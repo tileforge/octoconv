@@ -104,7 +104,7 @@ for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surface
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
-for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg dxf/alpha_clear_geometry.dxf dxf/alpha_clear_all.dxf dxf/alpha_one_visible.dxf dxf-out/alpha_one_visible.texts.json dxf-out/alpha_one_visible.render.svg; do
+for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg dxf/alpha_clear_geometry.dxf dxf/alpha_clear_all.dxf dxf/alpha_one_visible.dxf dxf-out/alpha_one_visible.texts.json dxf-out/alpha_one_visible.render.svg dxf/white_geometry.dxf dxf/white_text.dxf dxf/white_one_black.dxf dxf-out/white_one_black.texts.json dxf-out/white_one_black.render.svg dxf/degenerate_fill.dxf dxf/faint_only.dxf dxf/zwsp_text.dxf; do
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 REPL50="$SCALED/$REPL50_NAME"
@@ -1129,6 +1129,11 @@ dxf_svg_one() {
 	text_fonts)
 		texts_check=$(python3 "$W/svgfonts.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the font attributes are not those of the measured faces: $texts_check"
 		;;
+	white_one_black)
+		[ "$(grep -o '"#ffffff"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" -ge 10 ] && [ "$(grep -o 'stroke="#000000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 1 ] || fail "DXF_SVG $name: want the white geometry and texts kept and one black stroke"
+		[ "$SV_VISIBLE" -ge 11 ] || fail "DXF_SVG $name: $SV_VISIBLE visible elements, want the white ones counted too"
+		texts_check="white_paints_kept=1,black_strokes=1,visible_elements=$SV_VISIBLE"
+		;;
 	alpha_one_visible)
 		[ "$SV_VISIBLE" = 1 ] || fail "DXF_SVG $name: $SV_VISIBLE visible elements, want exactly the one 50% line"
 		[ "$(grep -o 'stroke-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 8 ] && [ "$(grep -o 'fill-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 4 ] || fail "DXF_SVG $name: the fully transparent strokes, fills and texts are not all kept"
@@ -1151,6 +1156,7 @@ dxf_svg_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
 dxf_svg_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
 dxf_svg_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf
 dxf_svg_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf
+dxf_svg_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf
 
 pdf_judged() {
 	local label=$1 pdf=$2 line rc=0
@@ -1197,6 +1203,12 @@ dxf_pdf_one() {
 		[ "$(grep -c '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(head -c 300 "$W/dxf_$name.pdf.txt")"
 		text_check="pdftotext_text=empty"
 		;;
+	white_one_black)
+		for s in "WHITE TEXT" "WHITE MTEXT"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold the white text '$s': $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		done
+		text_check="pdftotext_white_texts=2"
+		;;
 	text_alpha_faint)
 		grep -qF "FAINT ONLY" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold FAINT ONLY: $(head -c 300 "$W/dxf_$name.pdf.txt")"
 		[ "$(grep -c GONE "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds the fully transparent GONE: $(grep GONE "$W/dxf_$name.pdf.txt" | head -3)"
@@ -1227,6 +1239,7 @@ dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 4
 dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1
 dxf_pdf_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 0
 dxf_pdf_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 2
+dxf_pdf_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf 0
 
 drawing_judge() {
 	local png=$1 size=$2 background=$3 svg=$4 line rc=0
@@ -1282,6 +1295,7 @@ dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf
 dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 transparent '{"background":"transparent"}'
 dxf_render_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 1280 opaque ""
 dxf_render_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 1280 opaque ""
+dxf_render_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf 1280 opaque ""
 
 dxf_meas_one() {
 	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
@@ -1385,30 +1399,32 @@ dxf_bomb_one "$DXF/all_hidden.dxf" all_hidden.dxf cad_empty_result
 dxf_bomb_one "$DXF/single_point.dxf" single_point.dxf cad_empty_result
 
 dxf_empty_one() {
-	local name=$1 target=$2 op=$3 want_msg code msg events n
-	create_job "$DXF/$name.dxf" "$name.dxf" "$target" "$op"
+	local name=$1 target=$2 op=$3 opts=${4:-} want_msg code msg events n
+	create_job "$DXF/$name.dxf" "$name.dxf" "$target" "$op" "$opts"
 	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_EMPTY $name $target: create returned $HTTP: $(cat "$W/create.json")"
 	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
 	[ "$JOB_STATUS" = failed ] || fail "DXF_EMPTY $name $target: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
 	code=$(jq -r '.error_code // empty' "$W/job.json")
 	[ "$code" = cad_empty_result ] || fail "DXF_EMPTY $name $target: error_code '$code', want cad_empty_result: $(cat "$W/job.json")"
 	msg=$(jq -r '.error_message // empty' "$W/job.json")
-	want_msg="the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"
+	want_msg="the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
 	[ "$msg" = "$want_msg" ] || fail "DXF_EMPTY $name $target: message '$msg', want '$want_msg': $(cat "$W/job.json")"
 	events=$(job_events "$JOB_ID")
 	case ";$events;" in *";active>active;"*) fail "DXF_EMPTY $name $target: job $JOB_ID was retried: $events" ;; esac
 	n=$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")
 	[ "$n" = 0 ] || fail "DXF_EMPTY $name $target: $n output rows exist"
 	[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "DXF_EMPTY $name $target: the failed job exposes download_url or outputs"
-	ev "DXF_EMPTY,name=$name.dxf,target=$target,operation=${op:-convert},job=$JOB_ID,status=failed,code=$code,message=$(printf '%s' "$msg" | sed 's/,/;/g'),retried=0,events=$events,outputs=0,download_url=absent,result=ok"
+	ev "DXF_EMPTY,name=$name.dxf,target=$target,operation=${op:-convert},opts=$(printf '%s' "${opts:-none}" | sed 's/,/;/g'),job=$JOB_ID,status=failed,code=$code,message=$(printf '%s' "$msg" | sed 's/,/;/g'),retried=0,events=$events,outputs=0,download_url=absent,result=ok"
 	N_DXF_EMPTY=$((N_DXF_EMPTY + 1))
 }
 
-for e in alpha_clear_geometry alpha_clear_all; do
+for e in alpha_clear_geometry alpha_clear_all white_geometry white_text degenerate_fill faint_only zwsp_text; do
 	dxf_empty_one "$e" svg ""
 	dxf_empty_one "$e" pdf ""
 	dxf_empty_one "$e" png render
 done
+dxf_empty_one white_geometry png render '{"background":"transparent"}'
+dxf_empty_one white_text png render '{"size":2048,"background":"transparent"}'
 
 python3 - "$CORPUS/synthetic/legacy_cp1251.dxf" "$W/ceiling.dxf" 123731969 <<'PY' || fail "cannot build the padded dxf"
 import sys

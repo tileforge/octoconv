@@ -25,7 +25,7 @@ PY_PACKAGES=(ezdxf fonttools numpy pillow pyparsing typing-extensions)
 RW_SET=/job
 OUT_OVERRIDE=""
 FIXTURE_DIR="$CORPUS/dxf"
-FIXTURE_COUNT=48
+FIXTURE_COUNT=54
 HELPER_EVID="$PHASE_DIR/evidence/75-02-helper.txt"
 HELPER_EVID_NAME="evidence/75-02-helper.txt"
 DXF_OUT="$CORPUS/dxf-out"
@@ -43,6 +43,8 @@ JUDGE_DRAWINGS="public/hatches_2 public/acad_table_with_blk_ref public/uncommon 
   public/columns_R2007 synthetic/legacy_cp1251 synthetic/legacy_latin1 public/houses_of_parliament_georeferenced
   dxf/wide dxf/tall dxf/far_point dxf/xline_ray dxf/text_cases"
 JUDGE_SIZES="256 1280 2048"
+INK_EVID="$PHASE_DIR/evidence/75-ink.txt"
+INK_EVID_NAME="evidence/75-ink.txt"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -51,6 +53,7 @@ Usage:
   scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
   scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|fonts|all] [--write-out] [--out FILE]
   scripts/cad-dxf-probe.sh judge    [--out FILE]
+  scripts/cad-dxf-probe.sh ink      [--ceilings] [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
           uncommon.dxf with cad-dxf under its candidate Landlock ruleset, turn each SVG into a
@@ -86,6 +89,17 @@ judge     draw the 8 phase-71 drawings and wide, tall, far_point, xline_ray and 
           frame is judged by both. Disagreements are classified by the pre-registered classes E1,
           E2 and E3; anything else is unexplained. The evidence file defaults to
           .planning/phases/75-dxf-2d-pipeline/evidence/75-08-judge.txt and is rewritten whole.
+
+ink       draw every committed DXF (testdata/cad/dxf, public, synthetic, dxf-cr) with cad-dxf under its
+          measured ruleset, validate the render-only SVG with the Go validator and draw it with
+          rsvg-convert under its measured ruleset at the exact argv of the Go ink check (-b white into
+          the letterbox of a CADDXFInkSize frame), then judge it with cad-pixel-judge --ink. The
+          pre-registered empty fixtures must have no ink, every other drawing the helper accepts must
+          have ink. A crafted-SVG differential runs the same raster on SVGs whose Go visible count is
+          known: a visible count of 0 with ink would be a false refusal. Every raster and judge run is
+          wrapped by measure_wrap.py for wall time and peak memory; --ceilings adds the 75-05 rows
+          L170031, R118, C and B from the scaled cache (sha256 checked against 75-05-bounds.txt).
+          The evidence file defaults to .planning/phases/75-dxf-2d-pipeline/evidence/75-ink.txt.
 
 Every mode rewrites its own lines in the evidence file (default
 .planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
@@ -238,7 +252,7 @@ for p in sys.argv[1:]:
   docker run --rm --network none --entrypoint sh "$tag" -c "$inner" </dev/null | sed "s/^/HDR,mode=$mode,/"
   if [ "$mode" = tracer ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
-  elif [ "${mode%%,*}" = helper ] || [ "$mode" = judge ]; then
+  elif [ "${mode%%,*}" = helper ] || [ "$mode" = judge ] || [ "$mode" = ink ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset,max_drawn_entities=%s\n' "$mode" "$MAX_DRAWN"
   else
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/tmp_PYTHONHASHSEED=0_python=-B,unconfined=1\n' "$mode"
@@ -617,7 +631,7 @@ PY
 fixture_expectation() {
   case "$1" in
     cyclic_*) echo audit_104 ;;
-    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|text_fonts|alpha_clear_geometry|alpha_clear_all|alpha_one_visible|alpha_one_fill|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
+    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|text_fonts|alpha_clear_geometry|alpha_clear_all|alpha_one_visible|alpha_one_fill|white_geometry|white_text|white_one_black|degenerate_fill|faint_only|zwsp_text|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
     *) echo fact ;;
   esac
 }
@@ -974,6 +988,26 @@ elif case == "alpha_one_fill":
     need("the_visible_element_is_a_fill", blob.count(b'fill-opacity="0.498"') == 1 and b'stroke-opacity="0.498"' not in blob)
     need("two_invisible_texts", [e.get("invisible") for e in entries] == [True, True])
     need("bbox_counts_transparent_geometry", bbox is not None and near(bbox[:3], (0.0, -20.0, 100.0), 1e-6) and bbox[3] > 120.0)
+elif case in ("white_geometry", "white_text", "white_one_black", "degenerate_fill", "faint_only", "zwsp_text"):
+    expect("ok")
+    blob = open(svg_path, "rb").read() if os.path.exists(svg_path) else b""
+    vis = visible_count(root) if root is not None else -1
+    fact("visible", vis)
+    need("the_helper_and_the_walk_count_it_visible", vis >= 1)
+    whites = blob.count(b'"#ffffff"') - 1
+    fact("white_paints", whites)
+    if case == "white_geometry":
+        need("white_geometry_kept", whites >= 8 and b"<text" not in blob)
+    elif case == "white_text":
+        need("white_texts_kept", whites == 2 and blob.count(b"<text") == 2)
+    elif case == "white_one_black":
+        need("white_kept_and_one_black_stroke", whites >= 10 and blob.count(b'stroke="#000000"') == 1)
+    elif case == "degenerate_fill":
+        need("two_fills_no_stroke", blob.count(b"<path") == 2 and b"stroke=" not in blob.replace(b"stroke-linecap", b"").replace(b"stroke-linejoin", b""))
+    elif case == "faint_only":
+        need("every_paint_at_0.004", blob.count(b'opacity="0.004"') == 3 and b'opacity="0.498"' not in blob)
+    elif case == "zwsp_text":
+        need("one_text_of_u200b", svg_texts == ["\u200b"])
 elif case == "wide":
     expect("ok")
     need("page_wide", pw == 297.0 and ph < 30.0)
@@ -1213,6 +1247,9 @@ group_semantics() {
     sem_case "$c" "dxf/$c.dxf"
   done
   for c in alpha_clear_geometry alpha_clear_all alpha_one_visible alpha_one_fill; do
+    sem_case "$c" "dxf/$c.dxf"
+  done
+  for c in white_geometry white_text white_one_black degenerate_fill faint_only zwsp_text; do
     sem_case "$c" "dxf/$c.dxf"
   done
   sem_case 3dsolids public/3dsolids.dxf
@@ -1652,7 +1689,7 @@ group_writeout() {
   disk_guard
   mkdir -p "$DXF_OUT"
   : > "$WORK/frames.rows"
-  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf text_fonts:dxf alpha_one_visible:dxf; do
+  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf text_fonts:dxf alpha_one_visible:dxf white_one_black:dxf; do
     src="$CORPUS/${n#*:}/${n%%:*}.dxf"
     n=${n%%:*}
     read -r rc job <<< "$(draw_out "$n" "$src")"
@@ -1674,7 +1711,7 @@ group_writeout() {
         fi ;;
     esac
     case "$n" in
-      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint|text_fonts|alpha_one_visible)
+      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint|text_fonts|alpha_one_visible|white_one_black)
         pdfrc=0
         MOUNTS=()
         run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
@@ -2392,10 +2429,285 @@ judge_mode() {
   [ "$JUDGE_FAIL" = 0 ] && [ "$n" = 1 ]
 }
 
+INK_EMPTY="white_geometry white_text degenerate_fill faint_only zwsp_text"
+INK_CEILINGS="L170031:dxf-minsert-uncommon-n170031.dxf R118:dxf-replicate-uncommon-118MiB.dxf C:dxf-combo-dxf-replicate-uncommon-118MiB-c89163.dxf B:dxf-minsert-uncommon-n17003-b50.dxf"
+
+ink_go() {
+  local c
+  mkdir -p "$WORK/bin"
+  chmod 0755 "$WORK/bin"
+  for c in cad-svg-check cad-pixel-judge; do
+    CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/bin/$c" "./scripts/cmd/$c"
+  done
+  chmod 0755 "$WORK/bin"/*
+  mkdir -p "$WORK/wrap"
+  chmod 0755 "$WORK/wrap"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+  chmod 0644 "$WORK/wrap/measure_wrap.py"
+}
+
+ink_wrap() {
+  local job=$1 step=$2 ro=$3 rc=0
+  shift 3
+  mkdir -p "$job/w_$step"
+  chmod 0777 "$job/w_$step"
+  if [ "$ro" = none ]; then
+    docker run --rm "${LIMITS[@]}" "${STAGE_ENV[@]}" -v "$WORK/bin:/gobin:ro" -v "$WORK/wrap:/wrap:ro" -v "$job:/job" \
+      --entrypoint /usr/bin/python3 "$TAG" -I -B /wrap/measure_wrap.py --budget-s 1800 --outdir "/job/w_$step" -- \
+      "$@" > "$job/w_$step/wrap.out" 2>/dev/null </dev/null || rc=$?
+  else
+    docker run --rm "${LIMITS[@]}" "${STAGE_ENV[@]}" -e "PROBE_RO=$ro" -e "PROBE_RW=$RW_SET" -v "$WORK/probe:/probe:ro" \
+      -v "$WORK/bin:/gobin:ro" -v "$WORK/wrap:/wrap:ro" -v "$job:/job" --entrypoint /usr/bin/python3 "$TAG" -I -B \
+      /wrap/measure_wrap.py --budget-s 1800 --outdir "/job/w_$step" -- /probe/sandbox-probe "$@" \
+      > "$job/w_$step/wrap.out" 2>/dev/null </dev/null || rc=$?
+  fi
+  python3 - "$job/w_$step/wrap.out" "$rc" <<'PY'
+import sys
+f = {}
+for line in open(sys.argv[1], errors="replace"):
+    if line.startswith("WRAP,"):
+        f = dict(p.split("=", 1) for p in line.strip().split(",")[1:] if "=" in p)
+peak = max([int(v) for v in (f.get("child_rss_mib"), f.get("cg_peak_mib")) if v and v.isdigit()] or [-1])
+print("rc=%s,wall_s=%s,peak_mib=%s,oom_kill=%s,timeout=%s,wrap_rc=%s" % (
+    f.get("rc", "na"), f.get("wall_s", "na"), peak, f.get("oom_kill", "na"), f.get("timeout", "na"), sys.argv[2]))
+PY
+}
+
+ink_line() { grep -h "^$1," "$2" 2>/dev/null | tail -n 1; }
+
+pfx() { printf '%s' "$2" | sed "s/\([a-z_]*\)=/$1_\1=/g"; }
+
+ink_row() {
+  local kind=$1 name=$2 src=$3 expect=$4 job rc vf sv lb sw sh left top w_dxf w_rsvg w_judge gj visible ink result svg_mib
+  disk_guard
+  job=$(new_job)
+  cp -c "$src" "$job/in.dxf" 2>/dev/null || cp "$src" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  ink_wrap "$job" guard none /usr/bin/python3 -IB /usr/local/bin/cad-guard --format dxf --max-expanded-inserts "$INK_INSERTS" \
+    --max-expanded-entities "$MAX_DRAWN" --max-nesting "$INK_NESTING" --max-abs-coordinate "$INK_ABS" /job/in.dxf > "$job/guard.wrap"
+  vf=$(verdict_fields "$job/w_guard/child.log")
+  if [ "$(python3 -c 'import json, sys; v = [json.loads(l[11:]) for l in open(sys.argv[1], errors="replace") if l.startswith("CADVERDICT ")]; print(int(bool(v) and v[-1].get("stage") == "guard" and v[-1].get("verdict") == "ok"))' "$job/w_guard/child.log" 2>/dev/null || echo 0)" != 1 ]; then
+    result=fact
+    [ "$expect" != empty ] || result=fail
+    printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,guard=%s,check=not_reached_guard,expect=%s,result=%s\n' "$kind" "$name" \
+      "${src#"$CORPUS"/}" "$(wc -c < "$src" | tr -d ' ')" "$(sha_of "$src")" \
+      "$(grep -h '^CADVERDICT ' "$job/w_guard/child.log" | tail -n 1 | sed 's/^CADVERDICT //' | tr ',' ';')" "$expect" "$result" >> "$LINES"
+    rm -rf "$job"
+    return 0
+  fi
+  w_dxf=$(ink_wrap "$job" dxf "$DXF_RO" /usr/local/bin/cad-dxf --max-drawn-entities "$MAX_DRAWN" --texts /job/texts.json \
+    --render-svg /job/draw.render.svg --measure /job/measure.json /job/in.dxf /job/draw.svg)
+  vf=$(verdict_fields "$job/w_dxf/child.log")
+  if [ "$(field verdict "$vf")" != ok ] || [ ! -s "$job/draw.render.svg" ]; then
+    result=fact
+    [ "$expect" != empty ] || result=fail
+    printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,%s,%s,check=not_reached,expect=%s,result=%s\n' "$kind" "$name" \
+      "${src#"$CORPUS"/}" "$(wc -c < "$src" | tr -d ' ')" "$(sha_of "$src")" "$vf" "$(pfx dxf "$w_dxf")" "$expect" "$result" >> "$LINES"
+    rm -rf "$job"
+    return 0
+  fi
+  docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-svg-check "$TAG" \
+    --max-bytes "$SVG_MAX" --out /job/clean.svg /job/draw.render.svg > "$job/svg.out" 2>&1 </dev/null || true
+  sv=$(ink_line GOSVG "$job/svg.out")
+  visible=$(field visible "$sv")
+  lb=$(docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pixel-judge "$TAG" \
+    --print-letterbox --svg /job/clean.svg --size "$INK_SIZE" --max-svg-bytes "$SVG_MAX" </dev/null 2>/dev/null || true)
+  read -r sw sh left top <<< "$(printf '%s' "$lb" | sed -n 's/^LETTERBOX,sw=\([0-9]*\),sh=\([0-9]*\),left=\([0-9]*\),top=\([0-9]*\)$/\1 \2 \3 \4/p')"
+  if [ -z "${top:-}" ] || [ "$(field ok "$sv")" != 1 ]; then
+    printf 'INK,kind=%s,drawing=%s,input=%s,sha256=%s,%s,svg_check=%s,letterbox=%s,result=fail\n' "$kind" "$name" "${src#"$CORPUS"/}" \
+      "$(sha_of "$src")" "$vf" "$(printf '%s' "$sv" | tr ',' ';')" "${lb:-none}" >> "$LINES"
+    INK_FAIL=1
+    rm -rf "$job"
+    return 0
+  fi
+  if [ "$visible" = 0 ]; then
+    result=fact
+    [ "$expect" != empty ] || result=fail
+    printf 'INK,kind=%s,drawing=%s,input=%s,sha256=%s,%s,visible=0,check=not_reached_visible_0,expect=%s,result=%s\n' "$kind" "$name" \
+      "${src#"$CORPUS"/}" "$(sha_of "$src")" "$vf" "$expect" "$result" >> "$LINES"
+    rm -rf "$job"
+    return 0
+  fi
+  w_rsvg=$(ink_wrap "$job" rsvg "$RSVG_RO" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" --page-width "$INK_SIZE" \
+    --page-height "$INK_SIZE" --left "$left" --top "$top" -o /job/ink.png /job/clean.svg)
+  w_judge=$(ink_wrap "$job" judge none /gobin/cad-pixel-judge --ink --size "$INK_SIZE" /job/ink.png)
+  gj=$(ink_line GOJUDGE "$job/w_judge/child.log")
+  ink=$(field count "$gj")
+  result=fail
+  case "$expect" in
+    empty) [ "$ink" = 0 ] && [ "$(field w "$gj")" = "$INK_SIZE" ] && result=ok ;;
+    ink|any) [ -n "$ink" ] && [ "$ink" -ge 1 ] && result=ok ;;
+  esac
+  [ "$(field rc "$w_rsvg")" = 0 ] || result=fail
+  svg_mib=$(awk -v b="$(wc -c < "$job/clean.svg" | tr -d ' ')" 'BEGIN { printf "%.1f", b / 1048576 }')
+  printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,%s,visible=%s,clean_svg_mib=%s,letterbox=%sx%s+%s+%s,ink=%s,dark=%s,frame=%sx%s,png_bytes=%s,%s,%s,%s,expect=%s,result=%s\n' \
+    "$kind" "$name" "${src#"$CORPUS"/}" "$(wc -c < "$src" | tr -d ' ')" "$(sha_of "$src")" "$vf" "$visible" "$svg_mib" "$sw" "$sh" "$left" "$top" \
+    "${ink:-none}" "$(field dark_count "$gj")" "$(field w "$gj")" "$(field h "$gj")" "$(wc -c < "$job/ink.png" 2>/dev/null | tr -d ' ' || echo 0)" \
+    "$(pfx dxf "$w_dxf")" "$(pfx rsvg "$w_rsvg")" "$(pfx judge "$w_judge")" "$expect" "$result" >> "$LINES"
+  [ "$result" = ok ] || INK_FAIL=1
+  rm -rf "$job"
+}
+
+ink_crafted() {
+  local job case_ body want_vis want_zero sv vis lb sw sh left top gj ink result n=0
+  job=$(new_job)
+  while IFS='|' read -r case_ want_vis want_zero body; do
+    [ -n "$case_" ] || continue
+    printf '<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="0 0 100 100">%s</svg>\n' "$body" > "$job/$case_.svg"
+    chmod 0644 "$job/$case_.svg"
+    docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-svg-check "$TAG" \
+      --out "/job/$case_.clean.svg" "/job/$case_.svg" > "$job/$case_.svgcheck" 2>&1 </dev/null || true
+    sv=$(ink_line GOSVG "$job/$case_.svgcheck")
+    vis=$(field visible "$sv")
+    lb=$(docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pixel-judge "$TAG" \
+      --print-letterbox --svg "/job/$case_.clean.svg" --size "$INK_SIZE" </dev/null 2>/dev/null || true)
+    read -r sw sh left top <<< "$(printf '%s' "$lb" | sed -n 's/^LETTERBOX,sw=\([0-9]*\),sh=\([0-9]*\),left=\([0-9]*\),top=\([0-9]*\)$/\1 \2 \3 \4/p')"
+    ink=none
+    if [ -n "${top:-}" ]; then
+      MOUNTS=()
+      run_confined "$RSVG_RO" "$job" "$WORK/crafted.out" "$WORK/crafted.err" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" \
+        --page-width "$INK_SIZE" --page-height "$INK_SIZE" --left "$left" --top "$top" -o "/job/$case_.png" "/job/$case_.clean.svg" || true
+      docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pixel-judge "$TAG" \
+        --ink --size "$INK_SIZE" "/job/$case_.png" > "$job/$case_.judge" 2>/dev/null </dev/null || true
+      gj=$(ink_line GOJUDGE "$job/$case_.judge")
+      ink=$(field count "$gj")
+    fi
+    result=fail
+    if [ "$(field ok "$sv")" = 1 ] && [ "$vis" = "$want_vis" ] && [ -n "$ink" ] && [ "$ink" != none ]; then
+      if { [ "$want_zero" = 1 ] && [ "$ink" = 0 ]; } || { [ "$want_zero" = 0 ] && [ "$ink" -ge 1 ]; }; then result=ok; fi
+    fi
+    if [ "$vis" = 0 ] && [ -n "$ink" ] && [ "$ink" != none ] && [ "$ink" != 0 ]; then result=fail_false_refusal; fi
+    printf 'CRAFTED,case=%s,visible=%s,want_visible=%s,ink=%s,want_ink_zero=%s,svg_check=%s,result=%s\n' "$case_" "${vis:-none}" "$want_vis" \
+      "$ink" "$want_zero" "$(field ok "$sv")" "$result" >> "$LINES"
+    [ "$result" = ok ] || INK_FAIL=1
+    n=$((n + 1))
+  done <<'CASES'
+bg_rect_clear|0|1|<rect fill="#ffffff" x="0" y="0" width="100" height="100" fill-opacity="0.0" />
+stroke_opacity_0|0|1|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="8" stroke-opacity="0.000" />
+fill_opacity_0|0|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="#ff0000" fill-opacity="0.000" />
+fill_none_no_stroke|0|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="none" />
+stroke_none|0|1|<path d="M 10 50 l 80 0" fill="none" stroke="none" stroke-width="8" />
+stroke_width_0|0|1|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="0" />
+g_fill_opacity_0|0|1|<g fill-opacity="0"><path d="M 10 10 l 80 0 l 0 80 Z" fill="#ff0000" /></g>
+g_fill_none|0|1|<g fill="none"><path d="M 10 10 l 80 0 l 0 80 Z" /></g>
+g_stroke_width_0|0|1|<g stroke="#000000" stroke-width="0"><path d="M 10 50 l 80 0" fill="none" /></g>
+line_unstroked|0|1|<line x1="10" y1="50" x2="90" y2="50" />
+rect_zero_width|0|1|<rect x="10" y="10" width="0" height="80" />
+circle_r0|0|1|<circle cx="50" cy="50" r="0" stroke="#000000" stroke-width="8" />
+ellipse_ry0|0|1|<ellipse cx="50" cy="50" rx="30" ry="0" stroke="#000000" stroke-width="8" />
+moveto_only|0|1|<path d="M 50 50" stroke="#000000" stroke-width="8" stroke-linecap="round" />
+polyline_one_point|0|1|<polyline points="50 50" stroke="#000000" stroke-width="8" stroke-linecap="round" />
+clip_path_rect|0|1|<defs><clipPath><rect x="0" y="0" width="100" height="100" /></clipPath></defs>
+text_opacity_0|0|1|<text x="10" y="60" font-size="30" fill-opacity="0">gone</text>
+text_fill_none|0|1|<text x="10" y="60" font-size="30" fill="none">gone</text>
+text_whitespace|0|1|<text x="10" y="60" font-size="30">   </text>
+g_text_opacity_0|0|1|<g fill-opacity="0"><text x="10" y="60" font-size="30">gone</text></g>
+collinear_fill|1|1|<path d="M 10 10 l 40 40 l 40 40 Z" fill="#000000" />
+zero_area_fill|1|1|<path d="M 10 90 l 80 -80 l -80 80 Z" fill="#000000" />
+zero_length_butt|1|1|<path d="M 50 50 l 0 0" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="butt" />
+text_zero_matrix|1|1|<text transform="matrix(0 0 0 0 0 0)" x="10" y="60" font-size="30">zero</text>
+text_zwsp|1|1|<text x="10" y="60" font-size="30">&#8203;</text>
+white_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#ffffff" stroke-width="8" />
+white_fill|1|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="#ffffff" />
+white_text|1|1|<text x="10" y="60" font-size="30" fill="#ffffff">white</text>
+faint_fill|1|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="#000000" fill-opacity="0.004" />
+faint_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="8" stroke-opacity="0.004" />
+near_white_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#fafafa" stroke-width="8" />
+black_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="8" />
+round_cap_dot|1|0|<path d="M 50 50 l 0 0" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="round" />
+half_text|1|0|<text x="10" y="60" font-size="30" fill-opacity="0.498">half</text>
+light_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#f9f9f9" stroke-width="8" />
+hairline_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="0.05" />
+CASES
+  rm -rf "$job"
+  printf 'CRAFTED_SUMMARY,cases=%s,false_refusals=%s,fail=%s\n' "$n" "$(grep -c '^CRAFTED,.*,result=fail_false_refusal$' "$LINES" || true)" \
+    "$(grep -c '^CRAFTED,.*,result=fail' "$LINES" || true)" >> "$LINES"
+}
+
+ink_mode() {
+  local f name expect rows fails svg_mib entry row file path want_sha
+  need_tool pdftotext
+  setup ink
+  DXF_RO=$(measured_ro dxf /usr/local/bin/cad-dxf)
+  RSVG_RO=$(measured_ro rsvg /usr/bin/rsvg-convert)
+  [ -n "$DXF_RO" ] && [ -n "$RSVG_RO" ] \
+    || fail "$LANDLOCK_EVID carries no single readable MEASURED line for dxf and rsvg"
+  svg_mib=$(sed -n 's/^[[:space:]]*CADMaxDXFSVGBytes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) << 20$/\1/p' "$REPO_ROOT/internal/convert/cad.go")
+  [ -n "$svg_mib" ] || fail "CADMaxDXFSVGBytes is not N << 20 in internal/convert/cad.go"
+  SVG_MAX=$((svg_mib << 20))
+  INK_SIZE=$(sed -n 's/^[[:space:]]*CADMaxRenderSize[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)$/\1/p' "$REPO_ROOT/internal/convert/cadopts.go")
+  grep -qE '^[[:space:]]*CADDXFInkSize[[:space:]]*=[[:space:]]*CADMaxRenderSize$' "$REPO_ROOT/internal/convert/cadpixel.go" \
+    || fail "CADDXFInkSize is not CADMaxRenderSize in internal/convert/cadpixel.go"
+  [ -n "$INK_SIZE" ] || fail "CADMaxRenderSize is not a literal in internal/convert/cadopts.go"
+  INK_INSERTS=$(sed -n 's/^[[:space:]]*CADMaxDXFExpandedInserts[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)$/\1/p' "$REPO_ROOT/internal/convert/cad.go")
+  INK_NESTING=$(sed -n 's/^[[:space:]]*CADMaxDXFNesting[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)$/\1/p' "$REPO_ROOT/internal/convert/cad.go")
+  INK_ABS=$(sed -n 's/^[[:space:]]*MaxAbsCoordinate[[:space:]]*=[[:space:]]*\([0-9e.+]*\)$/\1/p' "$REPO_ROOT/internal/measurements/"*.go | head -n 1)
+  [ -n "$INK_INSERTS" ] && [ -n "$INK_NESTING" ] && [ -n "$INK_ABS" ] || fail "cannot read the guard caps from internal/convert/cad.go and internal/measurements"
+  ink_go
+  INK_FAIL=0
+  {
+    printf 'HDR,mode=ink,ro_cad_dxf=%s,ro_rsvg=%s,rw=%s,landlock_evidence=evidence/75-08-landlock.txt,ink_size=%s,max_drawn_entities=%s,svg_max_bytes=%s\n' \
+      "$DXF_RO" "$RSVG_RO" "$RW_SET" "$INK_SIZE" "$MAX_DRAWN" "$SVG_MAX"
+    printf 'HDR,mode=ink,check=rsvg-convert -b white -w SW -h SH --page-width %s --page-height %s --left L --top T -o ink.png clean.svg,letterbox=cad-pixel-judge --print-letterbox,judge=cad-pixel-judge --ink (JudgeCADDrawingInk),wrap=measure_wrap.py\n' "$INK_SIZE" "$INK_SIZE"
+    printf 'RULE,key=ink_expectations,registered=before_any_row,empty=%s,every_other_helper_ok_drawing=ink_at_least_1,helper_refused=fact,crafted_visible_0=ink_0_else_false_refusal\n' "$(printf '%s' "$INK_EMPTY" | tr ' ' '+')"
+  } >> "$LINES"
+  for f in "$FIXTURE_DIR"/*.dxf "$CORPUS"/public/*.dxf "$CORPUS"/synthetic/*.dxf "$CORPUS"/dxf-cr/*.dxf; do
+    name=$(basename "$f" .dxf)
+    expect=ink
+    case " $INK_EMPTY " in *" $name "*) expect=empty ;; esac
+    ink_row corpus "$name" "$f" "$expect"
+  done
+  ink_crafted
+  if [ "$INK_CEILINGS_ON" = 1 ]; then
+    for entry in $INK_CEILINGS; do
+      row=${entry%%:*}
+      file=${entry#*:}
+      path="$CAD_CACHE/scaled/$file"
+      want_sha=$(grep -m1 "^BOUND_ROW,row=$row," "$PHASE_DIR/evidence/75-05-bounds.txt" | sed -n 's/.*,sha256=\([0-9a-f]*\),.*/\1/p')
+      if [ ! -f "$path" ] || [ -z "$want_sha" ] || [ "$(sha_of "$path")" != "$want_sha" ]; then
+        printf 'INK,kind=ceiling,drawing=%s,input=%s,reason=missing_or_not_the_75-05_input,result=fail\n' "$row" "$file" >> "$LINES"
+        INK_FAIL=1
+        continue
+      fi
+      ink_row ceiling "$row" "$path" ink
+    done
+  fi
+  rows=$(grep -c '^INK,' "$LINES" || true)
+  fails=$(grep -E '^(INK|CRAFTED),' "$LINES" | grep -cvE ',result=(ok|fact)$' || true)
+  python3 - "$LINES" <<'PY' >> "$LINES"
+import sys
+rows = [dict(p.split("=", 1) for p in l.strip().split(",")[1:] if "=" in p) for l in open(sys.argv[1]) if l.startswith("INK,")]
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+for kind in ("corpus", "ceiling"):
+    rs = [r for r in rows if r.get("kind") == kind and num(r.get("rsvg_wall_s")) is not None]
+    if not rs:
+        continue
+    w = max(rs, key=lambda r: num(r["rsvg_wall_s"]))
+    p = max(rs, key=lambda r: num(r.get("rsvg_peak_mib")) or 0)
+    j = max(rs, key=lambda r: num(r.get("judge_wall_s")) or 0)
+    jp = max(rs, key=lambda r: num(r.get("judge_peak_mib")) or 0)
+    print("INK_COST,kind=%s,rasters=%d,rsvg_wall_max_s=%s@%s,rsvg_peak_max_mib=%s@%s,judge_wall_max_s=%s@%s,judge_peak_max_mib=%s@%s" % (
+        kind, len(rs), w["rsvg_wall_s"], w["drawing"], p["rsvg_peak_mib"], p["drawing"], j["judge_wall_s"], j["drawing"], jp["judge_peak_mib"], jp["drawing"]))
+PY
+  printf 'SUMMARY,mode=ink,rows=%s,converting=%s,inked=%s,empty=%s,helper_refused=%s,crafted=%s,fail=%s,result=%s\n' "$rows" \
+    "$(grep -c '^INK,.*,ink=[0-9]' "$LINES" || true)" "$(grep -cE '^INK,.*,ink=[1-9]' "$LINES" || true)" \
+    "$(grep -cE '^INK,.*,ink=0,' "$LINES" || true)" "$(grep -c ',check=not_reached,' "$LINES" || true)" \
+    "$(grep -c '^CRAFTED,' "$LINES" || true)" "$fails" "$( [ "$fails" = 0 ] && [ "$INK_FAIL" = 0 ] && echo ok || echo fail )" >> "$LINES"
+  mkdir -p "$(dirname "$EVID")"
+  cp "$LINES" "$EVID"
+  grep -E '^(INK|CRAFTED|INK_COST|CRAFTED_SUMMARY|SUMMARY),' "$LINES"
+  [ "$fails" = 0 ] && [ "$INK_FAIL" = 0 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
 WRITE=0
+INK_CEILINGS_ON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT_OVERRIDE=${2:?}; shift 2 ;;
@@ -2405,6 +2717,7 @@ while [ $# -gt 0 ]; do
       case "${2:-}" in semantics|safety|corpus|fonts|all) GROUP=$2 ;; *) usage ;; esac
       shift 2 ;;
     --write-out) [ "$MODE" = helper ] || usage; WRITE_OUT=1; shift ;;
+    --ceilings) [ "$MODE" = ink ] || usage; INK_CEILINGS_ON=1; shift ;;
     *) usage ;;
   esac
 done
@@ -2416,6 +2729,10 @@ if [ "$MODE" = judge ]; then
   EVID=$JUDGE_EVID
   EVID_NAME=$JUDGE_EVID_NAME
 fi
+if [ "$MODE" = ink ]; then
+  EVID=$INK_EVID
+  EVID_NAME=$INK_EVID_NAME
+fi
 [ -z "$OUT_OVERRIDE" ] || EVID=$OUT_OVERRIDE
 
 case "$MODE" in
@@ -2423,5 +2740,6 @@ case "$MODE" in
   fixtures) fixtures ;;
   helper) helper_mode ;;
   judge) judge_mode ;;
+  ink) ink_mode ;;
   *) usage ;;
 esac
