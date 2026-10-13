@@ -724,6 +724,23 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 
 ---
 
+## 3D render pairs on both backgrounds (`render-bg/`)
+
+- Licence: generated. Every file is a PNG drawn by this repository's `cmd/cad-worker/helper/cad-render` from a mesh of a corpus file listed above (`public/LinearSlide-MGN15x-Block.step`, CC-BY-3.0, unmodified geometry; the synthetic `degenerate_plate.step` and `degenerate_rod.step`; the derived `stl-ascii` slice of the fetched `nasa-sls-block1.stl`, PD).
+- Added by quick task 261014-0lo. Image `octoconv-cad-worker:latest`, image id `sha256:e2d4105a85da1d8d6743f4820b974b889d4383b7c0011fac4fbf7b599cd96482` (the 261013-0og build; `cmd/cad-worker` and `Dockerfile.cad-worker` are unchanged since). Every run: `--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody`.
+- Meshes: `cad-mesh --format step --quality Q --measure M IN OUT` (production argv), or `cad-mesh stats --measure M IN OUT` for the ASCII STL. Frames: `cad-render --view V --size S --background opaque|transparent IN.stl OUT.png`, once per background from the same STL. Harness and per-pair numbers: `.planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/` (`harness/`, `pairs.txt`).
+- What they prove: the 3D pixel judge gives the same verdict on the opaque and the transparent render of one mesh, with the same box, margin and dark count, and the transparent part pixels a subset of the opaque ones (the difference is the FXAA fringe, which `cad-render` writes into alpha-0 pixels).
+
+| Pair (`<name>_opaque.png`, `<name>_transparent.png`) | Mesh | View, size | Verdict on both |
+|---|---|---|---|
+| `nauo4_iso_1280` | `scripts/cad-corpus-gen.py --scaled-from public/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 4` (540850 bytes, sha256 `12fae7aaf151a5c9777f4ebc97b0d73e5d682dfcc151f63adb48cb42a60b7572`), draft quality, 12624 triangles | iso, 1280 | blob at about 4.3% ink: the sparse assembly the transparent route refused before (M2 of 76-02 at n=4) |
+| `linearslide_iso_256` | `public/LinearSlide-MGN15x-Block.step`, standard, 5948 triangles | iso, 256 | blob, a dense part |
+| `w15_iso_256` | `stl-ascii-nasa-sls-block1-1MiB.stl` (sha256 `77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0`), stats path, 4396 triangles | iso, 256 | thin, the 71 W15 slice |
+| `degenerate_plate_front_1280` | `synthetic/degenerate_plate.step`, standard, 12 triangles | front, 1280 | thin, a plate seen edge on |
+| `degenerate_rod_iso_256` | `synthetic/degenerate_rod.step`, standard, 140 triangles | iso, 256 | refused by J4 on both |
+
+---
+
 ## Fetched (manifest authoritative)
 
 These files are not committed. `scripts/cad-corpus-manifest.tsv` holds the URL, archive digest, member, sha256, byte count and licence of each; the sha256 values are deliberately not repeated here, so that the manifest is the only place that has to agree with the bytes. `scripts/cad-corpus-fetch.sh` downloads them into `$OCTOCONV_CAD_CACHE/fetched` and refuses a file whose sha256 differs.

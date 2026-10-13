@@ -1,0 +1,8 @@
+# RED compile at d2f52ef (judge unchanged), new tests added
+# github.com/apaderin/octoconv/internal/convert [github.com/apaderin/octoconv/internal/convert.test]
+internal/convert/cadpixelbg_test.go:129:69: ft.RingNonTransparent undefined (type CADPixelFacts has no field or method RingNonTransparent)
+internal/convert/cadpixelbg_test.go:174:9: f.RingNonTransparent undefined (type CADPixelFacts has no field or method RingNonTransparent)
+internal/convert/cadpixelbg_test.go:241:7: f.RingNonTransparent undefined (type CADPixelFacts has no field or method RingNonTransparent)
+internal/convert/cadpixelbg_test.go:242:50: f.RingNonTransparent undefined (type CADPixelFacts has no field or method RingNonTransparent)
+FAIL	github.com/apaderin/octoconv/internal/convert [build failed]
+FAIL

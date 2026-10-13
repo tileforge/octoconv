@@ -85,8 +85,8 @@ func main() {
 		if facts.HasAlpha {
 			alpha = 1
 		}
-		fmt.Printf("GOJUDGE,png=%s,ok=%d,mode=%s,w=%d,h=%d,count=%d,dark_count=%d,frac=%.4f,dark=%.4f,box=%dx%d,margin_px=%d,alpha=%d,frac_transparent=%.4f",
-			path, ok, facts.Mode, facts.Width, facts.Height, facts.Count, facts.DarkCount, facts.Frac, facts.Dark, facts.BoxW, facts.BoxH, facts.Margin, alpha, facts.FracTransparent)
+		fmt.Printf("GOJUDGE,png=%s,ok=%d,mode=%s,w=%d,h=%d,count=%d,dark_count=%d,frac=%.4f,dark=%.4f,box=%dx%d,margin_px=%d,alpha=%d,frac_transparent=%.4f,ring_nontransparent=%d",
+			path, ok, facts.Mode, facts.Width, facts.Height, facts.Count, facts.DarkCount, facts.Frac, facts.Dark, facts.BoxW, facts.BoxH, facts.Margin, alpha, facts.FracTransparent, facts.RingNonTransparent)
 		if *drawing {
 			fmt.Printf(",box_x=%d,box_y=%d,frac6=%.6f,lb_left=%d,lb_top=%d,lb_w=%d,lb_h=%d",
 				facts.BoxX, facts.BoxY, facts.Frac, box.Left, box.Top, box.Width, box.Height)
