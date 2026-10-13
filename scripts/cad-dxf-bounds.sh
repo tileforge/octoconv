@@ -77,7 +77,11 @@ bounds76  the pre-registered stage bounds of plan 76-02 on the production engine
        group of rows after checking the commit and image id against the init HDR; --finish checks every required
        group and writes SUMMARY; --smoke runs one 3D and one DXF row through every stage kind into a file under
        TMPDIR. --amend-rerun appends the one rerun_after_watchdog amendment; --group G --rerun then re-runs once a
-       group the disk watchdog stopped, keeping its partial rows and its STOP line. The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
+       group the disk watchdog stopped, keeping its partial rows and its STOP line. A second --amend-rerun appends
+       the one rerun_after_product_fix amendment for the step group stopped by the render judge (stage pixel) and
+       its NOTE lines; --group step --rerun then re-runs it once at a commit that differs from the init commit only
+       in .planning, this script and the judge fix of quick 261014-0lo, and every later group runs at that commit.
+       The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
        in the RULE lines and applied by 76-03.
 
 The RULE lines are written before any row is measured. Generated inputs live in
@@ -2326,17 +2330,70 @@ def maxwall(argv):
     print("na" if best is None else "%.2f" % best)
 
 
+def fixnote(argv):
+    path = argv[0]
+    text = open(path).read().splitlines()
+    stops = [kv(l) for l in text if l.startswith("STOP,") and ",reason=row_failed," in l and ",stage=pixel," in l]
+    hdrs = [i for i, l in enumerate(text) if l.startswith("HDR,group=step,") and ",rerun_key=rerun_after_product_fix," in l]
+    if len(stops) != 1 or not hdrs:
+        print("NOTE,key=fix_row_compare,mode=bounds76,result=not_determinable,why=no_single_judge_stop_or_no_fix_hdr")
+        return 0
+    s = stops[0]
+    keys = ("cell", "quality", "view", "background", "rep")
+
+    def match(d, stage):
+        return d.get("stage") == stage and all(d.get(k) == s.get(k) for k in keys)
+
+    old_render = old_pixel = new_render = new_pixel = None
+    for i, l in enumerate(text):
+        if not l.startswith("BOUND76_ROW,"):
+            continue
+        d = kv(l)
+        if i < hdrs[-1]:
+            if match(d, "pixel") and d.get("band") == "failed":
+                old_pixel = d
+            elif match(d, "render") and old_pixel is None:
+                old_render = d
+        else:
+            if match(d, "render") and new_render is None:
+                new_render = d
+            elif match(d, "pixel") and new_pixel is None:
+                new_pixel = d
+    if not (old_render and old_pixel and new_render and new_pixel):
+        print("NOTE,key=fix_row_compare,mode=bounds76,cell=%s,result=not_determinable,why=rows_missing" % s.get("cell"))
+        return 0
+
+    def facts(d):
+        return dict(p.split(":", 1) for p in d.get("detail", "").split("+") if ":" in p)
+
+    fo, fn = facts(old_pixel), facts(new_pixel)
+    same = lambda k: "1" if old_render.get(k) == new_render.get(k) else "0"
+    cmp = "+".join("%s:%s>%s" % (k, fo.get(k, "na"), fn.get(k, "na")) for k in ("mode", "count", "dark_count", "box", "margin_px", "alpha", "frac_transparent", "ring_nontransparent"))
+    print("NOTE,key=fix_row_compare,mode=bounds76,cell=%s,quality=%s,view=%s,background=%s,rep=%s,input_sha256_same=%s,triangles_same=%s,"
+          "render_out_bytes=%s>%s,out_bytes_same=%s,png_sha256=not_recorded_in_either_attempt,png_bytes_identical=not_determinable,"
+          "judge_argv_same=1,old_pixel_class=%s,new_pixel_class=%s,facts=%s,render_wall_s=%s>%s,"
+          "note=the_judge_input_is_the_render_PNG_of_the_same_cell_file_and_mesh_quality;its_size_is_compared;its_bytes_were_not_hashed;count_differs_by_the_fixed_part-pixel_definition_even_for_identical_bytes" % (
+              s.get("cell"), s.get("quality"), s.get("view"), s.get("background"), s.get("rep"), same("sha256"), same("triangles"),
+              old_render.get("out_bytes"), new_render.get("out_bytes"), same("out_bytes"), old_pixel.get("class"), new_pixel.get("class"), cmp,
+              old_render.get("wall_s"), new_render.get("wall_s")))
+    return 0
+
+
 def finish(argv):
     path, groups = argv[0], argv[1].split("+")
     text = open(path).read().splitlines()
     problems = []
     amend = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_watchdog,")]
+    amend_fix = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_product_fix,")]
     watchdog = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," in l + ","]
-    if any(l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," not in l + "," for l in text):
+    other = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," not in l + ","]
+    fix_ok = len(amend_fix) == 1 and len(other) == 1 and other[0].get("group") == "step" and other[0].get("reason") == "row_failed" and other[0].get("stage") == "pixel"
+    if other and not fix_ok:
         problems.append("stop_line_present")
     if watchdog and len(amend) != 1:
         problems.append("watchdog_stop_without_the_rerun_amendment")
     stopped = {d.get("group") for d in watchdog}
+    fixed = {other[0].get("group")} if fix_ok else set()
     init = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,commit=")]
     image = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,image=")]
     if len(init) != 1 or len(image) != 1:
@@ -2345,25 +2402,47 @@ def finish(argv):
     first_row = min((i for i, l in enumerate(text) if l.startswith(("BOUND76_ROW,", "REFUSAL_ROW,", "CELL,"))), default=len(text))
     if last_rule < 0 or first_row < last_rule:
         problems.append("a_row_before_the_last_rule")
+    fix_commit = None
     for g in groups:
         hdr = [kv(l) for l in text if l.startswith("HDR,group=%s," % g)]
-        end = [l for l in text if l.startswith("GROUP_END,group=%s," % g)]
-        want = 2 if g in stopped else 1
-        if len(hdr) != want or (want == 2 and hdr[1].get("rerun") != "1"):
+        end = [kv(l) for l in text if l.startswith("GROUP_END,group=%s," % g)]
+        want = 1 + (g in stopped) + (g in fixed)
+        reruns = [h.get("rerun") for h in hdr[1:]]
+        expect = (["1"] if g in stopped else []) + (["2"] if g in fixed else [])
+        if len(hdr) != want or reruns != expect:
             problems.append("group_%s_hdr_count_%d" % (g, len(hdr)))
             continue
         last = hdr[-1]
+        if g in fixed:
+            if last.get("rerun_key") != "rerun_after_product_fix":
+                problems.append("group_%s_fix_rerun_key" % g)
+            fix_commit = last.get("commit")
         if init and image:
             same_commit = last.get("commit") == init[0].get("commit")
             same_image = last.get("image_id") == image[0].get("image_id")
-            if not same_commit and not (amend and last.get("inputs_identical") == "1"):
+            fix_inputs = amend_fix and last.get("inputs_identical_except") == "judge" and last.get("judge_commit") == amend_fix[0].get("judge_commit")
+            if not same_commit and not ((amend and last.get("inputs_identical") == "1") or fix_inputs):
                 problems.append("group_%s_commit_differs" % g)
-            if not same_image and not (amend and last.get("image") == image[0].get("image")):
+            if not same_image and not ((amend or amend_fix) and last.get("image") == image[0].get("image")):
                 problems.append("group_%s_image_differs" % g)
-        if len(end) != 1 or ",result=ok" not in end[0]:
+        oks = [e for e in end if e.get("result") == "ok"]
+        stops = [e for e in end if e.get("result") != "ok"]
+        if len(oks) != 1 or not end or end[-1].get("result") != "ok" or len(stops) != (1 if g in fixed else 0):
             problems.append("group_%s_did_not_end_ok" % g)
+    fpos = [i for i, l in enumerate(text) if l.startswith("HDR,group=") and ",rerun_key=rerun_after_product_fix," in l]
+    if fixed and fpos:
+        for i, l in enumerate(text):
+            if i > fpos[-1] and l.startswith("HDR,group=") and kv(l).get("commit") != fix_commit:
+                problems.append("group_%s_not_at_the_fix_commit" % kv(l).get("group"))
     rows = [l for l in text if l.startswith("BOUND76_ROW,")]
-    if any(",band=failed," in l for l in rows):
+    failed = [kv(l) for l in rows if ",band=failed," in l]
+    if fixed:
+        s0 = other[0]
+        failed = [d for d in failed if not (d.get("group") == s0.get("group") and d.get("stage") == s0.get("stage") and all(
+            d.get(k) == s0.get(k) for k in ("cell", "quality", "view", "background", "rep")))]
+        if len([l for l in rows if ",band=failed," in l]) != 1:
+            problems.append("failed_band_rows_besides_the_fix_stop")
+    if failed:
         problems.append("failed_band_row")
     if problems:
         print("STOP,mode=bounds76,reason=finish_check_failed,detail=%s" % "+".join(problems))
@@ -2380,7 +2459,7 @@ def finish(argv):
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
-    fn = {"row": row, "guard_probe": guard_probe, "brackets": brackets, "maxwall": maxwall, "finish": finish}.get(cmd)
+    fn = {"row": row, "guard_probe": guard_probe, "brackets": brackets, "maxwall": maxwall, "finish": finish, "fixnote": fixnote}.get(cmd)
     if fn is None:
         sys.exit(64)
     sys.exit(fn(sys.argv[2:]) or 0)
@@ -3204,6 +3283,46 @@ b76_init_check() {
   INIT_TAG=$(sed -n 's/^HDR,mode=bounds76,image=\([^,]*\),image_id=.*/\1/p' "$B76_OUT" | head -n 1)
   [ -n "$INIT_COMMIT" ] && [ -n "$INIT_IMAGE" ] && [ -n "$INIT_TAG" ] || fail "the init HDR lines are missing in $B76_OUT"
   B76_AMEND=$(grep -c '^RULE_AMEND,key=rerun_after_watchdog,' "$B76_OUT" || true)
+  B76_AMEND_FIX=$(grep -c '^RULE_AMEND,key=rerun_after_product_fix,' "$B76_OUT" || true)
+}
+
+B76_FIX_STOP_RE='^STOP,mode=bounds76,group=step,reason=row_failed,cell=[^,]*,stage=pixel,'
+B76_FIX_GROUP=step
+B76_FIX_PATHS='^(scripts/cad-dxf-bounds\.sh|internal/convert/cadpixel[^/]*\.go|internal/convert/cad_docs_sync_test\.go|internal/convert/testdata/cad/PROVENANCE\.md|internal/convert/testdata/cad/render-bg/[^/]*\.png|scripts/cmd/cad-pixel-judge/[^/]*|scripts/cad-liveproof\.sh|docs/[^/]*\.md)$'
+B76_JUDGE_PATHS=(internal/convert/cadpixel.go scripts/cmd/cad-pixel-judge)
+
+b76_go_bin_shas() {
+  local c out=""
+  for c in "${GO_CLIS[@]}" sandbox-probe; do out="$out+$c:$(sha_of "$WORK/bin/$c")"; done
+  printf '%s' "${out#+}"
+}
+
+b76_other_stops() {
+  { grep '^STOP,' "$B76_OUT" || true; } | { grep -v ',reason=watchdog_disk_below_threshold,' || true; }
+}
+
+b76_fix_diff() {
+  local p cls bad="" planning=0 harness=0 judge_go=0 judge_test=0 judge_testdata=0 judge_cli=0 liveproof=0 docs=0
+  B76_JUDGE_COMMIT=$(git log -1 --format=%H "$INIT_COMMIT..HEAD" -- "${B76_JUDGE_PATHS[@]}")
+  [ -n "$B76_JUDGE_COMMIT" ] || fail "no judge fix commit between $INIT_COMMIT and HEAD"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in .planning/*) planning=$((planning + 1)); continue ;; esac
+    if ! printf '%s\n' "$p" | grep -qE "$B76_FIX_PATHS"; then bad="$bad $p"; continue; fi
+    case "$p" in
+      scripts/cad-dxf-bounds.sh) harness=$((harness + 1)) ;;
+      internal/convert/*_test.go) judge_test=$((judge_test + 1)) ;;
+      internal/convert/testdata/*) judge_testdata=$((judge_testdata + 1)) ;;
+      internal/convert/*) judge_go=$((judge_go + 1)) ;;
+      scripts/cmd/cad-pixel-judge/*) judge_cli=$((judge_cli + 1)) ;;
+      scripts/cad-liveproof.sh) liveproof=$((liveproof + 1)) ;;
+      docs/*) docs=$((docs + 1)) ;;
+    esac
+  done < <(git diff --name-only "$INIT_COMMIT" HEAD)
+  [ -z "$bad" ] || fail "commit $(git rev-parse HEAD) changes${bad} against the init commit; rerun_after_product_fix allows only .planning, this script and the judge fix"
+  B76_DIFF_CLASS="planning:$planning+harness:$harness+judge_go:$judge_go+judge_test:$judge_test+judge_testdata:$judge_testdata+judge_cli:$judge_cli+liveproof:$liveproof+docs:$docs"
+  B76_GO_SRC=$( { git diff --name-only "$INIT_COMMIT" HEAD -- '*.go' || true; } | { grep -v '_test\.go$' || true; } | tr '\n' '+' | sed 's/+$//')
+  [ -n "$B76_GO_SRC" ] || B76_GO_SRC=none
 }
 
 b76_watchdog_groups() {
@@ -3211,33 +3330,91 @@ b76_watchdog_groups() {
 }
 
 b76_group_gate() {
-  local x other changed
-  other=$(grep '^STOP,' "$B76_OUT" | grep -vc ',reason=watchdog_disk_below_threshold,' || true)
-  [ "$other" = 0 ] || fail "$B76_OUT holds a STOP line"
+  local x other changed fixhdr
+  other=$(b76_other_stops)
+  if [ -n "$other" ]; then
+    [ "$B76_AMEND_FIX" = 1 ] || fail "$B76_OUT holds a STOP line"
+    [ "$(printf '%s\n' "$other" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$other" | grep -qE "$B76_FIX_STOP_RE" \
+      || fail "$B76_OUT holds a STOP line the rerun_after_product_fix amendment does not cover"
+    if ! { [ "$B76_GROUP" = "$B76_FIX_GROUP" ] && [ "$B76_RERUN" = 1 ]; }; then
+      grep -q "^GROUP_END,group=$B76_FIX_GROUP,.*,result=ok" "$B76_OUT" || fail "group $B76_FIX_GROUP was stopped by the render judge and has not been re-run"
+    fi
+  fi
   for x in $(b76_watchdog_groups); do
     [ "$B76_AMEND" = 1 ] || fail "group $x was stopped by the disk watchdog and $B76_OUT has no rerun amendment"
     if [ "$x" = "$B76_GROUP" ] && [ "$B76_RERUN" = 1 ]; then continue; fi
     grep -q "^GROUP_END,group=$x,.*,result=ok" "$B76_OUT" || fail "group $x was stopped by the disk watchdog and has not been re-run"
   done
+  B76_RERUN_N=0
+  B76_RERUN_KEY=none
   if [ "$B76_RERUN" = 1 ]; then
-    [ "$B76_AMEND" = 1 ] || fail "--rerun needs the rerun_after_watchdog amendment"
-    b76_watchdog_groups | grep -qx "$B76_GROUP" || fail "group $B76_GROUP was not stopped by the disk watchdog; it may not be re-run"
-    [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 1 ] || fail "group $B76_GROUP was already re-run once"
-    grep -q "^GROUP_END,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP has a GROUP_END; it may not be re-run"
+    if [ -n "$other" ] && [ "$B76_GROUP" = "$B76_FIX_GROUP" ]; then
+      [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 2 ] || fail "group $B76_GROUP was already re-run after the product fix"
+      [ "$(grep -c "^GROUP_END,group=$B76_GROUP," "$B76_OUT")" = 1 ] && grep -q "^GROUP_END,group=$B76_GROUP,.*,result=STOP$" "$B76_OUT" \
+        || fail "group $B76_GROUP does not end in the one render-judge STOP"
+      B76_RERUN_N=2
+      B76_RERUN_KEY=rerun_after_product_fix
+    else
+      [ "$B76_AMEND" = 1 ] || fail "--rerun needs the rerun_after_watchdog amendment"
+      b76_watchdog_groups | grep -qx "$B76_GROUP" || fail "group $B76_GROUP was not stopped by the disk watchdog; it may not be re-run"
+      [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 1 ] || fail "group $B76_GROUP was already re-run once"
+      grep -q "^GROUP_END,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP has a GROUP_END; it may not be re-run"
+      B76_RERUN_N=1
+      B76_RERUN_KEY=rerun_after_watchdog
+    fi
   else
     grep -q "^HDR,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP already ran in $B76_OUT; a group never runs twice"
   fi
   B76_INPUTS_SAME=1
   if [ "$(git rev-parse HEAD)" != "$INIT_COMMIT" ]; then
     [ "$B76_AMEND" = 1 ] || fail "commit $(git rev-parse HEAD) differs from the init commit $INIT_COMMIT"
-    changed=$(git diff --name-only "$INIT_COMMIT" HEAD -- . ':(exclude).planning' | tr '\n' ' ' | sed 's/ $//')
-    [ -z "$changed" ] || [ "$changed" = scripts/cad-dxf-bounds.sh ] || fail "commit $(git rev-parse HEAD) changes $changed against the init commit"
+    if [ "$B76_AMEND_FIX" = 1 ]; then
+      b76_fix_diff
+      B76_INPUTS_SAME=0
+      if [ "$B76_RERUN_KEY" != rerun_after_product_fix ]; then
+        fixhdr=$(grep "^HDR,group=$B76_FIX_GROUP,.*,rerun_key=rerun_after_product_fix," "$B76_OUT" | tail -n 1 | tr ',' '\n' | sed -n 's/^commit=//p')
+        [ "$fixhdr" = "$(git rev-parse HEAD)" ] || fail "group $B76_GROUP must run at the commit of the product-fix re-run (${fixhdr:-none})"
+      fi
+    else
+      changed=$(git diff --name-only "$INIT_COMMIT" HEAD -- . ':(exclude).planning' | tr '\n' ' ' | sed 's/ $//')
+      [ -z "$changed" ] || [ "$changed" = scripts/cad-dxf-bounds.sh ] || fail "commit $(git rev-parse HEAD) changes $changed against the init commit"
+    fi
   fi
+}
+
+b76_amend_fix() {
+  local other g n ok tr retained
+  [ "$B76_AMEND_FIX" = 0 ] || fail "$B76_OUT already holds the rerun_after_product_fix amendment"
+  other=$(b76_other_stops)
+  [ -n "$other" ] && [ "$(printf '%s\n' "$other" | wc -l | tr -d ' ')" = 1 ] && printf '%s\n' "$other" | grep -qE "$B76_FIX_STOP_RE" \
+    || fail "$B76_OUT holds no single render-judge STOP of group $B76_FIX_GROUP"
+  [ "$(grep -c "^HDR,group=$B76_FIX_GROUP," "$B76_OUT")" = 2 ] && [ "$(grep -c "^GROUP_END,group=$B76_FIX_GROUP," "$B76_OUT")" = 1 ] \
+    && grep -q "^GROUP_END,group=$B76_FIX_GROUP,.*,result=STOP$" "$B76_OUT" || fail "group $B76_FIX_GROUP is not in the state the amendment covers"
+  b76_fix_diff
+  WORK_NOTES=$(mktemp "${TMPDIR:-/tmp}/b76-notes.XXXXXX")
+  retained=$( { find "${TMPDIR:-/tmp}" -maxdepth 4 -path '*cad-b76.*' -name '*.png' 2>/dev/null; find "$CAD_CACHE" -name '*.png' 2>/dev/null; } | wc -l | tr -d ' ')
+  for g in dxf stl; do
+    n=$(grep -cE "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" || true)
+    ok=$(grep -E "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" | grep -c ',class=ok,' || true)
+    tr=$(grep -E "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" | grep -c ',background=transparent,' || true)
+    printf 'NOTE,key=prefix_judge_%s,mode=bounds76,group=%s,judge_rows=%s,judge_rows_ok=%s,transparent_judge_rows=%s,group_end=%s,retained_pngs=%s,note=the_%s_group_was_judged_by_the_pre-fix_judge_(clone_commit_%s);the_judge_runs_as_its_own_wrapped_stage_never_inside_a_timed_stage_(guard;mesh;stats;render;dxf;rsvg_*)_so_the_stage_walls_of_the_group_are_unaffected;its_judge_rows_were_all_ok_under_the_old_judge;its_PNG_outputs_are_not_retained_(each_row_job_directory_is_removed_after_the_row_and_the_group_work_directory_on_exit;none_found_under_TMPDIR_cad-b76.*_or_the_CAD_cache)_so_no_offline_re-judge_with_the_fixed_cad-pixel-judge_was_run\n' \
+      "$g" "$g" "$n" "$ok" "$tr" "$(grep "^GROUP_END,group=$g," "$B76_OUT" | tail -n 1 | tr ',' '\n' | sed -n 's/^result=//p')" "$retained" "$g" \
+      "$(git rev-parse --short "$INIT_COMMIT")" >> "$WORK_NOTES"
+    [ "$n" = "$ok" ] && [ "$n" -gt 0 ] || { rm -f "$WORK_NOTES"; fail "group $g has a judge row that is not ok"; }
+  done
+  [ "$retained" = 0 ] || { rm -f "$WORK_NOTES"; fail "$retained PNG files are retained; re-judge them before the NOTE claims none"; }
+  printf 'RULE_AMEND,key=rerun_after_product_fix,mode=bounds76,date_utc=%s,commit=%s,init_commit=%s,judge_commit=%s,stopped_groups=%s,diff_class=%s,go_src_changed=%s,rule=group_step_stopped_by_STOP_reason=row_failed_at_stage=pixel_(the_render_judge_JudgeCADPNG_refused_the_M2_transparent_render_while_the_opaque_render_of_the_same_mesh_passed;a_product_defect_fixed_by_quick_261014-0lo)_may_be_re-run_once_more_after_the_judge_fix;its_partial_rows_from_both_earlier_attempts_and_both_STOP_lines_stay_in_the_file_and_count_in_W_(max)_which_can_only_raise_a_bound;the_re-run_commit_may_differ_from_init_commit_%s_only_in_.planning/**;scripts/cad-dxf-bounds.sh_and_the_judge_fix_paths_of_261014-0lo_(internal/convert/cadpixel*.go_and_its_tests_and_testdata;scripts/cmd/cad-pixel-judge/;scripts/cad-liveproof.sh;docs)_checked_by_git_diff_--name-only_against_the_init_commit_and_written_on_the_HDR_as_diff_class;judge_commit_and_inputs_identical_except=judge;any_other_differing_path_is_STOP;the_engine_image_must_have_the_same_tag_inputs_hash_as_init_(cad-render;cad-mesh;cad-guard;cad-dxf)_with_image_id_and_image_id_match_recorded;the_Go_judge_binaries_may_differ_(judge_only)_and_their_sha256_is_recorded;the_same_pre-registered_cells_and_rules_(a_regenerated_cell_whose_sha256_differs_from_its_earlier_CELL_line_is_STOP);group_iges_runs_at_the_same_commit_as_the_step_re-run_with_the_fixed_judge_and_records_judge_commit_on_its_HDR;no_other_rule_changes;any_other_re-run_is_refused\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$INIT_COMMIT" "$B76_JUDGE_COMMIT" "$B76_FIX_GROUP" "$B76_DIFF_CLASS" "$B76_GO_SRC" \
+    "$(git rev-parse --short "$INIT_COMMIT")" >> "$B76_OUT"
+  cat "$WORK_NOTES" >> "$B76_OUT"
+  rm -f "$WORK_NOTES"
+  tail -n 3 "$B76_OUT" >&2
+  exit 0
 }
 
 b76_amend() {
   local stopped
-  [ "$B76_AMEND" = 0 ] || fail "$B76_OUT already holds the rerun amendment"
+  [ "$B76_AMEND" = 0 ] && [ -z "$(b76_other_stops)" ] || b76_amend_fix
   stopped=$(b76_watchdog_groups | tr '\n' '+' | sed 's/+$//')
   [ -n "$stopped" ] || fail "$B76_OUT holds no disk-watchdog STOP"
   printf 'RULE_AMEND,key=rerun_after_watchdog,mode=bounds76,date_utc=%s,commit=%s,init_commit=%s,stopped_groups=%s,rule=a_group_stopped_by_the_environment_disk_watchdog_(STOP_reason=watchdog_disk_below_threshold)_may_be_re-run_once;its_partial_rows_stay_in_the_file_and_are_counted_in_W_(max)_which_can_only_raise_a_bound;the_re-run_uses_the_measured_inputs_of_clone_commit_%s_(the_re-run_commit_may_differ_only_in_.planning_and_in_this_permission_in_scripts/cad-dxf-bounds.sh;checked_by_git_diff_and_written_as_inputs_identical=1);the_same_image_build_inputs_(the_same_engine_tag_inputs_hash;an_image_id_other_than_the_init_one_is_recorded);the_same_pre-registered_cells_and_rules_(a_regenerated_cell_whose_sha256_differs_from_its_earlier_CELL_line_is_STOP);the_STOP_line_stays;no_other_rule_changes;any_other_re-run_is_refused\n' \
@@ -3281,6 +3458,7 @@ b76_mode() {
       b76_group_gate
       b76_setup
       B76_IMAGE_MATCH=1
+      [ "$B76_AMEND_FIX" = 0 ] || [ "$TAG" = "$INIT_TAG" ] || fail "engine tag $TAG differs from the init tag $INIT_TAG"
       if [ "$IMAGE_ID" != "$INIT_IMAGE" ]; then
         [ "$B76_AMEND" = 1 ] && [ "$TAG" = "$INIT_TAG" ] || fail "image id $IMAGE_ID differs from the init image id $INIT_IMAGE"
         B76_IMAGE_MATCH=0
@@ -3288,9 +3466,14 @@ b76_mode() {
       b76_classes
       B76_T0=$(date +%s)
       b76_sample
-      printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s,rerun=%s,init_commit=%s,inputs_identical=%s,init_image_id=%s,image_id_match=%s\n' "$B76_GROUP" \
+      B76_HDR_FIX=""
+      if [ "$B76_AMEND_FIX" = 1 ]; then
+        B76_HDR_FIX=$(printf ',rerun_key=%s,judge_commit=%s,inputs_identical_except=judge,diff_class=%s,go_src_changed=%s,go_bin_sha256=%s' \
+          "$B76_RERUN_KEY" "$B76_JUDGE_COMMIT" "$B76_DIFF_CLASS" "$B76_GO_SRC" "$(b76_go_bin_shas)")
+      fi
+      printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s,rerun=%s,init_commit=%s,inputs_identical=%s,init_image_id=%s,image_id_match=%s%s\n' "$B76_GROUP" \
         "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" \
-        "$B76_RERUN" "$INIT_COMMIT" "$B76_INPUTS_SAME" "$INIT_IMAGE" "$B76_IMAGE_MATCH" >> "$B76_OUT"
+        "$B76_RERUN_N" "$INIT_COMMIT" "$B76_INPUTS_SAME" "$INIT_IMAGE" "$B76_IMAGE_MATCH" "$B76_HDR_FIX" >> "$B76_OUT"
       case "$B76_GROUP" in
         refusal) b76_group_refusal ;;
         dxf) b76_group_dxf ;;
@@ -3301,6 +3484,7 @@ b76_mode() {
           [ -n "${B76_BYTE_BOUND// /}" ] || b76_stop "reason=pathb_without_a_byte_bound_format" ;;
         *) fail "unknown group $B76_GROUP" ;;
       esac
+      [ "$B76_RERUN_KEY" != rerun_after_product_fix ] || python3 "$WORK/tools/b76.py" fixnote "$B76_OUT" >> "$B76_OUT"
       b76_sample
       printf 'GROUP_END,group=%s,rows=%s,duration_s=%s,date_utc=%s,load1=%s,vm_free_gib=%s,result=ok\n' "$B76_GROUP" \
         "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - B76_T0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
