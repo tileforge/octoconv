@@ -5,11 +5,11 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Completed 76-01-PLAN.md
-last_updated: "2026-10-13T15:14:07.050Z"
-last_activity: 2026-10-12
+stopped_at: 76-02 Task 3 stopped by the disk watchdog in the step group
+last_updated: "2026-10-13T18:34:19.121Z"
+last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 1af1995529f0848f90cca32d7df6a5a70bc20481
+state_head: 34f61357f202b513d8f8d935c4f68a7659ede912
 progress:
   total_phases: 6
   completed_phases: 5
@@ -306,6 +306,7 @@ Carried from v1.12:
 - Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
 - Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
+- 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
 
 ## Deferred Items
 
@@ -427,8 +428,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-13T15:14:06.848Z
-Stopped at: Completed 76-01-PLAN.md
+Last session: 2026-10-13T18:34:18.961Z
+Stopped at: 76-02 Task 3 stopped by the disk watchdog in the step group
 Resume file: None
 
 ## Operator Next Steps
