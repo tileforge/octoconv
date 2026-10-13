@@ -527,17 +527,25 @@ Either place the CAD.md sync test in `package convert` (internal test, reads the
 | A5 | DERIVED key names (`cad_render_timeout_s`, `cad_io_allowance_s`, `cad_engine_timeout_s`, …) | Pattern 1 | cosmetic; must match the tests |
 | A6 | `docs/README.md` index should list CAD.md and PREVIEW.md | Docs | minor |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All six were resolved in planning with the recommended option (the user pre-delegated every choice). Each resolution is an AR entry under "Decisions auto-resolved" in the plan named below.
 
 1. **What if bytes do not bound stacked render cost?** (Pitfall 1)
    - Known: stacking, not triangles, drives the cost; stack depth is free for STL.
    - Unclear: whether any ceiling makes the render deadline fit 886 s for adversarial stacks.
    - Recommendation: pre-registered probe → `checkpoint:decision`. Likely options: (a) the render deadline (terminal `cad_too_complex`, no retry burn) is the documented bound for adversarial stacks, and the ceiling bounds the measured benign worst cells, recorded as a Known limit; (b) Path-B per format where it does converge. The user decides; a guard is out of scope.
+   - **RESOLVED: AR-1 (76-01-PLAN.md).** A pre-registered stacking probe classifies each 3D format. A byte render ceiling (Path-B) applies only to a `byte_bound` format; otherwise the render deadline, the window remainder R, is the bound and the limit goes to docs/CAD.md Known limits. Applied in 76-02, 76-03 and 76-05, and proven live by the STACKED_REFUSAL row of 76-08.
 2. **ci-local e2e on this host.** Add env knobs (port, extra compose file, stop-teardown) or run the suite by hand in the wrapper. Recommend the knobs, defaults unchanged, so the transcript is the tier's own.
+   - **RESOLVED: AR-2 (76-11-PLAN.md).** Four `CI_LOCAL_E2E_*` knobs whose defaults reproduce main exactly; the final gate sets port 18090, an extra ports file and the stop teardown.
 3. **"The tectonic liveproof."** No script exists. Recommend: e2e tectonic tests (verbose, PASS lines captured) plus tectonic-worker sandbox startup line, named in the wrapper.
+   - **RESOLVED: AR-3 (76-11-PLAN.md).** The e2e tier's `--- PASS` lines for TestMultiFileLaTeXProjectE2E and TestMultiFileRefusalsE2E plus the tectonic-worker landlock startup line from the same stack, recorded in a TECTONIC line. No new script.
 4. **Cold-start table "beside the value in values.yaml" vs. the no-comments rule.** Recommend docs/CAD.md and evidence only. Keep values.yaml to the number, unless the user says YAML provenance comments are allowed. Similarly `.env.example`: its comment block is parsed by `TestEstimateSourceMatchesEnvExampleProvenance` (it requires "measur" in the block), so it is functional documentation and must change. Record this as the exception in the SUMMARY.
+   - **RESOLVED: AR-4 (76-09-PLAN.md).** The table lives in docs/CAD.md `## Scaling` and the evidence, held to values.yaml by a subtest; values.yaml keeps the bare number. The `.env.example` provenance block changes in 76-04 as functional documentation.
 5. **openapi "cad error codes".** Async codes are not an openapi enum today; docs/README.md calls publishing them "ERRC-V2-02, a separate, deferred step". Recommend listing the cad codes the worker can emit (`cad_too_complex`, `cad_unreadable`, `cad_empty_result`, `cad_mesh_timeout`, plus `input_too_large`, `engine_error`, `invalid_options`) in the render operation / `error_code` description. Hold it with a worker-package test that computes the set from `cadFailureCode` over every CAD sentinel, both ways, without creating the global enum.
+   - **RESOLVED: AR-5 (76-06-PLAN.md).** The codes are listed in docs/CAD.md (76-06) and in openapi's error_code and render descriptions (76-07), held by a worker-package test over every declared ErrCAD sentinel, both ways. No global enum; ERRC-V2-02 stays deferred.
 6. **Which W counts for 3D.** D-01's enumeration lists on-record runs only for DXF (75-05, 0og). Recommend: 3D W = this phase's production-image rows only; 71/73 rows are cited, not used, and this is pre-registered in RULE lines.
+   - **RESOLVED: AR-6 (76-02-PLAN.md).** 3D W uses only this phase's production-image rows (76-02 stage rows and 76-03 in-worker stage walls); the 71, 73 and 74 rows are cited, not used. DXF W also includes the on-record walls D-01 names.
 
 ## Environment Availability
 
