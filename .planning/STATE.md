@@ -6,10 +6,10 @@ current_phase: 76
 current_phase_name: Measured Bounds, KEDA Proof & Client Docs
 status: planning
 stopped_at: Phase 75 complete, ready to plan Phase 76
-last_updated: "2026-10-12T21:08:23.504Z"
+last_updated: "2026-10-13T09:56:15.434Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: e587004c722ca49fc382c048f75e785375165344
+state_head: 59b9842fee63d5de94ce57380027f6371eb30e4f
 progress:
   total_phases: 6
   completed_phases: 5
@@ -230,6 +230,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261012-o2d | Codex PR#36 P2: carry DXF text transparency (TEXT/MTEXT incl. inline-colour runs) into SVG fill-opacity; PDF judge excludes fully transparent text as invisible_text; fixtures text_alpha/text_alpha_faint | 2026-10-12 | acddc6f | [261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-](./quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/) |
 | 261012-qds | Codex PR#36 round 2: DXF text font attributes from the measuring face's tables (style/weight/stretch, allowlisted); DXF conversions and limits documented with a docs-sync test; liveproof asserts the counters it records; race tier timeout 20m | 2026-10-12 | e1bf64e | [261012-qds-codex-pr36-round2-oblique-font-style-dxf](./quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/) |
 | 261012-u2s | Codex PR#36 round 3: a DXF with nothing visible is cad_empty_result on svg/pdf/render (helper nothing_visible, Go SVG Visible count, PDF judge InkOps from graphics-state alpha); font slant matches fontconfig (fsSelection bit 9, subfamily) | 2026-10-13 | e587004 | [261012-u2s-codex-pr36-round3-fully-transparent-dxf](./quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/) |
+| 261013-0og | Codex PR#36 round 4: a DXF is empty when its raster (confined rsvg, 2048 letterbox, white page) has no ink under the shared J1 judge, on svg/pdf/render alike; attribute checks kept only as early refusal; probe ink mode + crafted differential | 2026-10-13 | 59b9842 | [261013-0og-codex-pr36-round4-dxf-emptiness-judged-b](./quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/) |
 
 ### Pending Todos
 
