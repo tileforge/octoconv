@@ -40,7 +40,7 @@ Usage:
   scripts/cad-dxf-bounds.sh run [--out FILE]
   scripts/cad-dxf-bounds.sh floor [--out FILE]
   scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
-  scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G|--finish [--out FILE]
+  scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun|--finish [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -76,7 +76,8 @@ bounds76  the pre-registered stage bounds of plan 76-02 on the production engine
        sniffs and guards every D-02 cell and writes CELL lines; --group refusal|dxf|stl|step|iges|pathb appends one
        group of rows after checking the commit and image id against the init HDR; --finish checks every required
        group and writes SUMMARY; --smoke runs one 3D and one DXF row through every stage kind into a file under
-       TMPDIR. The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
+       TMPDIR. --amend-rerun appends the one rerun_after_watchdog amendment; --group G --rerun then re-runs once a
+       group the disk watchdog stopped, keeping its partial rows and its STOP line. The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
        in the RULE lines and applied by 76-03.
 
 The RULE lines are written before any row is measured. Generated inputs live in
@@ -2329,8 +2330,13 @@ def finish(argv):
     path, groups = argv[0], argv[1].split("+")
     text = open(path).read().splitlines()
     problems = []
-    if any(l.startswith("STOP,") for l in text):
+    amend = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_watchdog,")]
+    watchdog = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," in l + ","]
+    if any(l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," not in l + "," for l in text):
         problems.append("stop_line_present")
+    if watchdog and len(amend) != 1:
+        problems.append("watchdog_stop_without_the_rerun_amendment")
+    stopped = {d.get("group") for d in watchdog}
     init = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,commit=")]
     image = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,image=")]
     if len(init) != 1 or len(image) != 1:
@@ -2342,11 +2348,18 @@ def finish(argv):
     for g in groups:
         hdr = [kv(l) for l in text if l.startswith("HDR,group=%s," % g)]
         end = [l for l in text if l.startswith("GROUP_END,group=%s," % g)]
-        if len(hdr) != 1:
+        want = 2 if g in stopped else 1
+        if len(hdr) != want or (want == 2 and hdr[1].get("rerun") != "1"):
             problems.append("group_%s_hdr_count_%d" % (g, len(hdr)))
             continue
-        if init and image and (hdr[0].get("commit") != init[0].get("commit") or hdr[0].get("image_id") != image[0].get("image_id")):
-            problems.append("group_%s_commit_or_image_differs" % g)
+        last = hdr[-1]
+        if init and image:
+            same_commit = last.get("commit") == init[0].get("commit")
+            same_image = last.get("image_id") == image[0].get("image_id")
+            if not same_commit and not (amend and last.get("inputs_identical") == "1"):
+                problems.append("group_%s_commit_differs" % g)
+            if not same_image and not (amend and last.get("image") == image[0].get("image")):
+                problems.append("group_%s_image_differs" % g)
         if len(end) != 1 or ",result=ok" not in end[0]:
             problems.append("group_%s_did_not_end_ok" % g)
     rows = [l for l in text if l.startswith("BOUND76_ROW,")]
@@ -2804,6 +2817,11 @@ b76_cell() {
   role=$(b76_role_of "$name")
   stacked=$(b76_stacked_of "$name")
   if [ -s "$WORK/extra.$name" ]; then sed "s/\$/,cached=$CELL_CACHED/" "$WORK/extra.$name" >> "$out"; fi
+  local earlier
+  earlier=$(grep "^CELL,cell=$name," "$out" 2>/dev/null | tr ',' '\n' | sed -n 's/^sha256=//p' | sort -u | tr '\n' '+' | sed 's/+$//')
+  if [ -n "$earlier" ] && [ "$earlier" != "$CELL_SHA" ]; then
+    b76_stop "reason=cell_sha_differs_from_its_earlier_cell_line,cell=$name,sha256=$CELL_SHA,earlier=$earlier"
+  fi
   printf 'CELL,cell=%s,format=%s,file=%s,bytes=%s,target_bytes=%s,pad_gap_bytes=%s,sha256=%s,sniff=%s,inserts=%s,entities=%s,instances=%s,guard=%s,reason=%s,raw_entities=%s,role=%s,stacked=%s,cached=%s,match_76_01=%s,path=%s,gen=%s\n' \
     "$name" "$CELL_FMT" "$(basename "$CELL_PATH")" "$CELL_BYTES" "$target" "$gap" "$CELL_SHA" "$sniff" "$GP_INSERTS" "$GP_ENTITIES" \
     "$GP_INSTANCES" "$GP_VERDICT" "$GP_REASON" "$GP_RAW" "$role" "$stacked" "$CELL_CACHED" "$(b76_match_7601 "$name")" "$CELL_PATH" \
@@ -3183,7 +3201,49 @@ b76_init_check() {
   [ -f "$B76_OUT" ] || fail "no init file $B76_OUT; run bounds76 --init first"
   INIT_COMMIT=$(sed -n 's/^HDR,mode=bounds76,commit=\([0-9a-f]*\),.*/\1/p' "$B76_OUT" | head -n 1)
   INIT_IMAGE=$(sed -n 's/^HDR,mode=bounds76,image=.*,image_id=\([^,]*\),.*/\1/p' "$B76_OUT" | head -n 1)
-  [ -n "$INIT_COMMIT" ] && [ -n "$INIT_IMAGE" ] || fail "the init HDR lines are missing in $B76_OUT"
+  INIT_TAG=$(sed -n 's/^HDR,mode=bounds76,image=\([^,]*\),image_id=.*/\1/p' "$B76_OUT" | head -n 1)
+  [ -n "$INIT_COMMIT" ] && [ -n "$INIT_IMAGE" ] && [ -n "$INIT_TAG" ] || fail "the init HDR lines are missing in $B76_OUT"
+  B76_AMEND=$(grep -c '^RULE_AMEND,key=rerun_after_watchdog,' "$B76_OUT" || true)
+}
+
+b76_watchdog_groups() {
+  sed -n 's/^STOP,mode=bounds76,group=\([a-z0-9]*\),reason=watchdog_disk_below_threshold,.*/\1/p' "$B76_OUT" | sort -u
+}
+
+b76_group_gate() {
+  local x other changed
+  other=$(grep '^STOP,' "$B76_OUT" | grep -vc ',reason=watchdog_disk_below_threshold,' || true)
+  [ "$other" = 0 ] || fail "$B76_OUT holds a STOP line"
+  for x in $(b76_watchdog_groups); do
+    [ "$B76_AMEND" = 1 ] || fail "group $x was stopped by the disk watchdog and $B76_OUT has no rerun amendment"
+    if [ "$x" = "$B76_GROUP" ] && [ "$B76_RERUN" = 1 ]; then continue; fi
+    grep -q "^GROUP_END,group=$x,.*,result=ok" "$B76_OUT" || fail "group $x was stopped by the disk watchdog and has not been re-run"
+  done
+  if [ "$B76_RERUN" = 1 ]; then
+    [ "$B76_AMEND" = 1 ] || fail "--rerun needs the rerun_after_watchdog amendment"
+    b76_watchdog_groups | grep -qx "$B76_GROUP" || fail "group $B76_GROUP was not stopped by the disk watchdog; it may not be re-run"
+    [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 1 ] || fail "group $B76_GROUP was already re-run once"
+    grep -q "^GROUP_END,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP has a GROUP_END; it may not be re-run"
+  else
+    grep -q "^HDR,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP already ran in $B76_OUT; a group never runs twice"
+  fi
+  B76_INPUTS_SAME=1
+  if [ "$(git rev-parse HEAD)" != "$INIT_COMMIT" ]; then
+    [ "$B76_AMEND" = 1 ] || fail "commit $(git rev-parse HEAD) differs from the init commit $INIT_COMMIT"
+    changed=$(git diff --name-only "$INIT_COMMIT" HEAD -- . ':(exclude).planning' | tr '\n' ' ' | sed 's/ $//')
+    [ -z "$changed" ] || [ "$changed" = scripts/cad-dxf-bounds.sh ] || fail "commit $(git rev-parse HEAD) changes $changed against the init commit"
+  fi
+}
+
+b76_amend() {
+  local stopped
+  [ "$B76_AMEND" = 0 ] || fail "$B76_OUT already holds the rerun amendment"
+  stopped=$(b76_watchdog_groups | tr '\n' '+' | sed 's/+$//')
+  [ -n "$stopped" ] || fail "$B76_OUT holds no disk-watchdog STOP"
+  printf 'RULE_AMEND,key=rerun_after_watchdog,mode=bounds76,date_utc=%s,commit=%s,init_commit=%s,stopped_groups=%s,rule=a_group_stopped_by_the_environment_disk_watchdog_(STOP_reason=watchdog_disk_below_threshold)_may_be_re-run_once;its_partial_rows_stay_in_the_file_and_are_counted_in_W_(max)_which_can_only_raise_a_bound;the_re-run_uses_the_measured_inputs_of_clone_commit_%s_(the_re-run_commit_may_differ_only_in_.planning_and_in_this_permission_in_scripts/cad-dxf-bounds.sh;checked_by_git_diff_and_written_as_inputs_identical=1);the_same_image_build_inputs_(the_same_engine_tag_inputs_hash;an_image_id_other_than_the_init_one_is_recorded);the_same_pre-registered_cells_and_rules_(a_regenerated_cell_whose_sha256_differs_from_its_earlier_CELL_line_is_STOP);the_STOP_line_stays;no_other_rule_changes;any_other_re-run_is_refused\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$INIT_COMMIT" "$stopped" "$(git rev-parse --short "$INIT_COMMIT")" >> "$B76_OUT"
+  tail -n 1 "$B76_OUT" >&2
+  exit 0
 }
 
 b76_mode() {
@@ -3218,16 +3278,19 @@ b76_mode() {
       exit 0 ;;
     group)
       b76_init_check
-      grep -q "^HDR,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP already ran in $B76_OUT; a group never runs twice"
-      grep -q '^STOP,' "$B76_OUT" && fail "$B76_OUT holds a STOP line"
-      [ "$(git rev-parse HEAD)" = "$INIT_COMMIT" ] || fail "commit $(git rev-parse HEAD) differs from the init commit $INIT_COMMIT"
+      b76_group_gate
       b76_setup
-      [ "$IMAGE_ID" = "$INIT_IMAGE" ] || fail "image id $IMAGE_ID differs from the init image id $INIT_IMAGE"
+      B76_IMAGE_MATCH=1
+      if [ "$IMAGE_ID" != "$INIT_IMAGE" ]; then
+        [ "$B76_AMEND" = 1 ] && [ "$TAG" = "$INIT_TAG" ] || fail "image id $IMAGE_ID differs from the init image id $INIT_IMAGE"
+        B76_IMAGE_MATCH=0
+      fi
       b76_classes
       B76_T0=$(date +%s)
       b76_sample
-      printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s\n' "$B76_GROUP" \
-        "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" >> "$B76_OUT"
+      printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s,rerun=%s,init_commit=%s,inputs_identical=%s,init_image_id=%s,image_id_match=%s\n' "$B76_GROUP" \
+        "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" \
+        "$B76_RERUN" "$INIT_COMMIT" "$B76_INPUTS_SAME" "$INIT_IMAGE" "$B76_IMAGE_MATCH" >> "$B76_OUT"
       case "$B76_GROUP" in
         refusal) b76_group_refusal ;;
         dxf) b76_group_dxf ;;
@@ -3243,6 +3306,9 @@ b76_mode() {
         "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - B76_T0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "$B76_LOAD" "$B76_FREE" >> "$B76_OUT"
       exit 0 ;;
+    amend)
+      b76_init_check
+      b76_amend ;;
     finish)
       b76_init_check
       WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-b76.XXXXXX")
@@ -3303,6 +3369,7 @@ shift
 OUT_SET=0
 SMOKE=0
 B76_SUB=""
+B76_RERUN=0
 B76_GROUP=none
 b76_sub() { [ "$MODE" = bounds76 ] && [ -z "$B76_SUB" ] || usage; B76_SUB=$1; }
 while [ $# -gt 0 ]; do
@@ -3319,6 +3386,8 @@ while [ $# -gt 0 ]; do
     --cells-only) b76_sub cells; shift ;;
     --finish) b76_sub finish; shift ;;
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
+    --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
+    --amend-rerun) b76_sub amend; shift ;;
     *) usage ;;
   esac
 done
@@ -3337,6 +3406,7 @@ case "$MODE" in
     stack_mode ;;
   bounds76)
     [ -n "$B76_SUB" ] || usage
+    [ "$B76_RERUN" = 0 ] || [ "$B76_SUB" = group ] || usage
     if [ "$OUT_SET" = 0 ]; then
       case "$B76_SUB" in
         smoke) EVID="${TMPDIR:-/tmp}/76-02-smoke.txt" ;;
