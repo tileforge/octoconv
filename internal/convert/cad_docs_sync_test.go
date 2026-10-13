@@ -211,3 +211,28 @@ func TestCADDocsStateOneDefinitionOfAnEmptyDrawing(t *testing.T) {
 		}
 	}
 }
+
+func TestCADDocsStateOneVerdictOnBothBackgrounds(t *testing.T) {
+	preview := cadDocParagraph(t, readDoc(t, measurementsPath), measurementsPath, "**PNG check.**")
+	row := strings.Join(strings.Fields(docRow(t, readDoc(t, errorCodesPath), errorCodesPath, "| `cad_empty_result` |")), " ")
+	for _, want := range []string{
+		"white page", fmt.Sprintf("below %d", convert.CADInkChannelCutoff), "`background`", "the same verdict",
+		"alpha channel", "outer edge", "fully transparent", "`cad_empty_result`", "anti-aliasing", "DXF",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("the MEASUREMENTS PNG check paragraph does not state %q", want)
+		}
+	}
+	for _, want := range []string{"whatever its `background`", "the same verdict", "outer edge"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the ERROR-CODES cad_empty_result row does not state %q", want)
+		}
+	}
+	for _, stale := range []string{"0.95", "95%", "transparent fraction"} {
+		for where, text := range map[string]string{"MEASUREMENTS PNG check": preview, "ERROR-CODES cad_empty_result": row} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still states %q", where, stale)
+			}
+		}
+	}
+}

@@ -718,6 +718,28 @@ mv "$W/out/hier_nauo_K12.step" "$BOMBS/hier_nauo_K12.step"
 image_python scripts/cad-corpus-gen.py --scaled-from /base/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 1000 --scaled-dir /out >/dev/null
 NAUO1000="$W/out/step-nauo-LinearSlide-MGN15x-Block-n1000.step"
 [ -s "$NAUO1000" ] || fail "the step-nauo n=1000 input was not generated"
+image_python scripts/cad-corpus-gen.py --scaled-from /base/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 4 --scaled-dir /out >/dev/null
+NAUO4="$W/out/step-nauo-LinearSlide-MGN15x-Block-n4.step"
+[ -s "$NAUO4" ] || fail "the step-nauo n=4 input was not generated"
+
+render_job background_transparent_sparse "$NAUO4" step-nauo-n4.step '{"background":"transparent"}'
+SPARSE_JOB=$JOB_ID
+SPARSE_SHA=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1)
+png_judge "$R_PNG" 1280 transparent
+SPARSE_T=$PJ_LINE
+[ "$PJ_RC" = 0 ] && [ "$(mfield mode "$SPARSE_T")" = blob ] || fail "VIEWS: the transparent render of the sparse step-nauo n=4 assembly was not judged a blob: $SPARSE_T"
+[ "$(mfield alpha "$SPARSE_T")" = 1 ] && [ "$(mfield ring_nontransparent "$SPARSE_T")" = 0 ] || fail "VIEWS: the sparse transparent render has no transparent background: $SPARSE_T"
+awk -v f="$(mfield frac_transparent "$SPARSE_T")" 'BEGIN { exit !(f > 0.95) }' || fail "VIEWS: the sparse transparent render is $(mfield frac_transparent "$SPARSE_T") transparent, not above the 0.95 the old judge refused"
+render_job background_opaque_sparse_twin "$NAUO4" step-nauo-n4.step
+png_judge "$R_PNG" 1280 opaque
+SPARSE_O=$PJ_LINE
+[ "$PJ_RC" = 0 ] && [ "$(mfield mode "$SPARSE_O")" = blob ] || fail "VIEWS: the opaque twin of the sparse assembly was not judged a blob: $SPARSE_O"
+[ "$(mfield box "$SPARSE_O")" = "$(mfield box "$SPARSE_T")" ] && [ "$(mfield margin_px "$SPARSE_O")" = "$(mfield margin_px "$SPARSE_T")" ] && [ "$(mfield dark_count "$SPARSE_O")" = "$(mfield dark_count "$SPARSE_T")" ] \
+	|| fail "VIEWS: the sparse pair differs in box, margin or dark count: opaque $SPARSE_O transparent $SPARSE_T"
+SPARSE_GAP=$(awk -v o="$(mfield count "$SPARSE_O")" -v t="$(mfield count "$SPARSE_T")" 'BEGIN { printf "%.4f", (o - t) / o }')
+awk -v g="$SPARSE_GAP" 'BEGIN { exit !(g >= 0 && g <= 0.10) }' || fail "VIEWS: the sparse pair's part pixel counts differ by $SPARSE_GAP of the opaque count, outside 0..0.10"
+ev "VIEWS,name=background_transparent_sparse,input=step-nauo-n4,job=$SPARSE_JOB,twin_job=$JOB_ID,png_sha256=$SPARSE_SHA,judge=ok,count_gap=$SPARSE_GAP,$SPARSE_T,opaque_twin_box=$(mfield box "$SPARSE_O"),opaque_twin_count=$(mfield count "$SPARSE_O"),opaque_twin_mode=$(mfield mode "$SPARSE_O")"
+N_VIEWS=$((N_VIEWS + 1))
 
 container_counters
 BASE_RESTARTS=$C_RESTARTS
