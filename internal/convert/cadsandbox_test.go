@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +25,52 @@ type cadPreflightFakes struct {
 	draft         cadMeasureDraft
 	renderFrame   func(t *testing.T, size int, transparent bool) []byte
 	renderOutside string
+	guardDXF      string
+	dxfInside     cadDXFOutputs
+	dxfOutside    string
+	rsvgPDF       string
+	rsvgFrame     func(t *testing.T) []byte
+	rsvgInk       func(t *testing.T) []byte
+	rsvgOutside   string
+}
+
+func cadPreflightDXFFrame(t *testing.T) []byte {
+	t.Helper()
+	box, err := CADDrawingLetterbox(297, 86.1, cadPreflightFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := pixFrame(cadPreflightFrame, pixWhite)
+	mid := box.Top + box.Height/2
+	pixRect(img, box.Left+2, mid-2, box.Left+box.Width-3, mid+2, pixDark)
+	return pixEncode(t, img)
+}
+
+func cadPreflightDXFStub(o cadDXFOutputs, outside string) string {
+	var b strings.Builder
+	b.WriteString("T=''; R=''\n")
+	b.WriteString("while [ $# -gt 2 ]; do\n  case \"$1\" in\n    --texts) T=$2; shift 2 ;;\n    --render-svg) R=$2; shift 2 ;;\n    --measure) shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
+	draw := fmt.Sprintf("cp %s \"$2\"\ncp %s \"$R\"\ncp %s \"$T\"\nprintf '%%s\\n' %s\nexit 0\n",
+		cadDXFQuote(o.client), cadDXFQuote(o.render), cadDXFQuote(o.texts), cadDXFQuote(o.verdict))
+	deny := cadSay("dxf", "unreadable", "read_error", 2)
+	if outside == "leak" {
+		deny = draw
+	}
+	fmt.Fprintf(&b, "case \"$1\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", draw, deny)
+	return b.String()
+}
+
+func cadPreflightRsvgStub(pdf, frame, ink, outside string) string {
+	var b strings.Builder
+	b.WriteString("last=''\nfor a in \"$@\"; do last=$a; done\n")
+	b.WriteString("o=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) o=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
+	draw := fmt.Sprintf("case \"$o\" in\n*/ink.png) cp %s \"$o\" ;;\n*.pdf) cp %s \"$o\" ;;\n*) cp %s \"$o\" ;;\nesac\nexit 0\n", cadDXFQuote(ink), cadDXFQuote(pdf), cadDXFQuote(frame))
+	deny := "echo \"Error reading SVG: Permission denied\" >&2\nexit 1\n"
+	if outside == "leak" {
+		deny = draw
+	}
+	fmt.Fprintf(&b, "case \"$last\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", draw, deny)
+	return b.String()
 }
 
 func inchBoxDraft() cadMeasureDraft {
@@ -55,6 +102,13 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		draft:         inchBoxDraft(),
 		renderFrame:   renderPNGBytes,
 		renderOutside: "deny",
+		guardDXF:      "ok",
+		dxfInside:     cadDXFFixtureOutputs(t, "legacy_cp1251"),
+		dxfOutside:    "deny",
+		rsvgPDF:       cadDXFTestFile("legacy_cp1251.pdf"),
+		rsvgFrame:     cadPreflightDXFFrame,
+		rsvgInk:       cadDXFInkedFrame,
+		rsvgOutside:   "deny",
 	}
 }
 
@@ -70,7 +124,13 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	if p.guardOutside == "unreadable" {
 		guardOutside = `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"unreadable","reason":"cannot_count"}'` + "\nexit 2"
 	}
-	fakeEngine(t, dir, "cad-guard", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
+	guardDXFInside := `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"ok","reason":""}'` + "\nexit 0"
+	if p.guardDXF == "too_complex" {
+		guardDXFInside = `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"too_complex","reason":"expanded_inserts_over_cap"}'` + "\nexit 4"
+	}
+	guardDXF := fmt.Sprintf("if [ \"$2\" = dxf ]; then\ncase \"${11}\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\nfi\n", guardDXFInside,
+		`printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"unreadable","reason":"cannot_count"}'`+"\nexit 2")
+	fakeEngine(t, dir, "cad-guard", guardDXF+fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
 
 	draftJSON, err := json.Marshal(p.draft)
 	if err != nil {
@@ -101,6 +161,16 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 		renderOutside = renderDraw
 	}
 	fakeEngine(t, dir, "cad-render", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", renderDraw, renderOutside))
+	fakeEngine(t, dir, "cad-dxf", cadPreflightDXFStub(p.dxfInside, p.dxfOutside))
+	dxfFrame := filepath.Join(dir, "dxf-frame.png")
+	if err := os.WriteFile(dxfFrame, p.rsvgFrame(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inkFrame := filepath.Join(dir, "ink-frame.png")
+	if err := os.WriteFile(inkFrame, p.rsvgInk(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeEngine(t, dir, "rsvg-convert", cadPreflightRsvgStub(p.rsvgPDF, dxfFrame, inkFrame, p.rsvgOutside))
 	pathWith(t, dir)
 
 	helper, _ := fakeSandboxHelper(t)
@@ -150,6 +220,14 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"the area is not the inch box area", func(p *cadPreflightFakes) { *p.draft.Area *= 2 }, []string{"units", "area"}},
 		{"the extents are not 1 2 3", func(p *cadPreflightFakes) { p.draft.BBox.Max = []float64{25.4, 50.8, 25.4} }, []string{"units", "extents"}},
 		{"the unit is not declared", func(p *cadPreflightFakes) { p.draft.DeclaredUnit = "" }, []string{"units"}},
+		{"the guard in dxf mode calls the fixture too complex", func(p *cadPreflightFakes) { p.guardDXF = "too_complex" }, []string{"guard", "dxf mode"}},
+		{"the PDF rsvg-convert draws carries no text", func(p *cadPreflightFakes) { p.rsvgPDF = cadDXFTestFile("nofont.pdf") }, []string{"fonts", "missing text"}},
+		{"the drawing frame is blank", func(p *cadPreflightFakes) {
+			p.rsvgFrame = func(t *testing.T) []byte { return blankPNGBytes(t, cadPreflightFrame) }
+		}, []string{"drawing judge"}},
+		{"the ink check frame is blank", func(p *cadPreflightFakes) { p.rsvgInk = cadDXFBlankFrame }, []string{"ink check", "rsvg-convert", "J1"}},
+		{"cad-dxf draws the outside file", func(p *cadPreflightFakes) { p.dxfOutside = "leak" }, []string{"cad dxf", "outside", "confinement"}},
+		{"rsvg-convert converts the outside file", func(p *cadPreflightFakes) { p.rsvgOutside = "leak" }, []string{"rsvg-convert", "outside", "confinement"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -184,6 +262,81 @@ func TestCADPreflightDoesNotTakeASandboxFailureOnTheOutsideRenderForADenial(t *t
 	}
 	if !strings.Contains(err.Error(), "the cad render stage could not establish its sandbox") {
 		t.Errorf("error %q does not name the render stage as the one without a sandbox", err)
+	}
+}
+
+func TestCADPreflightRequiresTheFixtureTextExactly(t *testing.T) {
+	p := newCADPreflightFakes(t)
+	dir := t.TempDir()
+	o := cadDXFOutputs{
+		client: cadDXFMutate(t, dir, cadDXFTestFile("legacy_cp1251.svg"), "draw.svg", "Деталь", "Detail"),
+		render: cadDXFMutate(t, dir, cadDXFTestFile("legacy_cp1251.render.svg"), "draw.render.svg", "Деталь", "Detail"),
+		texts:  cadDXFWrite(t, dir, "texts.json", []byte(`{"texts":[{"text":"Detail","covered":"Detail"}]}`)),
+	}
+	o.verdict = cadDXFVerdictFor(t, o.client, o.texts)
+	p.dxfInside = o
+	err := CADPreflight(context.Background(), p.converter(t))
+	if err == nil {
+		t.Fatal("CADPreflight accepted a drawing whose only text is not the fixture's")
+	}
+	for _, w := range []string{"text", "Detail", cadPreflightDXFText} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q does not mention %q", err, w)
+		}
+	}
+	if strings.Contains(err.Error(), "differs") || strings.Contains(err.Error(), "texts.json holds") {
+		t.Errorf("error %q comes from the cross-check, so the preflight's own text rule never ran", err)
+	}
+}
+
+func TestCADPreflightDoesNotTakeASandboxFailureOnAnOutsideDrawingStageForADenial(t *testing.T) {
+	for _, tc := range []struct {
+		engine, want string
+	}{
+		{"cad-dxf", "the cad dxf stage could not establish its sandbox"},
+		{"rsvg-convert", "the rsvg-convert stage could not establish its sandbox"},
+	} {
+		t.Run(tc.engine, func(t *testing.T) {
+			c := newCADPreflightFakes(t).converter(t)
+			helper, _ := fakeSandboxHelper(t)
+			wrapper := filepath.Join(t.TempDir(), "refuse-outside.sh")
+			body := fmt.Sprintf("#!/bin/bash\nsep=0; engine=''; outside=0\nfor a in \"$@\"; do\n  if [ \"$sep\" = 1 ] && [ -z \"$engine\" ]; then engine=${a##*/}; fi\n  [ \"$a\" = -- ] && sep=1\n  case \"$a\" in *cad-preflight-outside-*) outside=1;; esac\ndone\nif [ \"$engine\" = %q ] && [ \"$outside\" = 1 ]; then exit 78; fi\nexec %q \"$@\"\n", tc.engine, helper[0])
+			if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			c = c.WithSandbox([]string{wrapper, helper[1]})
+			err := CADPreflight(context.Background(), c)
+			if err == nil {
+				t.Fatalf("CADPreflight accepted a sandbox that could not be established for the outside %s run", tc.engine)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not say %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCADPreflightRefusesADrawingSetThatCoversTheOutsideDirectory(t *testing.T) {
+	for _, name := range []string{"cadDXFReadOnly", "cadRsvgReadOnly"} {
+		t.Run(name, func(t *testing.T) {
+			c := newCADPreflightFakes(t).converter(t)
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			set := &cadDXFReadOnly
+			if name == "cadRsvgReadOnly" {
+				set = &cadRsvgReadOnly
+			}
+			saved := *set
+			t.Cleanup(func() { *set = saved })
+			*set = append(append([]string{}, saved...), tmp)
+			err := CADPreflight(context.Background(), c)
+			if err == nil {
+				t.Fatalf("CADPreflight accepted %s granting %s, which holds the outside directory", name, tmp)
+			}
+			if !strings.Contains(err.Error(), tmp) {
+				t.Errorf("error %q does not name the covering grant %s", err, tmp)
+			}
+		})
 	}
 }
 
@@ -222,19 +375,20 @@ func TestCADPreflightFixtureCountMatchesTheRealGuard(t *testing.T) {
 
 func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 	for _, n := range []int{0, 2, -1} {
-		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
+		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout)
 		if err == nil || !strings.Contains(err.Error(), "CAD_WORKER_CONCURRENCY") {
 			t.Errorf("concurrency %d: err = %v, want a refusal naming CAD_WORKER_CONCURRENCY", n, err)
 		}
 	}
-	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
+	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout)
 	if err != nil {
 		t.Fatalf("concurrency 1: %v", err)
 	}
-	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout || c.RenderTimeout != CADDefaultRenderTimeout {
+	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout || c.RenderTimeout != CADDefaultRenderTimeout ||
+		c.DXFTimeout != CADDefaultDXFTimeout || c.RsvgTimeout != CADDefaultRsvgTimeout {
 		t.Errorf("ConfinedCAD = %+v, want a confined converter carrying the given stage timeouts", c)
 	}
-	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
+	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout)
 	if err != nil || open.Sandbox.confines() {
 		t.Errorf("ConfinedCAD with no helper = %+v, %v, want an unconfined converter", open, err)
 	}
@@ -242,32 +396,239 @@ func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 
 func TestValidateCADTimeouts(t *testing.T) {
 	s := time.Second
-	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout); err != nil {
+	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout); err != nil {
 		t.Errorf("the defaults: %v", err)
 	}
-	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 886*s); err != nil {
-		t.Errorf("30+316+480 against 886: %v", err)
+	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 162*s, 141*s, 886*s); err != nil {
+		t.Errorf("30+316+480 and 30+162+2x141 against 886: %v", err)
+	}
+	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 204*s, 296*s, 886*s); err != nil {
+		t.Errorf("a DXF sum with both rsvg stages exactly at the engine timeout: %v", err)
 	}
 	cases := []struct {
-		name                        string
-		guard, mesh, render, engine time.Duration
-		want                        string
+		name                                   string
+		guard, mesh, render, dxf, rsvg, engine time.Duration
+		want                                   []string
 	}{
-		{"zero guard", 0, 316 * s, 480 * s, 886 * s, "CAD_GUARD_TIMEOUT"},
-		{"negative mesh", 30 * s, -s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
-		{"zero render", 30 * s, 316 * s, 0, 886 * s, "CAD_RENDER_TIMEOUT"},
-		{"zero engine", 30 * s, 316 * s, 480 * s, 0, "CAD_ENGINE_TIMEOUT"},
-		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 886 * s, "CAD_RENDER_TIMEOUT"},
-		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 885 * s, "CAD_ENGINE_TIMEOUT"},
-		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
+		{"zero guard", 0, 316 * s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_GUARD_TIMEOUT"}},
+		{"negative mesh", 30 * s, -s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
+		{"zero render", 30 * s, 316 * s, 0, 162 * s, 141 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
+		{"zero dxf", 30 * s, 316 * s, 480 * s, 0, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
+		{"negative dxf", 30 * s, 316 * s, 480 * s, -s, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
+		{"zero rsvg", 30 * s, 316 * s, 480 * s, 162 * s, 0, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
+		{"negative rsvg", 30 * s, 316 * s, 480 * s, 162 * s, -s, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
+		{"zero engine", 30 * s, 316 * s, 480 * s, 162 * s, 141 * s, 0, []string{"CAD_ENGINE_TIMEOUT"}},
+		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
+		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 162 * s, 141 * s, 885 * s, []string{"CAD_ENGINE_TIMEOUT"}},
+		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
+		{"the DXF sum one second over the engine", 30 * s, 316 * s, 480 * s, 205 * s, 296 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT", "CAD_ENGINE_TIMEOUT"}},
+		{"the second rsvg stage breaks a DXF sum that one would fit", 30 * s, 100 * s, 100 * s, 162 * s, 350 * s, 886 * s, []string{"CAD_RSVG_TIMEOUT", "two rsvg-convert stages"}},
+		{"a long dxf stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 800 * s, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
+		{"a long rsvg stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 162 * s, 700 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.render, tc.engine)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("err = %v, want one naming %s", err, tc.want)
+			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.render, tc.dxf, tc.rsvg, tc.engine)
+			if err == nil {
+				t.Fatalf("accepted, want a refusal naming %v", tc.want)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("err = %v, want one naming %s", err, w)
+				}
 			}
 		})
+	}
+}
+
+func TestConfinedCADCarriesTheDXFTimeoutsAndRefusesAnOverBudgetSum(t *testing.T) {
+	s := time.Second
+	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 7*s, 9*s, 886*s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DXFTimeout != 7*s || c.RsvgTimeout != 9*s || c.dxfTimeout() != 7*s || c.rsvgTimeout() != 9*s {
+		t.Errorf("ConfinedCAD = %+v, want DXFTimeout 7s and RsvgTimeout 9s", c)
+	}
+	if _, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 600*s, 300*s, 886*s); err == nil || !strings.Contains(err.Error(), "CAD_DXF_TIMEOUT") {
+		t.Errorf("an over-budget DXF sum: err = %v, want a refusal naming CAD_DXF_TIMEOUT", err)
+	}
+	if _, err := ConfinedCAD([]string{"helper"}, 2, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 162*s, 141*s, 886*s); err == nil {
+		t.Error("concurrency 2 was accepted with the DXF timeouts")
+	}
+}
+
+func cadEnvValue(env []string, key string) (string, int) {
+	var v string
+	n := 0
+	for _, e := range env {
+		if k, val, ok := strings.Cut(e, "="); ok && k == key {
+			v = val
+			n++
+		}
+	}
+	return v, n
+}
+
+func TestCADDrawStageGivesAJobLocalHome(t *testing.T) {
+	t.Setenv("HOME", "/nonexistent-worker-home")
+	t.Setenv("LANG", "C.UTF-8")
+	t.Setenv("LC_ALL", "C.UTF-8")
+	t.Setenv("LP_NUM_THREADS", "8")
+	jobDir := t.TempDir()
+	for _, stage := range []struct {
+		name     string
+		readOnly []string
+		engines  []string
+	}{{"dxf", cadDXFReadOnly, cadDXFEngines}, {"rsvg", cadRsvgReadOnly, cadRsvgEngines}} {
+		t.Run(stage.name, func(t *testing.T) {
+			x, err := (CADConverter{}).cadDrawStage(jobDir, stage.readOnly, stage.engines)
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(jobDir, ".home")
+			for _, dir := range []string{home, filepath.Join(home, ".cache"), filepath.Join(home, ".config")} {
+				info, err := os.Lstat(dir)
+				if err != nil {
+					t.Fatalf("%s was not created: %v", dir, err)
+				}
+				if !info.IsDir() || info.Mode().Perm() != 0o700 {
+					t.Errorf("%s: mode %v, want a 0700 directory", dir, info.Mode())
+				}
+			}
+			for key, want := range map[string]string{
+				"HOME":            home,
+				"XDG_CACHE_HOME":  filepath.Join(home, ".cache"),
+				"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+				"TMPDIR":          jobDir,
+				"PATH":            os.Getenv("PATH"),
+				"LANG":            "C.UTF-8",
+				"LC_ALL":          "C.UTF-8",
+			} {
+				if got, n := cadEnvValue(x.env, key); n != 1 || got != want {
+					t.Errorf("%s appears %d times as %q, want once as %q (env %v)", key, n, got, want, x.env)
+				}
+			}
+			if _, n := cadEnvValue(x.env, "LP_NUM_THREADS"); n != 0 {
+				t.Errorf("the draw stage passes LP_NUM_THREADS: %v", x.env)
+			}
+			if len(x.env) != 7 {
+				t.Errorf("env %v has %d entries, want exactly the seven named ones", x.env, len(x.env))
+			}
+		})
+	}
+}
+
+func TestCADDrawStageEnvironmentReachesTheEngine(t *testing.T) {
+	t.Setenv("HOME", "/nonexistent-worker-home")
+	t.Setenv("DATABASE_URL", "postgres://secret")
+	dir := t.TempDir()
+	jobDir := t.TempDir()
+	fakeEngine(t, dir, "cad-dxf", "env > \"$TMPDIR/engine.env\"\n")
+	pathWith(t, dir)
+	x, err := (CADConverter{}).cadDrawStage(jobDir, cadDXFReadOnly, cadDXFEngines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := x.runBounded(context.Background(), cadOutputLimit, "cad-dxf"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(jobDir, "engine.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if got, n := cadEnvValue(lines, "HOME"); n != 1 || got != filepath.Join(jobDir, ".home") {
+		t.Errorf("the engine saw HOME %q (%d times), want the job-local home", got, n)
+	}
+	if _, n := cadEnvValue(lines, "DATABASE_URL"); n != 0 {
+		t.Error("the engine saw the worker's DATABASE_URL")
+	}
+}
+
+func TestCADDrawStageMultiarchOnlyWhenConfined(t *testing.T) {
+	triple := cadMultiarchLib[runtime.GOARCH]
+	lib := "ro:/usr/lib/" + triple
+	helper, _ := fakeSandboxHelper(t)
+	confined, err := (CADConverter{}).WithSandbox(helper).cadDrawStage(t.TempDir(), cadRsvgReadOnly, cadRsvgEngines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(confined.spec, lib) || !slices.Contains(confined.spec, "ro:/usr/share/fonts") {
+		t.Errorf("confined spec %v lacks %s or the fonts", confined.spec, lib)
+	}
+	open, err := (CADConverter{}).cadDrawStage(t.TempDir(), cadRsvgReadOnly, cadRsvgEngines)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(open.spec, lib) {
+		t.Errorf("unconfined spec %v carries the multiarch directory", open.spec)
+	}
+	saved := cadMultiarchLib
+	t.Cleanup(func() { cadMultiarchLib = saved })
+	cadMultiarchLib = map[string]string{}
+	if _, err := (CADConverter{}).WithSandbox(helper).cadDrawStage(t.TempDir(), cadDXFReadOnly, cadDXFEngines); err == nil {
+		t.Error("cadDrawStage returned nil for an architecture with no multiarch directory")
+	}
+}
+
+func TestCADDrawStageRefusesASymlinkedHome(t *testing.T) {
+	jobDir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(jobDir, ".home")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (CADConverter{}).cadDrawStage(jobDir, cadDXFReadOnly, cadDXFEngines); err == nil {
+		t.Error("cadDrawStage accepted a .home that is a symlink out of the job directory")
+	}
+	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+		t.Errorf("cadDrawStage wrote %d entries through the symlink", len(entries))
+	}
+}
+
+func TestCADDrawSetsAreTheMeasuredOnes(t *testing.T) {
+	const remeasure = "these are the sets scripts/cad-worker-sandbox-measure.sh --stages guard,dxf,rsvg measured on the production engine image " +
+		"(evidence/75-08-landlock.txt, SANDBOX-PATHS.md section cad, conf05 blocks caddxf and cadrsvg); re-run it and update the document, " +
+		"the Go vars and this pin together rather than editing the expectation"
+	for _, p := range []struct {
+		name      string
+		got, want []string
+	}{
+		{"cadDXFReadOnly", cadDXFReadOnly, []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11", "/usr/share/fonts"}},
+		{"cadDXFEngines", cadDXFEngines, []string{"cad-dxf"}},
+		{"cadRsvgReadOnly", cadRsvgReadOnly, []string{"/usr/share/fonts"}},
+		{"cadRsvgEngines", cadRsvgEngines, []string{"rsvg-convert"}},
+	} {
+		if !slices.Equal(p.got, p.want) {
+			t.Errorf("%s = %v, want %v: %s", p.name, p.got, p.want, remeasure)
+		}
+	}
+}
+
+func TestCADDXFHelperImportsNoOpenCascadeOrVTK(t *testing.T) {
+	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-dxf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
+	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC|vtk|vtkmodules)\b|__import__|importlib`)
+	ezdxf, imports := 0, 0
+	for i, line := range strings.Split(string(raw), "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
+			continue
+		}
+		imports++
+		if strings.Contains(code, "ezdxf") {
+			ezdxf++
+		}
+		if forbidden.MatchString(code) {
+			t.Errorf("cad-dxf line %d imports %q: the drawing stage shares /opt/venv with OpenCascade and VTK, so its imports, "+
+				"not its path set, are what keep those bindings out of reach", i+1, strings.TrimSpace(line))
+		}
+	}
+	if imports == 0 || ezdxf == 0 {
+		t.Fatalf("read %d import lines and %d from ezdxf: the check would pass on a helper it did not read", imports, ezdxf)
 	}
 }
 
@@ -316,7 +677,10 @@ func TestCADGuardSetHasNoPathToTheReader(t *testing.T) {
 }
 
 func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
-	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly} {
+	for name, set := range map[string][]string{
+		"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly,
+		"cadDXFReadOnly": cadDXFReadOnly, "cadRsvgReadOnly": cadRsvgReadOnly,
+	} {
 		for _, p := range set {
 			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
 				if p == banned || strings.HasPrefix(p, banned+"/") {

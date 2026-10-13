@@ -42,7 +42,7 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 - [x] **RNDR-03**: Размер изображения — закрытая опция, по умолчанию 1280×1280, с жёстким потолком; вне диапазона — 422
 - [x] **RNDR-04**: Опция `quality` (`draft`/`standard`/`fine`) выбирает серверные константы тесселяции относительно диагонали bbox — для рендера и для конверсии в STL
 - [x] **RNDR-05**: Фон по умолчанию непрозрачный, `background: transparent` — опцией
-- [ ] **RNDR-06**: `render` для `dxf` → `png` рисует чертёж сверху; опция ракурса для `dxf` отвергается 422
+- [x] **RNDR-06**: `render` для `dxf` → `png` рисует чертёж сверху; опция ракурса для `dxf` отвергается 422
 
 ### Measurements (MEAS)
 
@@ -55,8 +55,8 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 ### Conversions (CCONV)
 
 - [x] **CCONV-01**: `step`/`iges` → `stl`: один бинарный STL в миллиметрах
-- [ ] **CCONV-02**: `dxf` → `svg`: вектор, model space, видимые слои, текст не теряется; в SVG нет скриптов, `foreignObject` и внешних ссылок
-- [ ] **CCONV-03**: `dxf` → `pdf`
+- [x] **CCONV-02**: `dxf` → `svg`: вектор, model space, видимые слои, текст не теряется; в SVG нет скриптов, `foreignObject` и внешних ссылок
+- [x] **CCONV-03**: `dxf` → `pdf`
 
 ### Preview contract (PREV)
 
@@ -122,9 +122,9 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 | MEAS-02 | Phase 74 | Complete |
 | MEAS-03 | Phase 74 | Complete |
 | MEAS-04 | Phase 74 | Complete |
-| RNDR-06 | Phase 75 | Pending |
-| CCONV-02 | Phase 75 | Pending |
-| CCONV-03 | Phase 75 | Pending |
+| RNDR-06 | Phase 75 | Complete |
+| CCONV-02 | Phase 75 | Complete |
+| CCONV-03 | Phase 75 | Complete |
 | CADW-04 | Phase 76 | Pending |
 | CADW-05 | Phase 76 | Pending |
 | CADW-06 | Phase 76 | Pending |

@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
-current_phase: 75
-current_phase_name: DXF 2D Pipeline
+current_phase: 76
+current_phase_name: Measured Bounds, KEDA Proof & Client Docs
 status: planning
-stopped_at: Phase 74 complete, ready to plan Phase 75
-last_updated: "2026-10-06T23:15:06.152Z"
-last_activity: 2026-10-07
-last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: 8dc219e5076bc115566d95d5d8e5a10f886c19aa
+stopped_at: Phase 75 complete, ready to plan Phase 76
+last_updated: "2026-10-13T09:56:15.434Z"
+last_activity: 2026-10-12
+last_activity_desc: Phase 75 complete, transitioned to Phase 76
+state_head: 59b9842fee63d5de94ce57380027f6371eb30e4f
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 28
-  completed_plans: 28
-  percent: 67
+  completed_phases: 5
+  total_plans: 38
+  completed_plans: 38
+  percent: 83
 ---
 
 # Project State
@@ -29,18 +29,18 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 ## Current Position
 
-Phase: 75 — DXF 2D Pipeline
+Phase: 76 — Measured Bounds, KEDA Proof & Client Docs
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-07 - Completed quick task 261007-1sx: Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2)
+Last activity: 2026-10-12 — Phase 75 complete, transitioned to Phase 76
 
-Progress: [███████░░░] 67% (0/6 phases)
+Progress: [████████░░] 83% (0/6 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 233 (all v1.0–v1.11)
+- Total plans completed: 243 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -109,6 +109,7 @@ Progress: [███████░░░] 67% (0/6 phases)
 | 72 | 7 | - | - |
 | 73 | 6 | - | - |
 | 74 | 7 | - | - |
+| 75 | 10 | - | - |
 
 **Recent Trend:**
 
@@ -225,6 +226,11 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261002-15o | Chart: independent pinned default for minio.mcImage (Codex P1 r4, PR 31) | 2026-10-01 | f45c7ee | [261002-15o-chart-independent-pinned-default-for-min](./quick/261002-15o-chart-independent-pinned-default-for-min/) |
 | 261006-t51 | Normalize ASCII STL case for cad stats and render (Codex P2 PR 35) | 2026-10-07 | 51f5131 | [261006-t51-normalize-ascii-stl-case-for-cad-stats-a](./quick/261006-t51-normalize-ascii-stl-case-for-cad-stats-a/) |
 | 261007-1sx | Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2) | 2026-10-07 | 8dc219e | [261007-1sx-per-shell-signed-volume-for-stl-and-per-](./quick/261007-1sx-per-shell-signed-volume-for-stl-and-per-/) |
+| 261012-gos | Close phase-75 deferred items: job-dir read/write hardening across engines (no-follow, regular-file, remove-then-O_EXCL), multipart spill cleanup in API handlers, python>=3.10 test floor; gate timeout 10m | 2026-10-12 | f0cb32f | [261012-gos-close-phase-75-deferred-items-job-dir-wr](./quick/261012-gos-close-phase-75-deferred-items-job-dir-wr/) |
+| 261012-o2d | Codex PR#36 P2: carry DXF text transparency (TEXT/MTEXT incl. inline-colour runs) into SVG fill-opacity; PDF judge excludes fully transparent text as invisible_text; fixtures text_alpha/text_alpha_faint | 2026-10-12 | acddc6f | [261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-](./quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/) |
+| 261012-qds | Codex PR#36 round 2: DXF text font attributes from the measuring face's tables (style/weight/stretch, allowlisted); DXF conversions and limits documented with a docs-sync test; liveproof asserts the counters it records; race tier timeout 20m | 2026-10-12 | e1bf64e | [261012-qds-codex-pr36-round2-oblique-font-style-dxf](./quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/) |
+| 261012-u2s | Codex PR#36 round 3: a DXF with nothing visible is cad_empty_result on svg/pdf/render (helper nothing_visible, Go SVG Visible count, PDF judge InkOps from graphics-state alpha); font slant matches fontconfig (fsSelection bit 9, subfamily) | 2026-10-13 | e587004 | [261012-u2s-codex-pr36-round3-fully-transparent-dxf](./quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/) |
+| 261013-0og | Codex PR#36 round 4: a DXF is empty when its raster (confined rsvg, 2048 letterbox, white page) has no ink under the shared J1 judge, on svg/pdf/render alike; attribute checks kept only as early refusal; probe ink mode + crafted differential | 2026-10-13 | 59b9842 | [261013-0og-codex-pr36-round4-dxf-emptiness-judged-b](./quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/) |
 
 ### Pending Todos
 
@@ -418,9 +424,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-05T15:22:32.176Z
-Stopped at: Phase 74 complete, ready to plan Phase 75
-Resume file: .planning/phases/71-evaluation-gate/71-CONTEXT.md
+Last session: 2026-10-07T00:30:33.237Z
+Stopped at: Phase 75 complete, ready to plan Phase 76
+Resume file: .planning/phases/75-dxf-2d-pipeline/75-CONTEXT.md
 
 ## Operator Next Steps
 

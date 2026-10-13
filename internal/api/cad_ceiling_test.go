@@ -136,8 +136,11 @@ func TestCADFormatCeilingDefaultsPinnedToConvertConstants(t *testing.T) {
 	if got := srv.maxFormatBytes[convert.EngineCAD]["stl"]; got != convert.CADMaxSTLBytes {
 		t.Errorf("cad stl ceiling = %d, want convert.CADMaxSTLBytes = %d", got, int64(convert.CADMaxSTLBytes))
 	}
-	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 3 {
-		t.Errorf("maxFormatBytes = %v, want exactly cad: step, iges and stl", srv.maxFormatBytes)
+	if got := srv.maxFormatBytes[convert.EngineCAD]["dxf"]; got != convert.CADMaxDXFBytes {
+		t.Errorf("cad dxf ceiling = %d, want convert.CADMaxDXFBytes = %d", got, int64(convert.CADMaxDXFBytes))
+	}
+	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 4 {
+		t.Errorf("maxFormatBytes = %v, want exactly cad: step, iges, stl and dxf", srv.maxFormatBytes)
 	}
 }
 
@@ -292,14 +295,16 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 		filename   string
 		fixture    string
 		ceiling    int64
-		wantTarget map[string]string
+		wantOffers map[string]bool
 	}{
 		{"step", "LM8UU.step", "public/LM8UU.step", convert.CADMaxSTEPBytes,
-			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationConvert + " stl": true, convert.OperationRender + " png": true}},
 		{"iges", "surfaces_only.iges", "synthetic/surfaces_only.iges", convert.CADMaxIGESBytes,
-			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationConvert + " stl": true, convert.OperationRender + " png": true}},
 		{"stl", "hubble.stl", "public/nasa-hubble-all-pieces.stl", convert.CADMaxSTLBytes,
-			map[string]string{convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationRender + " png": true}},
+		{"dxf", "legacy_cp1251.dxf", "synthetic/legacy_cp1251.dxf", convert.CADMaxDXFBytes,
+			map[string]bool{convert.OperationConvert + " svg": true, convert.OperationConvert + " pdf": true, convert.OperationRender + " png": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,12 +315,12 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 				if o.Engine != convert.EngineCAD {
 					continue
 				}
-				want, ok := tc.wantTarget[o.Operation]
-				if !ok || o.Target != want {
-					t.Errorf("offer %+v: unexpected cad offer for a %s file, want %v", o, tc.name, tc.wantTarget)
+				key := o.Operation + " " + o.Target
+				if !tc.wantOffers[key] {
+					t.Errorf("offer %+v: unexpected cad offer for a %s file, want %v", o, tc.name, tc.wantOffers)
 					continue
 				}
-				seen[o.Operation] = true
+				seen[key] = true
 				if o.MaxBytes != tc.ceiling {
 					t.Errorf("offer %+v: MaxBytes = %d, want %d", o, o.MaxBytes, tc.ceiling)
 				}
@@ -326,11 +331,94 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 					t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
 				}
 			}
-			for op := range tc.wantTarget {
-				if !seen[op] {
-					t.Errorf("no cad %s offer for a %s file; operations=%+v", op, tc.name, rep.Operations)
+			for key := range tc.wantOffers {
+				if !seen[key] {
+					t.Errorf("no cad %s offer for a %s file; operations=%+v", key, tc.name, rep.Operations)
 				}
 			}
 		})
+	}
+}
+
+func cadDXFPaddedTo(t *testing.T, size int) []byte {
+	t.Helper()
+	src := readCADFixture(t, "synthetic/legacy_cp1251.dxf")
+	at := bytes.Index(src, []byte("  0\r\nENDSEC\r\n"))
+	if at < 0 {
+		t.Fatal("no ENDSEC in legacy_cp1251.dxf")
+	}
+	const chunk = 1025
+	need := size - len(src)
+	if need < chunk {
+		t.Fatalf("size %d leaves no room for padding", size)
+	}
+	full := need/chunk - 1
+	last := need - full*chunk
+	out := make([]byte, 0, size)
+	out = append(out, src[:at]...)
+	line := append(append([]byte("999\r\n"), bytes.Repeat([]byte("x"), chunk-7)...), "\r\n"...)
+	for k := 0; k < full; k++ {
+		out = append(out, line...)
+	}
+	out = append(out, "999\r\n"...)
+	out = append(out, bytes.Repeat([]byte("x"), last-7)...)
+	out = append(out, "\r\n"...)
+	out = append(out, src[at:]...)
+	if len(out) != size {
+		t.Fatalf("padded dxf is %d bytes, want %d", len(out), size)
+	}
+	return out
+}
+
+func TestCADDXFCeilingAtTheDefaultRefusesBeforeUpload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds an input above 118 MiB")
+	}
+	for _, tc := range []struct {
+		target    string
+		operation string
+	}{
+		{"svg", ""},
+		{"png", convert.OperationRender},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			srv := newCADCeilingServer(repo, store, q)
+			var body *bytes.Buffer
+			var ct string
+			if tc.operation == "" {
+				body, ct = multipartBody(t, "big.dxf", tc.target, cadDXFPaddedTo(t, convert.CADMaxDXFBytes+1))
+			} else {
+				body, ct = multipartBodyWithOperation(t, "big.dxf", tc.target, tc.operation, cadDXFPaddedTo(t, convert.CADMaxDXFBytes+1))
+			}
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body=%.300s", rec.Code, rec.Body.String())
+			}
+			want := "dxf file exceeds the 118 MiB limit for this conversion"
+			if !strings.Contains(rec.Body.String(), `"code":"`+errcode.PayloadTooLarge+`"`) || !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("body = %s, want code %s and message %q", rec.Body.String(), errcode.PayloadTooLarge, want)
+			}
+			if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+				t.Errorf("a refused file must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+			}
+		})
+	}
+}
+
+func TestCADDXFPaddedInputIsAcceptedBelowTheCeiling(t *testing.T) {
+	data := cadDXFPaddedTo(t, 1<<20)
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	srv := newCADCeilingServer(repo, store, q)
+	rec := postFormatCeilingCreate(t, srv, "padded.dxf", "svg", data)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.SourceFormat != "dxf" || q.enqueuedCAD != repo.createdID {
+		t.Errorf("created = %+v, enqueuedCAD = %s, want a dxf job on the cad queue", repo.created, q.enqueuedCAD)
 	}
 }

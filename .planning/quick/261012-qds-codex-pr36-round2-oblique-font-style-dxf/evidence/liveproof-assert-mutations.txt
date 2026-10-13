@@ -1,0 +1,44 @@
+# Liveproof DXF_PDF assertions fed directly: the functions log, ev, fail, mfield, pdf_judged and dxf_pdf_one are cut verbatim from scripts/cad-liveproof.sh (awk, function start to closing brace); dxf_convert is stubbed to hand over a PDF instead of running a job.
+# Crafted PDFs: rsvg-convert (octoconv-cad-worker:latest) on the committed text_alpha(.faint).render.svg with every fill-opacity="0.000" rewritten to 1, so the fully transparent texts are drawn. The Go PDF judge accepts both (extra text is not a rejection), so only the pdftotext assertions catch them.
+# text_fonts crafted: the committed text_fonts.render.svg with font-style="oblique" added to every Sans Mono Book text, drawn by rsvg-convert in the probe image with fonts-dejavu-extra, so the PDF embeds DejaVuSansMono-Oblique; the judge accepts it, the pdffonts assertion does not.
+## case: good_text_alpha (pdf=internal/convert/testdata/cad/dxf-out/text_alpha.pdf, invisible=4)
+  DXF_PDF,name=text_alpha,upload=text_alpha.dxf,job=crafted,seconds=0,outputs=1,bytes=7300,sha256=99e6a11bd505eb696f25b96e5964004484ccf242c9189578afdd6b12566a1e23,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=18,text_runes=74,expected_runes=74,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=4,invisible_runes=29,pdftotext_chars=90,pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=0,result=ok
+## exit=0
+## case: crafted_text_alpha (pdf=craft/text_alpha.pdf, invisible=4)
+  FAIL: DXF_PDF text_alpha: pdftotext -raw holds a fully transparent text: CLEAR TEXT
+  CLEAR MTEXT
+  CLEAR
+  SUMMARY,result=FAIL,reason=DXF_PDF text_alpha: pdftotext -raw holds a fully transparent text: CLEAR TEXT
+  CLEAR MTEXT
+  CLEAR
+## exit=1
+## case: good_text_alpha_faint (pdf=internal/convert/testdata/cad/dxf-out/text_alpha_faint.pdf, invisible=1)
+  DXF_PDF,name=text_alpha_faint,upload=text_alpha_faint.dxf,job=crafted,seconds=0,outputs=1,bytes=5067,sha256=5fe1b6219f8b5dd6f13144a0011ad5c56d6dc317f982c6da66cb28c9d64784d4,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=2,text_runes=9,expected_runes=9,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=1,invisible_runes=4,pdftotext_chars=11,pdftotext_faint_only=1,pdftotext_gone_lines=0,result=ok
+## exit=0
+## case: crafted_text_alpha_faint (pdf=craft/text_alpha_faint.pdf, invisible=1)
+  FAIL: DXF_PDF text_alpha_faint: pdftotext -raw holds the fully transparent GONE: GONE
+  SUMMARY,result=FAIL,reason=DXF_PDF text_alpha_faint: pdftotext -raw holds the fully transparent GONE: GONE
+## exit=1
+## case: wrong_invisible_count (pdf=internal/convert/testdata/cad/dxf-out/text_alpha.pdf, invisible=3)
+  FAIL: DXF_PDF text_alpha: invisible_text=4, want 3: ok=1,pages=1,paint_ops=18,text_runes=74,expected_runes=74,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=4,invisible_runes=29
+  SUMMARY,result=FAIL,reason=DXF_PDF text_alpha: invisible_text=4, want 3: ok=1,pages=1,paint_ops=18,text_runes=74,expected_runes=74,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=4,invisible_runes=29
+## exit=1
+## case: good_text_fonts (pdf=internal/convert/testdata/cad/dxf-out/text_fonts.pdf, invisible=0)
+  DXF_PDF,name=text_fonts,upload=text_fonts.dxf,job=crafted,seconds=0,outputs=1,bytes=28794,sha256=12e0a43da08c6baf81d626a147b78f133c0e4d7f90d7f0233c69f369010f9054,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=19,text_runes=153,expected_runes=153,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=0,invisible_runes=0,pdftotext_chars=185,pdftotext_font_texts=14,pdffonts=DejaVuSans;DejaVuSans-Bold;DejaVuSansMono;DejaVuSansMono-Bold;DejaVuSerif;De
+## exit=0
+## case: crafted_text_fonts_oblique_face (pdf=craft/text_fonts.pdf, invisible=0)
+  FAIL: DXF_PDF text_fonts: pdffonts lists 'DejaVuSans;DejaVuSans-Bold;DejaVuSansMono;DejaVuSansMono-Bold;DejaVuSansMono-Oblique;DejaVuSerif;DejaVuSerif-Bold', want exactly the six faces of fonts-dejavu-core
+  SUMMARY,result=FAIL,reason=DXF_PDF text_fonts: pdffonts lists 'DejaVuSans;DejaVuSans-Bold;DejaVuSansMono;DejaVuSansMono-Bold;DejaVuSansMono-Oblique;DejaVuSerif;DejaVuSerif-Bold', want exactly the six faces of fonts-dejavu-core
+## exit=1
+## case: text_fonts_pdf_from_another_drawing (pdf=internal/convert/testdata/cad/dxf-out/text_alpha.pdf, invisible=0)
+  FAIL: DXF_PDF text_fonts: cad-pdf-check rejected the PDF: GOPDF,pdf=dxf_text_fonts.pdf,ok=0,pages=1,paint_ops=18,text_runes=74,expected_runes=153,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=0,invisible_runes=0,reason=cad: the drawing's PDF failed the content check: missing text: 6 of 153 expected characters found in order
+  SUMMARY,result=FAIL,reason=DXF_PDF text_fonts: cad-pdf-check rejected the PDF: GOPDF,pdf=dxf_text_fonts.pdf,ok=0,pages=1,paint_ops=18,text_runes=74,expected_runes=153,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=0,invisible_runes=0,reason=cad: the drawing's PDF failed the content check: missing text: 6 of 153 expected characters found in order
+## exit=1
+
+# RED: the same crafted PDFs through the HEAD (2d8d250) liveproof functions: the row records the transparent lines and still says result=ok
+## HEAD 2d8d250 script, case: crafted_text_alpha
+  pdftotext_chars=125 pdftotext_opaque_and_half_texts=8 pdftotext_clear_lines=3 result=ok
+## exit=0
+## HEAD 2d8d250 script, case: crafted_text_alpha_faint
+  pdftotext_chars=16 pdftotext_faint_only=1 pdftotext_gone_lines=1 result=ok
+## exit=0

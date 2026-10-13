@@ -202,7 +202,9 @@ components:
             "primary" being the one presigned into download_url.
 
             A sanitize job produces a second output with role="report"; its
-            body is SanitizeReport. The role is not a closed enum here on
+            body is SanitizeReport. A render job produces a second output
+            with role="measurements"; its body is the measurements document
+            of docs/MEASUREMENTS.md. The role is not a closed enum here on
             purpose -- later operations may add their own, and a client that
             hard-codes the current set breaks on the first one.
           items:
@@ -941,6 +943,11 @@ paths:
                     content outside those classes, and is not a substitute for
                     antivirus scanning. docs/SANITIZE.md carries the full
                     statement and the per-class wording.
+
+                    "render" draws a CAD file (step, iges, stl or dxf) as a
+                    png preview and adds a second output with
+                    role=measurements. A dxf also converts to svg and pdf
+                    under "convert".
               required: [file]
               additionalProperties: false
             examples:

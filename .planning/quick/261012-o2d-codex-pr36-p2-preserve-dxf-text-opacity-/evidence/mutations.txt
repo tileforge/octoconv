@@ -1,0 +1,11 @@
+MUT crosscheck_flag: --- FAIL: TestCADDXFConvertRejectsAnOpacityTheOutputsDisagreeOn (12.91s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	13.915s FAIL 
+MUT crosscheck_client_render: --- FAIL: TestCADDXFConvertRejectsAnOpacityTheOutputsDisagreeOn (12.90s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	13.905s FAIL 
+MUT tspan_max: --- FAIL: TestValidateCADSVGReportsTheEffectiveTextOpacity (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	12.822s FAIL 
+MUT no_inherit: --- FAIL: TestValidateCADSVGReportsTheEffectiveTextOpacity (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	12.510s FAIL 
+MUT no_fill_none: --- FAIL: TestValidateCADSVGReportsTheEffectiveTextOpacity (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	13.929s FAIL 
+MUT judge_flag: --- FAIL: TestJudgeCADDXFPDFRejectsAnInvisibleFlagTheSVGContradicts (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	12.492s FAIL 
+MUT judge_exclusion: --- FAIL: TestJudgeCADDXFPDFExcludesAndCountsInvisibleTexts (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	12.950s FAIL 
+MUT null_check: --- FAIL: TestParseCADDXFTextsReadsTheInvisibleFlag (0.00s) FAIL FAIL	github.com/apaderin/octoconv/internal/convert	13.641s FAIL 
+BASE: ok github.com/apaderin/octoconv/internal/convert 12.907s
+
+[exited with code 0]

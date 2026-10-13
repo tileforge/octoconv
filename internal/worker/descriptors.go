@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -409,7 +408,7 @@ func probeFailureCode(err error) (code, message string) {
 // the file -- and in both cases a silent success would deliver a sanitized
 // document with no statement of what was removed from it.
 func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOutput, error) {
-	blob, err := os.ReadFile(convert.SanitizeReportPath(outPath))
+	blob, err := convert.ReadJobFile(convert.SanitizeReportPath(outPath))
 	if err != nil {
 		return nil, fmt.Errorf("sanitize report missing beside the output: %w", err)
 	}
@@ -681,9 +680,9 @@ func cadSideOutputs(_ context.Context, job *jobs.Job, outPath string) ([]SideOut
 	if job.Operation != convert.OperationRender {
 		return nil, nil
 	}
-	blob, err := os.ReadFile(convert.CADMeasurementsPath(outPath))
+	blob, err := convert.ReadJobFile(convert.CADMeasurementsPath(outPath))
 	if err != nil {
-		return nil, fmt.Errorf("%w: measurements missing beside the render: %v", convert.ErrCADMeasurementsInvalid, err)
+		return nil, fmt.Errorf("%w: measurements missing beside the render: %w", convert.ErrCADMeasurementsInvalid, err)
 	}
 	if _, err := measurements.Validate(blob); err != nil {
 		return nil, fmt.Errorf("%w: %v", convert.ErrCADMeasurementsInvalid, err)
@@ -714,6 +713,11 @@ func isCADTerminal(err error) bool {
 		convert.ErrCADRenderTimeout,
 		convert.ErrCADRenderRejected,
 		convert.ErrCADMeasurementsInvalid,
+		convert.ErrCADNothingDrawable,
+		convert.ErrCADDXFTimeout,
+		convert.ErrCADRsvgTimeout,
+		convert.ErrCADSVGRejected,
+		convert.ErrCADPDFRejected,
 	} {
 		if errors.Is(err, sentinel) {
 			return true
@@ -730,6 +734,8 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"
 	case errors.Is(err, convert.ErrCADUnreadable):
 		return CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"
+	case errors.Is(err, convert.ErrCADNothingDrawable):
+		return CodeCADEmptyResult, "the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
 	case errors.Is(err, convert.ErrCADEmptyResult):
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):
@@ -742,6 +748,16 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeEngineError, "the measurements of this model could not be produced"
 	case errors.Is(err, convert.ErrCADRenderFailed):
 		return CodeEngineError, "the preview could not be rendered"
+	case errors.Is(err, convert.ErrCADDXFTimeout):
+		return CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRsvgTimeout):
+		return CodeCADTooComplex, "the drawing took too long to render or convert to PDF or PNG; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADSVGRejected):
+		return CodeEngineError, "the drawing could not be converted into a safe vector file"
+	case errors.Is(err, convert.ErrCADPDFRejected):
+		return CodeCADEmptyResult, "the PDF of this drawing shows no recognisable content"
+	case errors.Is(err, convert.ErrCADDrawingFailed):
+		return CodeEngineError, "the drawing could not be produced"
 	}
 	return CodeEngineError, "unsupported or corrupted input format"
 }

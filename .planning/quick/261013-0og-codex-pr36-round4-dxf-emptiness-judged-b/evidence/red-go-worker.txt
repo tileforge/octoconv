@@ -1,0 +1,10 @@
+--- FAIL: TestPinnedCADFailureVerdicts (0.00s)
+    --- FAIL: TestPinnedCADFailureVerdicts/dxf_nothing_drawable_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+        pinning_test.go:1567: MarkFailed message = "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids", want "the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
+    --- FAIL: TestPinnedCADFailureVerdicts/dxf_nothing_on_a_white_page_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+        pinning_test.go:1567: MarkFailed message = "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids", want "the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
+    --- FAIL: TestPinnedCADFailureVerdicts/rsvg_timeout_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+        pinning_test.go:1567: MarkFailed message = "the drawing took too long to convert to PDF or PNG; simplify it or export fewer details", want "the drawing took too long to render or convert to PDF or PNG; simplify it or export fewer details"
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/worker	1.251s
+FAIL

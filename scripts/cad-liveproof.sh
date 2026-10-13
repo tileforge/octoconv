@@ -44,6 +44,10 @@ CNAME=octoconv-cad-worker
 SERVICES="postgres redis minio api cad-worker"
 CORPUS=internal/convert/testdata/cad
 FETCHED="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}/fetched"
+SCALED="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}/scaled"
+REPL50_NAME=dxf-replicate-uncommon-50MiB.dxf
+REPL50_SHA=5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652
+DXF_SPECIAL="A&B <x> \"q\" 'a' & <script>alert(1)</script>"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
 
 W=""
@@ -51,6 +55,7 @@ STARTED_BY_ME=""
 FINISHED=""
 N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_QUALITY=0 N_RENDER=0 N_VIEWS=0 N_MEAS=0 N_OPTS_REJECT=0 N_REJECT=0 N_BOMB=0
 N_RENDER_RETRY=0 N_MESH_SIGNAL=0 N_EMPTY=0 N_CANCEL_RENDER=0 N_CANCEL=0 N_KILL=0 N_IMAGE=0
+N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJECT=0 N_DXF_BOMB=0 N_DXF_EMPTY=0 N_DXF_CEILING=0 N_DXF_RETRY=0 N_DXF_CANCEL=0
 
 log() { echo "$*" >&2; }
 ev() { echo "$*" | tee -a "$EVID"; }
@@ -83,7 +88,7 @@ cleanup() {
 trap cleanup EXIT
 
 [ "$(git rev-parse --git-dir)" = ".git" ] || fail "refusing to run outside the main checkout (git dir is $(git rev-parse --git-dir))"
-for tool in docker curl jq python3 go shasum; do
+for tool in docker curl jq python3 go shasum pdftotext pdfinfo pdffonts; do
 	command -v "$tool" >/dev/null 2>&1 || fail "$tool not found on PATH"
 done
 PROJECT=$(docker compose config --format json | jq -r .name)
@@ -99,6 +104,12 @@ for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surface
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
+for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg dxf/alpha_clear_geometry.dxf dxf/alpha_clear_all.dxf dxf/alpha_one_visible.dxf dxf-out/alpha_one_visible.texts.json dxf-out/alpha_one_visible.render.svg dxf/white_geometry.dxf dxf/white_text.dxf dxf/white_one_black.dxf dxf-out/white_one_black.texts.json dxf-out/white_one_black.render.svg dxf/degenerate_fill.dxf dxf/faint_only.dxf dxf/zwsp_text.dxf; do
+	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
+done
+REPL50="$SCALED/$REPL50_NAME"
+[ -f "$REPL50" ] || fail "missing $REPL50"
+[ "$(shasum -a 256 "$REPL50" | cut -d' ' -f1)" = "$REPL50_SHA" ] || fail "$REPL50 is not the 75-02 replicate (sha256 differs from $REPL50_SHA)"
 
 LARGE_STL=$(ls -S "$ROOT"/$CORPUS/public/*.stl "$FETCHED"/*.stl | head -1)
 [ -f "$LARGE_STL" ] || fail "no STL found for the render retry"
@@ -110,6 +121,8 @@ chmod 755 "$W"
 mkdir -p "$W/bin"
 go build -o "$W/bin/cad-pixel-judge" ./scripts/cmd/cad-pixel-judge || fail "cannot build cad-pixel-judge"
 go build -o "$W/bin/cad-measurements-check" ./scripts/cmd/cad-measurements-check || fail "cannot build cad-measurements-check"
+go build -o "$W/bin/cad-svg-check" ./scripts/cmd/cad-svg-check || fail "cannot build cad-svg-check"
+go build -o "$W/bin/cad-pdf-check" ./scripts/cmd/cad-pdf-check || fail "cannot build cad-pdf-check"
 
 RUNNING=$(docker compose ps --status running --services 2>/dev/null || true)
 for s in $SERVICES; do
@@ -144,6 +157,12 @@ SANDBOX_ENV=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CN
 [ -z "$SANDBOX_ENV" ] || fail "the cad-worker container has CAD_SANDBOX_DISABLED=$SANDBOX_ENV"
 case "$ENGINE_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_ENGINE_TIMEOUT from the container (got '$ENGINE_TIMEOUT_RAW')" ;; esac
 case "$RENDER_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_RENDER_TIMEOUT from the container (got '$RENDER_TIMEOUT_RAW')" ;; esac
+DXF_TIMEOUT_RAW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CNAME" | sed -n 's/^CAD_DXF_TIMEOUT=//p')
+DXF_TIMEOUT=${DXF_TIMEOUT_RAW%s}
+RSVG_TIMEOUT_RAW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CNAME" | sed -n 's/^CAD_RSVG_TIMEOUT=//p')
+RSVG_TIMEOUT=${RSVG_TIMEOUT_RAW%s}
+case "$DXF_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_DXF_TIMEOUT from the container (got '$DXF_TIMEOUT_RAW')" ;; esac
+case "$RSVG_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_RSVG_TIMEOUT from the container (got '$RSVG_TIMEOUT_RAW')" ;; esac
 
 ev "HDR,date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ev "HDR,commit=$(git rev-parse HEAD)"
@@ -154,10 +173,19 @@ ev "HDR,api_image_id=$(docker inspect -f '{{.Image}}' "$API_CID")"
 ev "HDR,cad_worker_image_id=$CAD_IMAGE"
 ev "HDR,cad_engine_timeout_s=$ENGINE_TIMEOUT"
 ev "HDR,cad_render_timeout_s=$RENDER_TIMEOUT"
+ev "HDR,cad_dxf_timeout_s=$DXF_TIMEOUT"
+ev "HDR,cad_rsvg_timeout_s=$RSVG_TIMEOUT"
 ev "HDR,sandbox_disabled=false"
 ev "HDR,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
 ev "HDR,server_arch=$(docker version --format '{{.Server.Arch}}')"
 ev "HDR,disk_free_gib=$DISK_GIB"
+
+LANDLOCK_LINE=$(printf '%s\n' "$WORKER_LOG" | grep 'cad sandbox: landlock via ' | tail -1)
+PROVEN_LINE=$(printf '%s\n' "$WORKER_LOG" | grep 'cad sandbox proven: ' | tail -1)
+case "$LANDLOCK_LINE" in *"(convert, render and dxf)"*) ;; *) fail "SANDBOX: the cad-worker log has no landlock line naming dxf: '$LANDLOCK_LINE'" ;; esac
+case "$PROVEN_LINE" in *cad-dxf*rsvg-convert*"ran inside the job directory and were denied a file outside it"*) ;; *) fail "SANDBOX: the proven line does not name cad-dxf and rsvg-convert: '$PROVEN_LINE'" ;; esac
+ev "SANDBOX,landlock_line=$(printf '%s' "${LANDLOCK_LINE#*cad sandbox: }" | sed 's/,/;/g'),proven_line=$(printf '%s' "${PROVEN_LINE#*cad sandbox proven: }" | sed 's/,/;/g'),names_cad_dxf=1,names_rsvg_convert=1,result=ok"
+N_SANDBOX=1
 
 CLIENT_OUT=$(DATABASE_URL="$DB_URL" API_KEY_SALT="$SALT" go run ./cmd/manage-clients create "cad-liveproof-$(date +%s)")
 KEY=$(printf '%s\n' "$CLIENT_OUT" | awk -F': ' '/^api key/ { print $2 }')
@@ -298,10 +326,11 @@ CODE=$(http "$FORMATS_JSON" "$API_BASE/v1/formats")
 CAD_FORMATS='["step","stp","iges","igs","stl","dxf","dwg"]'
 TOUCHING=$(jq -c --argjson f "$CAD_FORMATS" '[.engines | to_entries[] | .key as $e | .value.pairs[] | select(any(.[]; . as $x | $f | index($x))) | [$e, .[0], .[1]]] | sort' "$FORMATS_JSON")
 OPS_TOUCHING=$(jq -c --argjson f "$CAD_FORMATS" '[.operations | to_entries[] | .key as $o | .value | to_entries[] | .key as $e | .value.pairs[] | select(any(.[]; . as $x | $f | index($x))) | [$o, $e, .[0], .[1]]] | sort' "$FORMATS_JSON")
-[ "$TOUCHING" = '[["cad","iges","stl"],["cad","step","stl"]]' ] || fail "engines touching cad formats: $TOUCHING"
-WANT_OPS='[["convert","cad","iges","stl"],["convert","cad","step","stl"],["render","cad","iges","png"],["render","cad","step","png"],["render","cad","stl","png"]]'
+[ "$TOUCHING" = '[["cad","dxf","pdf"],["cad","dxf","svg"],["cad","iges","stl"],["cad","step","stl"]]' ] || fail "engines touching cad formats: $TOUCHING"
+WANT_OPS='[["convert","cad","dxf","pdf"],["convert","cad","dxf","svg"],["convert","cad","iges","stl"],["convert","cad","step","stl"],["render","cad","dxf","png"],["render","cad","iges","png"],["render","cad","step","png"],["render","cad","stl","png"]]'
 [ "$OPS_TOUCHING" = "$WANT_OPS" ] || fail "operations touching cad formats: $OPS_TOUCHING"
-ev "FORMATS,convert_cad_pairs=iges>stl;step>stl,render_cad_pairs=iges>png;step>png;stl>png,other_pairs_touching_cad_formats=0,operations_convert_cad=2,operations_render_cad=3,result=ok"
+[ "$(echo "$OPS_TOUCHING" | jq length)" = 8 ] || fail "operations touching cad formats are not eight pairs: $OPS_TOUCHING"
+ev "FORMATS,convert_cad_pairs=dxf>pdf;dxf>svg;iges>stl;step>stl,render_cad_pairs=dxf>png;iges>png;step>png;stl>png,cad_pairs=8,other_pairs_touching_cad_formats=0,operations_convert_cad=4,operations_render_cad=4,result=ok"
 N_FORMATS=1
 
 inspect_offers() {
@@ -323,6 +352,13 @@ inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step render p
 inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl 141557760
 inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png 141557760
 inspect_offers "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl stl render png 190840832
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert svg 123731968
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert pdf 123731968
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf render png 123731968
+DXF_OFFERS=$(jq -c '[.operations[] | select(.engine == "cad") | [.operation, .target]] | sort' "$W/inspect.json")
+[ "$DXF_OFFERS" = '[["convert","pdf"],["convert","svg"],["render","png"]]' ] || fail "INSPECT: the cad offers for a dxf are $DXF_OFFERS, want convert pdf, convert svg and render png"
+ev "INSPECT,format=dxf,cad_offers=convert>pdf;convert>svg;render>png,offers=3,max_bytes=123731968,result=ok"
+N_INSPECT=$((N_INSPECT + 1))
 
 convert_one() {
 	local label=$1 file=$2 upname=$3
@@ -794,7 +830,7 @@ MESH_HIT=$INJ_HIT
 wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
 [ "$JOB_STATUS" = failed ] || fail "MESH_SIGNAL: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
 MESH_CODE=$(jq -r '.error_code // empty' "$W/job.json")
-[ -n "$MESH_CODE" ] || fail "MESH_SIGNAL: the failed job has no error_code"
+[ "$MESH_CODE" = cad_unreadable ] || fail "MESH_SIGNAL: error_code '$MESH_CODE', want cad_unreadable (a reader that died on a signal)"
 MESH_EVENTS=$(job_events "$JOB_ID")
 case ";$MESH_EVENTS;" in *";active>active;"*) fail "MESH_SIGNAL: job $JOB_ID was retried: $MESH_EVENTS" ;; esac
 [ "$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")" = 0 ] || fail "MESH_SIGNAL: output rows exist for a failed job"
@@ -860,6 +896,633 @@ wait_job "$CANCEL_JOB" 30
 [ "$(jq 'has("download_url")' "$W/job.json")" = false ] || fail "CANCEL: a canceled job exposes a download_url"
 ev "CANCEL,job=$CANCEL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,mesh_pids=$(echo $BEFORE_PIDS | tr ' ' ';'),pid_gone=1,gone_s=$GONE_S,status=canceled,download_url=absent,result=ok"
 N_CANCEL=1
+
+DXF="$CORPUS/dxf"
+DXF_OUT="$CORPUS/dxf-out"
+
+cat > "$W/svgwalk.py" <<'PY'
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+path, out = sys.argv[1], sys.argv[2]
+with open(path, "rb") as fh:
+    data = fh.read()
+doctype = 1 if re.search(rb"<!DOCTYPE|<!ENTITY", data, re.I) else 0
+raw_script = 1 if re.search(rb"<script", data, re.I) else 0
+if doctype or raw_script:
+    print("root_svg=0,elements=0,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=%d,raw_script_tag=%d,svg_texts=0" % (doctype, raw_script))
+    sys.exit(1)
+root = ET.fromstring(data)
+root_svg = 1 if root.tag.rsplit("}", 1)[-1] == "svg" else 0
+SHAPES = ("path", "polyline", "polygon", "line", "circle", "ellipse", "rect")
+PAINT = ("fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width")
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def paint_of(el, parent):
+    paint = dict(parent)
+    for k in PAINT:
+        if el.get(k) is not None:
+            paint[k] = el.get(k)
+    return paint
+
+
+def stroked(p):
+    return p["stroke"] != "none" and num(p["stroke-opacity"]) > 0 and num(p["stroke-width"]) > 0
+
+
+def filled(p):
+    return p["fill"] != "none" and num(p["fill-opacity"]) > 0
+
+
+def has_extent(el, tag):
+    if tag == "rect":
+        return num(el.get("width")) > 0 and num(el.get("height")) > 0
+    if tag == "circle":
+        return num(el.get("r")) > 0
+    if tag == "ellipse":
+        return num(el.get("rx")) > 0 and num(el.get("ry")) > 0
+    if tag == "path":
+        return any(c in "LlQqCcZz" for c in el.get("d", ""))
+    if tag in ("polyline", "polygon"):
+        return len(re.findall(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", el.get("points", ""))) >= 4
+    return True
+
+
+visible = 0
+
+
+def walk(el, parent, hidden):
+    global visible
+    tag = el.tag.rsplit("}", 1)[-1]
+    paint = paint_of(el, parent)
+    hidden = hidden or tag in ("defs", "clipPath")
+    if not hidden and tag in SHAPES and ((filled(paint) and tag != "line") or stroked(paint)) and has_extent(el, tag):
+        visible += 1
+    if not hidden and tag == "text":
+        pieces = [(el.text, paint)]
+        for span in el:
+            pieces += [(span.text, paint_of(span, paint)), (span.tail, paint)]
+        if any((t or "").strip() and (filled(p) or stroked(p)) for t, p in pieces):
+            visible += 1
+    for child in el:
+        walk(child, paint, hidden)
+
+
+walk(root, {"fill": "#000000", "fill-opacity": "1", "stroke": "none", "stroke-opacity": "1", "stroke-width": "1"}, False)
+elements = forbidden = on_attrs = href_attrs = 0
+texts = []
+for el in root.iter():
+    elements += 1
+    local = el.tag.rsplit("}", 1)[-1]
+    if local in ("script", "foreignObject", "style", "use", "image"):
+        forbidden += 1
+    for key in el.attrib:
+        name = key.rsplit("}", 1)[-1].lower()
+        if name.startswith("on"):
+            on_attrs += 1
+        if name == "href":
+            href_attrs += 1
+    if local == "text":
+        texts.append("".join(el.itertext()))
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump(texts, fh, ensure_ascii=False)
+bad = forbidden or on_attrs or href_attrs or doctype or raw_script or not root_svg
+print("root_svg=%d,elements=%d,forbidden_elements=%d,on_attrs=%d,href_attrs=%d,doctype=%d,raw_script_tag=%d,svg_texts=%d,svg_visible=%d" % (
+    root_svg, elements, forbidden, on_attrs, href_attrs, doctype, raw_script, len(texts), visible))
+sys.exit(1 if bad else 0)
+PY
+
+cat > "$W/svgalpha.py" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+want = [
+    ("OPAQUE TEXT", "#000000", None), ("HALF TEXT", "#000000", "0.498"), ("CLEAR TEXT", "#000000", "0.000"),
+    ("OPAQUE MTEXT", "#000000", None), ("HALF MTEXT", "#000000", "0.498"), ("CLEAR MTEXT", "#000000", "0.000"),
+    ("HALF", "#000000", "0.498"), ("SPLIT", "#000000", "0.498"), ("INLINE", "#ff0000", "0.498"), ("RED", "#ff0000", "0.498"),
+    ("CLEAR", "#000000", "0.000"), ("SPLIT", "#000000", "0.000"),
+    ("LAYER TEXT", "#000000", "0.498"), ("BLOCK TEXT", "#000000", "0.498"),
+]
+ns = "{http://www.w3.org/2000/svg}"
+root = ET.parse(sys.argv[1]).getroot()
+got = [("".join(el.itertext()), el.get("fill"), el.get("fill-opacity")) for el in root.iter(ns + "text")]
+strokes = sum(1 for el in root.iter(ns + "path") if el.get("stroke-opacity") == "0.498" and el.get("fill") == "none")
+fills = sum(1 for el in root.iter(ns + "path") if el.get("fill-opacity") == "0.498" and el.get("stroke") is None)
+ok = got == want and strokes == 2 and fills == 1
+print("texts_opaque=%d,texts_half=%d,texts_clear=%d,texts_as_expected=%d,stroke_opacity_half=%d,fill_opacity_half=%d" % (
+    sum(1 for g in got if g[2] is None), sum(1 for g in got if g[2] == "0.498"),
+    sum(1 for g in got if g[2] == "0.000"), int(got == want), strokes, fills))
+sys.exit(0 if ok else 1)
+PY
+
+cat > "$W/svgfonts.py" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+want = [
+    ("MONO BOOK", "DejaVu Sans Mono", None), ("MONO BOLD", "DejaVu Sans Mono", "bold"),
+    ("MONO OBLIQUE", "DejaVu Sans", None), ("MONO BOLD OBLIQUE", "DejaVu Sans", None),
+    ("SANS BOOK", "DejaVu Sans", None), ("SANS BOLD", "DejaVu Sans", "bold"),
+    ("SERIF BOOK", "DejaVu Serif", None), ("SERIF BOLD", "DejaVu Serif", "bold"),
+    ("XDATA MONO ITALIC", "DejaVu Sans Mono", None), ("XDATA MONO BOLD ITALIC", "DejaVu Sans Mono", None),
+    ("INLINE", "DejaVu Sans Mono", None), ("MONO", "DejaVu Sans Mono", None), ("BOLD", "DejaVu Sans Mono", None),
+    ("ITALIC", "DejaVu Sans Mono", None), ("SHEARED STYLE", "DejaVu Sans Mono", None), ("SHEARED TEXT", "DejaVu Sans Mono", None),
+]
+ns = "{http://www.w3.org/2000/svg}"
+root = ET.parse(sys.argv[1]).getroot()
+texts = list(root.iter(ns + "text"))
+got = [("".join(el.itertext()), el.get("font-family"), el.get("font-weight")) for el in texts]
+slanted = sum(1 for el in texts if el.get("font-style") is not None)
+stretched = sum(1 for el in texts if el.get("font-stretch") is not None)
+tspans = sum(1 for _ in root.iter(ns + "tspan"))
+ok = got == want and slanted == 0 and stretched == 0 and tspans == 0
+print("font_texts=%d,fonts_as_expected=%d,bold=%d,font_style=%d,font_stretch=%d,tspans=%d" % (
+    len(got), int(got == want), sum(1 for g in got if g[2] == "bold"), slanted, stretched, tspans))
+sys.exit(0 if ok else 1)
+PY
+
+fetch_ct() {
+	docker compose exec -T cad-worker /usr/bin/python3 -c \
+		'import sys, urllib.request; r = urllib.request.urlopen(sys.argv[1]); r.read(); print(r.headers.get("Content-Type", ""))' "$1"
+}
+
+dxf_convert() {
+	local label=$1 file=$2 upname=$3 target=$4 out=$5 facts n primary size fmt
+	DC_T0=$(now)
+	create_job "$file" "$upname" "$target"
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "$label: create returned $HTTP: $(cat "$W/create.json")"
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	DC_SECS=$(elapsed "$DC_T0" "$(now)")
+	[ "$JOB_STATUS" = done ] || fail "$label: job $JOB_ID ended $JOB_STATUS: $(cat "$W/job.json")"
+	facts=$(output_facts "$JOB_ID")
+	n=${facts%%,*}
+	primary=$(echo "$facts" | cut -d, -f2)
+	size=$(echo "$facts" | cut -d, -f3)
+	fmt=$(echo "$facts" | cut -d, -f4)
+	[ "$n" = 1 ] && [ "$primary" = 1 ] && [ "$fmt" = "$target" ] || fail "$label: job_outputs facts '$facts', want exactly one primary $target"
+	[ "$(jq 'has("outputs")' "$W/job.json")" = false ] || fail "$label: the convert response carries an outputs array"
+	DC_URL=$(jq -r '.download_url // empty' "$W/job.json")
+	[ -n "$DC_URL" ] || fail "$label: no download_url on the done job"
+	fetch_url "$DC_URL" "$out" || fail "$label: cannot fetch the download_url"
+	[ "$(wc -c < "$out" | tr -d ' ')" = "$size" ] || fail "$label: downloaded $(wc -c < "$out" | tr -d ' ') bytes, job_outputs says $size"
+	DC_CT=$(fetch_ct "$DC_URL") || fail "$label: cannot read the content type of the download_url"
+	DC_JOB=$JOB_ID
+	DC_BYTES=$size
+}
+
+svg_judged() {
+	local label=$1 svg=$2 line rc=0
+	line=$("$W/bin/cad-svg-check" --out "$svg.reser" "$svg") || rc=$?
+	[ "$rc" = 0 ] || fail "$label: cad-svg-check rejected the downloaded SVG: $line"
+	SV_TEXTS=$(mfield texts "$line")
+	SV_VISIBLE=$(mfield visible "$line")
+	SV_SIZE="$(mfield width_mm "$line")x$(mfield height_mm "$line")"
+	cmp -s "$svg" "$svg.reser" || fail "$label: the re-serialization of the downloaded SVG differs from the download"
+	rc=0
+	SV_WALK=$(python3 "$W/svgwalk.py" "$svg" "$svg.texts.json") || rc=$?
+	[ "$rc" = 0 ] || fail "$label: the downloaded SVG holds a forbidden construct: $SV_WALK"
+	[ "$(mfield svg_texts "$SV_WALK")" = "$SV_TEXTS" ] || fail "$label: the Go validator counts $SV_TEXTS texts, the Python walk $(mfield svg_texts "$SV_WALK")"
+	[ "$(mfield svg_visible "$SV_WALK")" = "$SV_VISIBLE" ] || fail "$label: the Go validator counts $SV_VISIBLE visible elements, the Python walk $(mfield svg_visible "$SV_WALK")"
+	[ "$SV_VISIBLE" -ge 1 ] || fail "$label: the downloaded SVG shows nothing: $line"
+}
+
+dxf_svg_one() {
+	local name=$1 file=$2 upname=$3 texts_check
+	dxf_convert "DXF_SVG $name" "$file" "$upname" svg "$W/dxf_$name.svg"
+	[ "$DC_CT" = image/svg+xml ] || fail "DXF_SVG $name: the download content type is '$DC_CT', want image/svg+xml"
+	svg_judged "DXF_SVG $name" "$W/dxf_$name.svg"
+	if [ -f "$DXF_OUT/$name.texts.json" ]; then
+		[ "$SV_TEXTS" = "$(jq '.texts | length' "$DXF_OUT/$name.texts.json")" ] || fail "DXF_SVG $name: $SV_TEXTS texts, the committed helper output has $(jq '.texts | length' "$DXF_OUT/$name.texts.json")"
+	else
+		[ "$SV_TEXTS" -ge 1 ] || fail "DXF_SVG $name: no text in the SVG"
+	fi
+	case "$name" in
+	legacy_cp1251)
+		jq -e 'any(.[]; contains("Деталь"))' "$W/dxf_$name.svg.texts.json" >/dev/null || fail "DXF_SVG $name: no text holds Деталь: $(cat "$W/dxf_$name.svg.texts.json")"
+		texts_check="detal_cp1251=present"
+		;;
+	text_cases)
+		jq -e --arg s "$DXF_SPECIAL" 'any(.[]; . == $s)' "$W/dxf_$name.svg.texts.json" >/dev/null || fail "DXF_SVG $name: no text equals the special string exactly: $(cat "$W/dxf_$name.svg.texts.json")"
+		texts_check="special_text=exact"
+		;;
+	layers_off_frozen)
+		jq -e 'any(.[]; contains("VISIBLE"))' "$W/dxf_$name.svg.texts.json" >/dev/null || fail "DXF_SVG $name: VISIBLE is missing"
+		! grep -q -e HIDDEN_OFF -e HIDDEN_FROZEN "$W/dxf_$name.svg" || fail "DXF_SVG $name: a hidden layer's text is in the SVG"
+		texts_check="visible=present,hidden_off=absent,hidden_frozen=absent"
+		;;
+	uncommon)
+		[ "$SV_TEXTS" -ge 40 ] || fail "DXF_SVG $name: $SV_TEXTS texts, want at least 40"
+		texts_check="texts_at_least_40=1"
+		;;
+	text_alpha)
+		texts_check=$(python3 "$W/svgalpha.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the opacities are not the DXF transparencies: $texts_check"
+		;;
+	text_fonts)
+		texts_check=$(python3 "$W/svgfonts.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the font attributes are not those of the measured faces: $texts_check"
+		;;
+	white_one_black)
+		[ "$(grep -o '"#ffffff"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" -ge 10 ] && [ "$(grep -o 'stroke="#000000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 1 ] || fail "DXF_SVG $name: want the white geometry and texts kept and one black stroke"
+		[ "$SV_VISIBLE" -ge 11 ] || fail "DXF_SVG $name: $SV_VISIBLE visible elements, want the white ones counted too"
+		texts_check="white_paints_kept=1,black_strokes=1,visible_elements=$SV_VISIBLE"
+		;;
+	alpha_one_visible)
+		[ "$SV_VISIBLE" = 1 ] || fail "DXF_SVG $name: $SV_VISIBLE visible elements, want exactly the one 50% line"
+		[ "$(grep -o 'stroke-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 8 ] && [ "$(grep -o 'fill-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 4 ] || fail "DXF_SVG $name: the fully transparent strokes, fills and texts are not all kept"
+		[ "$(grep -o 'stroke-opacity="0.498"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 1 ] || fail "DXF_SVG $name: the 50% line is not the one half-transparent stroke"
+		texts_check="visible_elements=1,clear_strokes=8,clear_fills_and_texts=4,half_strokes=1"
+		;;
+	*)
+		texts_check="texts_checked=none"
+		;;
+	esac
+	ev "DXF_SVG,name=$name,upload=$upname,job=$DC_JOB,seconds=$DC_SECS,outputs=1,bytes=$DC_BYTES,sha256=$(shasum -a 256 "$W/dxf_$name.svg" | cut -d' ' -f1),content_type=$DC_CT,svg_check=ok,reserialized_identical=1,texts=$SV_TEXTS,page_mm=$SV_SIZE,$SV_WALK,$texts_check,result=ok"
+	N_DXF_SVG=$((N_DXF_SVG + 1))
+}
+
+dxf_svg_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf
+dxf_svg_one text_cases "$DXF/text_cases.dxf" text_cases.dxf
+dxf_svg_one layers_off_frozen "$DXF/layers_off_frozen.dxf" layers_off_frozen.dxf
+dxf_svg_one never_resolved "$DXF/never_resolved.dxf" never_resolved.dxf
+dxf_svg_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
+dxf_svg_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
+dxf_svg_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf
+dxf_svg_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf
+dxf_svg_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf
+
+pdf_judged() {
+	local label=$1 pdf=$2 line rc=0
+	shift 2
+	[ "$(head -c 5 "$pdf")" = "%PDF-" ] || fail "$label: the PDF does not start with %PDF-"
+	PD_PAGES=$(pdfinfo "$pdf" 2>/dev/null | awk '/^Pages:/ { print $2 }')
+	[ "$PD_PAGES" = 1 ] || fail "$label: pdfinfo reports '$PD_PAGES' pages, want 1"
+	line=$("$W/bin/cad-pdf-check" "$@" "$pdf") || rc=$?
+	[ "$rc" = 0 ] || fail "$label: cad-pdf-check rejected the PDF: $line"
+	PD_LINE=$(printf '%s' "$line" | sed -e 's/^GOPDF,pdf=[^,]*,//' -e 's/,reason=none$//')
+	pdftotext -raw -enc UTF-8 "$pdf" "$pdf.txt" || fail "$label: pdftotext failed"
+}
+
+dxf_pdf_one() {
+	local name=$1 file=$2 upname=$3 invisible=$4 text_check fonts
+	dxf_convert "DXF_PDF $name" "$file" "$upname" pdf "$W/dxf_$name.pdf"
+	[ "$DC_CT" = application/pdf ] || fail "DXF_PDF $name: the download content type is '$DC_CT', want application/pdf"
+	pdf_judged "DXF_PDF $name" "$W/dxf_$name.pdf" --texts "$DXF_OUT/$name.texts.json" --svg "$DXF_OUT/$name.render.svg"
+	if [ "$name" = alpha_one_visible ]; then
+		[ "$(mfield expected_runes "$PD_LINE")" = 0 ] || fail "DXF_PDF $name: the judge expected text from a drawing whose texts are all fully transparent: $PD_LINE"
+	else
+		[ "$(mfield expected_runes "$PD_LINE")" -gt 0 ] || fail "DXF_PDF $name: the judge expected no text: $PD_LINE"
+	fi
+	[ "$(mfield ink_ops "$PD_LINE")" -ge 2 ] || fail "DXF_PDF $name: the judge saw no ink beyond the background: $PD_LINE"
+	[ "$(mfield invisible_text "$PD_LINE")" = "$invisible" ] || fail "DXF_PDF $name: invisible_text=$(mfield invisible_text "$PD_LINE"), want $invisible: $PD_LINE"
+	case "$name" in
+	legacy_cp1251)
+		grep -qF "Деталь" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw holds no Деталь: $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		text_check="pdftotext_detal_cp1251=present"
+		;;
+	text_cases)
+		grep -qF -- "$DXF_SPECIAL" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold the special string: $(head -c 600 "$W/dxf_$name.pdf.txt")"
+		text_check="pdftotext_special_text=present"
+		;;
+	text_alpha)
+		for s in "OPAQUE TEXT" "HALF TEXT" "OPAQUE MTEXT" "HALF MTEXT" "LAYER TEXT" "BLOCK TEXT" "INLINE" "RED"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold '$s': $(head -c 600 "$W/dxf_$name.pdf.txt")"
+		done
+		[ "$(grep -c CLEAR "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(grep CLEAR "$W/dxf_$name.pdf.txt" | head -3)"
+		text_check="pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=0"
+		;;
+	alpha_one_visible)
+		[ "$(mfield ink_ops "$PD_LINE")" = 2 ] && [ "$(mfield paint_ops "$PD_LINE")" = 2 ] || fail "DXF_PDF $name: want the background and the 50% line as the only paint and ink: $PD_LINE"
+		[ "$(grep -c '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		text_check="pdftotext_text=empty"
+		;;
+	white_one_black)
+		for s in "WHITE TEXT" "WHITE MTEXT"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold the white text '$s': $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		done
+		text_check="pdftotext_white_texts=2"
+		;;
+	text_alpha_faint)
+		grep -qF "FAINT ONLY" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold FAINT ONLY: $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		[ "$(grep -c GONE "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds the fully transparent GONE: $(grep GONE "$W/dxf_$name.pdf.txt" | head -3)"
+		text_check="pdftotext_faint_only=1,pdftotext_gone_lines=0"
+		;;
+	text_fonts)
+		for s in "MONO BOOK" "MONO BOLD" "MONO OBLIQUE" "MONO BOLD OBLIQUE" "SANS BOOK" "SANS BOLD" "SERIF BOOK" "SERIF BOLD" \
+			"XDATA MONO ITALIC" "XDATA MONO BOLD ITALIC" "INLINE" "ITALIC" "SHEARED STYLE" "SHEARED TEXT"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold '$s': $(head -c 600 "$W/dxf_$name.pdf.txt")"
+		done
+		fonts=$(pdffonts "$W/dxf_$name.pdf" | awk 'NR > 2 { sub(/^[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]\+/, "", $1); print $1 }' | sort | paste -sd ';' -)
+		[ "$fonts" = "DejaVuSans;DejaVuSans-Bold;DejaVuSansMono;DejaVuSansMono-Bold;DejaVuSerif;DejaVuSerif-Bold" ] || fail "DXF_PDF $name: pdffonts lists '$fonts', want exactly the six faces of fonts-dejavu-core"
+		text_check="pdftotext_font_texts=14,pdffonts=$fonts,oblique_faces=0"
+		;;
+	*)
+		[ -s "$W/dxf_$name.pdf.txt" ] && grep -q '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw extracts no text"
+		text_check="pdftotext_text=nonempty"
+		;;
+	esac
+	ev "DXF_PDF,name=$name,upload=$upname,job=$DC_JOB,seconds=$DC_SECS,outputs=1,bytes=$DC_BYTES,sha256=$(shasum -a 256 "$W/dxf_$name.pdf" | cut -d' ' -f1),content_type=$DC_CT,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,pdftotext_chars=$(wc -m < "$W/dxf_$name.pdf.txt" | tr -d ' '),$text_check,result=ok"
+	N_DXF_PDF=$((N_DXF_PDF + 1))
+}
+
+dxf_pdf_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf 0
+dxf_pdf_one text_cases "$DXF/text_cases.dxf" text_cases.dxf 0
+dxf_pdf_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf 0
+dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 4
+dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1
+dxf_pdf_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 0
+dxf_pdf_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 2
+dxf_pdf_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf 0
+
+drawing_judge() {
+	local png=$1 size=$2 background=$3 svg=$4 line rc=0
+	line=$("$W/bin/cad-pixel-judge" --size "$size" --background "$background" --drawing --letterbox-svg "$svg" "$png" 2>"$W/judge.err") || rc=$?
+	DJ_LINE=$(printf '%s' "$line" | sed -e 's/^GOJUDGE,png=[^,]*,//')
+	if [ "$rc" != 0 ]; then
+		DJ_LINE="$DJ_LINE,err=$(tr '\n' ' ' < "$W/judge.err" | sed 's/,/;/g')"
+	fi
+	DJ_RC=$rc
+}
+
+lb_svg() {
+	local name=$1 file=$2 upname=$3
+	LB_SVG="$W/lb_$name.svg"
+	if [ ! -s "$LB_SVG" ]; then
+		dxf_convert "letterbox svg $name" "$file" "$upname" svg "$LB_SVG"
+		svg_judged "letterbox svg $name" "$LB_SVG"
+		echo "$DC_JOB" > "$LB_SVG.job"
+	fi
+	LB_JOB=$(cat "$LB_SVG.job")
+}
+
+dxf_meas_2d() {
+	local label=$1 json=$2
+	meas_check "$json"
+	[ "$MC_RC" = 0 ] || fail "$label: the measurements body failed Validate: $MC_LINE"
+	[ "$(mfield format "$MC_LINE")" = dxf ] || fail "$label: measurements format $(mfield format "$MC_LINE"), want dxf"
+	jq -e '(.bbox.min | length) == 2 and (.bbox.max | length) == 2 and .volume == null and .area == null and .volume_null_reason == "not_applicable_2d" and .area_null_reason == "not_applicable_2d"' "$json" >/dev/null || fail "$label: the measurements body is not a 2D bbox with null volume and area for not_applicable_2d: $(cat "$json")"
+	MB_BBOX=$(jq -r '[.bbox.min[0], .bbox.min[1], .bbox.max[0], .bbox.max[1]] | map(tostring) | join(":")' "$json")
+}
+
+dxf_render_one() {
+	local name=$1 file=$2 upname=$3 size=$4 background=$5 opts=$6
+	lb_svg "$name" "$file" "$upname"
+	render_job "dxf_$name" "$file" "$upname" "$opts"
+	drawing_judge "$R_PNG" "$size" "$background" "$LB_SVG"
+	[ "$DJ_RC" = 0 ] || fail "DXF_RENDER $name: the drawing judge rejected the PNG: $DJ_LINE"
+	[ "$(mfield w "$DJ_LINE")" = "$size" ] && [ "$(mfield h "$DJ_LINE")" = "$size" ] || fail "DXF_RENDER $name: the PNG is $(mfield w "$DJ_LINE") x $(mfield h "$DJ_LINE"), want $size x $size"
+	if [ "$background" = transparent ]; then
+		[ "$(mfield alpha "$DJ_LINE")" = 1 ] || fail "DXF_RENDER $name: the transparent render carries no alpha channel: $DJ_LINE"
+	fi
+	dxf_meas_2d "DXF_RENDER $name" "$R_JSON"
+	ev "DXF_RENDER,name=$name,upload=$upname,size=$size,background=$background,opts=${opts:-none},job=$JOB_ID,seconds=$R_SECS,outputs=2,roles=primary@0;measurements@1,png_bytes=$(wc -c < "$R_PNG" | tr -d ' '),png_sha256=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1),letterbox_svg_job=$LB_JOB,judge=drawing_ok,$DJ_LINE,measurements=valid,$MC_LINE,bbox=$MB_BBOX,coords_per_corner=2,result=ok"
+	N_DXF_RENDER=$((N_DXF_RENDER + 1))
+}
+
+dxf_render_one wide "$DXF/wide.dxf" wide.dxf 1280 opaque ""
+dxf_render_one tall "$DXF/tall.dxf" tall.dxf 1280 opaque ""
+dxf_render_one wide "$DXF/wide.dxf" wide.dxf 2048 transparent '{"size":2048,"background":"transparent"}'
+dxf_render_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf 256 opaque '{"size":256}'
+dxf_render_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 1280 opaque ""
+dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 opaque ""
+dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 transparent '{"background":"transparent"}'
+dxf_render_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 1280 opaque ""
+dxf_render_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 1280 opaque ""
+dxf_render_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf 1280 opaque ""
+
+dxf_meas_one() {
+	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
+	if [ -n "$assume" ]; then
+		opts="{\"assume_unit\":\"$assume\"}"
+	fi
+	render_job "dxf_meas_$name" "$file" "$upname" "$opts"
+	local job=$JOB_ID
+	dxf_meas_2d "DXF_MEAS $name" "$R_JSON"
+	if [ "$w_unit" != any ]; then
+		[ "$(mfield unit "$MC_LINE")" = "$w_unit" ] || fail "DXF_MEAS $name: unit $(mfield unit "$MC_LINE"), want $w_unit"
+		[ "$(mfield unit_source "$MC_LINE")" = "$w_src" ] || fail "DXF_MEAS $name: unit_source $(mfield unit_source "$MC_LINE"), want $w_src"
+	fi
+	case "$w_bbox" in
+	any) ;;
+	far)
+		awk -v x="$(echo "$MB_BBOX" | cut -d: -f3)" 'BEGIN { exit !(x >= 100000) }' || fail "DXF_MEAS $name: bbox $MB_BBOX, want max x at least 1e5"
+		lb_svg "$name" "$file" "$upname"
+		drawing_judge "$R_PNG" 1280 opaque "$LB_SVG"
+		[ "$DJ_RC" = 0 ] || fail "DXF_MEAS $name: the drawing judge rejected the PNG: $DJ_LINE"
+		extra=",max_x_at_least_1e5=1,letterbox_svg_job=$LB_JOB,judge=drawing_ok,$DJ_LINE"
+		;;
+	*)
+		for i in 1 2 3 4; do
+			near "$(echo "$MB_BBOX" | cut -d: -f$i)" "$(echo "$w_bbox" | cut -d: -f$i)" || fail "DXF_MEAS $name: bbox $MB_BBOX, want $w_bbox"
+		done
+		extra=",expected_bbox=$w_bbox"
+		;;
+	esac
+	ev "DXF_MEAS,name=$name,upload=$upname,assume_unit=${assume:-none},job=$job,outputs=2,$MC_LINE,bbox=$MB_BBOX,expected_unit=$w_unit,expected_unit_source=$w_src$extra,result=ok"
+	N_DXF_MEAS=$((N_DXF_MEAS + 1))
+}
+
+dxf_meas_one wrong_extents "$DXF/wrong_extents.dxf" wrong_extents.dxf "" mm declared 10:20:40:30
+dxf_meas_one units_1 "$DXF/units_1.dxf" units_1.dxf "" inch declared any
+dxf_meas_one units_13 "$DXF/units_13.dxf" units_13.dxf "" micrometre declared any
+dxf_meas_one units_0 "$DXF/units_0.dxf" units_0.dxf "" unspecified none any
+dxf_meas_one units_0_assume_mm "$DXF/units_0.dxf" units_0.dxf mm mm client_assumed any
+dxf_meas_one units_3_assume_mm "$DXF/units_3.dxf" units_3.dxf mm unspecified none any
+dxf_meas_one far_point "$DXF/far_point.dxf" far_point.dxf "" any any far
+
+dxf_reject_opts() {
+	local name=$1 op=$2 target=$3 opts=$4 want=$5 before after
+	local args=(-F "target=$target" -F "file=@$CORPUS/synthetic/legacy_cp1251.dxf;filename=legacy_cp1251.dxf" -F "opts=$opts")
+	if [ -n "$op" ]; then
+		args+=(-F "operation=$op")
+	fi
+	before=$(psqlq "select count(*) from jobs")
+	CODE=$(http "$W/rej.json" -X POST "$API_BASE/v1/jobs" "${args[@]}")
+	[ "$CODE" = 422 ] && [ "$(jq -r .code "$W/rej.json")" = "$want" ] || fail "DXF_OPTS_REJECT $name: got $CODE $(cat "$W/rej.json"), want 422 $want"
+	[ "$(jq 'has("job_id")' "$W/rej.json")" = false ] || fail "DXF_OPTS_REJECT $name: the response carries a job_id"
+	after=$(psqlq "select count(*) from jobs")
+	[ "$before" = "$after" ] || fail "DXF_OPTS_REJECT $name: jobs rows moved $before -> $after"
+	ev "DXF_OPTS_REJECT,name=$name,operation=${op:-convert},target=$target,upload=legacy_cp1251.dxf,opts=$(printf '%s' "$opts" | sed 's/,/;/g'),http=422,code=$want,jobs_created=0,result=ok"
+	N_DXF_OPTS_REJECT=$((N_DXF_OPTS_REJECT + 1))
+}
+
+dxf_reject_opts render_view_top render png '{"view":"top"}' opts_not_applicable
+dxf_reject_opts render_quality_fine render png '{"quality":"fine"}' opts_not_applicable
+dxf_reject_opts render_view_sideways render png '{"view":"sideways"}' invalid_options
+dxf_reject_opts convert_svg_size_1024 "" svg '{"size":1024}' opts_not_applicable
+
+container_counters
+DXF_BASE_RESTARTS=$C_RESTARTS
+DXF_BASE_STARTED=$C_STARTED
+DXF_BASE_OOMKILL=$C_OOMKILL
+[ "$C_OOMKILLED" = false ] || fail "the cad-worker was OOMKilled before the DXF bombs"
+
+dxf_bomb_one() {
+	local file=$1 upname=$2 want=$3 t0 secs code events n
+	t0=$(now)
+	create_job "$file" "$upname" svg
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_BOMB $upname: create returned $HTTP: $(cat "$W/create.json")"
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	secs=$(elapsed "$t0" "$(now)")
+	[ "$JOB_STATUS" = failed ] || fail "DXF_BOMB $upname: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+	code=$(jq -r '.error_code // empty' "$W/job.json")
+	[ "$code" = "$want" ] || fail "DXF_BOMB $upname: error_code '$code', want $want: $(cat "$W/job.json")"
+	events=$(job_events "$JOB_ID")
+	case ";$events;" in *";active>active;"*) fail "DXF_BOMB $upname: job $JOB_ID was retried: $events" ;; esac
+	n=$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")
+	[ "$n" = 0 ] || fail "DXF_BOMB $upname: $n output rows exist"
+	[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "DXF_BOMB $upname: the failed job exposes download_url or outputs"
+	container_counters
+	[ "$C_OOMKILLED" = false ] || fail "DXF_BOMB $upname: the cad-worker container was OOMKilled"
+	[ "$C_RESTARTS" = "$DXF_BASE_RESTARTS" ] || fail "DXF_BOMB $upname: RestartCount moved $DXF_BASE_RESTARTS -> $C_RESTARTS"
+	[ "$C_STARTED" = "$DXF_BASE_STARTED" ] || fail "DXF_BOMB $upname: StartedAt moved"
+	[ "$C_OOMKILL" = "$DXF_BASE_OOMKILL" ] || fail "DXF_BOMB $upname: memory.events oom_kill moved $DXF_BASE_OOMKILL -> $C_OOMKILL"
+	ev "DXF_BOMB,name=$upname,bytes=$(wc -c < "$file" | tr -d ' '),sha256=$(shasum -a 256 "$file" | cut -d' ' -f1),job=$JOB_ID,status=failed,code=$code,retried=0,events=$events,outputs=0,download_url=absent,seconds=$secs,oom_killed=false,restart_count=$C_RESTARTS,started_at_unchanged=1,oom_kill=$C_OOMKILL,result=ok"
+	N_DXF_BOMB=$((N_DXF_BOMB + 1))
+}
+
+for b in minsert_over_inserts entities_over dimension_minsert cyclic_self cyclic_ab cyclic_case nest_d17; do
+	dxf_bomb_one "$DXF/$b.dxf" "$b.dxf" cad_too_complex
+done
+for b in nonnumeric_abc nonnumeric_nan nonnumeric_inf nonnumeric_underscore coord_1e400; do
+	dxf_bomb_one "$DXF/$b.dxf" "$b.dxf" cad_unreadable
+done
+dxf_bomb_one "$CORPUS/public/3dsolids.dxf" 3dsolids.dxf cad_empty_result
+dxf_bomb_one "$DXF/all_hidden.dxf" all_hidden.dxf cad_empty_result
+dxf_bomb_one "$DXF/single_point.dxf" single_point.dxf cad_empty_result
+
+dxf_empty_one() {
+	local name=$1 target=$2 op=$3 opts=${4:-} want_msg code msg events n
+	create_job "$DXF/$name.dxf" "$name.dxf" "$target" "$op" "$opts"
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_EMPTY $name $target: create returned $HTTP: $(cat "$W/create.json")"
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	[ "$JOB_STATUS" = failed ] || fail "DXF_EMPTY $name $target: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+	code=$(jq -r '.error_code // empty' "$W/job.json")
+	[ "$code" = cad_empty_result ] || fail "DXF_EMPTY $name $target: error_code '$code', want cad_empty_result: $(cat "$W/job.json")"
+	msg=$(jq -r '.error_message // empty' "$W/job.json")
+	want_msg="the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
+	[ "$msg" = "$want_msg" ] || fail "DXF_EMPTY $name $target: message '$msg', want '$want_msg': $(cat "$W/job.json")"
+	events=$(job_events "$JOB_ID")
+	case ";$events;" in *";active>active;"*) fail "DXF_EMPTY $name $target: job $JOB_ID was retried: $events" ;; esac
+	n=$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")
+	[ "$n" = 0 ] || fail "DXF_EMPTY $name $target: $n output rows exist"
+	[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "DXF_EMPTY $name $target: the failed job exposes download_url or outputs"
+	ev "DXF_EMPTY,name=$name.dxf,target=$target,operation=${op:-convert},opts=$(printf '%s' "${opts:-none}" | sed 's/,/;/g'),job=$JOB_ID,status=failed,code=$code,message=$(printf '%s' "$msg" | sed 's/,/;/g'),retried=0,events=$events,outputs=0,download_url=absent,result=ok"
+	N_DXF_EMPTY=$((N_DXF_EMPTY + 1))
+}
+
+for e in alpha_clear_geometry alpha_clear_all white_geometry white_text degenerate_fill faint_only zwsp_text; do
+	dxf_empty_one "$e" svg ""
+	dxf_empty_one "$e" pdf ""
+	dxf_empty_one "$e" png render
+done
+dxf_empty_one white_geometry png render '{"background":"transparent"}'
+dxf_empty_one white_text png render '{"size":2048,"background":"transparent"}'
+
+python3 - "$CORPUS/synthetic/legacy_cp1251.dxf" "$W/ceiling.dxf" 123731969 <<'PY' || fail "cannot build the padded dxf"
+import sys
+
+src = open(sys.argv[1], "rb").read()
+size = int(sys.argv[3])
+at = src.index(b"  0\r\nENDSEC\r\n")
+chunk = 1025
+need = size - len(src)
+full = need // chunk - 1
+last = need - full * chunk
+line = b"999\r\n" + b"x" * (chunk - 7) + b"\r\n"
+out = src[:at] + line * full + b"999\r\n" + b"x" * (last - 7) + b"\r\n" + src[at:]
+assert len(out) == size, len(out)
+open(sys.argv[2], "wb").write(out)
+PY
+CEIL_BYTES=$(wc -c < "$W/ceiling.dxf" | tr -d ' ')
+[ "$CEIL_BYTES" = 123731969 ] || fail "DXF_CEILING: the padded dxf is $CEIL_BYTES bytes, want 123731969"
+JOBS_BEFORE=$(psqlq "select count(*) from jobs")
+CODE=$(http "$W/ceiling.json" -X POST "$API_BASE/v1/jobs" -F "target=svg" -F "file=@$W/ceiling.dxf;filename=ceiling.dxf")
+[ "$CODE" = 413 ] && [ "$(jq -r .code "$W/ceiling.json")" = payload_too_large ] || fail "DXF_CEILING: got $CODE $(cat "$W/ceiling.json"), want 413 payload_too_large"
+CEIL_MSG=$(jq -r .error "$W/ceiling.json")
+case "$CEIL_MSG" in *dxf*118\ MiB*) ;; *) fail "DXF_CEILING: message '$CEIL_MSG' does not name dxf and 118 MiB" ;; esac
+[ "$(jq 'has("job_id")' "$W/ceiling.json")" = false ] || fail "DXF_CEILING: the response carries a job_id"
+JOBS_AFTER=$(psqlq "select count(*) from jobs")
+[ "$JOBS_BEFORE" = "$JOBS_AFTER" ] || fail "DXF_CEILING: jobs rows moved $JOBS_BEFORE -> $JOBS_AFTER"
+ev "DXF_CEILING,name=dxf_118mib_plus_1,bytes=$CEIL_BYTES,ceiling_bytes=123731968,padding=999_comment_pairs,http=413,code=payload_too_large,message=$CEIL_MSG,jobs_created=0,result=ok"
+N_DXF_CEILING=1
+rm -f "$W/ceiling.dxf"
+
+REPL50_BYTES=$(wc -c < "$REPL50" | tr -d ' ')
+
+inject_start cad-dxf TERM "$W/inj_dxf.out" || fail "DXF_RETRY cad-dxf: the signal watcher did not start"
+DR_T0=$(now)
+create_job "$REPL50" "$REPL50_NAME" svg
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_RETRY cad-dxf: create returned $HTTP: $(cat "$W/create.json")"
+inject_wait || fail "DXF_RETRY cad-dxf: no cad-dxf process was found to signal for job $JOB_ID"
+DR_HIT=$INJ_HIT
+DR_JOB=$JOB_ID
+wait_job "$DR_JOB" "$ENGINE_TIMEOUT"
+DR_SECS=$(elapsed "$DR_T0" "$(now)")
+[ "$JOB_STATUS" = done ] || fail "DXF_RETRY cad-dxf: job $DR_JOB ended $JOB_STATUS: $(cat "$W/job.json")"
+DR_EVENTS=$(job_events "$DR_JOB")
+case ";$DR_EVENTS;" in *";active>active;"*) ;; *) fail "DXF_RETRY cad-dxf: job $DR_JOB events '$DR_EVENTS' show no retry" ;; esac
+DR_FACTS=$(output_facts "$DR_JOB")
+[ "${DR_FACTS%%,*}" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f2)" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f4)" = svg ] || fail "DXF_RETRY cad-dxf: job_outputs facts '$DR_FACTS'"
+download_output "$W/retry_dxf.svg" || fail "DXF_RETRY cad-dxf: no download_url on the done job"
+svg_judged "DXF_RETRY cad-dxf" "$W/retry_dxf.svg"
+ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=svg,signal=TERM,signalled=cad-dxf,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,svg_check=ok,reserialized_identical=1,texts=$SV_TEXTS,$SV_WALK,result=ok"
+N_DXF_RETRY=$((N_DXF_RETRY + 1))
+
+inject_start rsvg-convert TERM "$W/inj_rsvg.out" || fail "DXF_RETRY rsvg-convert: the signal watcher did not start"
+DR_T0=$(now)
+create_job "$REPL50" "$REPL50_NAME" pdf
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_RETRY rsvg-convert: create returned $HTTP: $(cat "$W/create.json")"
+inject_wait || fail "DXF_RETRY rsvg-convert: no rsvg-convert process was found to signal for job $JOB_ID"
+DR_HIT=$INJ_HIT
+DR_JOB=$JOB_ID
+wait_job "$DR_JOB" "$ENGINE_TIMEOUT"
+DR_SECS=$(elapsed "$DR_T0" "$(now)")
+[ "$JOB_STATUS" = done ] || fail "DXF_RETRY rsvg-convert: job $DR_JOB ended $JOB_STATUS: $(cat "$W/job.json")"
+DR_EVENTS=$(job_events "$DR_JOB")
+case ";$DR_EVENTS;" in *";active>active;"*) ;; *) fail "DXF_RETRY rsvg-convert: job $DR_JOB events '$DR_EVENTS' show no retry" ;; esac
+DR_FACTS=$(output_facts "$DR_JOB")
+[ "${DR_FACTS%%,*}" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f2)" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f4)" = pdf ] || fail "DXF_RETRY rsvg-convert: job_outputs facts '$DR_FACTS'"
+download_output "$W/retry_rsvg.pdf" || fail "DXF_RETRY rsvg-convert: no download_url on the done job"
+pdf_judged "DXF_RETRY rsvg-convert" "$W/retry_rsvg.pdf"
+ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=pdf,signal=TERM,signalled=rsvg-convert,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,result=ok"
+N_DXF_RETRY=$((N_DXF_RETRY + 1))
+
+inject_start cad-dxf 0 "$W/inj_dxf_cancel.out" || fail "DXF_CANCEL: the watcher did not start"
+create_job "$REPL50" "$REPL50_NAME" svg
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_CANCEL: create returned $HTTP: $(cat "$W/create.json")"
+DX_JOB=$JOB_ID
+inject_wait || fail "DXF_CANCEL: no cad-dxf process ever appeared for job $DX_JOB"
+DX_PID=$INJ_HIT_PID
+T_CANCEL=$(now)
+CODE=$(http "$W/cancel.json" -X POST "$API_BASE/v1/jobs/$DX_JOB/cancel")
+[ "$CODE" = 200 ] && [ "$(jq -r .status "$W/cancel.json")" = canceled ] || fail "DXF_CANCEL: cancel returned $CODE $(cat "$W/cancel.json")"
+GONE=0
+for _ in $(seq 1 24); do
+	case " $(proc_pids cad-dxf) " in *" $DX_PID "*) ;; *)
+		GONE=1
+		break
+		;;
+	esac
+	sleep 0.25
+done
+GONE_S=$(elapsed "$T_CANCEL" "$(now)")
+[ "$GONE" = 1 ] && within "$GONE_S" 5 || fail "DXF_CANCEL: cad-dxf pid $DX_PID still alive ${GONE_S}s after cancel"
+wait_job "$DX_JOB" 30
+[ "$JOB_STATUS" = canceled ] || fail "DXF_CANCEL: job reads $JOB_STATUS, want canceled"
+[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "DXF_CANCEL: a canceled job exposes download_url or outputs"
+[ "$(psqlq "select count(*) from job_outputs where job_id = '$DX_JOB'")" = 0 ] || fail "DXF_CANCEL: output rows exist for a canceled job"
+LEFT_DXF=$(proc_pids cad-dxf)
+[ -z "$(echo $LEFT_DXF)" ] || fail "DXF_CANCEL: cad-dxf process(es) [$LEFT_DXF] are alive after the cancel"
+ev "DXF_CANCEL,job=$DX_JOB,input=$REPL50_NAME,cad_dxf_pid=$DX_PID,pid_gone=1,gone_s=$GONE_S,cad_dxf_left=0,status=canceled,download_url=absent,outputs=0,result=ok"
+N_DXF_CANCEL=1
 
 sleep 3
 create_job "$NAUO1000" "$NAUO_NAME" stl
@@ -927,5 +1590,5 @@ fi
 ev "IMAGE,cad_worker_image_id=$CAD_IMAGE,cad_worker_size_bytes=$IMG_SIZE,phase73_image_id=${P73_ID:-unknown},phase73_size_bytes=$P73_SIZE"
 N_IMAGE=1
 
-ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE"
+ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE,sandbox=$N_SANDBOX,dxf_svg=$N_DXF_SVG,dxf_pdf=$N_DXF_PDF,dxf_render=$N_DXF_RENDER,dxf_meas=$N_DXF_MEAS,dxf_opts_reject=$N_DXF_OPTS_REJECT,dxf_bomb=$N_DXF_BOMB,dxf_empty=$N_DXF_EMPTY,dxf_ceiling=$N_DXF_CEILING,dxf_retry=$N_DXF_RETRY,dxf_cancel=$N_DXF_CANCEL"
 FINISHED=1

@@ -1298,7 +1298,7 @@ soffice
 verapdf
 <!-- /conf05:verapdf:engines -->
 
-## cad (cad-guard + cad-mesh + cad-render) — замерено и доказано 2026-10-05 (фаза 73, план 03; render и повторный замер mesh — фаза 74, план 06)
+## cad (cad-guard + cad-mesh + cad-render + cad-dxf + rsvg-convert) — замерено и доказано 2026-10-05 (фаза 73, план 03; render и повторный замер mesh — фаза 74, план 06; cad-dxf, rsvg-convert и повторный замер guard на DXF — фаза 75, план 08, 2026-10-11)
 
 Две стадии одного образа и два ОТДЕЛЬНЫХ набора (D-12): guard первым читает
 недоверенные байты и не должен иметь пути к OCP, поэтому `/opt/venv` в его наборе нет;
@@ -1471,6 +1471,114 @@ cadquery-ocp-novtk 7.9.3.1.1, `USER nobody`, нативный arm64, ядро 7.
   а не замерена, и эмулируемая сборка этим прогоном не повторялась (флаг `--amd64` повторяет сборку
   guard и mesh).
 
+### cad-dxf и rsvg-convert — фаза 75, план 08
+
+Две новые стадии того же образа и два ОТДЕЛЬНЫХ набора (D-01, D-14): `cad-dxf` (ezdxf) рисует
+модельное пространство DXF в SVG, `rsvg-convert` превращает проверенный Go SVG в PDF или PNG. Инструмент
+тот же — `scripts/cad-worker-sandbox-measure.sh`, теперь с `--stages guard,dxf,rsvg` (без флага он
+повторяет прогон 74-06). Образ — боевой engine-этап `Dockerfile.cad-worker` с DXF-цепочкой (id
+`sha256:687fe04acf5591e41fd33b38e6539babd4f32407146eda9eb4ff56878b7bd43c`, Python 3.11.2, ezdxf 1.4.4,
+librsvg2-bin 2.54.7+dfsg-1~deb12u1, fonts-dejavu-core 2.37-6, `USER nobody`, нативный arm64 на arm64-сервере,
+ядро 7.0.14-orbstack). Транскрипт — `.planning/phases/75-dxf-2d-pipeline/evidence/75-08-landlock.txt`.
+До этого замера `cadDXFReadOnly` и `cadRsvgReadOnly` были посеяны в плане 75-06 из таблиц исследования
+(прототип helper'а на образе исследования) и ничем на боевом образе не доказаны.
+
+- **Матрица cad-dxf** — десять DXF: `text_cases`, `legacy_cp1251`, `legacy_latin1`, `columns_R2007`,
+  `uncommon`, `never_resolved`, `layers_off_frozen`, `hatches_2`, `acad_table_with_blk_ref`,
+  `dimension_in_nested_blocks`. Каждый эталон обязан дать вердикт `ok` и оба SVG.
+- **argv cad-dxf боевой** (75-07): `/usr/local/bin/cad-dxf --max-drawn-entities 850155 --texts /job/texts.json
+  --render-svg /job/draw.render.svg --measure /job/measure.json /job/in.dxf /job/draw.svg`.
+- **Подпись cad-dxf** — последняя строка `CADVERDICT` плюс sha256 клиентского SVG, render-only SVG,
+  `texts.json` и `measure.json` и число элементов `<text>` в клиентском SVG.
+- **Матрица rsvg-convert** — render-only SVG тех же десяти рисунков, пропущенные через Go-валидатор
+  (`scripts/cmd/cad-svg-check --out`, то есть ровно `clean.svg` воркера), по три argv на каждый:
+  `-f pdf -b white -o /job/out.pdf /job/clean.svg`; PNG 1280 непрозрачный
+  (`-b white -w SW -h SH --page-width 1280 --page-height 1280 --left L --top T -o /job/out.png /job/clean.svg`);
+  PNG 2048 прозрачный (то же без `-b white`). Letterbox берётся из Go (`cad-pixel-judge --print-letterbox`).
+  Тридцать эталонов.
+- **Подпись rsvg-convert** — для PDF sha256 файла без `/CreationDate` плюс sha256 текста, который
+  декодирует Go-судья PDF (`cad-pdf-check --print-text`); для PNG — sha256. Эталон без ruleset и прогон
+  под набором совпадают по этой подписи во всех строках `SUFFICIENT` с PDF.
+- **Среда — та, что строит Go** (`cadDrawStage`, 75-06): `PATH` образа, `TMPDIR=/job`,
+  `HOME=/job/.home`, `XDG_CACHE_HOME=/job/.home/.cache`, `XDG_CONFIG_HOME=/job/.home/.config`, `LANG` и
+  `LC_ALL` не заданы, каталоги `.home` созданы до запуска. Это не `HOME=/job` прошлых замеров:
+  в контейнере воркера `HOME=/nonexistent`, и fontconfig у `rsvg-convert` пишет свой кэш в
+  `$XDG_CACHE_HOME/fontconfig` внутри каталога задания. Лимиты и проба те же, что у guard и mesh.
+- **Кандидаты** — семена из Go плюс грант на исполнение (`/usr/local/bin/cad-dxf` и интерпретатор
+  `/usr/bin/python3.11`; `/usr/bin/rsvg-convert`), каталог multiarch и то, что добавила трасса:
+  десять трасс cad-dxf и четырнадцать трасс rsvg-convert (каждый PDF, плюс оба PNG для `text_cases` и
+  `uncommon`). `TMP_NEED none` для обеих стадий.
+
+Таблица удаления cad-dxf (каждый раз полная матрица из десяти входов):
+
+| Запись | Итог |
+|---|---|
+| `/etc/ld.so.cache` | removable |
+| `/sys/devices/system/cpu` | removable |
+| `/usr/lib/locale` | removable |
+| `/usr/local/share` | removable |
+| `/usr/share/zoneinfo` | removable |
+| `/opt/venv` | **load-bearing** (ezdxf и shebang `/opt/venv/bin/python`) |
+| `/usr/bin/python3.11` | **load-bearing** (интерпретатор) |
+| `/usr/lib/python3.11` | **load-bearing** (стандартная библиотека) |
+| `/usr/share/fonts` | **load-bearing** (DejaVu: без него текст не рисуется, первым меняется `text_cases`) |
+| `/usr/local/bin/cad-dxf` | **load-bearing** (движок) |
+| `/usr/lib/aarch64-linux-gnu` | **load-bearing** (multiarch) |
+
+Таблица удаления rsvg-convert (каждый раз полная матрица из тридцати прогонов):
+
+| Запись | Итог |
+|---|---|
+| `/etc/fonts` | removable (fontconfig берёт встроенную конфигурацию) |
+| `/etc/ld.so.cache` | removable |
+| `/proc/filesystems` | removable |
+| `/proc/self/maps` | removable |
+| `/usr/local/share` | removable |
+| `/usr/share/fontconfig` | removable |
+| `/usr/share/zoneinfo` | removable |
+| `/var/cache/fontconfig` | removable (кэш строится в `$XDG_CACHE_HOME`) |
+| `/usr/share/fonts` | **load-bearing** (без него текст выпадает из PDF, первым меняется `text_cases@pdf`) |
+| `/usr/bin/rsvg-convert` | **load-bearing** (движок) |
+| `/usr/lib/aarch64-linux-gnu` | **load-bearing** (multiarch: librsvg, cairo, pango) |
+
+Итоговые наборы совпали с семенами 75-06: cad-dxf — `/opt/venv`, `/usr/bin/python3.11`,
+`/usr/lib/python3.11`, `/usr/share/fonts`; rsvg-convert — `/usr/share/fonts`; у обеих плюс multiarch и
+собственный грант на исполнение. Набор из одних load-bearing записей даёт ту же матрицу (сорок из сорока
+идентичны). Ни `/tmp`, ни `/proc`, ни `/sys` ни в одном из двух наборов нет: трасса rsvg-convert видит
+`/proc/filesystems` и `/proc/self/maps`, трасса cad-dxf — `/sys/devices/system/cpu/possible`, но без них
+результат тот же, и записи убраны. Записываемый путь — один каталог задания.
+
+- **Действенность**: `legacy_cp1251.dxf` вне всех грантов (`/outside`, только чтение) — без ruleset `ok` и
+  SVG, под набором вердикт `unreadable` без SVG, rc=2; его проверенный SVG вне грантов — без ruleset PDF
+  есть, под набором rsvg-convert печатает `Error opening file /outside/clean.svg` и PDF нет, rc=1. Обе
+  проверки — и на кандидате, и на итоговом наборе. Проба читает канарейку `/etc/hostname` до ruleset.
+- **Шрифтовой отрицательный контроль** (D-14, SC5): итоговый набор без `/usr/share/fonts`. cad-dxf — все
+  десять входов с текстом дают `failed/font_unavailable` и ни одного SVG (helper падает громко, а не теряет
+  текст молча). rsvg-convert — все десять PDF меняются, а текст, который декодирует Go-судья, пуст. Значит,
+  шрифт читается именно под этим ruleset, и без него текст теряется.
+- **Ссылки не разрешаются** (D-03, CADIN-04): трасса `never_resolved.dxf` без ruleset, `strace -f -e
+  trace=%file` со всеми результатами (не только успешные открытия), ни одного обращения к путям, которые
+  называют его сущности (`/etc/passwd`, `/etc/hostname`, `../../outside/secret.png`): `trace_hits=0` при
+  3830 записанных вызовах и четырёх открытиях самого входа. helper пропустил и сосчитал `IMAGE` ×2,
+  `OLE2FRAME`, `PDFUNDERLAY`, `XREF`. Прогон под итоговым набором идентичен прогону без него. Landlock здесь —
+  вторая линия.
+- **Повторный замер guard на DXF**: к десяти STEP и IGES добавлены пятьдесят три DXF (десять входов
+  cad-dxf, пять остальных файлов корпуса 71 и тридцать восемь фикстур фазы) с боевым argv DXF-режима
+  `--format dxf --max-expanded-inserts 170031 --max-expanded-entities 850155 --max-nesting 16
+  --max-abs-coordinate 1e+12`. Пятнадцать фикстур guard отвергает (`too_complex`, `unreadable`); их трассы
+  сняты через `sh -c '"$@"; exit 0'`, чтобы отказ движка не обрывал трассу, а судятся они, как и все, по
+  строке вердикта. Набор guard не изменился: `/usr/bin/python3.11`, `/usr/lib/python3.11` плюс multiarch;
+  `/opt/venv` guard по-прежнему не читает.
+- **Итого**: сто три пары стадия-вход (63 guard, 10 cad-dxf, 30 rsvg-convert), двести шесть проверок
+  достаточности — ни одна не отличается; семь строк действенности — все denied; три отрицательных
+  контроля — все `failed_as_expected`; тридцать одна строка удаления; `--recheck` заканчивается `RECHECK-OK`.
+  Транскрипт — третий прогон на закоммиченном коде (грязь — только `.planning/config.json`). Первый, на
+  холодно собранном образе, остановился на `FAIL ... dxf_text_cases ... the trace recorded no path`: ручная
+  трасса того же входа на том же образе пути видит, сбой не повторился. Второй остановил сторож диска VM
+  (меньше 6 GiB свободно), не дойдя до трасс.
+- **amd64 не замерен.** Эмулируемому процессу Landlock недоступен; наборы cad-dxf и rsvg-convert на amd64
+  отложены, как и render, а строка amd64 в карте multiarch по-прежнему выведена.
+
 <!-- conf05:cadguard:readonly -->
 /usr/bin/python3.11
 /usr/lib/python3.11
@@ -1497,6 +1605,23 @@ cad-mesh
 cad-render
 <!-- /conf05:cadrender:engines -->
 
+<!-- conf05:caddxf:readonly -->
+/opt/venv
+/usr/bin/python3.11
+/usr/lib/python3.11
+/usr/share/fonts
+<!-- /conf05:caddxf:readonly -->
+<!-- conf05:caddxf:engines -->
+cad-dxf
+<!-- /conf05:caddxf:engines -->
+
+<!-- conf05:cadrsvg:readonly -->
+/usr/share/fonts
+<!-- /conf05:cadrsvg:readonly -->
+<!-- conf05:cadrsvg:engines -->
+rsvg-convert
+<!-- /conf05:cadrsvg:engines -->
+
 <!-- conf05:cad:multiarch -->
 amd64 x86_64-linux-gnu
 arm64 aarch64-linux-gnu
@@ -1505,6 +1630,6 @@ arm64 aarch64-linux-gnu
 ## Ещё не замерено
 
 Ничего: все классы замерены на нативных образах. `document` (LibreOffice и
-veraPDF) — в разделе выше. `cad` (guard, mesh и render) замерен на нативном arm64;
-amd64 для него — доказательство сборки (guard и mesh), а не замер, а для render не сделано и
-этого (раздел `cad` выше).
+veraPDF) — в разделе выше. `cad` (guard, mesh, render, cad-dxf и rsvg-convert) замерен на нативном arm64;
+amd64 для него — доказательство сборки (guard и mesh), а не замер, а для render, cad-dxf и rsvg-convert не
+сделано и этого (раздел `cad` выше).

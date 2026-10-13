@@ -41,7 +41,6 @@ package convert
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 )
 
@@ -162,7 +161,7 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 	if err != nil {
 		return fmt.Errorf("sanitize: marshal report: %w", err)
 	}
-	if err := os.WriteFile(SanitizeReportPath(outPath), blob, 0o644); err != nil {
+	if err := writeNewFile(SanitizeReportPath(outPath), blob, 0o644); err != nil {
 		return fmt.Errorf("sanitize: write report: %w", err)
 	}
 	return nil

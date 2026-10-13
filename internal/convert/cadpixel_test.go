@@ -9,6 +9,9 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -318,5 +321,300 @@ func TestCADPixelJudgeAcceptsTheSmallestFrame(t *testing.T) {
 	f, err := pixJudge(t, pixEncode(t, img), 256, "opaque")
 	if err != nil || f.Mode != "blob" {
 		t.Fatalf("256 frame: facts %+v err %v", f, err)
+	}
+}
+
+type cadFrameRow struct {
+	name, background string
+	size             int
+	wMM, hMM         float64
+	box              CADLetterbox
+}
+
+func cadFrameRows(t *testing.T) []cadFrameRow {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(cadSVGTestDir, "frames.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if lines[0] != "name\tsize\tbackground\tw_mm\th_mm\tsw\tsh\tleft\ttop" {
+		t.Fatalf("frames.tsv header = %q", lines[0])
+	}
+	var rows []cadFrameRow
+	for _, line := range lines[1:] {
+		f := strings.Split(line, "\t")
+		if len(f) != 9 {
+			t.Fatalf("frames.tsv row %q", line)
+		}
+		var n [9]float64
+		for i := 1; i < 9; i++ {
+			if i == 2 {
+				continue
+			}
+			v, err := strconv.ParseFloat(f[i], 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n[i] = v
+		}
+		rows = append(rows, cadFrameRow{
+			name: f[0], background: f[2], size: int(n[1]), wMM: n[3], hMM: n[4],
+			box: CADLetterbox{Left: int(n[7]), Top: int(n[8]), Width: int(n[5]), Height: int(n[6])},
+		})
+	}
+	if len(rows) < 3 {
+		t.Fatalf("frames.tsv has %d rows", len(rows))
+	}
+	return rows
+}
+
+func TestCADDrawingLetterboxReproducesTheProbeFrames(t *testing.T) {
+	for _, r := range cadFrameRows(t) {
+		got, err := CADDrawingLetterbox(r.wMM, r.hMM, r.size)
+		if err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+		if got != r.box {
+			t.Errorf("%s: letterbox %+v, the probe drew %+v", r.name, got, r.box)
+		}
+	}
+	sq, err := CADDrawingLetterbox(297, 297, 1280)
+	if err != nil || sq != (CADLetterbox{Left: 38, Top: 38, Width: 1203, Height: 1203}) {
+		t.Fatalf("square at 1280: %+v %v", sq, err)
+	}
+	thin, err := CADDrawingLetterbox(297, 0.001, 256)
+	if err != nil || thin.Height != 1 || thin.Top != 127 {
+		t.Fatalf("a hairline drawing: %+v %v", thin, err)
+	}
+	for _, bad := range []struct {
+		w, h float64
+		size int
+	}{{0, 10, 1280}, {10, -1, 1280}, {math.NaN(), 10, 1280}, {math.Inf(1), 10, 1280}, {10, 10, 255}, {10, 10, 2049}} {
+		if b, err := CADDrawingLetterbox(bad.w, bad.h, bad.size); err == nil {
+			t.Errorf("%v x %v at %d gave %+v, want an error", bad.w, bad.h, bad.size, b)
+		}
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsTheHelperFrames(t *testing.T) {
+	boxes := map[string][4]int{}
+	for _, r := range cadFrameRows(t) {
+		data, err := os.ReadFile(filepath.Join(cadSVGTestDir, r.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := JudgeCADDrawingPNG(bytes.NewReader(data), r.size, r.background, r.box)
+		if err != nil {
+			t.Fatalf("%s rejected: %v", r.name, err)
+		}
+		if f.Mode != "drawing" || f.Width != r.size || f.Height != r.size {
+			t.Errorf("%s: facts %+v", r.name, f)
+		}
+		boxes[r.name] = [4]int{f.BoxX, f.BoxY, f.BoxW, f.BoxH}
+	}
+	for _, name := range []string{"wide", "text_alpha_faint"} {
+		o, okO := boxes[name+"_1280_opaque.png"]
+		tr, okT := boxes[name+"_1280_transparent.png"]
+		if !okO || !okT {
+			t.Fatalf("frames.tsv lacks the 1280 opaque and transparent frames of %s", name)
+		}
+		for i := range o {
+			if d := o[i] - tr[i]; d < -2 || d > 2 {
+				t.Errorf("%s: opaque ink box %v and transparent twin %v differ by more than 2 px", name, o, tr)
+			}
+		}
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsAFrameWhoseOnlyInkIsHalfTransparentText(t *testing.T) {
+	img := pixFrame(1280, pixWhite)
+	cadDrawingSquare(img, color.NRGBA{R: 128, G: 128, B: 128, A: 255})
+	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "opaque", cadSquareBox); err != nil {
+		t.Fatalf("opaque: rejected: %v", err)
+	}
+	img = pixFrame(1280, color.NRGBA{})
+	cadDrawingSquare(img, color.NRGBA{R: 0, G: 0, B: 0, A: 127})
+	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "transparent", cadSquareBox); err != nil {
+		t.Fatalf("transparent: rejected: %v", err)
+	}
+	for _, name := range []string{"text_alpha_faint_1280_opaque.png", "text_alpha_faint_1280_transparent.png"} {
+		data, err := os.ReadFile(filepath.Join(cadSVGTestDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+				if strings.Contains(name, "transparent") && c.A > 128 {
+					t.Fatalf("%s: pixel %d,%d is %v, more opaque than half-transparent text", name, x, y, c)
+				}
+				if strings.Contains(name, "opaque") && c.R < 120 {
+					t.Fatalf("%s: pixel %d,%d is %v, darker than half-transparent black on white", name, x, y, c)
+				}
+			}
+		}
+	}
+}
+
+func cadDrawingSquare(img *image.NRGBA, c color.NRGBA) {
+	pixRect(img, 40, 40, 1239, 41, c)
+	pixRect(img, 40, 1238, 1239, 1239, c)
+	pixRect(img, 40, 40, 41, 1239, c)
+	pixRect(img, 1238, 40, 1239, 1239, c)
+}
+
+var cadSquareBox = CADLetterbox{Left: 38, Top: 38, Width: 1203, Height: 1203}
+
+func TestJudgeCADDrawingPNGAcceptsAHollowOutlineThe3DJudgeRejects(t *testing.T) {
+	img := pixFrame(1280, pixWhite)
+	cadDrawingSquare(img, pixDark)
+	data := pixEncode(t, img)
+	f, err := JudgeCADDrawingPNG(bytes.NewReader(data), 1280, "opaque", cadSquareBox)
+	if err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	if f.Mode != "drawing" || f.BoxX != 40 || f.BoxY != 40 || f.BoxW != 1200 || f.BoxH != 1200 || f.Margin != 40 {
+		t.Errorf("facts = %+v", f)
+	}
+	if _, err := pixJudge(t, data, 1280, "opaque"); err == nil {
+		t.Error("the 3D judge accepted the outline: the case no longer shows the drawing mode is needed")
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsAnAntialiasedHairlineWithNoDarkPixel(t *testing.T) {
+	img := pixFrame(1280, pixWhite)
+	cadDrawingSquare(img, color.NRGBA{R: 160, G: 160, B: 160, A: 255})
+	f, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "opaque", cadSquareBox)
+	if err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	if f.DarkCount != 0 {
+		t.Errorf("dark count %d, want 0 for the case to mean anything", f.DarkCount)
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsANearlyEmptyTransparentFrameWithoutOpaquePixels(t *testing.T) {
+	img := pixFrame(1280, color.NRGBA{})
+	half := color.NRGBA{R: 0, G: 0, B: 0, A: 128}
+	pixRect(img, 40, 640, 1039, 640, half)
+	pixRect(img, 640, 100, 640, 599, half)
+	f, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "transparent", cadSquareBox)
+	if err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	if f.FracTransparent < 0.999 || !f.HasAlpha {
+		t.Errorf("facts = %+v, want a transparent fraction of at least 0.999", f)
+	}
+}
+
+func TestJudgeCADDrawingPNGRejects(t *testing.T) {
+	wideBox := CADLetterbox{Left: 38, Top: 594, Width: 1203, Height: 92}
+	square := func() *image.NRGBA {
+		img := pixFrame(1280, pixWhite)
+		cadDrawingSquare(img, pixDark)
+		return img
+	}
+	edge := square()
+	pixRect(edge, 0, 640, 0, 640, pixDark)
+	outside := pixFrame(1280, pixWhite)
+	pixRect(outside, 40, 640, 1239, 641, pixDark)
+	outside.SetNRGBA(640, wideBox.Top-3, pixDark)
+	slack := pixFrame(1280, pixWhite)
+	pixRect(slack, 40, 640, 1239, 641, pixDark)
+	slack.SetNRGBA(640, wideBox.Top-2, pixDark)
+	dot := pixFrame(1280, pixWhite)
+	pixRect(dot, 590, 590, 689, 689, pixDark)
+	holed := square()
+	holed.SetNRGBA(5, 5, color.NRGBA{})
+	tight := pixFrame(1280, color.NRGBA{R: 255, G: 255, B: 255, A: 10})
+	cadDrawingSquare(tight, pixDark)
+	tight.SetNRGBA(640, 640, color.NRGBA{})
+	single := pixFrame(1280, pixWhite)
+	single.SetNRGBA(640, 640, pixDark)
+	cases := []struct {
+		name       string
+		img        image.Image
+		size       int
+		background string
+		box        CADLetterbox
+		rule       string
+	}{
+		{"blank", pixFrame(1280, pixWhite), 1280, "opaque", cadSquareBox, "J1"},
+		{"blank_transparent", pixFrame(1280, color.NRGBA{R: 1, A: 0}), 1280, "transparent", cadSquareBox, "J1"},
+		{"wrong_size", image.NewNRGBA(image.Rect(0, 0, 1280, 1279)), 1280, "opaque", cadSquareBox, "J0"},
+		{"touches_edge", edge, 1280, "opaque", cadSquareBox, "J3"},
+		{"three_px_outside_letterbox", outside, 1280, "opaque", wideBox, "J3"},
+		{"dot", dot, 1280, "opaque", cadSquareBox, "J2"},
+		{"opaque_with_transparent_pixel", holed, 1280, "opaque", cadSquareBox, "transparent"},
+		{"transparent_without_alpha", square(), 1280, "transparent", cadSquareBox, "alpha"},
+		{"transparent_fraction_under_min", tight, 1280, "transparent", cadSquareBox, "transparent fraction"},
+		{"single_ink_pixel_wrong_span", single, 1280, "opaque", cadSquareBox, "J2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, c.img)), c.size, c.background, c.box)
+			requireRejected(t, err, c.rule)
+			if f.Mode != "drawing" {
+				t.Errorf("mode %q, want drawing", f.Mode)
+			}
+		})
+	}
+	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, slack)), 1280, "opaque", wideBox); err != nil {
+		t.Fatalf("ink 2 px outside the letterbox is within the slack: %v", err)
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsAnySpanningInkHoweverSparse(t *testing.T) {
+	box, err := CADDrawingLetterbox(297, 297, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sparse := pixFrame(2048, pixWhite)
+	pixRect(sparse, 100, 1024, 1199, 1024, pixDark)
+	twoDots := pixFrame(2048, pixWhite)
+	twoDots.SetNRGBA(box.Left+64, box.Top+box.Height-65, pixDark)
+	twoDots.SetNRGBA(box.Left+box.Width-65, box.Top+64, pixDark)
+	for _, c := range []struct {
+		name  string
+		img   image.Image
+		count int
+	}{{"line_under_the_old_fraction", sparse, 1100}, {"two_far_dots", twoDots, 2}} {
+		t.Run(c.name, func(t *testing.T) {
+			f, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, c.img)), 2048, "opaque", box)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if f.Count != c.count || f.Frac >= 0.0003 {
+				t.Errorf("count %d frac %.6f, want %d ink pixels under the old 0.0003 fraction", f.Count, f.Frac, c.count)
+			}
+		})
+	}
+}
+
+func TestJudgeCADDrawingPNGBoundsItsArguments(t *testing.T) {
+	img := pixFrame(1280, pixWhite)
+	cadDrawingSquare(img, pixDark)
+	data := pixEncode(t, img)
+	for _, c := range []struct {
+		size       int
+		background string
+		box        CADLetterbox
+	}{
+		{100, "opaque", cadSquareBox},
+		{1280, "red", cadSquareBox},
+		{1280, "opaque", CADLetterbox{Left: 38, Top: 38, Width: 0, Height: 1203}},
+		{1280, "opaque", CADLetterbox{Left: -1, Top: 38, Width: 1203, Height: 1203}},
+		{1280, "opaque", CADLetterbox{Left: 100, Top: 38, Width: 1203, Height: 1203}},
+	} {
+		_, err := JudgeCADDrawingPNG(bytes.NewReader(data), c.size, c.background, c.box)
+		if err == nil || errors.Is(err, ErrCADRenderRejected) {
+			t.Errorf("%+v: err = %v, want a usage error", c, err)
+		}
 	}
 }

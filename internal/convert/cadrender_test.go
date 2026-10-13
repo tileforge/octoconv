@@ -74,7 +74,7 @@ func (f cadRenderFixture) statsScript(draft, stl string, n int) string {
 }
 
 func (f cadRenderFixture) statsScriptLinking(draft, stl string, n int) string {
-	return f.statsScriptPlacing("ln -s", draft, stl, n)
+	return f.statsScriptPlacing("ln", draft, stl, n)
 }
 
 func (f cadRenderFixture) statsScriptPlacing(place, draft, stl string, n int) string {
@@ -594,5 +594,48 @@ func TestCADSetsRenderSetIsItsOwnSliceSeededFromTheMeshPaths(t *testing.T) {
 	defer func() { cadRenderReadOnly[0] = "/opt/venv" }()
 	if cadMeshReadOnly[0] != "/opt/venv" {
 		t.Error("cadRenderReadOnly shares its backing array with cadMeshReadOnly")
+	}
+}
+
+func TestCADRenderWritesTheSidecarAsANewFile(t *testing.T) {
+	for _, planter := range []string{"cad-mesh", "cad-render"} {
+		t.Run("a symlink planted by "+planter, func(t *testing.T) {
+			f := newCADRenderFixture(t, "step")
+			outside := filepath.Join(t.TempDir(), "outside.json")
+			if err := os.WriteFile(outside, []byte("untouched"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plant := fmt.Sprintf("ln -s %s %s\n", cadDXFQuote(outside), cadDXFQuote(f.sidecar()))
+			draft := f.writeDraft(t, unitsInchDraft())
+			mesh := f.meshScript(t, draft)
+			render := f.renderScript(t, renderPNGBytes(t, 512, true))
+			if planter == "cad-mesh" {
+				mesh = plant + mesh
+			} else {
+				render = plant + render
+			}
+			f.setEngines(t, cadOKGuard(), mesh, render)
+			opts := map[string]any{"view": "top", "size": float64(512), "background": "transparent", "quality": "fine"}
+			if err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, opts); err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			if got, _ := os.ReadFile(outside); string(got) != "untouched" {
+				t.Errorf("the worker wrote through a planted sidecar symlink: %q", got)
+			}
+			info, err := os.Lstat(f.sidecar())
+			if err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("sidecar = %v, %v, want a regular file", info, err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Errorf("sidecar mode = %v, want 0600", info.Mode().Perm())
+			}
+			raw, err := os.ReadFile(f.sidecar())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := measurements.Validate(raw); err != nil {
+				t.Errorf("the sidecar is not a valid measurements document: %v", err)
+			}
+		})
 	}
 }

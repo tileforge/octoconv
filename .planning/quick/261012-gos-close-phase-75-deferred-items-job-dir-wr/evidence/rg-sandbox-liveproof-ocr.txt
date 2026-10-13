@@ -1,0 +1,15 @@
+== ocr: building octoconv-ocr:sandbox-liveproof-1791810642-53832 from Dockerfile.ocr-worker ==
+commit: 46e742c4497052fd2affa22758e3b9253c33b6bb
+tracked dirt: 0 file(s)
+image id: sha256:7dae344caad04ab28bab7636b94e435f0b6e4be0fb89a219d4693d23d248866a
+PASS: ocr confined-startup
+  2026/10/12 13:11:09 🔒 ocr sandbox: landlock via /usr/local/bin/ocr-worker __sandbox-exec
+  2026/10/12 13:11:11 🔒 ocr sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/10/12 13:11:11 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: ocr refuses-without-landlock
+  2026/10/12 13:11:11 ocr sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set OCR_SANDBOX_DISABLED=true to accept that deliberately
+PASS: ocr escape-hatch
+  2026/10/12 13:11:12 ⚠️  OCR_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: ocr preflight-catches-restrict-self
+  2026/10/12 13:11:13 ocr sandbox preflight: text-layer route: ocr: ocr: pdfinfo: engine sandbox could not be established: pdfinfo failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+ALL PASS (4 checks)

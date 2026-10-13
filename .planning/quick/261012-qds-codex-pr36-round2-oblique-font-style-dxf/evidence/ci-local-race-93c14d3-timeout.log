@@ -1,0 +1,286 @@
+=== ci-local 20261012T175106Z ===
+commit:   93c14d3
+branch:   gsd/phase-75-dxf-2d-pipeline
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   29.4.0 (orbstack)
+tiers:    race
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: race (started 17:51:08 UTC)
+--------------------------------------------------------------
+ok  	github.com/apaderin/octoconv/cmd/api	6.784s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	6.603s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	6.461s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	6.183s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	8.404s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	8.678s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	8.575s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	38.078s
+ok  	github.com/apaderin/octoconv/internal/auth	3.268s
+ok  	github.com/apaderin/octoconv/internal/cancel	3.312s
+ok  	github.com/apaderin/octoconv/internal/clients	1.621s
+BUDGET,5m0s
+panic: test timed out after 10m0s
+	running tests:
+		TestConfinedClassesExecOnlyThroughTheSandbox (11s)
+
+goroutine 8335 [running]:
+testing.(*M).startAlarm.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2802 +0x498
+created by time.goFunc
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/time/sleep.go:215 +0x44
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0xc00036e008, {0x10116b732, 0x2c}, 0x101956e28)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2109 +0x7dc
+testing.runTests.func1(0xc00036e008)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2585 +0x78
+testing.tRunner(0xc00036e008, 0xc00004bab8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0x168
+testing.runTests({0x101149020, 0x1c}, {0x10116d71d, 0x2d}, 0xc000010480, {0x101a58f80, 0x376, 0x376}, {0xc000356940?, 0xc00010bde0?, ...})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2583 +0x7a4
+testing.(*M).Run(0xc00033c960)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2443 +0xb3c
+main.main()
+	_testmain.go:1822 +0x104
+
+goroutine 7188 [runnable]:
+sync.(*Mutex).Unlock(0xc001c33d60?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/sync/mutex.go:64 +0x38
+go/token.(*File).AddLine(0xc001c33d40, 0x1b5)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/token/position.go:151 +0x180
+go/scanner.(*Scanner).next(0xc0043c1780)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/scanner/scanner.go:73 +0x104
+go/scanner.(*Scanner).skipWhitespace(0xc0043c1780)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/scanner/scanner.go:734 +0x2c
+go/scanner.(*Scanner).Scan(0xc0043c1780)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/scanner/scanner.go:820 +0x50
+go/parser.(*parser).next0(0xc0043c1760)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:157 +0x224
+go/parser.(*parser).consumeComment(0xc0043c1760)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:199 +0x17c
+go/parser.(*parser).consumeCommentGroup(0xc0043c1760, 0x1)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:213 +0x19c
+go/parser.(*parser).next(0xc0043c1760)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:262 +0x2f0
+go/parser.(*parser).expectSemi(0xc0043c1760)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:369 +0xfc
+go/parser.(*parser).parseGenDecl(0xc0043c1760, 0x4b, 0xc0053b5dc8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:2769 +0x4bc
+go/parser.(*parser).parseFile(0xc0043c1760)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/parser.go:2908 +0x64c
+go/parser.ParseFile(0xc002d8ae10, {0xc001042540, 0x63}, {0x10184ed00, 0xc001de0f60}, 0x6)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/parser/interface.go:131 +0x184
+go/build.readGoInfo({0x101963620, 0xc003a98ae0}, 0xc0032cc870)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/build/read.go:314 +0x39c
+go/build.(*Context).matchFile(0x101a61de0, {0xc003191620, 0x58}, {0xc002d94776, 0xa}, 0xc002d8ade0, 0xc00150c568, 0xc002d8ae10)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/build/build.go:1483 +0xb0c
+go/build.(*Context).Import(0x101a61de0, {0xc004a71d58, 0x7}, {0xc0044c2d00, 0x6f}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/build/build.go:900 +0x34dc
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc004a71d58, 0x7}, {0xc0044c2d00, 0x6f}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:71 +0xb8
+go/types.(*Checker).importPackage(0xc001666200, {0x1019648e0, 0xc004558180}, {0xc004a71d58, 0x7}, {0xc0044c2d00, 0x6f})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc004558150})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc001666200, {0x101969708, 0xc001896480}, 0xc0053b7c08)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc001666200)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc001666200, {0xc0044b8ac0, 0x8, 0x8})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc001666200, {0xc0044b8ac0, 0x8, 0x8})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc0019784d0, {0xc0014ddd21, 0x1e}, 0xc0002f8b70, {0xc0044b8ac0, 0x8, 0x8}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc0014ddd21, 0x1e}, {0xc00426bd80, 0x6d}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc003a49a00, {0x1019648e0, 0xc003ac37a0}, {0xc0014ddd21, 0x1e}, {0xc00426bd80, 0x6d})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc003ac3770})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc003a49a00, {0x101969708, 0xc003ad2580}, 0xc0053b8d68)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc003a49a00)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc003a49a00, {0xc004267400, 0x2, 0x2})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc003a49a00, {0xc004267400, 0x2, 0x2})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc0039f3960, {0xc0014ddc61, 0x1c}, 0xc0002f8b70, {0xc004267400, 0x2, 0x2}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc0014ddc61, 0x1c}, {0xc004220930, 0x5c}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc004181800, {0x1019648e0, 0xc003ac2240}, {0xc0014ddc61, 0x1c}, {0xc004220930, 0x5c})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc003ac2210})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc004181800, {0x101969708, 0xc003aa6e80}, 0xc0053b9ec8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc004181800)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc004181800, {0xc0042420c0, 0x3, 0x3})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc004181800, {0xc0042420c0, 0x3, 0x3})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc0041c9730, {0xc0045dbb14, 0xb}, 0xc0002f8b70, {0xc0042420c0, 0x3, 0x3}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc0045dbb14, 0xb}, {0xc000372150, 0x5c}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc00483c400, {0x1019648e0, 0xc0045ee2d0}, {0xc0045dbb14, 0xb}, {0xc000372150, 0x5c})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc0045ee2a0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc00483c400, {0x101969708, 0xc0045ec340}, 0xc0053bb028)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc00483c400)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc00483c400, {0xc004687810, 0xd, 0xd})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc00483c400, {0xc004687810, 0xd, 0xd})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc004686a10, {0xc00359e054, 0xb}, 0xc0002f8b70, {0xc004687810, 0xd, 0xd}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc00359e054, 0xb}, {0xc0027127e0, 0x4c}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc0022e9600, {0x1019648e0, 0xc0035ac030}, {0xc00359e054, 0xb}, {0xc0027127e0, 0x4c})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc0035ac000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc0022e9600, {0x101969708, 0xc0035a80c0}, 0xc0053bc188)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc0022e9600)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc0022e9600, {0xc003281680, 0x23, 0x23})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc0022e9600, {0xc003281680, 0x23, 0x23})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc0022ca690, {0xc002bb028d, 0x29}, 0xc0002f8b70, {0xc003281680, 0x23, 0x23}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc003516e71, 0x29}, {0xc002d74fc0, 0x46}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc0014d8000, {0x1019648e0, 0xc002c35a40}, {0xc003516e71, 0x29}, {0xc002d74fc0, 0x46})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc002c35a10})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc0014d8000, {0x101969708, 0xc002869240}, 0xc0053bd2e8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc0014d8000)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc0014d8000, {0xc002df2280, 0x26, 0x26})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc0014d8000, {0xc002df2280, 0x26, 0x26})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc001e44690, {0xc002c64047, 0x23}, 0xc0002f8b70, {0xc002df2280, 0x26, 0x26}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc001c51771, 0x23}, {0xc0013109c0, 0x43}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc002212800, {0x1019648e0, 0xc001e8a690}, {0xc001c51771, 0x23}, {0xc0013109c0, 0x43})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc001e8a630})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc002212800, {0x101969708, 0xc0016fa600}, 0xc0053be448)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc002212800)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc002212800, {0xc001353540, 0x28, 0x28})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc002212800, {0xc001353540, 0x28, 0x28})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc002990000, {0xc0016960f4, 0x20}, 0xc0002f8b70, {0xc001353540, 0x28, 0x28}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+go/internal/srcimporter.(*Importer).ImportFrom(0xc0008371a0, {0xc0065d9171, 0x20}, {0x1011ba0c8, 0x1}, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/internal/srcimporter/srcimporter.go:145 +0x914
+go/types.(*Checker).importPackage(0xc000718c00, {0x1019648e0, 0xc0006d7c50}, {0xc0065d9171, 0x20}, {0x1011ba0c8, 0x1})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:162 +0x6fc
+go/types.(*Checker).collectObjects.func1({0x101964a00, 0xc0006d7c20})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:274 +0x12c
+go/types.(*Checker).walkDecl(0xc000718c00, {0x101969708, 0xc000755780}, 0xc0053bf5a8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:373 +0x49c
+go/types.(*Checker).walkDecls(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/decl.go:360
+go/types.(*Checker).collectObjects(0xc000718c00)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/resolver.go:261 +0x8ac
+go/types.(*Checker).checkFiles(0xc000718c00, {0xc0001f5688, 0x46, 0x8f})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:525 +0x284
+go/types.(*Checker).Files(0xc000718c00, {0xc0001f5688, 0x46, 0x8f})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/check.go:491 +0xd4
+go/types.(*Config).Check(0xc00030e000, {0x10113b8bb, 0x14}, 0xc0002f8b70, {0xc0001f5688, 0x46, 0x8f}, 0xc000894f00)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/go/types/api.go:492 +0x7c
+github.com/apaderin/octoconv/internal/convert.sandboxScan({0x101972298, 0xc00043a248}, 0xc0002f8b70, {0xc0001f5688, 0x46, 0x8f}, {0xc0002f3260, 0xc0002f3290, 0xc0002f32c0, 0x101958f70, ...})
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/race-clone/internal/convert/sandboxcoverage_test.go:263 +0x20c
+github.com/apaderin/octoconv/internal/convert.TestConfinedClassesExecOnlyThroughTheSandbox(0xc00043a248)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/race-clone/internal/convert/sandboxcoverage_test.go:496 +0x118
+testing.tRunner(0xc00043a248, 0x101956e28)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0x168
+created by testing.(*T).Run in goroutine 1
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2101 +0x7c0
+FAIL	github.com/apaderin/octoconv/internal/convert	606.196s
+ok  	github.com/apaderin/octoconv/internal/db	4.102s
+ok  	github.com/apaderin/octoconv/internal/e2e	6.703s
+ok  	github.com/apaderin/octoconv/internal/envcfg	12.660s
+ok  	github.com/apaderin/octoconv/internal/errcode	4.727s
+ok  	github.com/apaderin/octoconv/internal/inspect	14.523s
+ok  	github.com/apaderin/octoconv/internal/jobs	8.520s
+ok  	github.com/apaderin/octoconv/internal/logfmt	9.200s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	11.891s
+ok  	github.com/apaderin/octoconv/internal/measurements	12.085s
+ok  	github.com/apaderin/octoconv/internal/metrics	8.536s
+ok  	github.com/apaderin/octoconv/internal/presets	9.838s
+ok  	github.com/apaderin/octoconv/internal/queue	8.843s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	6.652s
+ok  	github.com/apaderin/octoconv/internal/reconciler	7.356s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	4.788s
+ok  	github.com/apaderin/octoconv/internal/sandbox	4.713s
+ok  	github.com/apaderin/octoconv/internal/storage	5.437s
+ok  	github.com/apaderin/octoconv/internal/webhook	6.797s
+ok  	github.com/apaderin/octoconv/internal/worker	18.404s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+FAIL
+### tier race: FAIL (rc=1)
+
+==============================================================
+ci-local 20261012T175106Z summary   commit 93c14d3
+  FAIL  race (rc=1)
+  AT LEAST ONE TIER FAILED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/race-clone/.planning/ci-local/ci-local-20261012T175106Z.log
+==============================================================

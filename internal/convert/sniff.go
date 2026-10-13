@@ -215,6 +215,8 @@ func MIMEType(format string) string {
 		return "model/iges"
 	case "stl":
 		return "model/stl"
+	case "svg":
+		return "image/svg+xml"
 	case "mp3":
 		return "audio/mpeg"
 	case "wav":

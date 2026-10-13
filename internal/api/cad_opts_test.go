@@ -158,3 +158,114 @@ func TestCreateJobRenderIsAcceptedForEachCADSource(t *testing.T) {
 		})
 	}
 }
+
+func postDXFJob(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, target, operation, opts string) *httptest.ResponseRecorder {
+	t.Helper()
+	srv, _ := newTestServer(repo, store, q)
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, err := w.CreateFormFile("file", "drawing.dxf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write(readCADFixture(t, "synthetic/legacy_cp1251.dxf"))
+	_ = w.WriteField("target", target)
+	if operation != "" {
+		_ = w.WriteField("operation", operation)
+	}
+	if opts != "" {
+		_ = w.WriteField("opts", opts)
+	}
+	_ = w.Close()
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &b))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCreateJobDXFRenderViewOrQualityIsOptsNotApplicable(t *testing.T) {
+	for _, opts := range []string{
+		`{"view":"top"}`,
+		`{"quality":"fine"}`,
+		`{"size":512,"view":"iso"}`,
+		`{"background":"transparent","quality":"draft"}`,
+	} {
+		t.Run(opts, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDXFJob(t, repo, store, q, "png", "render", opts)
+			assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+		})
+	}
+}
+
+func TestCreateJobDXFRenderInvalidViewIsInvalidOptions(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postDXFJob(t, repo, store, q, "png", "render", `{"view":"sideways"}`)
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.InvalidOptions)
+}
+
+func TestCreateJobDXFConvertWithAnyOptionIsOptsNotApplicable(t *testing.T) {
+	cases := []struct {
+		target string
+		opts   string
+	}{
+		{"svg", `{"size":1024}`},
+		{"svg", `{"quality":"fine"}`},
+		{"svg", `{"assume_unit":"mm"}`},
+		{"pdf", `{"background":"transparent"}`},
+		{"pdf", `{"view":"top"}`},
+		{"pdf", `{"quality":"draft"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target+" "+tc.opts, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDXFJob(t, repo, store, q, tc.target, "", tc.opts)
+			assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+		})
+	}
+}
+
+func TestCreateJobDXFConvertWithoutOptionsIsAcceptedOnTheCADQueue(t *testing.T) {
+	for _, target := range []string{"pdf", "svg"} {
+		t.Run(target, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDXFJob(t, repo, store, q, target, "", "")
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if repo.created == nil || repo.created.Engine != "cad" || repo.created.Operation != "convert" ||
+				repo.created.SourceFormat != "dxf" || repo.created.TargetFormat != target {
+				t.Fatalf("created = %+v, want a cad convert job dxf -> %s", repo.created, target)
+			}
+			if len(repo.created.Opts) != 0 {
+				t.Errorf("stored opts = %#v, want none", repo.created.Opts)
+			}
+			if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+				t.Errorf("enqueueCalls = %d, enqueuedCAD = %s, want one cad enqueue of %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+			}
+			if store.uploadCalls != 1 {
+				t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
+			}
+		})
+	}
+}
+
+func TestCreateJobDXFRenderWithSizeBackgroundAndUnitIsAcceptedNormalized(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postDXFJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Engine != "cad" || repo.created.Operation != "render" ||
+		repo.created.SourceFormat != "dxf" || repo.created.TargetFormat != "png" {
+		t.Fatalf("created = %+v, want a cad render job dxf -> png", repo.created)
+	}
+	want := map[string]any{"size": float64(2048), "background": "transparent", "assume_unit": "mm"}
+	if !reflect.DeepEqual(repo.created.Opts, want) {
+		t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, want)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Errorf("enqueueCalls = %d, enqueuedCAD = %s, want one cad enqueue of %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+	}
+}

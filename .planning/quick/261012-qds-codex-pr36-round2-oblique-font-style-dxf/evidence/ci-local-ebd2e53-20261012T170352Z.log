@@ -1,0 +1,403 @@
+=== ci-local 20261012T170352Z ===
+commit:   ebd2e53
+branch:   gsd/phase-75-dxf-2d-pipeline
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   29.4.0 (orbstack)
+tiers:    helm gate race
+untracked (present but not part of the build):
+            docker-compose.override.yml
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: helm (started 17:03:53 UTC)
+--------------------------------------------------------------
+### helm lint (default values)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### helm lint (capacity-floor overlay)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### render both variants
+### anti-vacuity gate: exactly 10 ScaledObjects must render in BOTH files, checked before any diff or isolation claim
+OK: 10 ScaledObjects in both renders
+### per-class isolation (SC2): the nine non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small
+OK: document unchanged
+OK: html unchanged
+OK: audio unchanged
+OK: av unchanged
+OK: ocr unchanged
+OK: pandoc unchanged
+OK: probe unchanged
+OK: tectonic unchanged
+OK: cad unchanged
+OK: image changed (expected)
+### rendered VALUE assertions (SC1/D-05): every check above is a SHAPE check -- a chart that silently clamped the operator's floor of 2 down to 1 (removing the D-05 fallback effect entirely) would still pass all of them. These assert the actual rendered numbers.
+OK: image renders 0/1 by default and 2/2 under the capacity-floor overlay
+### whole-chart isolation scope (SC2): every differing line in the full-chart diff must be a minReplicaCount:/replicas: line, and the diff must be non-empty
+OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines
+### every Deployment that gets the app secret must wait for BOTH startup deps
+OK: every Deployment carrying the app secret waits for postgres and the bucket (12 of them)
+### the MinIO pod hands root-owned data to uid 65532 before the server starts
+OK: MinIO pod runs one init container from the server image that chowns 65532:65532 over the data mount with only CHOWN
+### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults
+OK: a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership.migrate=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on the real chart renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.uid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.gid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.migrate renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.image renders byte-identically to the defaults
+OK: only uid: 1000 on a chart without the block gives owner 1000:65532 and changes exactly 4 lines
+OK: uid: 0 on a chart without the block is honoured, not replaced by the default
+OK: migrate: false on a chart without the block is honoured, not replaced by the default
+OK: --set minio.dataOwnership.uid=null on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership.uid: null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership: {} on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=1.5 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.gid=-1 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.migrate=no on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on the real chart rejected (rc=1)
+### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else
+OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves
+### minio.dataOwnership.migrate=false drops the init container and changes nothing else
+OK: migrate=false removes the MinIO initContainers key and nothing else
+### minio.dataOwnership.image reaches the init container and nothing else
+OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images
+### a non-boolean minio.dataOwnership.migrate must abort the render
+OK: minio.dataOwnership.migrate=no rejected (rc=1)
+OK: minio.dataOwnership.migrate=false rejected (rc=1)
+OK: a bad uid still aborts the render with migrate=false
+### no chart value may be spliced into an initContainer shell program
+OK: postgres.user reaches the wait initContainer as env, never as program text
+### every mc invocation must use the transport s3.useSSL asks for
+OK: s3.useSSL=false renders 14 mc aliases, all http://
+OK: s3.useSSL=true renders 14 mc aliases, all https://
+### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image
+OK: 14 containers run mc: the pinned minio.mcImage default survives a minio.image-only override, the override wins everywhere and reaches no other container, a missing or empty key falls back to minio.image; the MinIO pod stays on minio.image
+### no extraEnv may override S3_USE_SSL
+OK: no Deployment overrides S3_USE_SSL through extraEnv (11 templates accept one)
+### the octoconv chart must never be installed with --wait
+OK: no octoconv chart install uses --wait
+### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.minReplicaCount (99) must not exceed keda.image.maxReplicaCount (4)
+
+Use --debug flag to render out invalid YAML
+OK: negative case A failed as expected (rc=1)
+### negative case B -- negative floor (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-ocr.yaml:35:22): keda.ocr.minReplicaCount (-1) must not be negative
+
+Use --debug flag to render out invalid YAML
+OK: negative case B failed as expected (rc=1)
+### negative case C -- non-integer floors must NOT coerce silently (CR-01): sprig's int is cast.ToInt, which discards its parse error and returns 0. Cases A and B above use only BARE INTEGERS, so they never touch this path -- every input below used to render minReplicaCount: 0 and exit 0, bypassing BOTH guards and silently discarding the operator's floor.
+OK: [99.9] rejected (rc=1)
+OK: [-0.5] rejected (rc=1)
+OK: [2.9] rejected (rc=1)
+OK: [2.0] rejected (rc=1)
+OK: [abc] rejected (rc=1)
+OK: [true] rejected (rc=1)
+OK: [] rejected (rc=1)
+OK: [null] rejected (rc=1)
+### negative case D -- a null/absent ceiling is its own misconfiguration (CR-01): without the raw-kind check it coerced to 0 and got mis-reported as a minReplicaCount problem
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.maxReplicaCount must be a whole number, got <nil> (kind invalid) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor
+
+Use --debug flag to render out invalid YAML
+OK: negative case D failed as expected (rc=1)
+### invalid minio.dataOwnership.uid/gid must abort the render
+OK: uid=[-1] rejected (rc=1)
+OK: uid=[1.5] rejected (rc=1)
+OK: uid=[2.0] rejected (rc=1)
+OK: uid=[abc] rejected (rc=1)
+OK: uid=[true] rejected (rc=1)
+OK: uid=[] rejected (rc=1)
+OK: uid=[1000:0] rejected (rc=1)
+OK: gid=[-1] rejected (rc=1)
+OK: gid=[1.5] rejected (rc=1)
+OK: gid=[2.0] rejected (rc=1)
+OK: gid=[abc] rejected (rc=1)
+OK: gid=[true] rejected (rc=1)
+OK: gid=[] rejected (rc=1)
+OK: gid=[1000:0] rejected (rc=1)
+OK: values file [uid: 1.5] rejected (rc=1)
+OK: values file [uid: "1000"] rejected (rc=1)
+OK: values file [gid: -5] rejected (rc=1)
+### tier helm: PASS
+
+--------------------------------------------------------------
+### tier: gate (started 17:04:12 UTC)
+--------------------------------------------------------------
+gofmt -l .: clean
+go vet ./...: clean
+go build ./...: clean
+ok  	github.com/apaderin/octoconv/cmd/api	4.384s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	4.490s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	5.386s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	5.636s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	6.315s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	6.963s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	7.465s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	10.274s
+ok  	github.com/apaderin/octoconv/internal/auth	6.863s
+ok  	github.com/apaderin/octoconv/internal/cancel	7.862s
+ok  	github.com/apaderin/octoconv/internal/clients	9.122s
+ok  	github.com/apaderin/octoconv/internal/convert	524.657s
+ok  	github.com/apaderin/octoconv/internal/db	9.713s
+ok  	github.com/apaderin/octoconv/internal/e2e	9.551s
+ok  	github.com/apaderin/octoconv/internal/envcfg	15.065s
+ok  	github.com/apaderin/octoconv/internal/errcode	10.538s
+ok  	github.com/apaderin/octoconv/internal/inspect	10.834s
+ok  	github.com/apaderin/octoconv/internal/jobs	10.275s
+ok  	github.com/apaderin/octoconv/internal/logfmt	8.839s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	9.264s
+ok  	github.com/apaderin/octoconv/internal/measurements	7.875s
+ok  	github.com/apaderin/octoconv/internal/metrics	8.373s
+ok  	github.com/apaderin/octoconv/internal/presets	10.368s
+ok  	github.com/apaderin/octoconv/internal/queue	9.297s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	7.360s
+ok  	github.com/apaderin/octoconv/internal/reconciler	6.761s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	6.451s
+ok  	github.com/apaderin/octoconv/internal/sandbox	6.947s
+ok  	github.com/apaderin/octoconv/internal/storage	7.955s
+ok  	github.com/apaderin/octoconv/internal/webhook	8.771s
+ok  	github.com/apaderin/octoconv/internal/worker	19.882s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier gate: PASS
+
+--------------------------------------------------------------
+### tier: race (started 17:13:33 UTC)
+--------------------------------------------------------------
+ok  	github.com/apaderin/octoconv/cmd/api	4.783s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	3.492s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	4.747s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	5.460s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	6.145s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	7.089s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	6.949s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	41.542s
+ok  	github.com/apaderin/octoconv/internal/auth	5.359s
+ok  	github.com/apaderin/octoconv/internal/cancel	5.782s
+ok  	github.com/apaderin/octoconv/internal/clients	4.754s
+panic: test timed out after 10m0s
+	running tests:
+		TestOCREveryEngineRunsThroughTheHelper (0s)
+		TestOCREveryEngineRunsThroughTheHelper/scanned_pdf_to_txt (0s)
+
+goroutine 6468 [running]:
+testing.(*M).startAlarm.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2802 +0x498
+created by time.goFunc
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/time/sleep.go:215 +0x44
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0xc000150d88, {0x1059ceb6a, 0x26}, 0x1061c7690)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2109 +0x7dc
+testing.runTests.func1(0xc000150d88)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2585 +0x78
+testing.tRunner(0xc000150d88, 0xc00004bab8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0x168
+testing.runTests({0x1059b9020, 0x1c}, {0x1059dd71d, 0x2d}, 0xc0001620c0, {0x1062c8f80, 0x376, 0x376}, {0xc00012b800?, 0xc000125600?, ...})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2583 +0x7a4
+testing.(*M).Run(0xc00026e5a0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2443 +0xb3c
+main.main()
+	_testmain.go:1822 +0x104
+
+goroutine 6461 [IO wait]:
+internal/poll.runtime_pollWait(0x115f81000, 0x72)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0xc0009f0da0, 0x72, 0x1)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:84 +0xb8
+internal/poll.(*pollDesc).waitRead(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0xc0009f0d80, {0xc000b98000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_unix.go:165 +0x34c
+os.(*File).read(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:29
+os.(*File).Read(0xc001282458, {0xc000b98000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:144 +0xb0
+io.copyBuffer({0x1061d3860, 0xc000a3c6f0}, {0x1061d3508, 0xc001282458}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:429 +0x210
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os.genericWriteTo(0xc001282458, {0x1061d3860, 0xc000a3c6f0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:295 +0x50
+os.(*File).WriteTo(0xc001282458, {0x1061d3860, 0xc000a3c6f0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:273 +0x90
+io.copyBuffer({0x1061d3860, 0xc000a3c6f0}, {0x1061d3620, 0xc001282458}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:411 +0xac
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:602 +0x5c
+os/exec.(*Cmd).Start.func2(0xc0003b13c0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:757 +0x3c
+created by os/exec.(*Cmd).Start in goroutine 6459
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:756 +0xb20
+
+goroutine 6462 [syscall]:
+syscall.syscalln(0x10504a8a0, {0xc000945d18, 0x6, 0x6})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/sys_darwin.go:38 +0x20
+syscall.syscall6(0x10504a8a0, 0x8c94, 0xc000945de8, 0x0, 0xc000410ea0, 0x0, 0x0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/syscall_darwin.go:388 +0xb4
+syscall.wait4(0x8c94, 0xc000945de8, 0x0, 0xc000410ea0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/zsyscall_darwin_arm64.go:44 +0x60
+syscall.Wait4(0x8c94, 0xc000945e40, 0x0, 0xc000410ea0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/syscall_bsd.go:144 +0x48
+os.(*Process).pidWait.func1(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:64
+os.ignoringEINTR2[...](...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:266
+os.(*Process).pidWait(0xc0009d8c00)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:63 +0xe8
+os.(*Process).wait(0xc0009d8c00)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:28 +0x44
+os.(*Process).Wait(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec.go:346
+os/exec.(*Cmd).Wait(0xc000239860)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:930 +0x74
+github.com/apaderin/octoconv/internal/convert.runCommandCore.func1()
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/exec.go:213 +0x34
+created by github.com/apaderin/octoconv/internal/convert.runCommandCore in goroutine 6459
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/exec.go:213 +0x47c
+
+goroutine 6458 [chan receive]:
+testing.(*T).Run(0xc0009dc6c8, {0x1059a816f, 0x12}, 0x1061c89f0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2109 +0x7dc
+github.com/apaderin/octoconv/internal/convert.TestOCREveryEngineRunsThroughTheHelper(0xc0009dc6c8)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocrsandbox_test.go:187 +0x40
+testing.tRunner(0xc0009dc6c8, 0x1061c7690)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0x168
+created by testing.(*T).Run in goroutine 1
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2101 +0x7c0
+
+goroutine 6459 [select]:
+github.com/apaderin/octoconv/internal/convert.runCommandCore({0x1061dac48, 0x1062fa120}, 0x0, {0x0, 0x0, 0x0}, {0x1059989ca, 0x7}, {0xc0000450e0, 0x8e}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/exec.go:215 +0x4dc
+github.com/apaderin/octoconv/internal/convert.runCommandAs(...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/exec.go:186
+github.com/apaderin/octoconv/internal/convert.engineExec.run({0xc0003b1340, {0xc000a7a270, 0xc, 0xd}, {0x0, 0x0, 0x0}}, {0x1061dac48, 0x1062fa120}, {0x1059989ca, ...}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/sandboxwrap.go:285 +0xf4
+github.com/apaderin/octoconv/internal/convert.ocrPDFPageCount({0x1061dac48, 0x1062fa120}, {0xc0003b1340, {0xc000a7a270, 0xc, 0xd}, {0x0, 0x0, 0x0}}, {0xc000a4ad00, ...})
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocrguards.go:69 +0xb4
+github.com/apaderin/octoconv/internal/convert.OCRConverter.ocrPDFGuardStage({0x0?, 0x0?, 0xc0003b1340?}, {0x1061dac48, 0x1062fa120}, {0xc0003b1340, {0xc000a7a270, 0xc, 0xd}, {0x0, ...}}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocrpdf.go:170 +0xac
+github.com/apaderin/octoconv/internal/convert.OCRConverter.convertPDF({0xc000a4ad7a?, 0x4?, 0xc0003b1340?}, {0x1061dac48, 0x1062fa120}, {0xc000a4ad00, 0x7e}, {0xc000a4ae00, 0x7f}, {0xc000a4ae7c, ...}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocrpdf.go:255 +0x144
+github.com/apaderin/octoconv/internal/convert.OCRConverter.Convert({0xc000945e20?, 0x2?, 0xc0003b1340?}, {0x1061dac48, 0x1062fa120}, {0xc000a4ad00, 0x7e}, {0xc000a4ae00, 0x7f}, 0x0)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocr.go:239 +0x154
+github.com/apaderin/octoconv/internal/convert.TestOCREveryEngineRunsThroughTheHelper.func1(0xc0009dc908)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/internal/convert/ocrsandbox_test.go:198 +0x27c
+testing.tRunner(0xc0009dc908, 0x1061c89f0)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0x168
+created by testing.(*T).Run in goroutine 6458
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2101 +0x7c0
+
+goroutine 6460 [IO wait]:
+internal/poll.runtime_pollWait(0x115f80c00, 0x72)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0xc0009f0ce0, 0x72, 0x1)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:84 +0xb8
+internal/poll.(*pollDesc).waitRead(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0xc0009f0cc0, {0xc000b90000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_unix.go:165 +0x34c
+os.(*File).read(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:29
+os.(*File).Read(0xc001282440, {0xc000b90000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:144 +0xb0
+io.copyBuffer({0x1061d3860, 0xc000a3c6c0}, {0x1061d3508, 0xc001282440}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:429 +0x210
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os.genericWriteTo(0xc001282440, {0x1061d3860, 0xc000a3c6c0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:295 +0x50
+os.(*File).WriteTo(0xc001282440, {0x1061d3860, 0xc000a3c6c0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:273 +0x90
+io.copyBuffer({0x1061d3860, 0xc000a3c6c0}, {0x1061d3620, 0xc001282440}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:411 +0xac
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:602 +0x5c
+os/exec.(*Cmd).Start.func2(0xc0003b1380)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:757 +0x3c
+created by os/exec.(*Cmd).Start in goroutine 6459
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:756 +0xb20
+FAIL	github.com/apaderin/octoconv/internal/convert	606.970s
+ok  	github.com/apaderin/octoconv/internal/db	5.882s
+ok  	github.com/apaderin/octoconv/internal/e2e	9.010s
+ok  	github.com/apaderin/octoconv/internal/envcfg	11.961s
+ok  	github.com/apaderin/octoconv/internal/errcode	5.499s
+ok  	github.com/apaderin/octoconv/internal/inspect	14.085s
+ok  	github.com/apaderin/octoconv/internal/jobs	7.949s
+ok  	github.com/apaderin/octoconv/internal/logfmt	8.252s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	10.701s
+ok  	github.com/apaderin/octoconv/internal/measurements	9.978s
+ok  	github.com/apaderin/octoconv/internal/metrics	8.364s
+ok  	github.com/apaderin/octoconv/internal/presets	9.054s
+ok  	github.com/apaderin/octoconv/internal/queue	8.892s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	7.799s
+ok  	github.com/apaderin/octoconv/internal/reconciler	9.442s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	7.025s
+ok  	github.com/apaderin/octoconv/internal/sandbox	6.676s
+ok  	github.com/apaderin/octoconv/internal/storage	7.241s
+ok  	github.com/apaderin/octoconv/internal/webhook	7.859s
+ok  	github.com/apaderin/octoconv/internal/worker	21.087s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+FAIL
+### tier race: FAIL (rc=1)
+
+==============================================================
+ci-local 20261012T170352Z summary   commit ebd2e53
+  PASS  helm
+  PASS  gate
+  FAIL  race (rc=1)
+  AT LEAST ONE TIER FAILED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/qds/lp/octoconv/.planning/ci-local/ci-local-20261012T170352Z.log
+==============================================================

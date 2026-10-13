@@ -293,7 +293,7 @@ func sanitizePDF(ctx context.Context, x engineExec, inPath, outPath string) (San
 	// Ghostscript signs its own output. See redactEngineIdentity's header for
 	// what it writes, what was measured trying to stop it, and why blanking
 	// in place is safe.
-	produced, err := os.ReadFile(outPath)
+	produced, err := ReadJobFile(outPath)
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: read output: %w", err)
 	}
@@ -301,7 +301,7 @@ func sanitizePDF(ctx context.Context, x engineExec, inPath, outPath string) (San
 	if err != nil {
 		return SanitizeResult{}, err
 	}
-	if err := os.WriteFile(outPath, redacted, 0o644); err != nil {
+	if err := writeNewFile(outPath, redacted, 0o644); err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: redact engine identity: %w", err)
 	}
 

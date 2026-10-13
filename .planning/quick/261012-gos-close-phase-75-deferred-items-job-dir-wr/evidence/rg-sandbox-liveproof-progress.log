@@ -1,0 +1,19 @@
+13:09:31 class=image host_free_kib=28914232 vm_free_kib=23898748
+13:10:09 class=image rc=0 last=ALL PASS (4 checks)
+13:10:10 class=pandoc host_free_kib=28353040 vm_free_kib=23352200
+13:10:41 class=pandoc rc=0 last=ALL PASS (4 checks)
+13:10:42 class=ocr host_free_kib=28484748 vm_free_kib=23436068
+13:11:13 class=ocr rc=0 last=ALL PASS (4 checks)
+13:11:13 class=av host_free_kib=28116280 vm_free_kib=23073704
+13:11:45 class=av rc=0 last=ALL PASS (4 checks)
+13:11:45 class=audio host_free_kib=28467332 vm_free_kib=23432684
+13:12:20 class=audio rc=0 last=ALL PASS (4 checks)
+13:12:21 class=html host_free_kib=28054984 vm_free_kib=23070292
+13:13:47 class=html rc=0 last=ALL PASS (9 checks)
+13:13:48 class=probe host_free_kib=28178784 vm_free_kib=23362520
+13:14:27 class=probe rc=0 last=ALL PASS (4 checks)
+13:14:27 class=document host_free_kib=27801604 vm_free_kib=23010300
+13:19:25 class=document rc=0 last=ALL PASS (7 checks)
+13:19:26 class=cad host_free_kib=27645120 vm_free_kib=22687296
+13:23:08 class=cad rc=0 last=ALL PASS (5 checks)
+done

@@ -351,3 +351,136 @@ func TestParseCADMeasureDraftRefusals(t *testing.T) {
 		t.Fatalf("missing file: %v", err)
 	}
 }
+
+func dxfDraft() cadMeasureDraft {
+	return cadMeasureDraft{
+		Format:        measurements.FormatDXF,
+		AppliedFactor: floatp(1),
+		BBox:          measurements.BBox{Min: []float64{-2.5, 4}, Max: []float64{17.5, 9}},
+		NullReason:    measurements.ReasonNotApplicable2D,
+	}
+}
+
+func TestCADUnitDXF(t *testing.T) {
+	cases := []struct {
+		name               string
+		declared, raw      string
+		assume             string
+		wantUnit, wantFrom string
+	}{
+		{"declared inch", "inch", "", "", measurements.UnitInch, measurements.SourceDeclared},
+		{"declared inch ignores an assumed unit", "inch", "", "mm", measurements.UnitInch, measurements.SourceDeclared},
+		{"declared micrometre", "micrometre", "", "", measurements.UnitMicrometre, measurements.SourceDeclared},
+		{"declared foot", "foot", "", "", measurements.UnitFoot, measurements.SourceDeclared},
+		{"declared cm", "cm", "", "", measurements.UnitCM, measurements.SourceDeclared},
+		{"declared m", "m", "", "", measurements.UnitM, measurements.SourceDeclared},
+		{"declared mm", "mm", "", "", measurements.UnitMM, measurements.SourceDeclared},
+		{"no unit and no raw code", "", "", "", measurements.UnitUnspecified, measurements.SourceNone},
+		{"no unit filled by assume_unit", "", "", "mm", measurements.UnitMM, measurements.SourceClientAssumed},
+		{"no unit filled by assume_unit foot", "", "", "foot", measurements.UnitFoot, measurements.SourceClientAssumed},
+		{"a raw code outside the vocabulary", "", "3", "", measurements.UnitUnspecified, measurements.SourceNone},
+		{"a raw code outside the vocabulary takes no assumed unit", "", "3", "mm", measurements.UnitUnspecified, measurements.SourceNone},
+		{"raw code 14 takes no assumed unit", "", "14", "inch", measurements.UnitUnspecified, measurements.SourceNone},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := dxfDraft()
+			d.DeclaredUnit, d.DeclaredUnitRaw = tc.declared, tc.raw
+			doc, err := buildCADMeasurements(d, tc.assume)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Unit != tc.wantUnit || doc.UnitSource != tc.wantFrom {
+				t.Fatalf("unit %s source %s, want %s %s", doc.Unit, doc.UnitSource, tc.wantUnit, tc.wantFrom)
+			}
+			if !slices.Equal(doc.BBox.Min, d.BBox.Min) || !slices.Equal(doc.BBox.Max, d.BBox.Max) {
+				t.Fatalf("bbox %v %v, want the drawing units unscaled %v %v", doc.BBox.Min, doc.BBox.Max, d.BBox.Min, d.BBox.Max)
+			}
+			if doc.Format != measurements.FormatDXF || doc.Volume != nil || doc.Area != nil ||
+				doc.VolumeNullReason != measurements.ReasonNotApplicable2D || doc.AreaNullReason != measurements.ReasonNotApplicable2D {
+				t.Fatalf("document %+v, want a dxf document with null volume and area and not_applicable_2d", doc)
+			}
+			if doc.Solids != nil || doc.ClosedSolids != nil {
+				t.Fatalf("a dxf document carries solid counts: %v %v", doc.Solids, doc.ClosedSolids)
+			}
+			if err := doc.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBuildCADMeasurementsDXFRefusals(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(d *cadMeasureDraft)
+		assume string
+	}{
+		{"applied factor 25.4", func(d *cadMeasureDraft) { d.DeclaredUnit, d.AppliedFactor = "inch", floatp(25.4) }, ""},
+		{"applied factor a hair off 1", func(d *cadMeasureDraft) { d.AppliedFactor = floatp(1 + 1e-12) }, ""},
+		{"a null applied factor", func(d *cadMeasureDraft) { d.AppliedFactor = nil }, ""},
+		{"a null applied factor with an assumed unit", func(d *cadMeasureDraft) { d.AppliedFactor = nil }, "mm"},
+		{"both a declared unit and a raw code", func(d *cadMeasureDraft) { d.DeclaredUnit, d.DeclaredUnitRaw = "mm", "4" }, ""},
+		{"a declared unit outside the table", func(d *cadMeasureDraft) { d.DeclaredUnit = "furlong" }, ""},
+		{"declared unspecified", func(d *cadMeasureDraft) { d.DeclaredUnit = "unspecified" }, ""},
+		{"non-null solids", func(d *cadMeasureDraft) { d.Solids = intp(0) }, ""},
+		{"non-null closed solids", func(d *cadMeasureDraft) { d.ClosedSolids = intp(0) }, ""},
+		{"a non-null volume beside the reason", func(d *cadMeasureDraft) { d.Volume = floatp(1) }, ""},
+		{"a volume and an area with no reason", func(d *cadMeasureDraft) { d.Volume, d.Area, d.NullReason = floatp(1), floatp(1), "" }, ""},
+		{"a 3D null reason", func(d *cadMeasureDraft) { d.NullReason = measurements.ReasonNoSolids }, ""},
+		{"an stl null reason", func(d *cadMeasureDraft) { d.NullReason = measurements.ReasonSTLNotWatertight }, ""},
+		{"three coordinates per corner", func(d *cadMeasureDraft) {
+			d.BBox = measurements.BBox{Min: []float64{0, 0, 0}, Max: []float64{1, 1, 1}}
+		}, ""},
+		{"an unknown assumed unit", func(d *cadMeasureDraft) {}, "furlong"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := dxfDraft()
+			tc.mutate(&d)
+			doc, err := buildCADMeasurements(d, tc.assume)
+			if err == nil {
+				t.Fatalf("returned a document: %+v", doc)
+			}
+			if !errors.Is(err, ErrCADMeasure) {
+				t.Fatalf("error does not wrap ErrCADMeasure: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildCADMeasurementsDXFRealDrafts(t *testing.T) {
+	dir := filepath.Join("testdata", "cad", "dxf-out")
+	cases := []struct {
+		file               string
+		assume             string
+		wantUnit, wantFrom string
+		min, max           []float64
+	}{
+		{"wrong_extents.measure.json", "", measurements.UnitMM, measurements.SourceDeclared, []float64{10, 20}, []float64{40, 30}},
+		{"wrong_extents.measure.json", "inch", measurements.UnitMM, measurements.SourceDeclared, []float64{10, 20}, []float64{40, 30}},
+		{"units_3.measure.json", "", measurements.UnitUnspecified, measurements.SourceNone, []float64{0, 0}, []float64{10, 5}},
+		{"units_3.measure.json", "mm", measurements.UnitUnspecified, measurements.SourceNone, []float64{0, 0}, []float64{10, 5}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file+" assume "+tc.assume, func(t *testing.T) {
+			d, err := parseCADMeasureDraft(filepath.Join(dir, tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc, err := buildCADMeasurements(d, tc.assume)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if doc.Unit != tc.wantUnit || doc.UnitSource != tc.wantFrom {
+				t.Fatalf("unit %s source %s, want %s %s", doc.Unit, doc.UnitSource, tc.wantUnit, tc.wantFrom)
+			}
+			if !slices.Equal(doc.BBox.Min, tc.min) || !slices.Equal(doc.BBox.Max, tc.max) {
+				t.Fatalf("bbox %v %v, want %v %v", doc.BBox.Min, doc.BBox.Max, tc.min, tc.max)
+			}
+			if doc.Volume != nil || doc.Area != nil || doc.VolumeNullReason != measurements.ReasonNotApplicable2D {
+				t.Fatalf("document %+v, want null volume and area with not_applicable_2d", doc)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package convert
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -224,7 +225,7 @@ var pdfMagic = []byte("%PDF-")
 // non-zero size AND begin with the %PDF- magic bytes before a conversion is
 // treated as successful.
 func validatePDF(path string) error {
-	fi, err := os.Stat(path)
+	fi, err := statJobOutput(path)
 	if err != nil {
 		return fmt.Errorf("libreoffice: stat output: %w", err)
 	}
@@ -237,9 +238,9 @@ func validatePDF(path string) error {
 	if fi.Size() < int64(len(pdfMagic)) {
 		return fmt.Errorf("libreoffice: output missing %%PDF- magic bytes")
 	}
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
-		return fmt.Errorf("libreoffice: open output: %w", err)
+		return jobOutputOpenFailure("libreoffice", err)
 	}
 	defer f.Close()
 	buf := make([]byte, len(pdfMagic))
@@ -288,7 +289,10 @@ func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetForm
 		if !wantPDFA {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := ReadJobFile(path)
+		if errors.Is(err, ErrJobFileIrregular) {
+			return fmt.Errorf("libreoffice: stat output: %w", err)
+		}
 		if err != nil {
 			return fmt.Errorf("libreoffice: read output for PDF/A check: %w", err)
 		}
@@ -308,16 +312,16 @@ func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetForm
 		return nil
 	}
 
-	fi, err := os.Stat(path)
+	fi, err := statJobOutput(path)
 	if err != nil {
 		return fmt.Errorf("libreoffice: stat output: %w", err)
 	}
 	if fi.Size() == 0 {
 		return fmt.Errorf("libreoffice: output is empty")
 	}
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
-		return fmt.Errorf("libreoffice: open output: %w", err)
+		return jobOutputOpenFailure("libreoffice", err)
 	}
 	defer f.Close()
 

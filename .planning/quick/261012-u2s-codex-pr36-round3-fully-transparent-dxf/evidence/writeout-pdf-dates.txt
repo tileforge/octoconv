@@ -1,0 +1,9 @@
+internal/convert/testdata/cad/dxf-out/hatches_2.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/legacy_cp1251.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/nofont.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/outline.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/text_alpha.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/text_alpha_faint.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/text_cases.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/text_fonts.pdf only_creation_date
+internal/convert/testdata/cad/dxf-out/uncommon.pdf only_creation_date

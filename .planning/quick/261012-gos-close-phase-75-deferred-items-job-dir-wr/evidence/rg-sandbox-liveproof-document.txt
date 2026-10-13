@@ -1,0 +1,21 @@
+== document: building octoconv-document:sandbox-liveproof-1791810867-77953 from Dockerfile.document-worker ==
+commit: 46e742c4497052fd2affa22758e3b9253c33b6bb
+tracked dirt: 0 file(s)
+image id: sha256:c5007e1880a30a2f272f8278c505c76bdf80d8959cd1a9fcd8477caabae3310c
+PASS: document confined-startup
+  2026/10/12 13:15:02 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  2026/10/12 13:15:08 🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it
+  2026/10/12 13:15:08 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: document refuses-without-landlock
+  2026/10/12 13:15:09 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document escape-hatch
+  2026/10/12 13:15:10 ⚠️  DOCUMENT_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: document preflight-catches-restrict-self
+  2026/10/12 13:15:10 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: soffice failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+emulated image id: sha256:87d1da4eabb743ce02a9cf319fb15d8009592aee661784b58d5e3de55e80733e (amd64)
+PASS: document emulated-amd64-refuses
+  2026/10/12 13:19:13 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document concurrency-guard
+  2026/10/12 13:19:17 document sandbox: DOCUMENT_WORKER_CONCURRENCY=2 with the sandbox enabled: this class's ruleset grants the container's shared /tmp read-write, so concurrent tasks could read each other's files there; set DOCUMENT_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+PASS: document sweeps-shared-tmp
+ALL PASS (7 checks)

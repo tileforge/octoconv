@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 
 	"github.com/apaderin/octoconv/internal/measurements"
 )
@@ -52,7 +51,7 @@ func cadDraftError(format string, args ...any) error {
 }
 
 func parseCADMeasureDraft(path string) (cadMeasureDraft, error) {
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
 		return cadMeasureDraft{}, fmt.Errorf("%w: %v", ErrCADMeasure, err)
 	}
@@ -139,6 +138,8 @@ func cadUnitFor(d cadMeasureDraft, assumeUnit string) (unit, source string, fact
 		return measurements.UnitUnspecified, measurements.SourceNone, factor, nil
 	}
 	switch d.Format {
+	case measurements.FormatDXF:
+		return cadUnitForDXF(d, assumeUnit)
 	case measurements.FormatSTL:
 		if assumeUnit != "" {
 			return assumeUnit, measurements.SourceClientAssumed, 1, nil
@@ -162,6 +163,35 @@ func cadUnitFor(d cadMeasureDraft, assumeUnit string) (unit, source string, fact
 		return assumeUnit, measurements.SourceClientAssumed, factor, nil
 	}
 	return unspecified()
+}
+
+func cadUnitForDXF(d cadMeasureDraft, assumeUnit string) (unit, source string, factor float64, err error) {
+	if d.AppliedFactor == nil || *d.AppliedFactor != 1 {
+		return "", "", 0, cadDraftError("a dxf draft is in drawing units, applied_factor must be exactly 1, got %s", factorWord(d.AppliedFactor))
+	}
+	if d.Solids != nil || d.ClosedSolids != nil {
+		return "", "", 0, cadDraftError("a dxf draft carries no solid counts")
+	}
+	if d.DeclaredUnit != "" && d.DeclaredUnitRaw != "" {
+		return "", "", 0, cadDraftError("declared_unit %q and declared_unit_raw %q are both set", d.DeclaredUnit, d.DeclaredUnitRaw)
+	}
+	if d.DeclaredUnit != "" {
+		if _, ok := cadMMPerUnit[d.DeclaredUnit]; !ok {
+			return "", "", 0, cadDraftError("declared_unit %q is not in the vocabulary", d.DeclaredUnit)
+		}
+		return d.DeclaredUnit, measurements.SourceDeclared, 1, nil
+	}
+	if d.DeclaredUnitRaw == "" && assumeUnit != "" {
+		return assumeUnit, measurements.SourceClientAssumed, 1, nil
+	}
+	return measurements.UnitUnspecified, measurements.SourceNone, 1, nil
+}
+
+func factorWord(v *float64) string {
+	if v == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%g", *v)
 }
 
 func buildCADMeasurements(d cadMeasureDraft, assumeUnit string) (measurements.Document, error) {

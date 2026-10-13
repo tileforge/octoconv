@@ -1,0 +1,12 @@
+# github.com/apaderin/octoconv/internal/convert [github.com/apaderin/octoconv/internal/convert.test]
+internal/convert/caddxfvisible_test.go:16:31: cadSVGFactsOf(t, svg).Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:116:12: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:117:74: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:121:13: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:122:74: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:137:13: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:138:66: facts.Visible undefined (type CADSVGFacts has no field or method Visible)
+internal/convert/caddxfvisible_test.go:279:13: facts.InkOps undefined (type CADPDFFacts has no field or method InkOps)
+internal/convert/caddxfvisible_test.go:280:58: facts.InkOps undefined (type CADPDFFacts has no field or method InkOps)
+internal/convert/caddxfvisible_test.go:327:13: facts.InkOps undefined (type CADPDFFacts has no field or method InkOps)
+internal/convert/caddxfvisible_test.go:327:13: too many errors

@@ -498,7 +498,7 @@ func avThreadCount() int {
 // no existing validateXOutput sibling does this second check, it is new for
 // AV (34-PATTERNS.md).
 func validateAVOutput(path, target string) error {
-	fi, err := os.Stat(path)
+	fi, err := statJobOutput(path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrAVOutputMissingOrEmpty, err)
 	}
@@ -507,7 +507,7 @@ func validateAVOutput(path, target string) error {
 	}
 	switch target {
 	case "jpg", "png", "webp":
-		f, err := os.Open(path)
+		f, _, err := OpenJobFile(path)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrAVOutputMissingOrEmpty, err)
 		}

@@ -55,6 +55,8 @@ func main() {
 		envDuration("CAD_GUARD_TIMEOUT", convert.CADDefaultGuardTimeout),
 		envDuration("CAD_MESH_TIMEOUT", convert.CADDefaultMeshTimeout),
 		envDuration("CAD_RENDER_TIMEOUT", convert.CADDefaultRenderTimeout),
+		envDuration("CAD_DXF_TIMEOUT", convert.CADDefaultDXFTimeout),
+		envDuration("CAD_RSVG_TIMEOUT", convert.CADDefaultRsvgTimeout),
 		engineTimeout,
 	)
 	if err != nil {
@@ -63,10 +65,12 @@ func main() {
 
 	convert.Default.Replace(conv)
 	convert.Default.Replace(convert.CADRenderConverter{CADConverter: conv})
+	convert.Default.Replace(convert.CADDXFConverter{CADConverter: conv})
+	convert.Default.Replace(convert.CADDXFRenderConverter{CADConverter: conv})
 	if len(sandboxHelper) == 0 {
 		log.Printf("⚠️  %s=true — the engines can read every file in this container", cadSandboxDisabledEnv)
 	} else {
-		log.Printf("🔒 cad sandbox: landlock via %s (convert and render)", strings.Join(sandboxHelper, " "))
+		log.Printf("🔒 cad sandbox: landlock via %s (convert, render and dxf)", strings.Join(sandboxHelper, " "))
 	}
 
 	preflightCtx, cancelPreflight := context.WithTimeout(ctx, cadPreflightTimeout)
@@ -76,7 +80,7 @@ func main() {
 	}
 	cancelPreflight()
 	if len(sandboxHelper) > 0 {
-		log.Printf("🔒 cad sandbox proven: cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it")
+		log.Printf("🔒 cad sandbox proven: cad-guard, cad-mesh, cad-render, cad-dxf and rsvg-convert ran inside the job directory and were denied a file outside it")
 	}
 
 	pool, err := db.Connect(ctx)

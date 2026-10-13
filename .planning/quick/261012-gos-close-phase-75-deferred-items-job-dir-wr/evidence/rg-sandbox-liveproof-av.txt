@@ -1,0 +1,15 @@
+== av: building octoconv-av:sandbox-liveproof-1791810673-56520 from Dockerfile.av-worker ==
+commit: 46e742c4497052fd2affa22758e3b9253c33b6bb
+tracked dirt: 0 file(s)
+image id: sha256:9f5f612deeb4b3ff013d42c892c6bf307a5aee6679db773a1ff4364fa7cc680d
+PASS: av confined-startup
+  2026/10/12 13:11:42 🔒 av sandbox: landlock via /usr/local/bin/av-worker __sandbox-exec
+  2026/10/12 13:11:42 🔒 av sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/10/12 13:11:42 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: av refuses-without-landlock
+  2026/10/12 13:11:43 av sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set AV_SANDBOX_DISABLED=true to accept that deliberately
+PASS: av escape-hatch
+  2026/10/12 13:11:44 ⚠️  AV_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: av preflight-catches-restrict-self
+  2026/10/12 13:11:44 av sandbox preflight: generate preflight source: engine sandbox could not be established: ffmpeg failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+ALL PASS (4 checks)

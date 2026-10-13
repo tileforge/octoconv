@@ -241,6 +241,7 @@ func TestMIMEType(t *testing.T) {
 		"html":    "text/html",
 		"hocr":    "text/html",
 		"alto":    "application/xml",
+		"svg":     "image/svg+xml",
 		"unknown": "application/octet-stream",
 	}
 	for format, want := range cases {

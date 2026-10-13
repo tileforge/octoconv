@@ -1,0 +1,14 @@
+# github.com/apaderin/octoconv/internal/convert [github.com/apaderin/octoconv/internal/convert.test]
+internal/convert/caddxfpdffloor_test.go:167:13: facts.InvisibleText undefined (type CADPDFFacts has no field or method InvisibleText)
+internal/convert/caddxfpdffloor_test.go:167:41: facts.InvisibleRunes undefined (type CADPDFFacts has no field or method InvisibleRunes)
+internal/convert/caddxfpdffloor_test.go:228:13: facts.InvisibleText undefined (type CADPDFFacts has no field or method InvisibleText)
+internal/convert/caddxfpdffloor_test.go:228:51: facts.InvisibleRunes undefined (type CADPDFFacts has no field or method InvisibleRunes)
+internal/convert/caddxfpdffloor_test.go:258:94: texts[2].Invisible undefined (type cadDXFText has no field or method Invisible)
+internal/convert/caddxfpdffloor_test.go:259:88: texts[0].Invisible undefined (type cadDXFText has no field or method Invisible)
+internal/convert/caddxfpdffloor_test.go:260:97: texts[1].Invisible undefined (type cadDXFText has no field or method Invisible)
+internal/convert/caddxfpdffloor_test.go:261:77: svg.TextOpacity undefined (type *CADSVGFacts has no field or method TextOpacity)
+internal/convert/caddxfpdffloor_test.go:266:7: sv.TextOpacity undefined (type CADSVGFacts has no field or method TextOpacity)
+internal/convert/caddxfpdffloor_test.go:266:48: svg.TextOpacity undefined (type CADSVGFacts has no field or method TextOpacity)
+internal/convert/caddxfpdffloor_test.go:261:77: too many errors
+FAIL	github.com/apaderin/octoconv/internal/convert [build failed]
+FAIL

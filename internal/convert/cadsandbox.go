@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/apaderin/octoconv/internal/measurements"
@@ -20,6 +22,11 @@ import (
 
 //go:embed testdata/cad/synthetic/units_inch.step
 var cadPreflightSTEP []byte
+
+//go:embed testdata/cad/synthetic/legacy_cp1251.dxf
+var cadPreflightDXF []byte
+
+const cadPreflightDXFText = "Деталь"
 
 const (
 	cadPreflightTriangles   = 12
@@ -56,19 +63,79 @@ var cadRenderEngines = []string{"cad-render"}
 
 var cadGuardEngines = []string{"cad-guard"}
 
+var cadDXFReadOnly = []string{
+	"/opt/venv",
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+	"/usr/share/fonts",
+}
+
+var cadDXFEngines = []string{"cad-dxf"}
+
+var cadRsvgReadOnly = []string{
+	"/usr/share/fonts",
+}
+
+var cadRsvgEngines = []string{"rsvg-convert"}
+
 var cadMultiarchLib = map[string]string{"arm64": "aarch64-linux-gnu", "amd64": "x86_64-linux-gnu"}
 
-func (c CADConverter) cadStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+func (c CADConverter) cadReadOnly(readOnly []string) ([]string, error) {
 	ro := append([]string{}, readOnly...)
 	if c.Sandbox.confines() {
 		triple, ok := cadMultiarchLib[runtime.GOARCH]
 		if !ok {
-			return engineExec{}, fmt.Errorf("cad: no multiarch library directory is known for GOARCH %s", runtime.GOARCH)
+			return nil, fmt.Errorf("cad: no multiarch library directory is known for GOARCH %s", runtime.GOARCH)
 		}
 		ro = append(ro, "/usr/lib/"+triple)
 	}
+	return ro, nil
+}
+
+func (c CADConverter) cadStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+	ro, err := c.cadReadOnly(readOnly)
+	if err != nil {
+		return engineExec{}, err
+	}
 	env := append(engineEnv(jobDir), "LP_NUM_THREADS=2")
 	return c.Sandbox.forJob(jobDir, ro, engines).withEnv(env), nil
+}
+
+func (c CADConverter) cadDrawStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+	ro, err := c.cadReadOnly(readOnly)
+	if err != nil {
+		return engineExec{}, err
+	}
+	home := filepath.Join(jobDir, ".home")
+	cache := filepath.Join(home, ".cache")
+	config := filepath.Join(home, ".config")
+	for _, dir := range []string{home, cache, config} {
+		if err := cadPrivateDir(dir); err != nil {
+			return engineExec{}, err
+		}
+	}
+	var env []string
+	for _, e := range engineEnv(jobDir) {
+		if !strings.HasPrefix(e, "HOME=") {
+			env = append(env, e)
+		}
+	}
+	env = append(env, "HOME="+home, "XDG_CACHE_HOME="+cache, "XDG_CONFIG_HOME="+config)
+	return c.Sandbox.forJob(jobDir, ro, engines).withEnv(env), nil
+}
+
+func cadPrivateDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("cad: create the stage home %s: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("cad: stat the stage home %s: %w", dir, err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("cad: the stage home %s is %v, want a 0700 directory", dir, info.Mode())
+	}
+	return nil
 }
 
 func (c CADConverter) WithSandbox(helper []string) CADConverter {
@@ -76,11 +143,14 @@ func (c CADConverter) WithSandbox(helper []string) CADConverter {
 	return c
 }
 
-func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
+func ValidateCADTimeouts(guard, mesh, render, dxf, rsvg, engine time.Duration) error {
 	for _, v := range []struct {
 		name  string
 		value time.Duration
-	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render}, {"CAD_ENGINE_TIMEOUT", engine}} {
+	}{
+		{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render},
+		{"CAD_DXF_TIMEOUT", dxf}, {"CAD_RSVG_TIMEOUT", rsvg}, {"CAD_ENGINE_TIMEOUT", engine},
+	} {
 		if v.value <= 0 {
 			return fmt.Errorf("%s=%s must be positive", v.name, v.value)
 		}
@@ -89,18 +159,22 @@ func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
 		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + CAD_RENDER_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
 			"the attempt deadline would cut a stage short of its own limit", guard, mesh, render, CADIOAllowance, engine)
 	}
+	if guard+dxf+2*rsvg+CADIOAllowance > engine {
+		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_DXF_TIMEOUT=%s + two rsvg-convert stages of CAD_RSVG_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
+			"the attempt deadline would cut a stage short of its own limit", guard, dxf, rsvg, CADIOAllowance, engine)
+	}
 	return nil
 }
 
-func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, engine time.Duration) (CADConverter, error) {
+func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, dxf, rsvg, engine time.Duration) (CADConverter, error) {
 	if concurrency != 1 {
 		return CADConverter{}, fmt.Errorf("%s=%d: the cad pod limit was derived for one job at a time; set %s=1 and scale with replicas",
 			concurrencyEnv, concurrency, concurrencyEnv)
 	}
-	if err := ValidateCADTimeouts(guard, mesh, render, engine); err != nil {
+	if err := ValidateCADTimeouts(guard, mesh, render, dxf, rsvg, engine); err != nil {
 		return CADConverter{}, err
 	}
-	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render}.WithSandbox(helper)
+	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render, DXFTimeout: dxf, RsvgTimeout: rsvg}.WithSandbox(helper)
 	return c, nil
 }
 
@@ -137,7 +211,7 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		return err
 	}
 	defer cleanup()
-	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, cadRenderReadOnly, []string{"/usr/lib/" + triple}); err != nil {
+	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, cadRenderReadOnly, cadDXFReadOnly, cadRsvgReadOnly, []string{"/usr/lib/" + triple}); err != nil {
 		return err
 	}
 	inside, outside, err := w.place("in.step", cadPreflightSTEP)
@@ -182,6 +256,9 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		return err
 	}
 	if err := cadPreflightRender(ctx, CADRenderConverter{c}, w, outInside); err != nil {
+		return err
+	}
+	if err := cadPreflightDrawing(ctx, c, w); err != nil {
 		return err
 	}
 
@@ -283,6 +360,99 @@ func cadPreflightRenderDenied(ctx context.Context, r CADRenderConverter, w prefl
 	}
 	if err := requireDenied(err, outPNG, nil); err != nil {
 		return fmt.Errorf("the cad render stage read a file outside the job directory: confinement is not in effect: %w", err)
+	}
+	return nil
+}
+
+func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspace) error {
+	inside, outside, err := w.place("in.dxf", cadPreflightDXF)
+	if err != nil {
+		return err
+	}
+	if _, err := c.guardStage(ctx, w.jobDir, "dxf", inside); err != nil {
+		return fmt.Errorf("the cad guard stage in dxf mode refuses the fixture inside the job directory under its sandbox: %w", err)
+	}
+	clean := filepath.Join(w.jobDir, cadDXFCleanName)
+	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", "")
+	if errors.Is(err, ErrCADNothingDrawable) {
+		return fmt.Errorf("the ink check finds nothing on the fixture's page drawn under the rsvg-convert ruleset: %w", err)
+	}
+	if err != nil {
+		return fmt.Errorf("the cad dxf stage cannot draw a file inside the job directory under its sandbox: %w", err)
+	}
+	if len(d.texts) != 1 || d.texts[0].Text != cadPreflightDXFText || d.texts[0].Covered != cadPreflightDXFText || d.texts[0].Invisible {
+		var got []string
+		for _, t := range d.texts {
+			got = append(got, t.Text)
+		}
+		return fmt.Errorf("text: the cad dxf stage drew the fixture's texts as %q, want exactly %q with every character covered by the font", got, cadPreflightDXFText)
+	}
+
+	pdf := filepath.Join(w.jobDir, "preflight-dxf.pdf")
+	if err := c.rsvgStage(ctx, w.jobDir, pdf, cadDXFPDFArgs(pdf, clean)...); err != nil {
+		return fmt.Errorf("the rsvg-convert stage cannot convert an SVG inside the job directory to PDF under its sandbox: %w", err)
+	}
+	facts, err := JudgeCADDXFPDF(pdf, CADMaxDXFPDFBytes, d.texts, d.render)
+	if err != nil {
+		return fmt.Errorf("fonts: the PDF judge rejects the fixture's PDF drawn under the rsvg-convert ruleset, so its text did not survive: %w", err)
+	}
+	if facts.BelowRenderFloor != 0 {
+		return fmt.Errorf("text: the fixture's text falls below the PDF render floor, so the PDF judge would accept it without any text")
+	}
+	if facts.InvisibleText != 0 {
+		return fmt.Errorf("text: the fixture's text is invisible, so the PDF judge would accept it without any text")
+	}
+	if _, err := JudgeCADPDF(pdf, CADMaxDXFPDFBytes, cadDXFExpectedText(d.texts)); err != nil {
+		return fmt.Errorf("fonts: the PDF drawn under the rsvg-convert ruleset does not carry the text %q: %w", cadPreflightDXFText, err)
+	}
+
+	size := cadPreflightFrame
+	box, err := CADDrawingLetterbox(d.render.WidthMM, d.render.HeightMM, size)
+	if err != nil {
+		return fmt.Errorf("cad preflight: letterbox of the fixture drawing: %w", err)
+	}
+	frame := filepath.Join(w.jobDir, "preflight-dxf.png")
+	if err := c.rsvgStage(ctx, w.jobDir, frame, cadDXFFrameArgs(CADBackgroundOpq, box, size, frame, clean)...); err != nil {
+		return fmt.Errorf("the rsvg-convert stage cannot draw an SVG inside the job directory to PNG under its sandbox: %w", err)
+	}
+	f, err := os.Open(frame)
+	if err != nil {
+		return fmt.Errorf("the rsvg-convert stage left no frame inside the job directory: %w", err)
+	}
+	_, err = JudgeCADDrawingPNG(f, size, CADBackgroundOpq, box)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("the drawing judge rejects the frame the rsvg-convert stage drew inside the job directory: %w", err)
+	}
+
+	negSVG := filepath.Join(w.jobDir, "neg.svg")
+	negRender := filepath.Join(w.jobDir, "neg.render.svg")
+	negTexts := filepath.Join(w.jobDir, "neg.texts.json")
+	_, dxfErr := c.dxfStage(ctx, w.jobDir, outside, negSVG, negRender, negTexts, "")
+	if err := requireCADDenied("cad dxf", dxfErr); err != nil {
+		return err
+	}
+	for _, p := range []string{negSVG, negRender, negTexts} {
+		if err := requireDenied(dxfErr, p, nil); err != nil {
+			return fmt.Errorf("the cad dxf stage read a file outside the job directory: confinement is not in effect: %w", err)
+		}
+	}
+
+	data, err := os.ReadFile(clean)
+	if err != nil {
+		return fmt.Errorf("cad preflight: read the validated fixture SVG: %w", err)
+	}
+	outsideSVG := filepath.Join(w.outsideDir, cadDXFCleanName)
+	if err := os.WriteFile(outsideSVG, data, 0o600); err != nil {
+		return fmt.Errorf("cad preflight fixture (outside): %w", err)
+	}
+	negPDF := filepath.Join(w.jobDir, "neg.pdf")
+	rsvgErr := c.rsvgStage(ctx, w.jobDir, negPDF, cadDXFPDFArgs(negPDF, outsideSVG)...)
+	if err := requireCADDenied("rsvg-convert", rsvgErr); err != nil {
+		return err
+	}
+	if err := requireDenied(rsvgErr, negPDF, nil); err != nil {
+		return fmt.Errorf("the rsvg-convert stage read a file outside the job directory: confinement is not in effect: %w", err)
 	}
 	return nil
 }

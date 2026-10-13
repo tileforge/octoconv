@@ -1,0 +1,15 @@
+--- FAIL: TestCADDXFConvertSVGReturnsOnlyGoBytes (6.52s)
+    --- FAIL: TestCADDXFConvertSVGReturnsOnlyGoBytes/text_alpha (0.75s)
+        caddxf_test.go:279: Convert: cad dxf: cad: the drawing's SVG failed the safety check: cad: the drawing's PDF failed the content check: texts.json: "json: unknown field \"invisible\""
+    --- FAIL: TestCADDXFConvertSVGReturnsOnlyGoBytes/text_alpha_faint (0.80s)
+        caddxf_test.go:279: Convert: cad dxf: cad: the drawing's SVG failed the safety check: cad: the drawing's PDF failed the content check: texts.json: "json: unknown field \"invisible\""
+--- FAIL: TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt (7.85s)
+    --- FAIL: TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt/text_alpha (0.66s)
+        caddxf_test.go:369: Convert: cad dxf: cad: the drawing's SVG failed the safety check: cad: the drawing's PDF failed the content check: texts.json: "json: unknown field \"invisible\""
+    --- FAIL: TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt/text_alpha_faint (0.66s)
+        caddxf_test.go:369: Convert: cad dxf: cad: the drawing's SVG failed the safety check: cad: the drawing's PDF failed the content check: texts.json: "json: unknown field \"invisible\""
+--- FAIL: TestCADDXFRenderLetterboxesTheValidatedSVGWithTheProbeArgv (0.00s)
+    caddxf_test.go:790: frames.tsv has 5 frames, want 3
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	85.110s
+FAIL
