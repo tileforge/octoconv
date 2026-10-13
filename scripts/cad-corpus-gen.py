@@ -11,6 +11,8 @@ Usage:
     scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-minsert --targets N [--block-entities N] [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from REPLICATE --kind dxf-combo --cells N [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-far-point --targets D,... [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --kind stl-stack --targets K,... (--part cube | --scaled-from FILE.stl) [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-nauo --targets N [--nauo-pitch MM] [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -849,13 +851,14 @@ DEFAULT_SCALED = os.path.join(
     os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
     "scaled",
 )
-KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo", "dxf-far-point")
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo", "dxf-far-point", "stl-stack")
 STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
 STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
 STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
 DXF_NORMALIZED_NUMERIC = {"$TDCREATE", "$TDUCREATE", "$TDUPDATE", "$TDUUPDATE", "$TDINDWG", "$TDUSRTIMER"}
 DXF_NORMALIZED_GUID = {"$FINGERPRINTGUID", "$VERSIONGUID"}
 NIL_GUID = "{00000000-0000-0000-0000-000000000000}"
+STL_STACK_MAX_BYTES = 190840832
 
 
 def parse_targets(text):
@@ -1002,7 +1005,7 @@ def scale_step_copies(base_path, targets, out_dir):
     return failures
 
 
-def scale_step_nauo(base_path, targets, out_dir):
+def scale_step_nauo(base_path, targets, out_dir, pitch=200.0):
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader
@@ -1033,12 +1036,12 @@ def scale_step_nauo(base_path, targets, out_dir):
         side = max(1, int(round(count ** (1.0 / 3.0))))
         for i in range(count):
             trsf = gp_Trsf()
-            trsf.SetTranslation(gp_Vec(200.0 * (i % side), 200.0 * ((i // side) % side), 200.0 * (i // (side * side))))
+            trsf.SetTranslation(gp_Vec(pitch * (i % side), pitch * ((i // side) % side), pitch * (i // (side * side))))
             tool.AddComponent(asm, part, TopLoc_Location(trsf))
         tool.UpdateAssemblies()
         writer = STEPCAFControl_Writer()
         writer.Transfer(doc, STEPControl_AsIs)
-        name = "step-nauo-%s-n%d.step" % (stem, count)
+        name = "step-nauo-%s-n%d%s.step" % (stem, count, "" if pitch == 200.0 else "-pitch%g" % pitch)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = os.path.join(tmp, "assembly.step")
             writer.Write(tmp_path)
@@ -1051,7 +1054,8 @@ def scale_step_nauo(base_path, targets, out_dir):
             continue
         write_blob(os.path.join(out_dir, name), blob)
         scaled_line("step-nauo", "n%d" % count, len(blob), sha_of(blob), "ok",
-                    ",base=%s,instances=%d,nauo=%d,file=%s" % (os.path.basename(base_path), count, found, name))
+                    ",base=%s,instances=%d,nauo=%d,%sfile=%s" % (os.path.basename(base_path), count, found,
+                                                               "" if pitch == 200.0 else "pitch=%g," % pitch, name))
     return failures
 
 
@@ -1147,6 +1151,79 @@ def scale_stl_tile(base_path, targets, out_dir):
         scaled_line("stl-tile", "%dMiB" % target, size, digest.hexdigest(), "ok",
                     ",base=%s,tiles=%d,triangles=%d,file=%s" % (os.path.basename(base_path), tiles, total, name))
     return failures
+
+
+def stl_cube_part():
+    header = b"\x00" * 80
+    return stl_binary_blob(header, box_triangles(1, 1, 1))
+
+
+def scale_stl_stack(part_blob, part_count, label, targets, out_dir):
+    records = part_blob[84:84 + 50 * part_count]
+    failures = 0
+    for copies in targets:
+        if copies < 1:
+            raise SystemExit("stl-stack: --targets must be copy counts of at least 1")
+        total = copies * part_count
+        size = 84 + 50 * total
+        if size > STL_STACK_MAX_BYTES:
+            print("SCALED_SKIP,kind=stl-stack,target=k%d,part=%s,copies=%d,triangles=%d,bytes=%d,reason=over_stl_ceiling" % (
+                copies, label, copies, total, size), flush=True)
+            continue
+        header = (b"octoconv cad-corpus-gen stl-stack " + label.encode("ascii", "replace"))[:80]
+        header = header + b"\x00" * (80 - len(header))
+        name = "stl-stack-%s-k%d.stl" % (stem_of(label), copies)
+        path = os.path.join(out_dir, name)
+        digest = hashlib.sha256()
+        with open(path, "wb") as fh:
+            head = header + struct.pack("<I", total)
+            fh.write(head)
+            digest.update(head)
+            per = max(1, (1 << 22) // max(1, len(records)))
+            left = copies
+            while left > 0:
+                n = min(per, left)
+                chunk = records * n
+                fh.write(chunk)
+                digest.update(chunk)
+                left -= n
+        problems = []
+        if os.path.getsize(path) != 84 + 50 * total:
+            problems.append("size %d != 84 + 50 x %d" % (os.path.getsize(path), total))
+        with open(path, "rb") as fh:
+            got = fh.read(84 + len(records))
+            fh.seek(-len(records), os.SEEK_END)
+            last = fh.read(len(records))
+        if struct.unpack("<I", got[80:84])[0] != total:
+            problems.append("count field differs from %d" % total)
+        if got[84:] != records or last != records:
+            problems.append("first or last copy differs from the part")
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        print("SCALED,kind=stl-stack,target=k%d,part=%s,copies=%d,triangles=%d,bytes=%d,sha256=%s,check=ok,file=%s" % (
+            copies, label, copies, total, size, digest.hexdigest(), name), flush=True)
+    return failures
+
+
+def run_stl_stack(args):
+    if not args.targets:
+        raise SystemExit("--kind stl-stack requires --targets")
+    if (args.part is None) == (args.scaled_from is None):
+        raise SystemExit("--kind stl-stack takes exactly one of --part cube or --scaled-from FILE.stl")
+    out_dir = args.scaled_dir or DEFAULT_SCALED
+    os.makedirs(out_dir, exist_ok=True)
+    if args.part == "cube":
+        blob = stl_cube_part()
+        count = 12
+        label = "cube"
+    else:
+        if not os.path.isfile(args.scaled_from):
+            raise SystemExit("--scaled-from: no such file")
+        blob, count = read_binary_stl(args.scaled_from)
+        label = os.path.basename(args.scaled_from)
+    return 1 if scale_stl_stack(blob, count, label, parse_targets(args.targets), out_dir) else 0
 
 
 def ascii_facet(vals):
@@ -1853,6 +1930,10 @@ def run_scaled(args):
         return 1 if scale_dxf_minsert(args.scaled_from, parse_targets(args.targets), out_dir,
                                       5 if args.block_entities is None else args.block_entities) else 0
     targets = parse_targets(args.targets)
+    if args.nauo_pitch is not None and args.kind != "step-nauo":
+        raise SystemExit("--nauo-pitch applies to --kind step-nauo only")
+    if args.kind == "step-nauo" and args.nauo_pitch is not None:
+        return 1 if scale_step_nauo(args.scaled_from, targets, out_dir, args.nauo_pitch) else 0
     runner = {
         "step-copies": scale_step_copies,
         "step-nauo": scale_step_nauo,
@@ -2803,9 +2884,11 @@ def main():
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
-    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-far-point|dxf-guard-stress")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-stack|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-far-point|dxf-guard-stress")
+    ap.add_argument("--part", choices=("cube",), help="stl-stack: the built-in 12-triangle unit cube as the stacked part")
+    ap.add_argument("--nauo-pitch", type=float, help="step-nauo: grid pitch in mm between instances (default 200, 0 stacks them)")
     ap.add_argument("--shape", help="dxf-guard-stress shape: chain|fanout|blocks|wide")
-    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
+    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or copy counts for stl-stack, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
     ap.add_argument("--block-entities", type=int, help="dxf-minsert: entities in the CELL block (default 5)")
     ap.add_argument("--cells", type=int, help="dxf-combo: cells of the MINSERT appended to the base")
@@ -2821,6 +2904,12 @@ def main():
 
     if args.kind == "dxf-guard-stress":
         return run_guard_stress(args)
+
+    if args.kind == "stl-stack":
+        return run_stl_stack(args)
+
+    if args.part is not None:
+        raise SystemExit("--part applies to --kind stl-stack only")
 
     if args.scaled_from:
         return run_scaled(args)

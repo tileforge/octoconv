@@ -39,6 +39,7 @@ Usage:
   scripts/cad-dxf-bounds.sh smoke [--out FILE]
   scripts/cad-dxf-bounds.sh run [--out FILE]
   scripts/cad-dxf-bounds.sh floor [--out FILE]
+  scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -59,6 +60,14 @@ floor  the R-10 sweep: uncommon.dxf with one far POINT at 61 distances and the 2
        each drawn, validated, converted to PDF and reported per text by cad-pdf-check --report, and
        the DERIVED cad_dxf_pdf_text_floor = 2 x the largest rendered size of a lost text. Its lines
        replace only the floor lines of the evidence file; run replaces only the others.
+
+stack  the pre-registered 3D stacking probe of plan 76-01 on the production engine image: stacked STL
+       (cube and the largest liveproof STL), NAUO assemblies on a grid and coincident, STEP copies and
+       IGES written from STEP copies, each rung through the production stages (cad-guard, cad-mesh or
+       cad-mesh stats, cad-render iso 2048 opaque), into
+       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt with the
+       STACK_DECISION and STACK_GLOBAL lines. --smoke runs one cube rung into a file under TMPDIR,
+       checks stl-tile output against the main-branch generator, and decides nothing.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -108,7 +117,7 @@ cleanup() {
 
 build_engine() {
   local tag stage h
-  tag="octoconv-cad-worker:engine75-$(inputs_short)"
+  tag="octoconv-cad-worker:${ENGINE_TAG_PREFIX:-engine75-}$(inputs_short)"
   stage=$(mktemp -d "${TMPDIR:-/tmp}/cad-bounds-build.XXXXXX")
   mkdir -p "$stage/cmd/cad-worker/helper"
   cp "$DOCKERFILE" "$stage/Dockerfile.cad-worker"
@@ -1289,13 +1298,727 @@ run_mode() {
   finish 0
 }
 
+STACK_EVID_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
+STACK_EVID_NAME=evidence/76-01-stack.txt
+STACK_BUDGET_S=900
+STACK_STEP_BASE=internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step
+STACK_STEP_MAX_BYTES=66060288
+STACK_IGES_MAX_BYTES=141557760
+STACK_STL_MAX_BYTES=190840832
+STACK_MAX_ENTITIES=754762
+STACK_MAX_NAUO=1518
+STACK_TRI_CAP=3835382
+STACK_S1=(64 256 1024 4096 16384 65536 262144 318067)
+STACK_S2=(2 4 8 16 32 64 128 256)
+STACK_NAUO=(36 100 300 644 1000 1518)
+STACK_S4=(10 20 32 40 48 56)
+STACK_S4_CEIL_TARGET=63
+STACK_S5_MIB=(32 64 96)
+STACK_ENV=(-e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2)
+
+stack_rule_lines() {
+  cat <<'RULES'
+RULE,key=limits,mode=stack,rule=production_engine_stage_of_Dockerfile.cad-worker;one_container_per_stage;--network_none_--cpus_2_--memory_4g_--memory-swap_4g_--user_nobody;cad-mesh_and_cad-render_confined_by_sandbox-probe_with_PROBE_RO=/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/<triplet>:/usr/local/bin/<helper>_and_PROBE_RW=/job;cad-guard_unconfined_/usr/bin/python3_-IB_as_in_75-03;env_HOME=/job_LANG=C.UTF-8_TMPDIR=/job_LP_NUM_THREADS=2_on_every_stage_(cadStage_sets_LP_NUM_THREADS=2);wrap_budget_900_s_per_stage_(measure_wrap.py)
+RULE,key=budget,mode=stack,rule=B_render=(886-30-316-60)/1.5=320_s;B_mesh=316/1.5=210.67_s;from_the_current_deadlines_(guard_30_mesh_316_render_480_io_60_engine_886);provisional_for_this_probe_only;76-03_re-derives_them;cad-mesh_stats_(STL)_runs_under_the_mesh_deadline_so_B_mesh_applies_to_stats
+RULE,key=shapes,mode=stack,rule=S1=stl-stack_of_the_12-triangle_unit_cube_at_K_in_64;256;1024;4096;16384;65536;262144;318067|S2=stl-stack_of_LARGE_STL_at_K_in_2;4;8;16;32;64;128;256_while_84+50xKxT<=190840832_(T=triangles_of_LARGE_STL)|S3=step-nauo_of_public/LinearSlide-MGN15x-Block.step_at_n_in_36;100;300;644;1000;1518_(1518=CADMaxNAUO)_on_the_generator's_200_mm_grid|S4=step-copies_of_LinearSlide_at_10;20;32;40;48;56_MiB_and_at_the_63_MiB_ceiling_(the_largest_whole-MiB_step-copies_target_at_or_below_63_whose_file_is_at_most_66060288_bytes)|S5=iges-from-step_of_step-copies_of_LinearSlide_at_32;64;96_MiB_of_IGES_and_the_largest_IGES_the_generator_yields_at_or_below_141557760_bytes_(each_rung=the_largest_whole-MiB_step-copies_target_whose_IGES_is_at_or_below_the_rung_bytes)|S6=step-nauo_of_LinearSlide_at_the_S3_counts_with_--nauo-pitch_0_(every_instance_coincident;added_by_the_executor_because_the_S3_grid_places_instances_200_mm_apart_and_so_does_not_stack_them)
+RULE,key=rows,mode=stack,rule=N=1_per_rung_(a_premise_test_not_a_W_setter);STL:cad-mesh_stats_--measure_then_cad-render_--view_iso_--size_2048_--background_opaque;STEP_and_IGES:cad-guard_--max-entities_754762_--max-nauo_1518_then_cad-mesh_--quality_standard_--measure_then_cad-render_iso_2048_opaque_or_band=refused_by_cap_above_3835382_triangles_(render_not_run);inputs_generated_inside_the_engine_image_with_PYTHONHASHSEED=0_under_the_same_limits_except_iges-from-step_which_gets_8g_(generation_is_not_measured);inputs_and_outputs_deleted_after_each_rung
+RULE,key=bands,mode=stack,rule=band=over_when_a_render_wall_exceeds_B_render_or_a_stats_or_mesh_wall_exceeds_B_mesh_or_the_stage_hit_the_900_s_wrap_budget_(timeout=1)_or_was_OOM-killed;band=refused_by_cap_for_a_guard_too_complex_verdict_(rc_4;the_production_refusal)_or_a_mesh_above_3835382_triangles;band=within_otherwise;a_guard_row_is_within_unless_refused
+RULE,key=ladder_stop,mode=stack,rule=a_ladder_ends_at_its_first_rung_whose_render_wall_exceeds_B_render_or_whose_stats_or_mesh_wall_exceeds_B_mesh_or_which_hits_the_900_s_wrap_budget_(a_timeout_counts_as_over);every_larger_rung_is_written_NOT_RUN_reason=over_budget_below_and_never_counted;nothing_is_extrapolated;no_row_is_dropped;a_refused_by_cap_rung_does_not_end_a_ladder
+RULE,key=floors,mode=stack,rule=floor_f=bytes_of_the_largest_file_of_format_f_that_scripts/cad-liveproof.sh_renders_today;STL:LARGE_STL=the_first_of_ls_-S_public/*.stl_fetched/*.stl;STEP_and_IGES:the_largest_.step/.stp_and_.igs/.iges_input_named_on_its_render_one;render_job;meas_case_and_create_job_png_render_lines;each_written_as_a_FLOOR_line_with_file_bytes_and_sha256
+RULE,key=decision,mode=stack,rule=per_format_f_mechanical:within_budget_if_no_row_of_any_shape_of_f_is_over;byte_bound_if_every_over_shape_of_f_is_a_copies_shape_(S4_for_step;S5_for_iges)_whose_first_over_rung_has_bytes>=floor_f_and_every_other_probed_mechanism_of_f_stays_within_budget_(step:S3_and_S6;stl:S1_and_S2)_and_f_has_no_unprobed_stacking_mechanism;IGES_308/408_subfigure_instancing_is_unprobed_so_iges_is_never_byte_bound;not_byte_bound_otherwise;shapes:stl=S1+S2;step=S3+S4+S6;iges=S5
+RULE,key=assumption_step_instancing,mode=stack,rule=STEP_MAPPED_ITEM_instancing_is_bounded_by_the_same_1518_expanded-instance_guard_cap_as_NAUO_and_meshes_to_the_same_coincident_instances;S6_is_counted_as_its_probe;this_is_an_assumption_written_before_any_row_not_a_measurement
+RULE,key=global,mode=stack,rule=render_deadline_rule=remainder_if_any_format_is_not_byte_bound_with_an_over_row_else_ceil_1.5W
+RULE,key=stop,mode=stack,rule=STOP_on_any_stage_rc_other_than_0_that_is_not_a_timeout_or_an_OOM_kill_(oom_kill>0;a_container_exit_137_without_a_WRAP_line;cad-mesh_rc_4_too_complex/out_of_memory)_or_a_guard_too_complex_refusal;on_any_generator_self-check_failure;on_VM_disk_below_6_GiB_(exit_3)
+RULES
+}
+
+write_stack_tools() {
+  cat > "$WORK/tools/stack.py" <<'PY'
+import glob
+import hashlib
+import os
+import re
+import struct
+import sys
+from decimal import Decimal
+
+B_RENDER = Decimal(320)
+B_MESH = Decimal("210.67")
+TRI_CAP = 3835382
+SHAPES = {"stl": ["S1", "S2"], "step": ["S3", "S4", "S6"], "iges": ["S5"]}
+COPIES = {"step": "S4", "iges": "S5"}
+UNPROBED = {"iges": "iges_308_408_subfigure_instancing_unprobed"}
+
+
+def kv(line):
+    head, _, rest = line.partition(",")
+    out = {"_": head}
+    for part in rest.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k] = v
+    return out
+
+
+def wrap_fields(path):
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("WRAP,"):
+                    return dict(p.split("=", 1) for p in line.strip().split(",")[1:] if "=" in p)
+    except OSError:
+        pass
+    return {}
+
+
+def verdict_of(path):
+    import json
+    obj = {}
+    try:
+        with open(path, "rb") as fh:
+            for raw in fh:
+                line = raw.decode("utf-8", "replace").strip()
+                if line.startswith("CADVERDICT "):
+                    try:
+                        obj = json.loads(line[len("CADVERDICT "):])
+                    except ValueError:
+                        obj = {}
+    except OSError:
+        pass
+    return obj
+
+
+def stl_count(path):
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(84)
+        if len(head) == 84 and os.path.getsize(path) == 84 + 50 * struct.unpack("<I", head[80:84])[0]:
+            return struct.unpack("<I", head[80:84])[0]
+    except OSError:
+        pass
+    return None
+
+
+def clean(v):
+    return re.sub(r"[,=\s]", "_", str(v))
+
+
+def row(argv):
+    shape, fmt, rung, size, digest, stage, wrap, log, rc_w, tri_in, mesh, load1, vmfree = argv
+    f = wrap_fields(wrap)
+    v = verdict_of(log)
+    rc = f.get("rc", "na")
+    timeout = f.get("timeout", "na")
+    oom = f.get("oom_kill", "na")
+    wall = f.get("wall_s", "na")
+    reason = v.get("reason") or "none"
+    verdict = v.get("verdict", "none")
+    triangles = tri_in
+    cls = "fail"
+    if not f:
+        cls = "oom" if rc_w == "137" else "fail"
+        oom = "container_137" if rc_w == "137" else oom
+    elif timeout == "1":
+        cls = "timeout"
+    elif oom not in ("na", "0"):
+        cls = "oom"
+    elif rc == "0":
+        cls = "ok"
+    elif stage == "guard" and rc == "4" and verdict == "too_complex":
+        cls = "refused"
+    elif stage in ("mesh", "stats") and rc == "4" and verdict == "too_complex" and reason == "out_of_memory":
+        cls = "oom"
+    if stage in ("mesh", "stats") and cls == "ok":
+        n = stl_count(mesh)
+        vt = v.get("triangles")
+        if n is None or vt != n or verdict != "ok":
+            cls = "fail"
+            reason = "stl_count_%s_verdict_%s_%s" % (n, vt, verdict)
+        triangles = str(n)
+    if stage == "render" and cls == "ok" and (verdict != "ok" or v.get("size") != 2048 or v.get("view") != "iso"):
+        cls = "fail"
+        reason = "render_verdict_%s_view_%s_size_%s" % (verdict, v.get("view"), v.get("size"))
+    if stage == "guard" and cls == "ok" and verdict != "ok":
+        cls = "fail"
+    band = "within"
+    if cls in ("timeout", "oom"):
+        band = "over"
+    elif cls == "refused":
+        band = "refused_by_cap"
+    elif cls == "ok":
+        w = Decimal(wall)
+        if stage == "render" and w > B_RENDER:
+            band = "over"
+        elif stage in ("mesh", "stats") and w > B_MESH:
+            band = "over"
+    elif cls == "fail":
+        band = "failed"
+    print("STACK_ROW,shape=%s,format=%s,rung=%s,bytes=%s,triangles=%s,stage=%s,rc=%s,wall_s=%s,child_rss_mib=%s,cg_peak_mib=%s,"
+          "oom_kill=%s,timeout=%s,band=%s,load1=%s,vm_free_gib=%s,sha256=%s,verdict=%s,reason=%s,class=%s,threads_max=%s" % (
+              shape, fmt, rung, size, triangles, stage, rc, wall, f.get("child_rss_mib", "na"), f.get("cg_peak_mib", "na"),
+              oom, timeout, band, load1, vmfree, digest, clean(verdict), clean(reason), cls, f.get("threads_max", "na")))
+
+
+def floors(argv):
+    liveproof, corpus, fetched = argv
+    text = open(liveproof).read()
+    picks = {"step": None, "iges": None}
+    pat = re.compile(r'"\$(CORPUS|FETCHED)/([^"]+)"')
+    for line in text.splitlines():
+        s = line.strip()
+        if not (s.startswith(("render_one ", "render_job ", "meas_case ")) or
+                (s.startswith("create_job ") and " png render" in s)):
+            continue
+        for root, rel in pat.findall(s):
+            path = os.path.join(corpus if root == "CORPUS" else fetched, rel)
+            ext = os.path.splitext(rel)[1].lower()
+            fmt = "step" if ext in (".step", ".stp") else "iges" if ext in (".igs", ".iges") else None
+            if fmt is None or not os.path.isfile(path):
+                continue
+            size = os.path.getsize(path)
+            if picks[fmt] is None or size > picks[fmt][0]:
+                picks[fmt] = (size, path, s.split()[0])
+    stls = glob.glob(os.path.join(corpus, "public", "*.stl")) + glob.glob(os.path.join(fetched, "*.stl"))
+    stls.sort(key=lambda p: -os.path.getsize(p))
+    picks["stl"] = (os.path.getsize(stls[0]), stls[0], "LARGE_STL") if stls else None
+    rc = 0
+    for fmt in ("step", "iges", "stl"):
+        p = picks[fmt]
+        if p is None:
+            print("STOP,mode=stack,reason=no_floor_file,format=%s" % fmt)
+            rc = 1
+            continue
+        digest = hashlib.sha256(open(p[1], "rb").read()).hexdigest()
+        print("FLOOR,format=%s,file=%s,bytes=%d,sha256=%s,source=%s,path=%s" % (fmt, os.path.basename(p[1]), p[0], digest, p[2], p[1]))
+    return rc
+
+
+def decide(argv):
+    path = argv[0]
+    rows, floors_, not_run = [], {}, []
+    for line in open(path):
+        line = line.rstrip("\n")
+        if line.startswith("STACK_ROW,"):
+            rows.append(kv(line))
+        elif line.startswith("FLOOR,"):
+            d = kv(line)
+            floors_[d["format"]] = int(d["bytes"])
+        elif line.startswith("NOT_RUN,"):
+            not_run.append(kv(line))
+    first_over = {}
+    measured = {}
+    order = {}
+    for r in rows:
+        sh = r["shape"]
+        measured.setdefault(sh, [])
+        if r["rung"] not in measured[sh]:
+            measured[sh].append(r["rung"])
+        order.setdefault((sh, r["rung"]), len(order))
+        if r["band"] == "over" and sh not in first_over:
+            first_over[sh] = (r["rung"], int(r["bytes"]), r["stage"], r["wall_s"], r["timeout"], r["oom_kill"])
+    problems = []
+    for fmt, shapes in SHAPES.items():
+        for sh in shapes:
+            if sh not in measured:
+                problems.append("shape_%s_has_no_row" % sh)
+        if fmt not in floors_:
+            problems.append("no_floor_%s" % fmt)
+    for d in not_run:
+        if d.get("shape") not in first_over:
+            problems.append("not_run_%s_%s_without_an_over_rung" % (d.get("shape"), d.get("rung")))
+    if problems:
+        print("STOP,mode=stack,reason=decision_inputs_incomplete,detail=%s" % ";".join(problems))
+        print("SUMMARY,mode=stack,rows=%d,not_run=%d,result=STOP" % (len(rows), len(not_run)))
+        return 1
+    decisions = {}
+    for fmt in ("step", "iges", "stl"):
+        shapes = SHAPES[fmt]
+        over = [sh for sh in shapes if sh in first_over]
+        floor = floors_[fmt]
+        if not over:
+            decision, why = "within_budget", "no_row_of_%s_over" % "+".join(shapes)
+            brk = ("none", "na")
+        else:
+            best = min(over, key=lambda sh: first_over[sh][1])
+            brk = (best, str(first_over[best][1]))
+            copies = COPIES.get(fmt)
+            others = [sh for sh in shapes if sh != copies]
+            if fmt in UNPROBED:
+                decision, why = "not_byte_bound", UNPROBED[fmt]
+            elif copies is None or set(over) != {copies}:
+                decision = "not_byte_bound"
+                why = "over_beyond_copies:" + ";".join("%s@%s:%s_%s_wall_%s_timeout_%s" % (sh, first_over[sh][0], first_over[sh][1], first_over[sh][2], first_over[sh][3], first_over[sh][4]) for sh in over if sh != copies)
+            elif first_over[copies][1] < floor:
+                decision = "not_byte_bound"
+                why = "copies_break_%d_below_floor_%d" % (first_over[copies][1], floor)
+            elif any(sh in first_over for sh in others):
+                decision, why = "not_byte_bound", "another_mechanism_over"
+            else:
+                decision = "byte_bound"
+                why = "only_copies_over_at_%d>=floor_%d;%s_within" % (first_over[copies][1], floor, "+".join(others))
+        decisions[fmt] = (decision, bool(over))
+        print("STACK_DECISION,format=%s,decision=%s,break_shape=%s,break_bytes=%s,floor_bytes=%d,over_shapes=%s,reason=%s" % (
+            fmt, decision, brk[0], brk[1], floor, "+".join(over) or "none", why))
+    nbb = [f for f in ("step", "iges", "stl") if decisions[f][0] == "not_byte_bound" and decisions[f][1]]
+    rule = "remainder" if nbb else "ceil_1.5W"
+    print("STACK_GLOBAL,render_deadline_rule=%s,not_byte_bound_with_over=%s,byte_bound=%s,within_budget=%s" % (
+        rule, "+".join(nbb) or "none", "+".join(f for f in ("step", "iges", "stl") if decisions[f][0] == "byte_bound") or "none",
+        "+".join(f for f in ("step", "iges", "stl") if decisions[f][0] == "within_budget") or "none"))
+    rungs = len({(r["shape"], r["rung"]) for r in rows})
+    print("SUMMARY,mode=stack,rows=%d,rungs=%d,not_run=%d,over_shapes=%s,result=ok" % (
+        len(rows), rungs, len(not_run), "+".join(sorted(first_over)) or "none"))
+    return 0
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1]
+    if cmd == "row":
+        row(sys.argv[2:])
+    elif cmd == "floors":
+        sys.exit(floors(sys.argv[2:]))
+    elif cmd == "decide":
+        sys.exit(decide(sys.argv[2:]))
+    else:
+        sys.exit(64)
+PY
+  chmod 0644 "$WORK/tools/stack.py"
+}
+
+load1_now() { sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'; }
+
+stack_stop() {
+  printf 'STOP,mode=%s,%s\n' "$STACK_MODE" "$1" >> "$LINES"
+  printf 'SUMMARY,mode=%s,rows=%s,not_run=%s,result=STOP\n' "$STACK_MODE" "$(grep -c '^STACK_ROW,' "$LINES" || true)" \
+    "$(grep -c '^NOT_RUN,' "$LINES" || true)" >> "$LINES"
+  log "STOP $1"
+  exit "${2:-1}"
+}
+
+stack_disk_guard() {
+  local free
+  free=$(vm_free_gib)
+  if [ -z "$free" ] || [ "$free" -lt "$MIN_FREE_GIB" ]; then
+    stack_stop "reason=disk_below_threshold,free_gib=${free:-unknown},threshold_gib=$MIN_FREE_GIB" 3
+  fi
+  STACK_FREE=$free
+}
+
+stack_preflight() {
+  local n
+  n=$(docker ps --filter name=octoconv- -q | wc -l | tr -d ' ')
+  [ "$n" = 0 ] || fail "preflight: $n octoconv- compose containers are running"
+  if command -v kubectl >/dev/null 2>&1; then
+    n=$(kubectl get pods -A 2>/dev/null | grep -c octoconv || true)
+    [ "$n" = 0 ] || fail "preflight: $n octoconv pods are running in k8s"
+  fi
+  if pgrep -f 'go test' >/dev/null 2>&1; then fail "preflight: a go test process is running"; fi
+  if pgrep -f 'docker build|buildx' >/dev/null 2>&1; then fail "preflight: a docker build is running"; fi
+}
+
+stack_setup() {
+  STACK_MODE=$1
+  need_tool docker
+  need_tool go
+  need_tool python3
+  need_tool shasum
+  need_tool git
+  [ "$(docker version --format '{{.Server.Arch}}')" = arm64 ] || fail "docker server is not arm64"
+  [ "$(GOTOOLCHAIN=$GO_TOOLCHAIN go env GOVERSION)" = "$GO_TOOLCHAIN" ] || fail "go toolchain is not $GO_TOOLCHAIN"
+  stack_preflight
+  disk_guard
+  EVID_NAME=$STACK_EVID_NAME
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-stack.XXXXXX")
+  chmod 0755 "$WORK"
+  trap cleanup EXIT
+  mkdir -p "$WORK/wrap" "$WORK/tools" "$WORK/gen"
+  chmod 0755 "$WORK/wrap" "$WORK/tools"
+  chmod 0777 "$WORK/gen"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+  chmod 0644 "$WORK/wrap/measure_wrap.py"
+  write_stack_tools
+  LINES=$EVID
+  mkdir -p "$(dirname "$LINES")"
+  stack_rule_lines > "$LINES"
+  ENGINE_TAG_PREFIX=engine76-
+  TAG=$(build_engine) || stack_stop "reason=engine_build_failed"
+  BUILT_TAGS+=("$TAG")
+  cad_require_native "$TAG" || stack_stop "reason=engine_image_not_native"
+  ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
+  TRIPLET=$(triplet_for "$ARCH")
+  MESH_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/$TRIPLET:/usr/local/bin/cad-mesh"
+  RENDER_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/$TRIPLET:/usr/local/bin/cad-render"
+  mkdir -p "$WORK/bin"
+  chmod 0755 "$WORK/bin"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/bin/sandbox-probe" ./scripts/cmd/sandbox-probe
+  chmod 0755 "$WORK/bin/sandbox-probe"
+  stack_disk_guard
+  {
+    printf 'HDR,mode=%s,date_utc=%s\n' "$STACK_MODE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'HDR,mode=%s,commit=%s,tracked_dirt=%s\n' "$STACK_MODE" "$(git rev-parse HEAD)" "$(tracked_dirt)"
+    printf 'HDR,mode=%s,image=%s,image_id=%s,server_arch=%s\n' "$STACK_MODE" "$TAG" "$(docker image inspect "$TAG" --format '{{.Id}}')" \
+      "$(docker version --format '{{.Server.Arch}}')"
+    printf 'HDR,mode=%s,load1=%s,vm_free_gib=%s\n' "$STACK_MODE" "$(load1_now)" "$STACK_FREE"
+    printf 'HDR,mode=%s,cad_mesh_sha256=%s,cad_render_sha256=%s,cad_guard_sha256=%s,generator_sha256=%s,measure_wrap_sha256=%s\n' "$STACK_MODE" \
+      "$(sha_of cmd/cad-worker/helper/cad-mesh)" "$(sha_of cmd/cad-worker/helper/cad-render)" "$(sha_of cmd/cad-worker/helper/cad-guard)" \
+      "$(sha_of scripts/cad-corpus-gen.py)" "$(sha_of "$WRAP_PY")"
+    printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job_LANG=C.UTF-8_TMPDIR=/job_LP_NUM_THREADS=2,wrap_budget_s=%s,go=%s,size=%s,view=iso,background=opaque,quality=standard\n' \
+      "$STACK_MODE" "$STACK_BUDGET_S" "$GO_TOOLCHAIN" "$SIZE"
+    printf 'HDR,mode=%s,ro_mesh=%s,ro_render=%s,rw=/job,guard=unconfined_/usr/bin/python3_-IB_as_in_75-03,guard_caps=--max-entities_%s_--max-nauo_%s,triangle_cap=%s\n' \
+      "$STACK_MODE" "$MESH_RO" "$RENDER_RO" "$STACK_MAX_ENTITIES" "$STACK_MAX_NAUO" "$STACK_TRI_CAP"
+  } >> "$LINES"
+}
+
+stack_gen() {
+  local out
+  out=$(docker run --rm --network none --cpus 2 --memory "${GEN_MEM:-4g}" --memory-swap "${GEN_MEM:-4g}" --user nobody \
+    -e HOME=/tmp -e PYTHONHASHSEED=0 -v "$REPO_ROOT:/src:ro" -v "$WORK/gen:/out" \
+    ${GEN_MOUNTS[@]+"${GEN_MOUNTS[@]}"} -w /src --entrypoint /opt/venv/bin/python "$TAG" -B "${GEN_SCRIPT:-scripts/cad-corpus-gen.py}" \
+    "$@" --scaled-dir "${GEN_OUT:-/out}" </dev/null 2>"$WORK/gen.err") || {
+    tail -n 5 "$WORK/gen.err" >&2
+    stack_stop "reason=generator_failed,args=$(printf '%s' "$*" | tr ' ,=' '___')"
+  }
+  printf '%s\n' "$out"
+}
+
+stack_stage() {
+  local job=$1 stage=$2 confine=$3 rc_w=0 dir
+  shift 3
+  dir="$job/w_$stage"
+  mkdir -p "$dir"
+  chmod 0777 "$dir"
+  if [ "$confine" = none ]; then
+    docker run --rm "${LIMITS[@]}" "${STACK_ENV[@]}" -v "$WORK/wrap:/wrap:ro" -v "$job:/job" \
+      --entrypoint /usr/bin/python3 "$TAG" -I -B /wrap/measure_wrap.py --budget-s "$STACK_BUDGET_S" --outdir "/job/w_$stage" -- \
+      "$@" > "$dir/wrap.out" 2>/dev/null </dev/null || rc_w=$?
+  else
+    docker run --rm "${LIMITS[@]}" "${STACK_ENV[@]}" -e "PROBE_RO=$confine" -e "PROBE_RW=/job" -v "$WORK/bin:/gobin:ro" \
+      -v "$WORK/wrap:/wrap:ro" -v "$job:/job" --entrypoint /usr/bin/python3 "$TAG" -I -B /wrap/measure_wrap.py \
+      --budget-s "$STACK_BUDGET_S" --outdir "/job/w_$stage" -- /gobin/sandbox-probe "$@" > "$dir/wrap.out" 2>/dev/null </dev/null || rc_w=$?
+  fi
+  printf '%s\n' "$rc_w" > "$dir/rc_w"
+}
+
+stack_emit() {
+  local shape=$1 fmt=$2 rung=$3 size=$4 digest=$5 job=$6 stage=$7 tri_in=$8 load=$9 free=${10} line
+  line=$(python3 "$WORK/tools/stack.py" row "$shape" "$fmt" "$rung" "$size" "$digest" "$stage" "$job/w_$stage/wrap.out" \
+    "$job/w_$stage/child.log" "$(cat "$job/w_$stage/rc_w")" "$tri_in" "$job/mesh.stl" "$load" "$free")
+  printf '%s\n' "$line" >> "$LINES"
+  log "$(printf '%s' "$line" | tr ',' '\n' | grep -E '^(shape|rung|stage|wall_s|triangles|band|class)=' | tr '\n' ' ')"
+  ROW_BAND=$(scaled_field band "$line")
+  ROW_CLASS=$(scaled_field class "$line")
+  ROW_TRI=$(scaled_field triangles "$line")
+  if [ "$ROW_CLASS" = fail ]; then
+    tail -n 8 "$job/w_$stage/child.log" >&2 2>/dev/null || true
+    stack_stop "reason=stage_failed,shape=$shape,rung=$rung,stage=$stage,rc=$(scaled_field rc "$line"),rc_wrap=$(cat "$job/w_$stage/rc_w")"
+  fi
+}
+
+stack_sample() {
+  stack_disk_guard
+  STACK_LOAD=$(load1_now)
+}
+
+stack_rung() {
+  local shape=$1 fmt=$2 rung=$3 src=$4 job size digest in
+  log "rung $shape $rung ($(bytes_of "$src") bytes)"
+  job=$(new_job)
+  in="/job/in.$fmt"
+  cp -c "$src" "$job/in.$fmt" 2>/dev/null || cp "$src" "$job/in.$fmt"
+  chmod 0644 "$job/in.$fmt"
+  size=$(bytes_of "$src")
+  digest=$(sha_of "$src")
+  RUNG_BAND=within
+  if [ "$fmt" = stl ]; then
+    stack_sample
+    stack_stage "$job" stats "$MESH_RO" /usr/local/bin/cad-mesh stats --measure /job/draft.json "$in" /job/mesh.stl
+    stack_emit "$shape" "$fmt" "$rung" "$size" "$digest" "$job" stats na "$STACK_LOAD" "$STACK_FREE"
+  else
+    stack_sample
+    stack_stage "$job" guard none /usr/bin/python3 -IB /usr/local/bin/cad-guard --format "$fmt" --max-entities "$STACK_MAX_ENTITIES" \
+      --max-nauo "$STACK_MAX_NAUO" "$in"
+    stack_emit "$shape" "$fmt" "$rung" "$size" "$digest" "$job" guard na "$STACK_LOAD" "$STACK_FREE"
+    if [ "$ROW_BAND" = refused_by_cap ]; then
+      RUNG_BAND=refused_by_cap
+      rm -rf "$job"
+      return 0
+    fi
+    stack_sample
+    stack_stage "$job" mesh "$MESH_RO" /usr/local/bin/cad-mesh --format "$fmt" "$in" /job/mesh.stl --quality standard --measure /job/draft.json
+    stack_emit "$shape" "$fmt" "$rung" "$size" "$digest" "$job" mesh na "$STACK_LOAD" "$STACK_FREE"
+  fi
+  if [ "$ROW_BAND" = over ]; then
+    RUNG_BAND=over
+    rm -rf "$job"
+    return 0
+  fi
+  if [ "$ROW_TRI" -gt "$STACK_TRI_CAP" ]; then
+    printf 'STACK_ROW,shape=%s,format=%s,rung=%s,bytes=%s,triangles=%s,stage=render,rc=na,wall_s=na,child_rss_mib=na,cg_peak_mib=na,oom_kill=na,timeout=na,band=refused_by_cap,load1=%s,vm_free_gib=%s,sha256=%s,verdict=not_run,reason=triangles_over_%s,class=refused,threads_max=na\n' \
+      "$shape" "$fmt" "$rung" "$size" "$ROW_TRI" "$(load1_now)" "$STACK_FREE" "$digest" "$STACK_TRI_CAP" >> "$LINES"
+    log "rung $shape $rung render refused_by_cap ($ROW_TRI triangles)"
+    RUNG_BAND=refused_by_cap
+    rm -rf "$job"
+    return 0
+  fi
+  local tri=$ROW_TRI
+  rm -f "$job/in.$fmt"
+  stack_sample
+  stack_stage "$job" render "$RENDER_RO" /usr/local/bin/cad-render --view iso --size "$SIZE" --background opaque /job/mesh.stl /job/out.png
+  stack_emit "$shape" "$fmt" "$rung" "$size" "$digest" "$job" render "$tri" "$STACK_LOAD" "$STACK_FREE"
+  [ "$ROW_BAND" != over ] || RUNG_BAND=over
+  rm -rf "$job"
+  return 0
+}
+
+stack_not_run() {
+  local shape=$1 r
+  shift
+  for r in "$@"; do printf 'NOT_RUN,shape=%s,rung=%s,reason=over_budget_below\n' "$shape" "$r" >> "$LINES"; done
+}
+
+gen_file_of() {
+  local out=$1 kind=$2 line
+  line=$(printf '%s\n' "$out" | grep "^SCALED,kind=$kind," | tail -n 1)
+  [ -n "$line" ] || stack_stop "reason=generator_gave_no_scaled_line,kind=$kind"
+  printf '%s\n' "$line" | grep -q ',check=ok' || stack_stop "reason=generator_self_check_failed,kind=$kind"
+  GEN_LINE=$line
+  GEN_PATH="$WORK/gen/$(scaled_field file "$line")"
+  [ -s "$GEN_PATH" ] || stack_stop "reason=generated_file_missing,kind=$kind"
+}
+
+stack_s1() {
+  local i k out
+  for i in "${!STACK_S1[@]}"; do
+    k=${STACK_S1[$i]}
+    GEN_MOUNTS=()
+    out=$(stack_gen --kind stl-stack --part cube --targets "$k")
+    gen_file_of "$out" stl-stack
+    printf 'GEN,shape=S1,rung=k%s,%s\n' "$k" "${GEN_LINE#SCALED,}" >> "$LINES"
+    stack_rung S1 stl "k$k" "$GEN_PATH"
+    rm -f "$GEN_PATH"
+    if [ "$RUNG_BAND" = over ]; then
+      stack_not_run S1 $(for k in "${STACK_S1[@]:$((i + 1))}"; do printf 'k%s ' "$k"; done)
+      return 0
+    fi
+  done
+}
+
+stack_s2() {
+  local large tri i k out size list=()
+  large=$(sed -n 's/^FLOOR,format=stl,.*,path=\(.*\)$/\1/p' "$LINES")
+  [ -s "$large" ] || stack_stop "reason=no_large_stl"
+  tri=$(( ($(bytes_of "$large") - 84) / 50 ))
+  for k in "${STACK_S2[@]}"; do
+    size=$(( 84 + 50 * k * tri ))
+    if [ "$size" -le "$STACK_STL_MAX_BYTES" ]; then
+      list+=("$k")
+    else
+      printf 'RUNG_SKIP,shape=S2,rung=k%s,bytes=%s,triangles=%s,reason=over_stl_ceiling_190840832\n' "$k" "$size" "$((k * tri))" >> "$LINES"
+    fi
+  done
+  [ "${#list[@]}" -gt 0 ] || stack_stop "reason=s2_has_no_rung_under_the_stl_ceiling"
+  for i in "${!list[@]}"; do
+    k=${list[$i]}
+    GEN_MOUNTS=(-v "$large:/base/$(basename "$large"):ro")
+    out=$(stack_gen --kind stl-stack --scaled-from "/base/$(basename "$large")" --targets "$k")
+    gen_file_of "$out" stl-stack
+    printf 'GEN,shape=S2,rung=k%s,%s\n' "$k" "${GEN_LINE#SCALED,}" >> "$LINES"
+    stack_rung S2 stl "k$k" "$GEN_PATH"
+    rm -f "$GEN_PATH"
+    if [ "$RUNG_BAND" = over ]; then
+      stack_not_run S2 $(for k in "${list[@]:$((i + 1))}"; do printf 'k%s ' "$k"; done)
+      return 0
+    fi
+  done
+}
+
+stack_nauo() {
+  local shape=$1 pitch=$2 i n out
+  for i in "${!STACK_NAUO[@]}"; do
+    n=${STACK_NAUO[$i]}
+    GEN_MOUNTS=()
+    if [ "$pitch" = grid ]; then
+      out=$(stack_gen --scaled-from "$STACK_STEP_BASE" --kind step-nauo --targets "$n")
+    else
+      out=$(stack_gen --scaled-from "$STACK_STEP_BASE" --kind step-nauo --targets "$n" --nauo-pitch "$pitch")
+    fi
+    gen_file_of "$out" step-nauo
+    printf 'GEN,shape=%s,rung=n%s,%s\n' "$shape" "$n" "${GEN_LINE#SCALED,}" >> "$LINES"
+    stack_rung "$shape" step "n$n" "$GEN_PATH"
+    rm -f "$GEN_PATH"
+    if [ "$RUNG_BAND" = over ]; then
+      stack_not_run "$shape" $(for n in "${STACK_NAUO[@]:$((i + 1))}"; do printf 'n%s ' "$n"; done)
+      return 0
+    fi
+  done
+}
+
+step_copies_gen() {
+  local t=$1 out
+  GEN_MOUNTS=()
+  out=$(stack_gen --scaled-from "$STACK_STEP_BASE" --kind step-copies --targets "$t")
+  gen_file_of "$out" step-copies
+}
+
+stack_s4() {
+  local i t targets=()
+  t=$STACK_S4_CEIL_TARGET
+  while :; do
+    step_copies_gen "$t"
+    if [ "$(bytes_of "$GEN_PATH")" -le "$STACK_STEP_MAX_BYTES" ]; then break; fi
+    printf 'RUNG_PICK,shape=S4,target=%sMiB,bytes=%s,reason=over_66060288\n' "$t" "$(bytes_of "$GEN_PATH")" >> "$LINES"
+    rm -f "$GEN_PATH"
+    t=$((t - 1))
+    [ "$t" -gt "${STACK_S4[${#STACK_S4[@]}-1]}" ] || stack_stop "reason=s4_no_ceiling_rung"
+  done
+  printf 'RUNG_PICK,shape=S4,target=%sMiB,bytes=%s,reason=ceiling_rung\n' "$t" "$(bytes_of "$GEN_PATH")" >> "$LINES"
+  rm -f "$GEN_PATH"
+  targets=("${STACK_S4[@]}" "$t")
+  for i in "${!targets[@]}"; do
+    t=${targets[$i]}
+    step_copies_gen "$t"
+    printf 'GEN,shape=S4,rung=%sMiB,%s\n' "$t" "${GEN_LINE#SCALED,}" >> "$LINES"
+    stack_rung S4 step "${t}MiB" "$GEN_PATH"
+    rm -f "$GEN_PATH"
+    if [ "$RUNG_BAND" = over ]; then
+      stack_not_run S4 $(for t in "${targets[@]:$((i + 1))}"; do printf '%sMiB ' "$t"; done)
+      return 0
+    fi
+  done
+}
+
+iges_of_copies() {
+  local t=$1 out step
+  step_copies_gen "$t"
+  step=$GEN_PATH
+  GEN_MOUNTS=()
+  out=$(GEN_MEM=8g stack_gen --scaled-from "/out/$(basename "$step")" --kind iges-from-step --targets 1)
+  gen_file_of "$out" iges-from-step
+  IGES_STEP_BYTES=$(bytes_of "$step")
+  rm -f "$step"
+}
+
+iges_pick() {
+  local limit=$1 ratio=$2 t best="" best_path="" tries=0 b
+  t=$(python3 -c "import sys; print(max(2, int(int(sys.argv[1]) / float(sys.argv[2]) / 1048576)))" "$limit" "$ratio")
+  while [ "$tries" -lt 8 ]; do
+    tries=$((tries + 1))
+    iges_of_copies "$t"
+    b=$(bytes_of "$GEN_PATH")
+    printf 'RUNG_PICK,shape=S5,limit=%s,step_target=%sMiB,step_bytes=%s,iges_bytes=%s,fits=%s\n' "$limit" "$t" "$IGES_STEP_BYTES" "$b" \
+      "$([ "$b" -le "$limit" ] && echo 1 || echo 0)" >> "$LINES"
+    if [ "$b" -le "$limit" ]; then
+      [ -z "$best_path" ] || rm -f "$best_path"
+      best=$t
+      best_path="$WORK/s5-pick-$t.igs"
+      mv -f "$GEN_PATH" "$best_path"
+      PICK_LINE=$GEN_LINE
+      t=$((t + 1))
+    else
+      rm -f "$GEN_PATH"
+      [ -z "$best" ] || break
+      t=$((t - 1))
+      [ "$t" -ge 2 ] || stack_stop "reason=s5_no_iges_under_limit,limit=$limit"
+    fi
+  done
+  [ -n "$best" ] || stack_stop "reason=s5_pick_did_not_settle,limit=$limit"
+  PICK_T=$best
+  PICK_PATH=$best_path
+}
+
+stack_s5() {
+  local ratio i limit limits=() labels=() t
+  iges_of_copies 4
+  ratio=$(python3 -c "import sys; print('%.6f' % (int(sys.argv[1]) / int(sys.argv[2])))" "$(bytes_of "$GEN_PATH")" "$IGES_STEP_BYTES")
+  printf 'RUNG_PICK,shape=S5,calibration=step_copies_4MiB,step_bytes=%s,iges_bytes=%s,ratio=%s\n' "$IGES_STEP_BYTES" "$(bytes_of "$GEN_PATH")" "$ratio" >> "$LINES"
+  rm -f "$GEN_PATH"
+  for t in "${STACK_S5_MIB[@]}"; do limits+=("$((t * 1048576))"); labels+=("${t}MiB"); done
+  limits+=("$STACK_IGES_MAX_BYTES"); labels+=(max)
+  for i in "${!limits[@]}"; do
+    limit=${limits[$i]}
+    iges_pick "$limit" "$ratio"
+    printf 'GEN,shape=S5,rung=%s,step_target=%sMiB,%s\n' "${labels[$i]}" "$PICK_T" "${PICK_LINE#SCALED,}" >> "$LINES"
+    stack_rung S5 iges "${labels[$i]}" "$PICK_PATH"
+    rm -f "$PICK_PATH"
+    if [ "$RUNG_BAND" = over ]; then
+      stack_not_run S5 "${labels[@]:$((i + 1))}"
+      return 0
+    fi
+  done
+}
+
+gen_identity() {
+  local ref out_main out_new sha_main sha_new base
+  ref=main
+  git rev-parse --verify -q "$ref^{commit}" >/dev/null || ref=origin/main
+  mkdir -p "$WORK/maingen" "$WORK/gen/main" "$WORK/gen/new"
+  chmod 0755 "$WORK/maingen"
+  chmod 0777 "$WORK/gen/main" "$WORK/gen/new"
+  git show "$ref:scripts/cad-corpus-gen.py" > "$WORK/maingen/cad-corpus-gen.py"
+  chmod 0644 "$WORK/maingen/cad-corpus-gen.py"
+  base=$1
+  GEN_MOUNTS=(-v "$WORK/maingen:/maingen:ro")
+  out_main=$(GEN_SCRIPT=/maingen/cad-corpus-gen.py GEN_OUT=/out/main stack_gen --scaled-from "/out/$(basename "$base")" --kind stl-tile --targets 2)
+  GEN_MOUNTS=()
+  out_new=$(GEN_OUT=/out/new stack_gen --scaled-from "/out/$(basename "$base")" --kind stl-tile --targets 2)
+  sha_main=$(scaled_field sha "$(printf '%s\n' "$out_main" | grep '^SCALED,kind=stl-tile,')")
+  sha_new=$(scaled_field sha "$(printf '%s\n' "$out_new" | grep '^SCALED,kind=stl-tile,')")
+  local f_main f_new
+  f_main=$(ls "$WORK/gen/main"/stl-tile-*.stl 2>/dev/null | head -n 1)
+  f_new=$(ls "$WORK/gen/new"/stl-tile-*.stl 2>/dev/null | head -n 1)
+  local eq=0
+  if [ -n "$sha_main" ] && [ "$sha_main" = "$sha_new" ] && [ -s "$f_main" ] && [ "$(sha_of "$f_main")" = "$(sha_of "$f_new")" ]; then eq=1; fi
+  printf 'GEN_IDENTITY,kind=stl-tile,base=%s,targets=2MiB,main_ref=%s,main_commit=%s,main_sha256=%s,new_sha256=%s,main_file_sha256=%s,new_file_sha256=%s,equal=%s\n' \
+    "$(basename "$base")" "$ref" "$(git rev-parse "$ref")" "${sha_main:-none}" "${sha_new:-none}" \
+    "$( [ -s "$f_main" ] && sha_of "$f_main" || echo none)" "$( [ -s "$f_new" ] && sha_of "$f_new" || echo none)" "$eq" >> "$LINES"
+  rm -rf "$WORK/gen/main" "$WORK/gen/new"
+  GEN_EQUAL=$eq
+}
+
+stack_smoke_mode() {
+  local out bad
+  stack_setup stack_smoke
+  GEN_MOUNTS=()
+  out=$(stack_gen --kind stl-stack --part cube --targets 64)
+  gen_file_of "$out" stl-stack
+  printf 'GEN,shape=S1,rung=k64,%s\n' "${GEN_LINE#SCALED,}" >> "$LINES"
+  stack_rung S1 stl k64 "$GEN_PATH"
+  gen_identity "$GEN_PATH"
+  rm -f "$GEN_PATH"
+  bad=$(grep '^STACK_ROW,' "$LINES" | grep -vc ',rc=0,' || true)
+  if [ "$bad" = 0 ] && [ "$GEN_EQUAL" = 1 ] && [ "$(grep -c '^STACK_ROW,' "$LINES")" = 2 ]; then
+    printf 'SUMMARY,mode=stack_smoke,rows=1,result=ok,stack_rows=2,gen_identity=1\n' >> "$LINES"
+    grep -E '^(STACK_ROW|GEN_IDENTITY|SUMMARY),' "$LINES" >&2
+    exit 0
+  fi
+  printf 'SUMMARY,mode=stack_smoke,rows=1,result=fail,stack_rows=%s,gen_identity=%s\n' "$(grep -c '^STACK_ROW,' "$LINES")" "$GEN_EQUAL" >> "$LINES"
+  exit 1
+}
+
+stack_mode() {
+  stack_setup stack
+  python3 "$WORK/tools/stack.py" floors scripts/cad-liveproof.sh "$REPO_ROOT/internal/convert/testdata/cad" "$CAD_CACHE/fetched" >> "$LINES" \
+    || stack_stop "reason=floors_failed"
+  stack_s1
+  stack_s2
+  stack_nauo S3 grid
+  stack_s4
+  stack_s5
+  stack_nauo S6 0
+  python3 "$WORK/tools/stack.py" decide "$LINES" > "$WORK/decide.out" || { cat "$WORK/decide.out" >> "$LINES"; exit 1; }
+  cat "$WORK/decide.out" >> "$LINES"
+  grep -E '^(STACK_DECISION|STACK_GLOBAL|SUMMARY),' "$LINES" >&2
+  exit 0
+}
+
 MODE=${1:-}
 [ -n "$MODE" ] || usage
 shift
 OUT_SET=0
+SMOKE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) [ $# -ge 2 ] || usage; EVID=$2; OUT_SET=1; shift 2 ;;
+    --smoke) [ "$MODE" = stack ] || usage; SMOKE=1; shift ;;
     *) usage ;;
   esac
 done
@@ -1305,5 +2028,12 @@ case "$MODE" in
     smoke_mode ;;
   run) run_mode ;;
   floor) floor_mode ;;
+  stack)
+    if [ "$SMOKE" = 1 ]; then
+      [ "$OUT_SET" = 1 ] || EVID="${TMPDIR:-/tmp}/76-01-stack-smoke.txt"
+      stack_smoke_mode
+    fi
+    [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$STACK_EVID_REL"
+    stack_mode ;;
   *) usage ;;
 esac
