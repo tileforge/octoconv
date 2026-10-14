@@ -20,7 +20,8 @@ job that is done with attempts=1.
 
 --smoke   one render_step row of public/LinearSlide-MGN15x-Block.step to png at size 1280
           (default output: a file under TMPDIR).
---cells   the CELLSPEC lines of FILE (derive76 --select-cells), CAD_INWORKER_N rows each (default 3).
+--cells   the CELLSPEC lines of the last derive76 --select-cells section of FILE (the whole file when it has no
+          section header), CAD_INWORKER_N rows each (default 3); a STOP line in that section refuses the run.
 
 The cad-worker must carry the measurement deadlines of an untracked docker-compose.override.yml
 (guard 120s, mesh 900s, render 900s, dxf 600s, rsvg 600s, engine 3600s); the API is reached at
@@ -508,8 +509,9 @@ if [ "$SMOKE" = 1 ]; then
 	exit 0
 fi
 
-grep '^CELLSPEC,' "$CELLS" > "$W/cells.txt" || fail "no CELLSPEC line in $CELLS"
-if grep -q '^STOP,' "$CELLS"; then fail "$CELLS carries a STOP line"; fi
+awk '/^HDR,mode=derive76_select,/ { n = NR } { l[NR] = $0 } END { for (i = n + 1; i <= NR; i++) print l[i] }' "$CELLS" > "$W/section.txt"
+grep '^CELLSPEC,' "$W/section.txt" > "$W/cells.txt" || fail "no CELLSPEC line in the last section of $CELLS"
+if grep -q '^STOP,' "$W/section.txt"; then fail "the last section of $CELLS carries a STOP line"; fi
 while IFS= read -r spec; do
 	file=$(printf '%s' "$spec" | tr ',' '\n' | sed -n 's/^file=//p')
 	sha=$(printf '%s' "$spec" | tr ',' '\n' | sed -n 's/^sha256=//p')

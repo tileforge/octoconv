@@ -42,6 +42,7 @@ Usage:
   scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
   scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun [--row-log LOG]|--finish [--out FILE]
   scripts/cad-dxf-bounds.sh derive76 --select-cells [--out FILE]
+  scripts/cad-dxf-bounds.sh derive76 --ladder render_iges|memory_iges [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -94,7 +95,13 @@ derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells wri
        variant whose rows of band within or margin have the largest sum of per-stage maxima (RULE inworker), with its
        file, sha256 re-checked against the 76-02 CELL line, target, operation and opts (default output
        .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt). A route with no eligible
-       cell is STOP.
+       cell is STOP. --select-cells appends a new section when the file exists and reads the amendments and the
+       ladder results of evidence/76-03-ladders.txt.
+       --ladder runs one pre-registered ladder of the RULE_AMEND lines of 76-03-cells.txt on the 76-02 engine image,
+       under caffeinate, appending BOUND76_ROW, LADDER_RUNG and LADDER_RESULT lines to evidence/76-03-ladders.txt:
+       render_iges renders IGES copies at 16, 8, 4 and 2 MiB until ceil(1.5W) <= 402; memory_iges meshes IGES copies at
+       128 down to 96 MiB and runs scripts/cad-inworker-measure.sh on a rung whose mesh peak fits, until mesh peak plus
+       go peak <= 2867.2 MiB.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -2977,6 +2984,7 @@ b76_make_cell() {
     S1_k*) CELL_FMT=stl; b76_make_simple "$name" stl-stack "stl-stack:cube:${name#S1_k}" --kind stl-stack --part cube --targets "${name#S1_k}" ;;
     S6_n*) CELL_FMT=step; b76_make_simple "$name" step-nauo "step-nauo:$STACK_STEP_BASE:${name#S6_n}:pitch0" --scaled-from "$STACK_STEP_BASE" --kind step-nauo --targets "${name#S6_n}" --nauo-pitch 0 ;;
     S5_*) CELL_FMT=iges; b76_make_s5 "$name" ;;
+    IR*MiB|IM*MiB) CELL_FMT=iges; d76_make_iges "$name" "$(d76_target_of "$name")" ;;
     *) b76_stop "reason=unknown_cell_$name" ;;
   esac
 }
@@ -3008,7 +3016,7 @@ b76_role_of() {
 
 b76_stacked_of() {
   case "$1" in
-    M1|M3|S1_*|S5_*|S6_*) echo 1 ;;
+    M1|M3|S1_*|S5_*|S6_*|IR*MiB|IM*MiB) echo 1 ;;
     *) echo 0 ;;
   esac
 }
@@ -3072,6 +3080,7 @@ b76_cell() {
     M1) [ "$CELL_BYTES" = "$B76_STEP_MAX" ] && [ "$gap" = 0 ] || b76_stop "reason=m1_not_at_the_ceiling,bytes=$CELL_BYTES" ;;
     M2) [ "$GP_INSTANCES" = "$B76_NAUO" ] || b76_stop "reason=m2_instances_$GP_INSTANCES" ;;
     M3) [ "$gap" -ge 0 ] && [ "$gap" -lt 82 ] || b76_stop "reason=m3_gap_$gap" ;;
+    IR*MiB|IM*MiB) [ "$gap" -ge 0 ] && [ "$gap" -lt 82 ] && [ "$CELL_BYTES" -le "$(d76_target_of "$name")" ] || b76_stop "reason=rung_gap_$gap,cell=$name" ;;
     M4) [ "$CELL_BYTES" = $(( 84 + 50 * ((B76_STL_MAX - 84) / 50) )) ] || b76_stop "reason=m4_bytes_$CELL_BYTES" ;;
     C) [ "$GP_ENTITIES" = "$B76_C_ENTITIES" ] && [ "$CELL_BYTES" -le "$B76_DXF_MAX" ] || b76_stop "reason=c_entities_$GP_ENTITIES,bytes=$CELL_BYTES" ;;
     L170030) [ "$GP_ENTITIES" = "$B76_L170030_ENTITIES" ] || b76_stop "reason=l170030_entities_$GP_ENTITIES" ;;
@@ -3789,6 +3798,239 @@ b76_smoke() {
   exit 0
 }
 
+D76_LADDER_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-ladders.txt
+D76_R_UPPER=402
+D76_POD_MIB=2867.2
+D76_RENDER_RUNGS=(IR16MiB:16777216 IR8MiB:8388608 IR4MiB:4194304 IR2MiB:2097152)
+D76_MEMORY_RUNGS=(IM128MiB:134217728 IM120MiB:125829120 IM112MiB:117440512 IM104MiB:109051904 IM96MiB:100663296)
+D76_PER=""
+D76_FIXED=""
+
+d76_target_of() {
+  local s
+  for s in "${D76_RENDER_RUNGS[@]}" "${D76_MEMORY_RUNGS[@]}"; do
+    [ "${s%%:*}" != "$1" ] || { printf '%s\n' "${s#*:}"; return 0; }
+  done
+  return 1
+}
+
+d76_ceil15() { python3 -c "import math, sys; print(int(math.ceil(round(1.5 * float(sys.argv[1]), 6))))" "$1"; }
+
+d76_iges_try() {
+  local k=$1 target=$2 step
+  GEN_MOUNTS=()
+  b76_gen "$WORK/gen.out" --scaled-from "$STACK_STEP_BASE" --kind step-copies --copies "$k"
+  b76_gen_file "$WORK/gen.out" step-copies
+  step=$GEN_PATH
+  GEN_MEM=$B76_IGES_GEN_MEM b76_gen "$WORK/gen.out" --scaled-from "/out/$(basename "$step")" --kind iges-from-step --exact-bytes "$target"
+  IT_STEP_BYTES=$(bytes_of "$step")
+  rm -f "$step"
+  if grep -q '^SCALED_SKIP,kind=iges-from-step,.*reason=over_target_bytes' "$WORK/gen.out"; then
+    IT_FIT=0
+    IT_BYTES=$(scaled_field bytes "$(grep '^SCALED_SKIP,kind=iges-from-step,' "$WORK/gen.out" | tail -n 1)")
+    GEN_PATH=""
+  else
+    b76_gen_file "$WORK/gen.out" iges-from-step
+    IT_FIT=1
+    IT_BYTES=$(scaled_field unpadded_bytes "$GEN_LINE")
+  fi
+}
+
+d76_make_iges() {
+  local name=$1 target=$2 key k b4="" b8="" tries=0 ok_k="" extras="$WORK/picks.$1" keep="$WORK/keep-$1.igs" line=""
+  key=$(b76_cache_key "$name:iges-from-step:step-copies:$STACK_STEP_BASE:exact=$target:largest")
+  b76_cache_get "$name" "$key" && return 0
+  : > "$extras"
+  if [ -z "$D76_PER" ]; then
+    for k in 4 8; do
+      d76_iges_try "$k" "$B76_IGES_MAX"
+      [ "$IT_FIT" = 1 ] || b76_stop "reason=iges_calibration_over,copies=$k"
+      if [ "$k" = 4 ]; then b4=$IT_BYTES; else b8=$IT_BYTES; fi
+      rm -f "$GEN_PATH"
+    done
+    D76_PER=$(( (b8 - b4) / 4 ))
+    D76_FIXED=$(( b4 - 4 * D76_PER ))
+    D76_CAL="4:$b4+8:$b8"
+  fi
+  printf 'CELL_PICK,cell=%s,calibration=%s,per_copy_bytes=%s,fixed_bytes=%s,role=calibration\n' "$name" "$D76_CAL" "$D76_PER" "$D76_FIXED" >> "$extras"
+  k=$(( (target - D76_FIXED) / D76_PER ))
+  [ "$k" -ge 1 ] || k=1
+  while [ "$tries" -lt 10 ]; do
+    tries=$((tries + 1))
+    d76_iges_try "$k" "$target"
+    printf 'CELL_PICK,cell=%s,copies=%s,step_bytes=%s,iges_unpadded_bytes=%s,fits=%s,target_bytes=%s,role=search\n' "$name" "$k" "$IT_STEP_BYTES" "$IT_BYTES" "$IT_FIT" "$target" >> "$extras"
+    log "$name pick copies=$k iges=$IT_BYTES fits=$IT_FIT"
+    if [ "$IT_FIT" = 1 ]; then
+      ok_k=$k
+      mv -f "$GEN_PATH" "$keep"
+      line=$GEN_LINE
+      k=$((k + 1))
+    else
+      if [ -n "$ok_k" ] && [ "$k" = $((ok_k + 1)) ]; then
+        b76_cache_put "$name" "$key" "$keep" "$line" "$extras"
+        return 0
+      fi
+      k=$((k - 1))
+      [ "$k" -ge 1 ] || b76_stop "reason=iges_rung_no_copies_fit,cell=$name"
+    fi
+  done
+  b76_stop "reason=iges_rung_search_did_not_settle,cell=$name"
+}
+
+d76_rows_of() {
+  python3 - "$B76_OUT" "$1" "$2" "$3" "$B76_GROUP" <<'PY'
+import sys
+path, cell, stage, quality, group = sys.argv[1:6]
+peak, oom, n, walls = 0.0, 0, 0, []
+for line in open(path):
+    if not line.startswith("BOUND76_ROW,"):
+        continue
+    d = dict(p.split("=", 1) for p in line.rstrip("\n").split(",")[1:] if "=" in p)
+    if d.get("cell") != cell or d.get("stage") != stage or d.get("group") != group:
+        continue
+    if quality != "any" and d.get("quality") != quality:
+        continue
+    n += 1
+    try:
+        peak = max(peak, float(d.get("peak_mib", "0")))
+    except ValueError:
+        pass
+    if d.get("oom_kill", "0") not in ("0", "na"):
+        oom += 1
+print("%d %.1f %d" % (n, peak, oom))
+PY
+}
+
+d76_hdr() {
+  local ladder=$1
+  b76_sample
+  printf 'HDR,mode=derive76_ladder,ladder=%s,date_utc=%s,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,server_arch=%s,load1=%s,vm_free_gib=%s,caffeinate_pid=%s,caffeinate_on_behalf_of=%s,prevent_system_sleep=1,amend_source=%s,amend_sha256=%s\n' \
+    "$ladder" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(docker version --format '{{.Server.Arch}}')" \
+    "$B76_LOAD" "$B76_FREE" "$B76_CAFF_PID" "$B76_CAFF_FOR" "$D76_CELLS_REL" \
+    "$(grep '^RULE_AMEND,' "$REPO_ROOT/$D76_CELLS_REL" | shasum -a 256 | awk '{print $1}')" >> "$B76_OUT"
+}
+
+d76_render_ladder() {
+  local spec name target keepdir rep w c15 refused rmax to tri
+  for spec in "${D76_RENDER_RUNGS[@]}"; do
+    name=${spec%%:*}
+    target=${spec#*:}
+    b76_cell "$name" "$B76_OUT"
+    keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+    for rep in $(seq 1 "$B76_N"); do b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; done
+    for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" standard "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    [ -f "$keepdir/tri_standard" ] || b76_stop "reason=ladder_no_admitted_standard_mesh,cell=$name"
+    PICK_Q=standard
+    refused=0
+    rmax=0
+    to=0
+    for rep in $(seq 1 "$B76_N"); do
+      if [ "$refused" = 1 ]; then
+        printf 'NOT_RUN,cell=%s,stage=render,quality=standard,view=iso,background=opaque,rep=%s,reason=rung_refused_by_max\n' "$name" "$rep" >> "$B76_OUT"
+        continue
+      fi
+      b76_render_row "$name" standard iso opaque "$rep" 1 "$B76_SETTER_S" "$keepdir"
+      w=$(b76_wall_or_budget "$RENDER_WALL" "$RENDER_TIMEOUT" "$B76_SETTER_S")
+      b76_gt "$w" "$rmax" && rmax=$w
+      [ "$RENDER_TIMEOUT" != 1 ] || to=1
+      c15=$(d76_ceil15 "$rmax")
+      if [ "$to" = 1 ] || [ "$c15" -gt "$D76_R_UPPER" ]; then refused=1; fi
+    done
+    tri=$(cat "$keepdir/tri_standard")
+    rm -rf "$keepdir"
+    c15=$(d76_ceil15 "$rmax")
+    printf 'LADDER_RUNG,ladder=render_iges,cell=%s,target_bytes=%s,bytes=%s,triangles=%s,render_max_wall_s=%s,ceil15=%s,timeout=%s,r_upper_s=%s,verdict=%s\n' \
+      "$name" "$target" "$CELL_BYTES" "$tri" "$rmax" "$c15" "$to" "$D76_R_UPPER" \
+      "$( [ "$refused" = 0 ] && echo fit || echo refused)" >> "$B76_OUT"
+    if [ "$refused" = 0 ]; then
+      printf 'LADDER_RESULT,ladder=render_iges,cell=%s,target_bytes=%s,bytes=%s,sha256=%s,render_max_wall_s=%s,ceil15=%s,result=ok\n' \
+        "$name" "$target" "$CELL_BYTES" "$CELL_SHA" "$rmax" "$c15" >> "$B76_OUT"
+      return 0
+    fi
+  done
+  b76_stop "reason=render_iges_ladder_no_rung_fits,r_upper_s=$D76_R_UPPER"
+}
+
+d76_inworker_rung() {
+  local name=$1 out=$2 rc=0
+  printf 'CELLSPEC,route=convert_iges,cell=%s,file=%s,sha256=%s,target=stl,operation=convert,opts=quality:fine,source=iges_memory_ceiling_ladder\n' \
+    "$name" "$CELL_PATH" "$CELL_SHA" > "$WORK/rung-cells.txt"
+  [ -f "$REPO_ROOT/docker-compose.override.yml" ] || b76_stop "reason=inworker_override_missing"
+  CAD_INWORKER_N=3 "$REPO_ROOT/scripts/cad-inworker-measure.sh" --cells "$WORK/rung-cells.txt" --out "$out" || rc=$?
+  [ "$rc" = 0 ] || b76_stop "reason=inworker_failed,cell=$name,rc=$rc,out=$(basename "$out")"
+}
+
+d76_memory_ladder() {
+  local spec name target keepdir rep q n peak oom out go cpk iooms total verdict reason
+  for spec in "${D76_MEMORY_RUNGS[@]}"; do
+    name=${spec%%:*}
+    target=${spec#*:}
+    b76_cell "$name" "$B76_OUT"
+    keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+    for rep in $(seq 1 "$B76_N"); do b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; done
+    for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" fine "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    for q in standard draft; do b76_mesh_row "$name" "$q" 1 0 "$B76_CLASS_S" "$keepdir"; done
+    rm -rf "$keepdir"
+    read -r n peak _ <<< "$(d76_rows_of "$name" mesh fine)"
+    oom=$(d76_rows_of "$name" mesh any | awk '{print $3}')
+    go=na; cpk=na; iooms=na; total=na
+    if [ "$oom" != 0 ] || b76_gt "$peak" "$D76_POD_MIB"; then
+      verdict=fail
+      reason=stage_peak_alone_or_oom
+    else
+      out="$D76_EVID_DIR/76-03-inworker-$name.txt"
+      d76_inworker_rung "$name" "$out"
+      read -r go cpk iooms <<< "$(awk -F, '$1 == "INWORKER_ROW" { for (i = 2; i <= NF; i++) { split($i, a, "="); v[a[1]] = a[2] } if (v["go_vmhwm_mib"] + 0 > g) g = v["go_vmhwm_mib"] + 0; if (v["container_peak_mib"] + 0 > c) c = v["container_peak_mib"] + 0; o += v["oom_kill"] + 0; n++ } END { printf "%.1f %.1f %d\n", g, c, (n == 3 ? o : 99) }' "$out")"
+      total=$(python3 -c "import sys; print('%.1f' % (float(sys.argv[1]) + float(sys.argv[2])))" "$peak" "$go")
+      if [ "$iooms" = 0 ] && ! b76_gt "$total" "$D76_POD_MIB" && b76_gt 4096 "$cpk"; then
+        verdict=pass
+        reason=stage_peak_plus_go_peak_within_pod_rule
+      else
+        verdict=fail
+        reason=stage_peak_plus_go_peak_over_pod_rule_or_oom_or_container_peak
+      fi
+    fi
+    printf 'LADDER_RUNG,ladder=memory_iges,cell=%s,target_bytes=%s,bytes=%s,mesh_fine_rows=%s,mesh_fine_peak_mib=%s,stage_oom_rows=%s,inworker_go_peak_mib=%s,inworker_container_peak_mib=%s,inworker_oom=%s,sum_mib=%s,pod_mib=%s,verdict=%s,reason=%s\n' \
+      "$name" "$target" "$CELL_BYTES" "$n" "$peak" "$oom" "$go" "$cpk" "$iooms" "$total" "$D76_POD_MIB" "$verdict" "$reason" >> "$B76_OUT"
+    if [ "$verdict" = pass ]; then
+      printf 'LADDER_RESULT,ladder=memory_iges,cell=%s,ceiling_bytes=%s,bytes=%s,sha256=%s,mesh_fine_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,result=ok\n' \
+        "$name" "$target" "$CELL_BYTES" "$CELL_SHA" "$peak" "$go" "$total" >> "$B76_OUT"
+      return 0
+    fi
+  done
+  b76_stop "reason=iges_memory_ladder_no_rung_passes,pod_mib=$D76_POD_MIB"
+}
+
+d76_ladder_mode() {
+  local ladder=$1 since found
+  case "$ladder" in render_iges | memory_iges) ;; *) usage ;; esac
+  B76_OUT=$EVID
+  B76_GROUP="ladder_$ladder"
+  D76_EVID_DIR=$(cd "$(dirname "$EVID")" && pwd -P)
+  grep -q '^RULE_AMEND,key=render_route_cell,' "$REPO_ROOT/$D76_CELLS_REL" || fail "the render_route_cell amendment is not in $D76_CELLS_REL"
+  grep -q '^RULE_AMEND,key=iges_memory_ceiling,' "$REPO_ROOT/$D76_CELLS_REL" || fail "the iges_memory_ceiling amendment is not in $D76_CELLS_REL"
+  if [ -f "$B76_OUT" ] && grep -q "^LADDER_RESULT,ladder=$ladder," "$B76_OUT"; then fail "ladder $ladder already has a result in $B76_OUT"; fi
+  if [ -f "$B76_OUT" ] && grep -q "^STOP,mode=bounds76,group=$B76_GROUP," "$B76_OUT"; then fail "ladder $ladder already stopped in $B76_OUT"; fi
+  b76_caffeinated
+  b76_setup
+  [ "$TAG" = octoconv-cad-worker:engine76-31b85807c654 ] || b76_stop "reason=engine_inputs_differ_from_76-02,tag=$TAG"
+  mkdir -p "$(dirname "$B76_OUT")"
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  d76_hdr "$ladder"
+  B76_T0=$(date +%s)
+  case "$ladder" in
+    render_iges) d76_render_ladder ;;
+    memory_iges) d76_memory_ladder ;;
+  esac
+  found=$(pmset -g log | python3 "$WORK/tools/b76.py" sleeps "$since" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  [ -z "$found" ] || b76_stop "reason=host_sleep,source=pmset_-g_log,sleep_intervals_utc=$found"
+  b76_sample
+  printf 'LADDER_END,ladder=%s,duration_s=%s,date_utc=%s,load1=%s,vm_free_gib=%s,host_sleeps=0,result=ok\n' "$ladder" "$(( $(date +%s) - B76_T0 ))" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" >> "$B76_OUT"
+  grep -E '^(LADDER_RUNG|LADDER_RESULT|LADDER_END),' "$B76_OUT" | cut -c1-240 >&2
+  exit 0
+}
+
 D76_CELLS_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt
 D76_BUDGET_S=886
 
@@ -3848,66 +4090,107 @@ def wall(r):
         return None
 
 
-def select(argv):
-    src, budget = argv[0], int(argv[1])
+def load_all(src, ladder):
     rows, cells, contaminated = load(src)
+    for r in rows:
+        r["_src"] = "76-02"
+    results = {}
+    if ladder and os.path.isfile(ladder):
+        lrows, lcells, _ = load(ladder)
+        for r in lrows:
+            r["_src"] = "76-03-ladders"
+        rows += lrows
+        cells.update(lcells)
+        for l in open(ladder).read().splitlines():
+            if l.startswith("LADDER_RESULT,"):
+                d = kv(l)
+                results[d["ladder"]] = d
+    return rows, cells, contaminated, results
+
+
+def amendments(path):
+    keys = set()
+    for l in open(path).read().splitlines():
+        if l.startswith("RULE_AMEND,"):
+            keys.add(kv(l).get("key"))
+    return keys
+
+
+def deadlines(rows):
     setter = [r for r in rows if r.get("setter") == "1"]
     w_guard = max(wall(r) for r in setter if r["stage"] == "guard")
     w_mesh = max(wall(r) for r in setter if r["stage"] in ("mesh", "stats"))
+    return w_guard, w_mesh
+
+
+def render_band(rs, r_upper):
+    if not rs:
+        return "absent", None
+    w = max(wall(r) for r in rs)
+    if any(r.get("timeout") != "0" or r.get("oom_kill") != "0" or r.get("rc") != "0" or r.get("band") != "within" for r in rs):
+        return "refused", w
+    if ceil15(w) <= r_upper:
+        return "margin", w
+    if w <= r_upper:
+        return "no_margin", w
+    return "refused", w
+
+
+def select(argv):
+    src, ladder, cellsfile, budget = argv[0], argv[1], argv[2], int(argv[3])
+    rows, cells, contaminated, results = load_all(src, ladder)
+    amend = amendments(cellsfile)
+    need = {"render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else"}
+    if not need <= amend:
+        print("STOP,mode=derive76,step=select_cells,reason=amendments_missing,missing=%s" % "+".join(sorted(need - amend)))
+        print("SUMMARY,mode=derive76_select,routes=8,cellspec=0,stop=1,result=STOP")
+        return 1
+    w_guard, w_mesh = deadlines(rows)
     g_dl, m_dl = ceil15(w_guard), ceil15(w_mesh)
     r_upper = budget - g_dl - m_dl
+    mem = results.get("memory_iges")
+    ren = results.get("render_iges")
+    ceiling = int(mem["ceiling_bytes"]) if mem else None
     print("BASIS,mode=derive76_select,w_guard_s=%.2f,w_mesh_s=%.2f,guard_deadline_s=%d,mesh_deadline_s=%d,io_assumed_s=0,r_upper_s=%d,"
-          "rule=r_upper=%d-ceil(1.5xW_guard)-ceil(1.5xW_mesh)-io_with_io=0_the_largest_R_any_measured_io_gives;W_from_76-02_setter_rows_(every_band;mesh_covers_stats);"
-          "contaminated_lines_excluded=%s" % (w_guard, w_mesh, g_dl, m_dl, r_upper, budget, "+".join(str(c) for c in sorted(contaminated)) or "none"))
+          "iges_ceiling_bytes=%s,iges_memory_cell=%s,render_iges_ladder_cell=%s,"
+          "rule=r_upper=%d-ceil(1.5xW_guard)-ceil(1.5xW_mesh)-io_with_io=0;W_from_setter_rows_of_76-02_and_76-03-ladders_(every_band;mesh_covers_stats);"
+          "render_variants_classified_against_r_upper_stacked_or_not_(render_remainder_all);an_IGES_cell_above_the_iges_ceiling_is_not_admitted_(iges_memory_ceiling);"
+          "contaminated_lines_excluded=%s" % (w_guard, w_mesh, g_dl, m_dl, r_upper, ceiling if ceiling is not None else "none",
+                                              mem["cell"] if mem else "none", ren["cell"] if ren else "none", budget,
+                                              "+".join(str(c) for c in sorted(contaminated)) or "none"))
 
     def of(cell, stage, **match):
-        out = []
-        for r in rows:
-            if r["cell"] != cell or r["stage"] != stage:
-                continue
-            if all(r.get(k) == v for k, v in match.items()):
-                out.append(r)
-        return out
+        return [r for r in rows if r["cell"] == cell and r["stage"] == stage and all(r.get(k) == v for k, v in match.items())]
 
     def plain_ok(rs):
         return bool(rs) and all(r.get("band") == "within" and r.get("rc") == "0" and r.get("timeout") == "0" and r.get("oom_kill") == "0" for r in rs)
 
-    def render_band(rs, stacked):
-        if not rs:
-            return "absent", None
-        if any(r.get("timeout") != "0" or r.get("oom_kill") != "0" or r.get("rc") != "0" or r.get("band") not in ("within",) for r in rs):
-            return "refused", max(wall(r) for r in rs)
-        w = max(wall(r) for r in rs)
-        if stacked != "1":
-            return "within", w
-        if ceil15(w) <= r_upper:
-            return "margin", w
-        if w <= r_upper:
-            return "no_margin", w
-        return "refused", w
-
-    cand = {k: [] for k in ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")}
-    seen = {k: [] for k in cand}
+    routes = ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")
+    cand = {k: [] for k in routes}
+    seen = {k: [] for k in routes}
     for name, c in cells.items():
         fmt = c.get("format")
-        stacked = c.get("stacked", "0")
+        if fmt == "iges" and ceiling is not None and int(c.get("bytes", "0")) > ceiling:
+            for route in ("convert_iges", "render_iges"):
+                seen[route].append("%s:above_iges_ceiling_%s" % (name, ceiling))
+            continue
         if fmt in ("step", "iges"):
             guard = of(name, "guard")
-            qualities = sorted({r["quality"] for r in of(name, "mesh")})
-            for q in qualities:
+            for q in sorted({r["quality"] for r in of(name, "mesh")}):
                 mesh = of(name, "mesh", quality=q)
                 ok = plain_ok(guard) and plain_ok(mesh)
+                if fmt == "iges" and not (mem and name == mem["cell"] and q == "fine"):
+                    ok = False
                 s = (max(wall(r) for r in guard) if guard else 0) + max(wall(r) for r in mesh)
                 route = "convert_" + fmt
-                seen[route].append("%s:%s:%s:%.2f" % (name, q, "eligible" if ok else "not_within", s))
+                seen[route].append("%s:%s:%s:%.2f" % (name, q, "eligible" if ok else "not_eligible", s))
                 if ok:
                     cand[route].append((s, name, {"quality": q}, "guard+mesh_%s" % q, "within"))
-            variants = sorted({(r["quality"], r["view"], r["background"]) for r in of(name, "render")})
-            for q, v, b in variants:
+            for q, v, b in sorted({(r["quality"], r["view"], r["background"]) for r in of(name, "render")}):
                 rr = of(name, "render", quality=q, view=v, background=b)
                 mesh = of(name, "mesh", quality=q)
-                band, w = render_band(rr, stacked)
-                ok = plain_ok(guard) and plain_ok(mesh) and band in ("within", "margin")
+                band, w = render_band(rr, r_upper)
+                ok = plain_ok(guard) and plain_ok(mesh) and band == "margin"
                 s = (max(wall(r) for r in guard) if guard else 0) + (max(wall(r) for r in mesh) if mesh else 0) + (w or 0)
                 route = "render_" + fmt
                 seen[route].append("%s:%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, q, v, b, band, w or 0, ceil15(w or 0)))
@@ -3915,11 +4198,10 @@ def select(argv):
                     cand[route].append((s, name, {"size": "2048", "quality": q, "view": v, "background": b}, "guard+mesh_%s+render_%s_%s_%s" % (q, q, v, b), band))
         elif fmt == "stl":
             stats = of(name, "stats")
-            variants = sorted({(r["view"], r["background"]) for r in of(name, "render")})
-            for v, b in variants:
+            for v, b in sorted({(r["view"], r["background"]) for r in of(name, "render")}):
                 rr = of(name, "render", view=v, background=b)
-                band, w = render_band(rr, stacked)
-                ok = plain_ok(stats) and band in ("within", "margin")
+                band, w = render_band(rr, r_upper)
+                ok = plain_ok(stats) and band == "margin"
                 s = (max(wall(r) for r in stats) if stats else 0) + (w or 0)
                 seen["render_stl"].append("%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, v, b, band, w or 0, ceil15(w or 0)))
                 if ok:
@@ -3939,8 +4221,7 @@ def select(argv):
                 seen["dxf_pdf"].append("%s:%.2f" % (name, s))
                 cand["dxf_pdf"].append((s, name, {}, "guard+dxf+rsvg_ink+rsvg_pdf", "within"))
             png_t = of(name, "rsvg_png_transparent")
-            opts = []
-            opts.append((max(wall(r) for r in ink), "opaque", "rsvg_ink_argv"))
+            opts = [(max(wall(r) for r in ink), "opaque", "rsvg_ink_argv")]
             if plain_ok(png_t):
                 opts.append((max(wall(r) for r in png_t), "transparent", "rsvg_png_transparent"))
             w, bg, st = max(opts)
@@ -3951,12 +4232,15 @@ def select(argv):
     targets = {"convert_step": ("stl", "convert"), "convert_iges": ("stl", "convert"), "render_step": ("png", "render"),
                "render_iges": ("png", "render"), "render_stl": ("png", "render"), "dxf_svg": ("svg", "convert"),
                "dxf_pdf": ("pdf", "convert"), "dxf_png": ("png", "render")}
-    stops = 0
-    specs = 0
-    for route in ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png"):
+    stops = specs = 0
+    for route in routes:
         if not cand[route]:
-            print("STOP,mode=derive76,step=select_cells,route=%s,reason=no_eligible_cell,r_upper_s=%d,candidates=%s" % (
-                route, r_upper, "+".join(seen[route]) or "none"))
+            reason = "no_eligible_cell"
+            if route == "convert_iges" and not mem:
+                reason = "iges_memory_ladder_has_no_result"
+            if route == "render_iges" and not ren:
+                reason = "no_eligible_cell_and_no_render_iges_ladder_result"
+            print("STOP,mode=derive76,step=select_cells,route=%s,reason=%s,r_upper_s=%d,candidates=%s" % (route, reason, r_upper, "+".join(seen[route]) or "none"))
             stops += 1
             continue
         s, name, opts, basis, band = max(cand[route], key=lambda t: (t[0], t[1]))
@@ -3968,7 +4252,7 @@ def select(argv):
             continue
         got = sha256(path)
         if got != c.get("sha256"):
-            print("STOP,mode=derive76,step=select_cells,route=%s,cell=%s,reason=sha256_differs_from_76-02_CELL,got=%s,want=%s" % (route, name, got, c.get("sha256")))
+            print("STOP,mode=derive76,step=select_cells,route=%s,cell=%s,reason=sha256_differs_from_its_CELL_line,got=%s,want=%s" % (route, name, got, c.get("sha256")))
             stops += 1
             continue
         target, op = targets[route]
@@ -3990,7 +4274,7 @@ PY
 }
 
 d76_mode() {
-  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" rc=0
+  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" ladder="$REPO_ROOT/$D76_LADDER_REL" rc=0 attempt
   need_tool python3
   need_tool shasum
   need_tool git
@@ -4001,15 +4285,20 @@ d76_mode() {
   mkdir -p "$WORK/tools"
   d76_tools
   EVID_NAME=$(basename "$out")
+  attempt=1
+  [ ! -f "$out" ] || attempt=$(( $(grep -c '^HDR,mode=derive76_select,' "$out" || true) + 1 ))
   {
-    printf 'HDR,mode=derive76_select,date_utc=%s,commit=%s,tracked_dirt=%s,source=%s,source_sha256=%s,budget_s=%s\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$B76_EVID_REL" "$(sha_of "$src")" "$D76_BUDGET_S"
-    printf 'RULE,key=select_cells,mode=derive76,rule=per_route_the_cell_and_variant_whose_rows_have_the_largest_sum_of_per-stage_maxima_among_rows_of_band_within_or_margin_(never_refused_or_no_margin);routes=convert_step;convert_iges_(guard+mesh_per_quality);render_step;render_iges_(guard+mesh+render_per_quality;view;background);render_stl_(stats+render_per_view;background);dxf_svg_(guard+dxf+rsvg_ink);dxf_pdf_(+rsvg_pdf);dxf_png_(+the_slower_of_rsvg_ink_argv_opaque_and_rsvg_png_transparent_at_2048);a_stacked_render_variant_is_margin_iff_ceil(1.5W)<=r_upper;a_timeout_or_OOM_is_refused;sha256_re-checked_against_the_76-02_CELL_line;a_route_with_no_eligible_cell_is_STOP\n'
+    printf 'HDR,mode=derive76_select,attempt=%s,date_utc=%s,commit=%s,tracked_dirt=%s,source=%s,source_sha256=%s,ladders=%s,ladders_sha256=%s,budget_s=%s\n' \
+      "$attempt" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$B76_EVID_REL" "$(sha_of "$src")" \
+      "$( [ -f "$ladder" ] && echo "$D76_LADDER_REL" || echo none)" "$( [ -f "$ladder" ] && sha_of "$ladder" || echo none)" "$D76_BUDGET_S"
+    [ "$attempt" != 1 ] || printf 'RULE,key=select_cells,mode=derive76,rule=per_route_the_cell_and_variant_whose_rows_have_the_largest_sum_of_per-stage_maxima_among_rows_of_band_within_or_margin_(never_refused_or_no_margin);routes=convert_step;convert_iges_(guard+mesh_per_quality);render_step;render_iges_(guard+mesh+render_per_quality;view;background);render_stl_(stats+render_per_view;background);dxf_svg_(guard+dxf+rsvg_ink);dxf_pdf_(+rsvg_pdf);dxf_png_(+the_slower_of_rsvg_ink_argv_opaque_and_rsvg_png_transparent_at_2048);a_stacked_render_variant_is_margin_iff_ceil(1.5W)<=r_upper;a_timeout_or_OOM_is_refused;sha256_re-checked_against_the_76-02_CELL_line;a_route_with_no_eligible_cell_is_STOP\n'
   } > "$WORK/out.txt"
-  python3 "$WORK/tools/d76.py" select "$src" "$D76_BUDGET_S" >> "$WORK/out.txt" || rc=$?
+  if [ -f "$out" ]; then cp "$out" "$WORK/cells.txt"; else : > "$WORK/cells.txt"; fi
+  cat "$WORK/out.txt" >> "$WORK/cells.txt"
+  python3 "$WORK/tools/d76.py" select "$src" "$ladder" "$WORK/cells.txt" "$D76_BUDGET_S" >> "$WORK/out.txt" || rc=$?
   mkdir -p "$(dirname "$out")"
-  cp "$WORK/out.txt" "$out"
-  cut -c1-260 "$out" >&2
+  cat "$WORK/out.txt" >> "$out"
+  cut -c1-260 "$WORK/out.txt" >&2
   exit "$rc"
 }
 
@@ -4039,6 +4328,7 @@ while [ $# -gt 0 ]; do
     --finish) b76_sub finish; shift ;;
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
     --select-cells) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=select; shift ;;
+    --ladder) [ $# -ge 2 ] && [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=ladder; D76_LADDER=$2; shift 2 ;;
     --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
     --amend-rerun) b76_sub amend; shift ;;
     --row-log) [ $# -ge 2 ] && [ "$MODE" = bounds76 ] || usage; B76_ROW_LOG=$2; shift 2 ;;
@@ -4071,8 +4361,14 @@ case "$MODE" in
     B76_OUT=$EVID
     b76_mode "$B76_SUB" ;;
   derive76)
-    [ "$D76_SUB" = select ] || usage
-    [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_CELLS_REL"
-    d76_mode "$EVID" ;;
+    case "$D76_SUB" in
+      select)
+        [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_CELLS_REL"
+        d76_mode "$EVID" ;;
+      ladder)
+        [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_LADDER_REL"
+        d76_ladder_mode "$D76_LADDER" ;;
+      *) usage ;;
+    esac ;;
   *) usage ;;
 esac
