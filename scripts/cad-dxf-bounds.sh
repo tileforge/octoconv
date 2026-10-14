@@ -41,6 +41,7 @@ Usage:
   scripts/cad-dxf-bounds.sh floor [--out FILE]
   scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
   scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun [--row-log LOG]|--finish [--out FILE]
+  scripts/cad-dxf-bounds.sh derive76 --select-cells [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -87,6 +88,13 @@ bounds76  the pre-registered stage bounds of plan 76-02 on the production engine
        re-runs it once under caffeinate -dimsu at the same commit and image.
        The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
        in the RULE lines and applied by 76-03.
+
+derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells writes, per in-worker route (convert_step,
+       convert_iges, render_step, render_iges, render_stl, dxf_svg, dxf_pdf, dxf_png), the CELLSPEC of the cell and
+       variant whose rows of band within or margin have the largest sum of per-stage maxima (RULE inworker), with its
+       file, sha256 re-checked against the 76-02 CELL line, target, operation and opts (default output
+       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt). A route with no eligible
+       cell is STOP.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -3781,6 +3789,230 @@ b76_smoke() {
   exit 0
 }
 
+D76_CELLS_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt
+D76_BUDGET_S=886
+
+d76_tools() {
+  cat > "$WORK/tools/d76.py" <<'PY'
+import hashlib
+import math
+import os
+import sys
+
+
+def kv(line):
+    out = {}
+    for part in line.rstrip("\n").split(",")[1:]:
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k] = v
+    return out
+
+
+def ceil15(w):
+    return int(math.ceil(round(1.5 * w, 6)))
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load(path):
+    lines = open(path).read().splitlines()
+    contaminated = set()
+    for l in lines:
+        if l.startswith("NOTE,key=contaminated_row,"):
+            d = kv(l)
+            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+                contaminated.add(int(d["line"]))
+    rows, cells = [], {}
+    for i, l in enumerate(lines, 1):
+        if l.startswith("BOUND76_ROW,") and i not in contaminated:
+            d = kv(l)
+            d["_line"] = i
+            rows.append(d)
+        elif l.startswith("CELL,"):
+            d = kv(l)
+            cells[d["cell"]] = d
+    return rows, cells, contaminated
+
+
+def wall(r):
+    try:
+        return float(r["wall_s"])
+    except (KeyError, ValueError):
+        return None
+
+
+def select(argv):
+    src, budget = argv[0], int(argv[1])
+    rows, cells, contaminated = load(src)
+    setter = [r for r in rows if r.get("setter") == "1"]
+    w_guard = max(wall(r) for r in setter if r["stage"] == "guard")
+    w_mesh = max(wall(r) for r in setter if r["stage"] in ("mesh", "stats"))
+    g_dl, m_dl = ceil15(w_guard), ceil15(w_mesh)
+    r_upper = budget - g_dl - m_dl
+    print("BASIS,mode=derive76_select,w_guard_s=%.2f,w_mesh_s=%.2f,guard_deadline_s=%d,mesh_deadline_s=%d,io_assumed_s=0,r_upper_s=%d,"
+          "rule=r_upper=%d-ceil(1.5xW_guard)-ceil(1.5xW_mesh)-io_with_io=0_the_largest_R_any_measured_io_gives;W_from_76-02_setter_rows_(every_band;mesh_covers_stats);"
+          "contaminated_lines_excluded=%s" % (w_guard, w_mesh, g_dl, m_dl, r_upper, budget, "+".join(str(c) for c in sorted(contaminated)) or "none"))
+
+    def of(cell, stage, **match):
+        out = []
+        for r in rows:
+            if r["cell"] != cell or r["stage"] != stage:
+                continue
+            if all(r.get(k) == v for k, v in match.items()):
+                out.append(r)
+        return out
+
+    def plain_ok(rs):
+        return bool(rs) and all(r.get("band") == "within" and r.get("rc") == "0" and r.get("timeout") == "0" and r.get("oom_kill") == "0" for r in rs)
+
+    def render_band(rs, stacked):
+        if not rs:
+            return "absent", None
+        if any(r.get("timeout") != "0" or r.get("oom_kill") != "0" or r.get("rc") != "0" or r.get("band") not in ("within",) for r in rs):
+            return "refused", max(wall(r) for r in rs)
+        w = max(wall(r) for r in rs)
+        if stacked != "1":
+            return "within", w
+        if ceil15(w) <= r_upper:
+            return "margin", w
+        if w <= r_upper:
+            return "no_margin", w
+        return "refused", w
+
+    cand = {k: [] for k in ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")}
+    seen = {k: [] for k in cand}
+    for name, c in cells.items():
+        fmt = c.get("format")
+        stacked = c.get("stacked", "0")
+        if fmt in ("step", "iges"):
+            guard = of(name, "guard")
+            qualities = sorted({r["quality"] for r in of(name, "mesh")})
+            for q in qualities:
+                mesh = of(name, "mesh", quality=q)
+                ok = plain_ok(guard) and plain_ok(mesh)
+                s = (max(wall(r) for r in guard) if guard else 0) + max(wall(r) for r in mesh)
+                route = "convert_" + fmt
+                seen[route].append("%s:%s:%s:%.2f" % (name, q, "eligible" if ok else "not_within", s))
+                if ok:
+                    cand[route].append((s, name, {"quality": q}, "guard+mesh_%s" % q, None))
+            variants = sorted({(r["quality"], r["view"], r["background"]) for r in of(name, "render")})
+            for q, v, b in variants:
+                rr = of(name, "render", quality=q, view=v, background=b)
+                mesh = of(name, "mesh", quality=q)
+                band, w = render_band(rr, stacked)
+                ok = plain_ok(guard) and plain_ok(mesh) and band in ("within", "margin")
+                s = (max(wall(r) for r in guard) if guard else 0) + (max(wall(r) for r in mesh) if mesh else 0) + (w or 0)
+                route = "render_" + fmt
+                seen[route].append("%s:%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, q, v, b, band, w or 0, ceil15(w or 0)))
+                if ok:
+                    cand[route].append((s, name, {"size": "2048", "quality": q, "view": v, "background": b}, "guard+mesh_%s+render_%s_%s_%s" % (q, q, v, b), band))
+        elif fmt == "stl":
+            stats = of(name, "stats")
+            variants = sorted({(r["view"], r["background"]) for r in of(name, "render")})
+            for v, b in variants:
+                rr = of(name, "render", view=v, background=b)
+                band, w = render_band(rr, stacked)
+                ok = plain_ok(stats) and band in ("within", "margin")
+                s = (max(wall(r) for r in stats) if stats else 0) + (w or 0)
+                seen["render_stl"].append("%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, v, b, band, w or 0, ceil15(w or 0)))
+                if ok:
+                    cand["render_stl"].append((s, name, {"size": "2048", "view": v, "background": b}, "stats+render_%s_%s" % (v, b), band))
+        elif fmt == "dxf":
+            guard, dxf, ink = of(name, "guard"), of(name, "dxf"), of(name, "rsvg_ink")
+            if not (plain_ok(guard) and plain_ok(dxf) and plain_ok(ink)):
+                for route in ("dxf_svg", "dxf_pdf", "dxf_png"):
+                    seen[route].append("%s:not_eligible" % name)
+                continue
+            base = max(wall(r) for r in guard) + max(wall(r) for r in dxf) + max(wall(r) for r in ink)
+            seen["dxf_svg"].append("%s:%.2f" % (name, base))
+            cand["dxf_svg"].append((base, name, {}, "guard+dxf+rsvg_ink", "within"))
+            pdf = of(name, "rsvg_pdf")
+            if plain_ok(pdf):
+                s = base + max(wall(r) for r in pdf)
+                seen["dxf_pdf"].append("%s:%.2f" % (name, s))
+                cand["dxf_pdf"].append((s, name, {}, "guard+dxf+rsvg_ink+rsvg_pdf", "within"))
+            png_t = of(name, "rsvg_png_transparent")
+            opts = []
+            opts.append((max(wall(r) for r in ink), "opaque", "rsvg_ink_argv"))
+            if plain_ok(png_t):
+                opts.append((max(wall(r) for r in png_t), "transparent", "rsvg_png_transparent"))
+            w, bg, st = max(opts)
+            s = base + w
+            seen["dxf_png"].append("%s:%s:%.2f" % (name, bg, s))
+            cand["dxf_png"].append((s, name, {"size": "2048", "background": bg}, "guard+dxf+rsvg_ink+%s" % st, "within"))
+
+    targets = {"convert_step": ("stl", "convert"), "convert_iges": ("stl", "convert"), "render_step": ("png", "render"),
+               "render_iges": ("png", "render"), "render_stl": ("png", "render"), "dxf_svg": ("svg", "convert"),
+               "dxf_pdf": ("pdf", "convert"), "dxf_png": ("png", "render")}
+    stops = 0
+    specs = 0
+    for route in ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png"):
+        if not cand[route]:
+            print("STOP,mode=derive76,step=select_cells,route=%s,reason=no_eligible_cell,r_upper_s=%d,candidates=%s" % (
+                route, r_upper, "+".join(seen[route]) or "none"))
+            stops += 1
+            continue
+        s, name, opts, basis, band = max(cand[route], key=lambda t: (t[0], t[1]))
+        c = cells[name]
+        path = c.get("path", "")
+        if not os.path.isfile(path):
+            print("STOP,mode=derive76,step=select_cells,route=%s,cell=%s,reason=cell_file_missing,path=%s" % (route, name, path))
+            stops += 1
+            continue
+        got = sha256(path)
+        if got != c.get("sha256"):
+            print("STOP,mode=derive76,step=select_cells,route=%s,cell=%s,reason=sha256_differs_from_76-02_CELL,got=%s,want=%s" % (route, name, got, c.get("sha256")))
+            stops += 1
+            continue
+        target, op = targets[route]
+        print("CELLSPEC,route=%s,cell=%s,file=%s,sha256=%s,target=%s,operation=%s,opts=%s,stage_max_sum_s=%.2f,basis=%s,band=%s,format=%s,bytes=%s,stacked=%s,setter=%s" % (
+            route, name, path, got, target, op, ";".join("%s:%s" % (k, v) for k, v in opts.items()) or "none", s, basis, band,
+            c.get("format"), c.get("bytes"), c.get("stacked", "0"), "1" if c.get("role") == "setter" else "0"))
+        specs += 1
+        print("CANDIDATES,route=%s,list=%s" % (route, "+".join(seen[route])))
+    print("SUMMARY,mode=derive76_select,routes=8,cellspec=%d,stop=%d,result=%s" % (specs, stops, "ok" if stops == 0 else "STOP"))
+    return 0 if stops == 0 else 1
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1]
+    if cmd == "select":
+        sys.exit(select(sys.argv[2:]))
+    sys.exit(64)
+PY
+}
+
+d76_mode() {
+  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" rc=0
+  need_tool python3
+  need_tool shasum
+  need_tool git
+  [ -f "$src" ] || fail "missing $src"
+  grep -q '^SUMMARY,mode=bounds76,.*result=ok' "$src" || fail "$src has no ok bounds76 SUMMARY"
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-d76.XXXXXX")
+  trap cleanup EXIT
+  mkdir -p "$WORK/tools"
+  d76_tools
+  EVID_NAME=$(basename "$out")
+  {
+    printf 'HDR,mode=derive76_select,date_utc=%s,commit=%s,tracked_dirt=%s,source=%s,source_sha256=%s,budget_s=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$B76_EVID_REL" "$(sha_of "$src")" "$D76_BUDGET_S"
+    printf 'RULE,key=select_cells,mode=derive76,rule=per_route_the_cell_and_variant_whose_rows_have_the_largest_sum_of_per-stage_maxima_among_rows_of_band_within_or_margin_(never_refused_or_no_margin);routes=convert_step;convert_iges_(guard+mesh_per_quality);render_step;render_iges_(guard+mesh+render_per_quality;view;background);render_stl_(stats+render_per_view;background);dxf_svg_(guard+dxf+rsvg_ink);dxf_pdf_(+rsvg_pdf);dxf_png_(+the_slower_of_rsvg_ink_argv_opaque_and_rsvg_png_transparent_at_2048);a_stacked_render_variant_is_margin_iff_ceil(1.5W)<=r_upper;a_timeout_or_OOM_is_refused;sha256_re-checked_against_the_76-02_CELL_line;a_route_with_no_eligible_cell_is_STOP\n'
+  } > "$WORK/out.txt"
+  python3 "$WORK/tools/d76.py" select "$src" "$D76_BUDGET_S" >> "$WORK/out.txt" || rc=$?
+  mkdir -p "$(dirname "$out")"
+  cp "$WORK/out.txt" "$out"
+  cut -c1-260 "$out" >&2
+  exit "$rc"
+}
+
 MODE=${1:-}
 [ -n "$MODE" ] || usage
 shift
@@ -3790,6 +4022,7 @@ B76_SUB=""
 B76_RERUN=0
 B76_ROW_LOG=""
 B76_GROUP=none
+D76_SUB=""
 b76_sub() { [ "$MODE" = bounds76 ] && [ -z "$B76_SUB" ] || usage; B76_SUB=$1; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -3805,6 +4038,7 @@ while [ $# -gt 0 ]; do
     --cells-only) b76_sub cells; shift ;;
     --finish) b76_sub finish; shift ;;
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
+    --select-cells) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=select; shift ;;
     --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
     --amend-rerun) b76_sub amend; shift ;;
     --row-log) [ $# -ge 2 ] && [ "$MODE" = bounds76 ] || usage; B76_ROW_LOG=$2; shift 2 ;;
@@ -3836,5 +4070,9 @@ case "$MODE" in
     fi
     B76_OUT=$EVID
     b76_mode "$B76_SUB" ;;
+  derive76)
+    [ "$D76_SUB" = select ] || usage
+    [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_CELLS_REL"
+    d76_mode "$EVID" ;;
   *) usage ;;
 esac
