@@ -40,7 +40,7 @@ Usage:
   scripts/cad-dxf-bounds.sh run [--out FILE]
   scripts/cad-dxf-bounds.sh floor [--out FILE]
   scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
-  scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun|--finish [--out FILE]
+  scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun [--row-log LOG]|--finish [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -81,6 +81,10 @@ bounds76  the pre-registered stage bounds of plan 76-02 on the production engine
        the one rerun_after_product_fix amendment for the step group stopped by the render judge (stage pixel) and
        its NOTE lines; --group step --rerun then re-runs it once at a commit that differs from the init commit only
        in .planning, this script and the judge fix of quick 261014-0lo, and every later group runs at that commit.
+       --amend-rerun --row-log LOG closes a group the host's sleep interrupted: it writes STOP reason=host_sleep with
+       the pmset Sleep..Wake intervals, the rerun_after_host_sleep amendment and one contaminated=1 NOTE per row of
+       that attempt whose interval (from LOG, the group's stderr log) overlaps a sleep; --group G --rerun then
+       re-runs it once under caffeinate -dimsu at the same commit and image.
        The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
        in the RULE lines and applied by 76-03.
 
@@ -2314,11 +2318,143 @@ def brackets(argv):
     return 0
 
 
+def contaminated_lines(lines):
+    out = set()
+    for line in lines:
+        if line.startswith("NOTE,key=contaminated_row,"):
+            d = kv(line.rstrip("\n"))
+            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+                out.add(int(d["line"]))
+    return out
+
+
+def pmset_intervals(text):
+    import datetime
+    ev = []
+    for line in text.splitlines():
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) ([+-]\d{4}) ([^\t]*?)\s*\t", line)
+        if not m:
+            continue
+        kind = m.group(3).strip()
+        if kind not in ("Sleep", "DarkWake", "Wake"):
+            continue
+        t = datetime.datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S %z").astimezone(datetime.timezone.utc)
+        ev.append((t, kind))
+    out, start = [], None
+    for t, kind in ev:
+        if kind == "Sleep" and start is None:
+            start = t
+        elif kind in ("DarkWake", "Wake") and start is not None:
+            out.append((start, t, kind))
+            start = None
+    if start is not None:
+        out.append((start, None, "none"))
+    return out, ev
+
+
+def utc(v):
+    import datetime
+    return datetime.datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+
+def zs(t):
+    return "open" if t is None else t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def overlapping(intervals, a, b):
+    out = []
+    for s0, e0, k in intervals:
+        e1 = b if e0 is None else e0
+        if s0 < b and e1 > a:
+            out.append((s0, e0, k))
+    return out
+
+
+def sleeps(argv):
+    since, until = utc(argv[0]), utc(argv[1])
+    ivs, _ = pmset_intervals(sys.stdin.read())
+    print("+".join("%s..%s" % (zs(a), zs(b)) for a, b, k in overlapping(ivs, since, until)))
+    return 0
+
+
+def sleepstop(argv):
+    import datetime
+    path, rowlog, group, now_s = argv
+    now = utc(now_s)
+    text = open(path).read().splitlines()
+    hidx = [i for i, l in enumerate(text) if l.startswith("HDR,group=%s," % group)]
+    if len(hidx) != 1:
+        print("group_%s_hdr_count_%d" % (group, len(hidx)))
+        return 1
+    hdr_t = utc(kv(text[hidx[0]])["date_utc"])
+    ivs, ev = pmset_intervals(sys.stdin.read())
+    hit = overlapping(ivs, hdr_t, now)
+    if not hit:
+        print("no_pmset_sleep_overlaps_group_%s" % group)
+        return 1
+    full = next((t for t, k in ev if k == "Wake" and t >= hit[0][0]), None)
+    log = []
+    day = hdr_t.date()
+    prev = None
+    for line in open(rowlog, errors="replace"):
+        m = re.match(r"^\[(\d\d):(\d\d):(\d\d)\] (.*)$", line.rstrip("\n"))
+        if not m:
+            continue
+        t = datetime.datetime(day.year, day.month, day.day, int(m.group(1)), int(m.group(2)), int(m.group(3)), tzinfo=datetime.timezone.utc)
+        if prev is not None and t < prev:
+            day = day + datetime.timedelta(days=1)
+            t = t + datetime.timedelta(days=1)
+        if t < hdr_t - datetime.timedelta(seconds=60):
+            t = t + datetime.timedelta(days=1)
+            day = t.date()
+        prev = t
+        f = dict(x.split("=", 1) for x in m.group(4).split() if "=" in x)
+        log.append((t, f))
+    rows = [(i + 1, kv(l)) for i, l in enumerate(text) if i > hidx[0] and l.startswith("BOUND76_ROW,") and kv(l).get("group") == group]
+    keys = ("cell", "stage", "quality", "view", "background", "rep")
+    pos, notes, bad = 0, [], 0
+    for ln, d in rows:
+        j = pos
+        while j < len(log) and not ("stage" in log[j][1] and all(log[j][1].get(k) == d.get(k) for k in keys)):
+            j += 1
+        if j < len(log):
+            end = log[j][0]
+            start = log[j - 1][0] if j > 0 else hdr_t
+            pos = j + 1
+            ov = sum(max(0.0, (min(end, b or now) - max(start, a)).total_seconds()) for a, b, k in ivs)
+            src = "row_log"
+            cont = ov > 0
+        else:
+            start = end = None
+            ov = None
+            src = "none"
+            cont = True
+        if cont:
+            bad += 1
+            notes.append("NOTE,key=contaminated_row,mode=bounds76,group=%s,line=%d,cell=%s,stage=%s,quality=%s,view=%s,background=%s,rep=%s,contaminated=1,"
+                         "row_start_utc=%s,row_end_utc=%s,overlap_s=%s,wall_s=%s,rc=%s,timeout=%s,interval_source=%s,excluded_from_W=1" % (
+                             group, ln, d.get("cell"), d.get("stage"), d.get("quality"), d.get("view"), d.get("background"), d.get("rep"),
+                             zs(start) if start else "unknown", zs(end) if end else "unknown", "unknown" if ov is None else "%d" % ov,
+                             d.get("wall_s"), d.get("rc"), d.get("timeout"), src))
+    allrows = sum(1 for l in text if l.startswith("BOUND76_ROW,") and kv(l).get("group") == group)
+    print("STOP,mode=bounds76,group=%s,reason=host_sleep,source=pmset_-g_log,first_sleep_utc=%s,full_wake_utc=%s,sleep_intervals_utc=%s,"
+          "interval=Sleep_to_the_next_DarkWake_or_Wake" % (group, zs(hit[0][0]), zs(full), "+".join("%s..%s" % (zs(a), zs(b)) for a, b, k in hit)))
+    print("GROUP_END,group=%s,rows=%d,duration_s=%d,date_utc=%s,result=STOP" % (group, allrows, int((now - hdr_t).total_seconds()), now_s))
+    for n in notes:
+        print(n)
+    print("NOTE,key=host_sleep_attempt,mode=bounds76,group=%s,hdr_utc=%s,stopped_utc=%s,attempt_rows=%d,contaminated=%d,clean=%d,"
+          "note=clean_rows_of_the_stopped_attempt_stay_and_count_in_W;contaminated_rows_are_excluded_from_W" % (
+              group, zs(hdr_t), now_s, len(rows), bad, len(rows) - bad))
+    return 0
+
+
 def maxwall(argv):
     path, cell, stage, quality, view, background = argv
     best = None
-    for line in open(path):
-        if not line.startswith("BOUND76_ROW,"):
+    lines = open(path).read().splitlines()
+    skip = contaminated_lines(lines)
+    for n, line in enumerate(lines, 1):
+        if n in skip or not line.startswith("BOUND76_ROW,"):
             continue
         d = kv(line.rstrip("\n"))
         if d["cell"] != cell or d["stage"] != stage or d["quality"] != quality or d["view"] != view or d["background"] != background:
@@ -2386,7 +2522,12 @@ def finish(argv):
     amend = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_watchdog,")]
     amend_fix = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_product_fix,")]
     watchdog = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," in l + ","]
-    other = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," not in l + ","]
+    amend_sleep = [kv(l) for l in text if l.startswith("RULE_AMEND,key=rerun_after_host_sleep,")]
+    slept_stops = [kv(l) for l in text if l.startswith("STOP,") and ",reason=host_sleep," in l + ","]
+    if slept_stops and (len(amend_sleep) != 1 or len(slept_stops) != 1):
+        problems.append("host_sleep_stop_without_one_amendment_or_more_than_one")
+    slept = {d.get("group") for d in slept_stops}
+    other = [kv(l) for l in text if l.startswith("STOP,") and ",reason=watchdog_disk_below_threshold," not in l + "," and ",reason=host_sleep," not in l + ","]
     fix_ok = len(amend_fix) == 1 and len(other) == 1 and other[0].get("group") == "step" and other[0].get("reason") == "row_failed" and other[0].get("stage") == "pixel"
     if other and not fix_ok:
         problems.append("stop_line_present")
@@ -2406,13 +2547,18 @@ def finish(argv):
     for g in groups:
         hdr = [kv(l) for l in text if l.startswith("HDR,group=%s," % g)]
         end = [kv(l) for l in text if l.startswith("GROUP_END,group=%s," % g)]
-        want = 1 + (g in stopped) + (g in fixed)
+        want = 1 + (g in stopped) + (g in fixed) + (g in slept)
         reruns = [h.get("rerun") for h in hdr[1:]]
-        expect = (["1"] if g in stopped else []) + (["2"] if g in fixed else [])
+        expect = (["1"] if g in stopped else []) + (["2"] if g in fixed else []) + (["3"] if g in slept else [])
         if len(hdr) != want or reruns != expect:
             problems.append("group_%s_hdr_count_%d" % (g, len(hdr)))
             continue
         last = hdr[-1]
+        if g in slept:
+            same_in = last.get("commit") == hdr[-2].get("commit") or (last.get("inputs_identical_to_stopped_hdr") == "1" and last.get("stopped_hdr_commit") == hdr[-2].get("commit"))
+            if last.get("rerun_key") != "rerun_after_host_sleep" or last.get("prevent_system_sleep") != "1" or not same_in \
+                    or last.get("image_id") != hdr[-2].get("image_id"):
+                problems.append("group_%s_sleep_rerun_hdr" % g)
         if g in fixed:
             if last.get("rerun_key") != "rerun_after_product_fix":
                 problems.append("group_%s_fix_rerun_key" % g)
@@ -2427,12 +2573,13 @@ def finish(argv):
                 problems.append("group_%s_image_differs" % g)
         oks = [e for e in end if e.get("result") == "ok"]
         stops = [e for e in end if e.get("result") != "ok"]
-        if len(oks) != 1 or not end or end[-1].get("result") != "ok" or len(stops) != (1 if g in fixed else 0):
+        if len(oks) != 1 or not end or end[-1].get("result") != "ok" or len(stops) != (1 if g in fixed else 0) + (1 if g in slept else 0):
             problems.append("group_%s_did_not_end_ok" % g)
     fpos = [i for i, l in enumerate(text) if l.startswith("HDR,group=") and ",rerun_key=rerun_after_product_fix," in l]
     if fixed and fpos:
         for i, l in enumerate(text):
-            if i > fpos[-1] and l.startswith("HDR,group=") and kv(l).get("commit") != fix_commit:
+            h = kv(l) if l.startswith("HDR,group=") else {}
+            if i > fpos[-1] and h and h.get("commit") != fix_commit and not (h.get("inputs_identical_to_stopped_hdr") == "1" and h.get("stopped_hdr_commit") == fix_commit):
                 problems.append("group_%s_not_at_the_fix_commit" % kv(l).get("group"))
     rows = [l for l in text if l.startswith("BOUND76_ROW,")]
     failed = [kv(l) for l in rows if ",band=failed," in l]
@@ -2452,14 +2599,16 @@ def finish(argv):
     cells = sum(1 for l in text if l.startswith("CELL,"))
     not_run = sum(1 for l in text if l.startswith("NOT_RUN,"))
     setter = sum(1 for l in rows if ",setter=1," in l)
-    print("SUMMARY,mode=bounds76,groups=%s,rows=%d,setter_rows=%d,classification_rows=%d,refusal_rows=%d,cells=%d,not_run=%d,result=ok" % (
-        "+".join(groups), len(rows), setter, len(rows) - setter, refusals, cells, not_run))
+    contaminated = len(contaminated_lines(text))
+    print("SUMMARY,mode=bounds76,groups=%s,rows=%d,setter_rows=%d,classification_rows=%d,refusal_rows=%d,cells=%d,not_run=%d,contaminated_rows=%d,result=ok" % (
+        "+".join(groups), len(rows), setter, len(rows) - setter, refusals, cells, not_run, contaminated))
     return 0
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
-    fn = {"row": row, "guard_probe": guard_probe, "brackets": brackets, "maxwall": maxwall, "finish": finish, "fixnote": fixnote}.get(cmd)
+    fn = {"row": row, "guard_probe": guard_probe, "brackets": brackets, "maxwall": maxwall, "finish": finish, "fixnote": fixnote,
+          "sleeps": sleeps, "sleepstop": sleepstop}.get(cmd)
     if fn is None:
         sys.exit(64)
     sys.exit(fn(sys.argv[2:]) or 0)
@@ -3284,6 +3433,7 @@ b76_init_check() {
   [ -n "$INIT_COMMIT" ] && [ -n "$INIT_IMAGE" ] && [ -n "$INIT_TAG" ] || fail "the init HDR lines are missing in $B76_OUT"
   B76_AMEND=$(grep -c '^RULE_AMEND,key=rerun_after_watchdog,' "$B76_OUT" || true)
   B76_AMEND_FIX=$(grep -c '^RULE_AMEND,key=rerun_after_product_fix,' "$B76_OUT" || true)
+  B76_AMEND_SLEEP=$(grep -c '^RULE_AMEND,key=rerun_after_host_sleep,' "$B76_OUT" || true)
 }
 
 B76_FIX_STOP_RE='^STOP,mode=bounds76,group=step,reason=row_failed,cell=[^,]*,stage=pixel,'
@@ -3298,7 +3448,30 @@ b76_go_bin_shas() {
 }
 
 b76_other_stops() {
-  { grep '^STOP,' "$B76_OUT" || true; } | { grep -v ',reason=watchdog_disk_below_threshold,' || true; }
+  { grep '^STOP,' "$B76_OUT" || true; } | { grep -vE ',reason=(watchdog_disk_below_threshold|host_sleep),' || true; }
+}
+
+b76_sleep_groups() {
+  sed -n 's/^STOP,mode=bounds76,group=\([a-z0-9]*\),reason=host_sleep,.*/\1/p' "$B76_OUT" | sort -u
+}
+
+b76_caffeinated() {
+  local pid=$$ comm
+  B76_CAFF_PID=""
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||')
+    if [ "$comm" = caffeinate ]; then B76_CAFF_PID=$pid; break; fi
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  done
+  [ -n "$B76_CAFF_PID" ] || fail "the host_sleep re-run must run under caffeinate -dimsu"
+  pmset -g assertions | grep -q "pid $B76_CAFF_PID(caffeinate): .* PreventSystemSleep named" \
+    || fail "caffeinate pid $B76_CAFF_PID holds no PreventSystemSleep assertion"
+}
+
+b76_sleep_check() {
+  local since=$1 found
+  found=$(pmset -g log | python3 "$WORK/tools/b76.py" sleeps "$since" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  [ -z "$found" ] || b76_stop "reason=host_sleep,source=pmset_-g_log,during=rerun_after_host_sleep,sleep_intervals_utc=$found"
 }
 
 b76_fix_diff() {
@@ -3340,6 +3513,11 @@ b76_group_gate() {
       grep -q "^GROUP_END,group=$B76_FIX_GROUP,.*,result=ok" "$B76_OUT" || fail "group $B76_FIX_GROUP was stopped by the render judge and has not been re-run"
     fi
   fi
+  for x in $(b76_sleep_groups); do
+    [ "$B76_AMEND_SLEEP" = 1 ] || fail "group $x was stopped by host sleep and $B76_OUT has no rerun_after_host_sleep amendment"
+    if [ "$x" = "$B76_GROUP" ] && [ "$B76_RERUN" = 1 ]; then continue; fi
+    grep -q "^GROUP_END,group=$x,.*,result=ok" "$B76_OUT" || fail "group $x was stopped by host sleep and has not been re-run"
+  done
   for x in $(b76_watchdog_groups); do
     [ "$B76_AMEND" = 1 ] || fail "group $x was stopped by the disk watchdog and $B76_OUT has no rerun amendment"
     if [ "$x" = "$B76_GROUP" ] && [ "$B76_RERUN" = 1 ]; then continue; fi
@@ -3347,8 +3525,21 @@ b76_group_gate() {
   done
   B76_RERUN_N=0
   B76_RERUN_KEY=none
+  B76_SLEEP_HDR=""
+  B76_SLEEP_COMMIT=""
   if [ "$B76_RERUN" = 1 ]; then
-    if [ -n "$other" ] && [ "$B76_GROUP" = "$B76_FIX_GROUP" ]; then
+    if b76_sleep_groups | grep -qx "$B76_GROUP"; then
+      [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 1 ] || fail "group $B76_GROUP was already re-run after host sleep"
+      [ "$(grep -c "^GROUP_END,group=$B76_GROUP," "$B76_OUT")" = 1 ] && grep -q "^GROUP_END,group=$B76_GROUP,.*,result=STOP$" "$B76_OUT" \
+        || fail "group $B76_GROUP does not end in the one host-sleep STOP"
+      B76_SLEEP_HDR=$(grep "^HDR,group=$B76_GROUP," "$B76_OUT")
+      B76_SLEEP_COMMIT=$(printf '%s\n' "$B76_SLEEP_HDR" | tr ',' '\n' | sed -n 's/^commit=//p')
+      changed=$(git diff --name-only "$B76_SLEEP_COMMIT" HEAD -- . ':(exclude).planning' | tr '\n' ' ' | sed 's/ $//')
+      [ -z "$changed" ] || [ "$changed" = scripts/cad-dxf-bounds.sh ] \
+        || fail "the host_sleep re-run of $B76_GROUP changes $changed against the commit of its stopped HDR"
+      B76_RERUN_N=3
+      B76_RERUN_KEY=rerun_after_host_sleep
+    elif [ -n "$other" ] && [ "$B76_GROUP" = "$B76_FIX_GROUP" ]; then
       [ "$(grep -c "^HDR,group=$B76_GROUP," "$B76_OUT")" = 2 ] || fail "group $B76_GROUP was already re-run after the product fix"
       [ "$(grep -c "^GROUP_END,group=$B76_GROUP," "$B76_OUT")" = 1 ] && grep -q "^GROUP_END,group=$B76_GROUP,.*,result=STOP$" "$B76_OUT" \
         || fail "group $B76_GROUP does not end in the one render-judge STOP"
@@ -3373,7 +3564,11 @@ b76_group_gate() {
       B76_INPUTS_SAME=0
       if [ "$B76_RERUN_KEY" != rerun_after_product_fix ]; then
         fixhdr=$(grep "^HDR,group=$B76_FIX_GROUP,.*,rerun_key=rerun_after_product_fix," "$B76_OUT" | tail -n 1 | tr ',' '\n' | sed -n 's/^commit=//p')
-        [ "$fixhdr" = "$(git rev-parse HEAD)" ] || fail "group $B76_GROUP must run at the commit of the product-fix re-run (${fixhdr:-none})"
+        if [ "$B76_RERUN_KEY" = rerun_after_host_sleep ] && [ "$fixhdr" = "$B76_SLEEP_COMMIT" ]; then
+          :
+        else
+          [ "$fixhdr" = "$(git rev-parse HEAD)" ] || fail "group $B76_GROUP must run at the commit of the product-fix re-run (${fixhdr:-none})"
+        fi
       fi
     else
       changed=$(git diff --name-only "$INIT_COMMIT" HEAD -- . ':(exclude).planning' | tr '\n' ' ' | sed 's/ $//')
@@ -3412,8 +3607,31 @@ b76_amend_fix() {
   exit 0
 }
 
+b76_amend_sleep() {
+  local g hdr out
+  [ "$B76_AMEND_SLEEP" = 0 ] || fail "$B76_OUT already holds the rerun_after_host_sleep amendment"
+  [ -s "$B76_ROW_LOG" ] || fail "no row log $B76_ROW_LOG"
+  hdr=$(grep -n '^HDR,group=' "$B76_OUT" | tail -n 1)
+  g=$(printf '%s\n' "$hdr" | tr ',' '\n' | sed -n 's/^group=//p')
+  [ -n "$g" ] || fail "no group HDR in $B76_OUT"
+  [ "$(grep -c "^HDR,group=$g," "$B76_OUT")" = 1 ] || fail "group $g already ran more than once"
+  tail -n +"${hdr%%:*}" "$B76_OUT" | grep -qE '^(GROUP_END|STOP),' && fail "group $g already ended"
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-b76.XXXXXX")
+  trap cleanup EXIT
+  mkdir -p "$WORK/tools"
+  b76_tools
+  out=$(pmset -g log | python3 "$WORK/tools/b76.py" sleepstop "$B76_OUT" "$B76_ROW_LOG" "$g" "$(date -u +%Y-%m-%dT%H:%M:%SZ)") || fail "sleepstop: $out"
+  printf '%s\n' "$out" | grep -E '^(STOP|GROUP_END),' >> "$B76_OUT"
+  printf 'RULE_AMEND,key=rerun_after_host_sleep,mode=bounds76,date_utc=%s,commit=%s,init_commit=%s,stopped_groups=%s,rule=the_%s_group_stopped_by_STOP_reason=host_sleep_(the_host_Mac_entered_Idle_Sleep_at_2026-10-14_05:37:59_+0300_and_cycled_through_Sleep_and_DarkWake_until_FullWake_at_11:32:16_+0300_per_pmset_-g_log;a_wall_that_overlaps_host_sleep_measures_the_laptop_not_the_product)_may_be_re-run_once_with_the_same_measured_inputs_and_image_as_its_HDR_(the_re-run_commit_may_differ_from_the_stopped_HDR_commit_only_in_.planning_and_in_this_permission_in_scripts/cad-dxf-bounds.sh;checked_by_git_diff_and_written_as_inputs_identical_to_stopped_hdr=1;the_same_image_id_written_as_image_id_match_stopped_hdr=1;the_same_cells_and_sha256_else_STOP)_under_caffeinate_-dimsu_with_PreventSystemSleep_verified_by_pmset_-g_assertions_before_the_first_timed_row_and_recorded_on_the_HDR;rows_of_the_stopped_attempt_whose_[start;end]_(start=the_previous_row_log_line_or_the_group_HDR;end=its_row_log_line;a_row_without_a_reliable_interval_counts_as_overlapping)_overlaps_any_pmset_Sleep..Wake_interval_(Sleep_to_the_next_DarkWake_or_Wake_line)_are_marked_contaminated=1_in_a_NOTE_line_each_and_are_excluded_from_W_because_their_wall_is_host_sleep_not_product_time;every_non-overlapping_row_of_the_stopped_attempt_stays_and_counts_in_W;this_is_the_only_exclusion_and_it_is_defined_by_the_pmset_evidence_not_by_the_wall_value;before_the_re-run_ends_pmset_-g_log_is_re-checked_and_a_Sleep_during_the_re-run_is_STOP_reason=host_sleep_with_no_third_attempt;the_STOP_line_stays;no_other_rule_changes;any_other_re-run_is_refused\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$INIT_COMMIT" "$g" "$g" >> "$B76_OUT"
+  printf '%s\n' "$out" | grep -E '^NOTE,' >> "$B76_OUT"
+  grep -E '^(STOP|GROUP_END|RULE_AMEND|NOTE),' "$B76_OUT" | tail -n 30 | cut -c1-260 >&2
+  exit 0
+}
+
 b76_amend() {
   local stopped
+  [ -z "$B76_ROW_LOG" ] || b76_amend_sleep
   [ "$B76_AMEND" = 0 ] && [ -z "$(b76_other_stops)" ] || b76_amend_fix
   stopped=$(b76_watchdog_groups | tr '\n' '+' | sed 's/+$//')
   [ -n "$stopped" ] || fail "$B76_OUT holds no disk-watchdog STOP"
@@ -3459,6 +3677,10 @@ b76_mode() {
       b76_setup
       B76_IMAGE_MATCH=1
       [ "$B76_AMEND_FIX" = 0 ] || [ "$TAG" = "$INIT_TAG" ] || fail "engine tag $TAG differs from the init tag $INIT_TAG"
+      if [ "$B76_RERUN_KEY" = rerun_after_host_sleep ]; then
+        [ "$IMAGE_ID" = "$(printf '%s\n' "$B76_SLEEP_HDR" | tr ',' '\n' | sed -n 's/^image_id=//p')" ] || fail "image id $IMAGE_ID differs from the stopped $B76_GROUP HDR"
+        b76_caffeinated
+      fi
       if [ "$IMAGE_ID" != "$INIT_IMAGE" ]; then
         [ "$B76_AMEND" = 1 ] && [ "$TAG" = "$INIT_TAG" ] || fail "image id $IMAGE_ID differs from the init image id $INIT_IMAGE"
         B76_IMAGE_MATCH=0
@@ -3471,6 +3693,10 @@ b76_mode() {
         B76_HDR_FIX=$(printf ',rerun_key=%s,judge_commit=%s,inputs_identical_except=judge,diff_class=%s,go_src_changed=%s,go_bin_sha256=%s' \
           "$B76_RERUN_KEY" "$B76_JUDGE_COMMIT" "$B76_DIFF_CLASS" "$B76_GO_SRC" "$(b76_go_bin_shas)")
       fi
+      if [ "$B76_RERUN_KEY" = rerun_after_host_sleep ]; then
+        B76_HDR_FIX="$B76_HDR_FIX,stopped_hdr_commit=$B76_SLEEP_COMMIT,inputs_identical_to_stopped_hdr=1,image_id_match_stopped_hdr=1,caffeinate=-dimsu,caffeinate_pid=$B76_CAFF_PID,prevent_system_sleep=1"
+      fi
+      B76_HDR_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s,rerun=%s,init_commit=%s,inputs_identical=%s,init_image_id=%s,image_id_match=%s%s\n' "$B76_GROUP" \
         "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" \
         "$B76_RERUN_N" "$INIT_COMMIT" "$B76_INPUTS_SAME" "$INIT_IMAGE" "$B76_IMAGE_MATCH" "$B76_HDR_FIX" >> "$B76_OUT"
@@ -3485,6 +3711,11 @@ b76_mode() {
         *) fail "unknown group $B76_GROUP" ;;
       esac
       [ "$B76_RERUN_KEY" != rerun_after_product_fix ] || python3 "$WORK/tools/b76.py" fixnote "$B76_OUT" >> "$B76_OUT"
+      if [ "$B76_RERUN_KEY" = rerun_after_host_sleep ]; then
+        b76_sleep_check "$B76_HDR_DATE"
+        printf 'NOTE,key=host_sleep_recheck,mode=bounds76,group=%s,since_utc=%s,until_utc=%s,source=pmset_-g_log,sleeps=0\n' "$B76_GROUP" "$B76_HDR_DATE" \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$B76_OUT"
+      fi
       b76_sample
       printf 'GROUP_END,group=%s,rows=%s,duration_s=%s,date_utc=%s,load1=%s,vm_free_gib=%s,result=ok\n' "$B76_GROUP" \
         "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - B76_T0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -3554,6 +3785,7 @@ OUT_SET=0
 SMOKE=0
 B76_SUB=""
 B76_RERUN=0
+B76_ROW_LOG=""
 B76_GROUP=none
 b76_sub() { [ "$MODE" = bounds76 ] && [ -z "$B76_SUB" ] || usage; B76_SUB=$1; }
 while [ $# -gt 0 ]; do
@@ -3572,6 +3804,7 @@ while [ $# -gt 0 ]; do
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
     --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
     --amend-rerun) b76_sub amend; shift ;;
+    --row-log) [ $# -ge 2 ] && [ "$MODE" = bounds76 ] || usage; B76_ROW_LOG=$2; shift 2 ;;
     *) usage ;;
   esac
 done
