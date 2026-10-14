@@ -28,6 +28,8 @@ above it is written with load_clean=0 and its rep is measured again (at most 5 t
 The cad-worker must carry the measurement deadlines of an untracked docker-compose.override.yml
 (guard 120s, mesh 900s, render 900s, dxf 600s, rsvg 600s, engine 3600s); the API is reached at
 CAD_INWORKER_API_BASE (default http://127.0.0.1:18090). The run must be a child of caffeinate -dimsu.
+After each row the job's own uploads/ and results/ objects are deleted from the octoconv bucket
+(a MINIO_DELETED line records the bytes), so the run does not grow the MinIO volume.
 It refuses to start when webhook-worker runs, an octoconv k8s pod exists, a go test or docker build
 runs, or the compose project is not octoconv. It mints and revokes its own client and stops only the
 services it started.
@@ -298,6 +300,17 @@ wait_job() {
 	done
 }
 
+drop_job_objects() {
+	local id=$1 p bytes total=0
+	dc exec -T minio mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 < /dev/null || fail "mc alias for the minio container failed"
+	for p in uploads results; do
+		bytes=$(dc exec -T minio mc du --json "local/octoconv/$p/$id/" < /dev/null 2>/dev/null | sed -n 's/.*"size":\([0-9]*\).*/\1/p' | head -n 1)
+		dc exec -T minio mc rm --recursive --force "local/octoconv/$p/$id/" >/dev/null 2>&1 < /dev/null || fail "cannot delete $p/$id"
+		total=$((total + ${bytes:-0}))
+	done
+	ev "MINIO_DELETED,job=$id,prefixes=uploads+results,bytes=$total"
+}
+
 psqlq() { dc exec -T postgres psql -U octo -d octo_db -At -F, -c "$1" < /dev/null; }
 
 write_watcher() {
@@ -473,6 +486,7 @@ measure_row() {
 	printf '%s\n' "$out" | grep '^INWORKER_STAGE,' | while IFS= read -r l; do ev "$l"; done
 	ev "INWORKER_ROW,route=$route,cell=$cell,rep=$rep,job=$JOB_ID,status=done,attempts=1,attempt_wall_s=$wall,stage_sum_s=$sum,nonstage_s=$nonstage,go_vmhwm_mib=$(awk -v k="$hwm" 'BEGIN { printf "%.1f", k / 1024 }'),container_peak_mib=$(mib "$peak"),preflight_peak_mib=$(mib "$pre"),oom_kill=$oom,load1=$load,vm_free_gib=$free,stages=$nstages,file_bytes=$(wc -c < "$file" | tr -d ' '),target=$target,operation=$op,load1_end=$load_end,gate_wait_s=$LOAD_WAIT,load_clean=$ROW_CLEAN"
 	[ "$ROW_CLEAN" = 0 ] || ROWS=$((ROWS + 1))
+	drop_job_objects "$JOB_ID"
 }
 
 opts_json() {
@@ -521,7 +535,7 @@ MODE_NAME=inworker
 ev "HDR,mode=$MODE_NAME,date_utc=$HDR_DATE,commit=$(git rev-parse HEAD),tracked_dirt=$DIRT,server_arch=$(docker version --format '{{.Server.Arch}}')"
 ev "HDR,mode=$MODE_NAME,api_image_id=$(docker inspect -f '{{.Image}}' "$(dc ps -q api)"),cad_worker_image_id=$(docker inspect -f '{{.Image}}' "$CNAME")"
 ev "HDR,mode=$MODE_NAME,override_sha256=$(shasum -a 256 "$OVERRIDE" | awk '{print $1}'),override_env=$ENVLINE,api_cad_engine_timeout=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q api)" | sed -n 's/^CAD_ENGINE_TIMEOUT=//p')"
-ev "HDR,mode=$MODE_NAME,load1=$(load1_now),vm_free_gib=$FREE,limits=cpus_$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$CNAME")_nano;memory_$(docker inspect -f '{{.HostConfig.Memory}}' "$CNAME")_bytes,pid1_comm=$(cg_read /proc/1/comm),caffeinate_pid=$CAFF_PID,caffeinate_on_behalf_of=$CAFF_FOR,prevent_system_sleep=1,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
+ev "HDR,mode=$MODE_NAME,load1=$(load1_now),vm_free_gib=$FREE,limits=cpus_$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$CNAME")_nano;memory_$(docker inspect -f '{{.HostConfig.Memory}}' "$CNAME")_bytes,pid1_comm=$(cg_read /proc/1/comm),caffeinate_pid=$CAFF_PID,caffeinate_on_behalf_of=$CAFF_FOR,prevent_system_sleep=1,job_objects=deleted_after_each_row,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
 
 if [ "$SMOKE" = 1 ]; then
 	measure_row render_step smoke 1 "$SMOKE_FILE" png render '{"size":1280}'
