@@ -279,7 +279,7 @@ wait_job() {
 	done
 }
 
-psqlq() { dc exec -T postgres psql -U octo -d octo_db -At -F, -c "$1"; }
+psqlq() { dc exec -T postgres psql -U octo -d octo_db -At -F, -c "$1" < /dev/null; }
 
 write_watcher() {
 	cat > "$W/watch.sh" <<'WATCH'
@@ -518,7 +518,7 @@ while IFS= read -r spec; do
 	[ -f "$file" ] || fail "missing cell file $file"
 	[ "$(shasum -a 256 "$file" | awk '{print $1}')" = "$sha" ] || fail "sha256 of $file differs from its CELLSPEC"
 done < "$W/cells.txt"
-while IFS= read -r spec; do
+while IFS= read -r spec <&3; do
 	f() { printf '%s' "$spec" | tr ',' '\n' | sed -n "s/^$1=//p"; }
 	route=$(f route)
 	cell=$(f cell)
@@ -527,10 +527,12 @@ while IFS= read -r spec; do
 	op=$(f operation)
 	opts=$(opts_json "$(f opts)")
 	for rep in $(seq 1 "$N_REPS"); do
-		measure_row "$route" "$cell" "$rep" "$file" "$target" "$op" "$opts"
+		measure_row "$route" "$cell" "$rep" "$file" "$target" "$op" "$opts" < /dev/null
 	done
-done < "$W/cells.txt"
+done 3< "$W/cells.txt"
 found=$(sleeps_since "$HDR_DATE")
 [ -z "$found" ] || fail "the host slept during the run: $found"
-ev "SUMMARY,mode=inworker,routes=$(wc -l < "$W/cells.txt" | tr -d ' '),rows=$ROWS,n=$N_REPS,result=ok"
+NROUTES=$(wc -l < "$W/cells.txt" | tr -d ' ')
+[ "$ROWS" = $((NROUTES * N_REPS)) ] || fail "wrote $ROWS rows, want $((NROUTES * N_REPS)) for $NROUTES routes at N=$N_REPS"
+ev "SUMMARY,mode=inworker,routes=$NROUTES,rows=$ROWS,n=$N_REPS,result=ok"
 FINISHED=1
