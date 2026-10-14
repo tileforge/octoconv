@@ -44,6 +44,7 @@ Usage:
   scripts/cad-dxf-bounds.sh derive76 --select-cells [--out FILE]
   scripts/cad-dxf-bounds.sh derive76 --ladder render_iges|memory_iges [--out FILE]
   scripts/cad-dxf-bounds.sh derive76 --derive [--out FILE]
+  scripts/cad-dxf-bounds.sh derive76 --quiet [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -103,6 +104,9 @@ derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells wri
        render_iges renders IGES copies at 16, 8, 4 and 2 MiB until ceil(1.5W) <= 402; memory_iges meshes IGES copies at
        128 down to 96 MiB and runs scripts/cad-inworker-measure.sh on a rung whose mesh peak fits, until mesh peak plus
        go peak <= 2867.2 MiB.
+       --quiet writes the load-contaminated rows of 76-02-bounds.txt and 76-03-ladders.txt (RULE_AMEND quiet_host) as NOTE
+       lines and re-measures, under the load gate (load1 <= 11 at the start and the end of every timed stage), only the reps
+       each setter key misses, into evidence/76-03-quiet.txt.
        --derive applies the 76-02 RULE lines and the RULE_AMEND lines to 76-02-bounds.txt, 76-03-ladders.txt, the in-worker
        rows and the on-record walls (75-05 and quick 0og), with no docker, and writes the DERIVED, PATHB, CHECK,
        GAP_CLOSED, KNOWN_LIMIT and SUMMARY lines (default evidence/76-03-derived.txt); a STOP writes no DERIVED line.
@@ -2654,6 +2658,16 @@ b76_sample() {
   fi
   B76_FREE=$free
   B76_LOAD=$(load1_now)
+  if [ "${D76_GATE:-0}" = 1 ]; then
+    D76_WAIT=0
+    while python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$B76_LOAD" "$D76_LOAD_MAX"; do
+      [ "$D76_WAIT" -lt "$D76_GATE_GIVEUP_S" ] || b76_stop "reason=host_load,load1=$B76_LOAD,waited_s=$D76_WAIT,limit=$D76_LOAD_MAX"
+      log "load1 $B76_LOAD above $D76_LOAD_MAX; waiting"
+      sleep 30
+      D76_WAIT=$((D76_WAIT + 30))
+      B76_LOAD=$(load1_now)
+    done
+  fi
 }
 
 b76_preflight() {
@@ -3146,6 +3160,7 @@ b76_emit() {
   shift 2
   line=$(python3 "$WORK/tools/b76.py" row "group=$B76_GROUP" "wrap=$job/w_$tag/wrap.out" "log=$job/w_$tag/child.log" \
     "rc_w=$(cat "$job/w_$tag/rc_w")" "load1=$B76_LOAD" "vmfree=$B76_FREE" "$@")
+  [ "${D76_GATE:-0}" != 1 ] || line="$line,load1_end=$(load1_now),gate_wait_s=${D76_WAIT:-0}"
   printf '%s\n' "$line" >> "$B76_OUT"
   log "$(printf '%s' "$line" | tr ',' '\n' | grep -E '^(cell|stage|quality|view|background|rep|wall_s|triangles|band|class)=' | tr '\n' ' ')"
   ROW_BAND=$(scaled_field band "$line")
@@ -3808,6 +3823,9 @@ D76_POD_MIB=2867.2
 D76_RENDER_RUNGS=(IR16MiB:16777216 IR8MiB:8388608 IR4MiB:4194304 IR2MiB:2097152)
 D76_MEMORY_RUNGS=(IM128MiB:134217728 IM120MiB:125829120 IM112MiB:117440512 IM104MiB:109051904 IM96MiB:100663296)
 D76_PER=""
+D76_LOAD_MAX=11
+D76_GATE_GIVEUP_S=7200
+D76_QUIET_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-quiet.txt
 D76_FIXED=""
 
 d76_target_of() {
@@ -4003,6 +4021,89 @@ d76_memory_ladder() {
     fi
   done
   b76_stop "reason=iges_memory_ladder_no_rung_passes,pod_mib=$D76_POD_MIB"
+}
+
+d76_prep_mesh() {
+  local name=$1 q=$2 keepdir=$3 job size tri
+  [ ! -f "$keepdir/mesh_$q.stl" ] || return 0
+  job=$(new_job)
+  cp -c "$CELL_PATH" "$job/in.$CELL_FMT" 2>/dev/null || cp "$CELL_PATH" "$job/in.$CELL_FMT"
+  chmod 0644 "$job/in.$CELL_FMT"
+  b76_stage "$job" prep "$MESH_RO" 3d "$B76_SETTER_S" /usr/local/bin/cad-mesh --format "$CELL_FMT" "/job/in.$CELL_FMT" /job/mesh.stl \
+    --quality "$q" --measure /job/draft.json
+  [ -s "$job/mesh.stl" ] || b76_stop "reason=quiet_prep_mesh_failed,cell=$name,quality=$q"
+  size=$(bytes_of "$job/mesh.stl")
+  tri=$(( (size - 84) / 50 ))
+  [ "$tri" -ge 1 ] && [ "$tri" -le "$B76_TRI_CAP" ] || b76_stop "reason=quiet_prep_mesh_triangles_$tri,cell=$name,quality=$q"
+  mv -f "$job/mesh.stl" "$keepdir/mesh_$q.stl"
+  printf '%s\n' "$tri" > "$keepdir/tri_$q"
+  printf 'QUIET_PREP,cell=%s,quality=%s,triangles=%s,timed=0\n' "$name" "$q" "$tri" >> "$B76_OUT"
+  rm -rf "$job"
+}
+
+d76_quiet_mode() {
+  local out=$1 src lad since first name stage q v bg fmt n clean miss mw cur="" keepdir="" rep=100 tries limit kk tf
+  B76_OUT=$out
+  B76_GROUP=quiet
+  grep -q '^RULE_AMEND,key=quiet_host,' "$REPO_ROOT/$D76_CELLS_REL" || fail "the quiet_host amendment is not in $D76_CELLS_REL"
+  if [ -f "$B76_OUT" ] && grep -q '^QUIET_END,.*result=ok' "$B76_OUT"; then fail "$B76_OUT already ended ok"; fi
+  b76_caffeinated
+  b76_setup
+  [ "$TAG" = octoconv-cad-worker:engine76-31b85807c654 ] || b76_stop "reason=engine_inputs_differ_from_76-02,tag=$TAG"
+  mkdir -p "$(dirname "$B76_OUT")"
+  src="$REPO_ROOT/$B76_EVID_REL"
+  lad="$REPO_ROOT/$D76_LADDER_REL"
+  since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  first=0
+  [ -s "$B76_OUT" ] || first=1
+  D76_GATE=1
+  b76_sample
+  printf 'HDR,mode=derive76_quiet,group=quiet,date_utc=%s,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,server_arch=%s,load1=%s,vm_free_gib=%s,gate_wait_s=%s,load_max=%s,giveup_s=%s,caffeinate_pid=%s,caffeinate_on_behalf_of=%s,prevent_system_sleep=1\n' \
+    "$since" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(docker version --format '{{.Server.Arch}}')" "$B76_LOAD" "$B76_FREE" \
+    "$D76_WAIT" "$D76_LOAD_MAX" "$D76_GATE_GIVEUP_S" "$B76_CAFF_PID" "$B76_CAFF_FOR" >> "$B76_OUT"
+  [ "$first" = 0 ] || python3 "$WORK/tools/d76.py" quiet notes "$src" "$lad" >> "$B76_OUT"
+  B76_T0=$(date +%s)
+  tf="$WORK/tries"
+  : > "$tf"
+  while :; do
+    python3 "$WORK/tools/d76.py" quiet missing "$src" "$lad" "$B76_OUT" > "$WORK/missing.txt"
+    [ -s "$WORK/missing.txt" ] || break
+    read -r name stage q v bg fmt n clean miss mw < "$WORK/missing.txt"
+    if [ "$fmt" = dxf ]; then kk="$name:chain"; else kk="$name:$stage:$q:$v:$bg"; fi
+    tries=$(awk -v k="$kk" '$1 == k { print $2 }' "$tf")
+    limit=$(awk -v k="$kk" '$1 == k { print $3 }' "$tf")
+    [ -n "$tries" ] || { tries=0; limit=$((3 * miss + 2)); }
+    [ "$tries" -lt "$limit" ] || b76_stop "reason=quiet_reps_not_reached,key=$kk,tries=$tries,limit=$limit"
+    awk -v k="$kk" '$1 != k' "$tf" > "$tf.n"
+    printf '%s %s %s\n' "$kk" "$((tries + 1))" "$limit" >> "$tf.n"
+    mv -f "$tf.n" "$tf"
+    if [ "$name" != "$cur" ]; then
+      b76_cell "$name" "$B76_OUT"
+      [ -z "$keepdir" ] || rm -rf "$keepdir"
+      keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+      cur=$name
+    fi
+    rep=$((rep + 1))
+    log "quiet $kk rep=$rep missing=$miss try=$((tries + 1))/$limit"
+    case "$fmt:$stage" in
+      dxf:*) b76_dxf_row "$name" "$rep" ;;
+      *:guard) b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S" ;;
+      *:mesh | *:stats) b76_mesh_row "$name" "$q" "$rep" 1 "$B76_SETTER_S" "$keepdir" ;;
+      *:render)
+        d76_prep_mesh "$name" "$q" "$keepdir"
+        b76_render_row "$name" "$q" "$v" "$bg" "$rep" 1 "$B76_SETTER_S" "$keepdir" ;;
+      *) b76_stop "reason=quiet_unknown_stage,cell=$name,stage=$stage" ;;
+    esac
+  done
+  [ -z "$keepdir" ] || rm -rf "$keepdir"
+  found=$(pmset -g log | python3 "$WORK/tools/b76.py" sleeps "$since" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  [ -z "$found" ] || b76_stop "reason=host_sleep,source=pmset_-g_log,sleep_intervals_utc=$found"
+  D76_GATE=0
+  b76_sample
+  printf 'QUIET_END,duration_s=%s,date_utc=%s,load1=%s,vm_free_gib=%s,quiet_rows=%s,host_sleeps=0,result=ok\n' "$(( $(date +%s) - B76_T0 ))" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" "$(grep -c '^BOUND76_ROW,.*,group=quiet,' "$B76_OUT")" >> "$B76_OUT"
+  grep -E '^(QUIET_END|STOP)' "$B76_OUT" | cut -c1-200 >&2
+  exit 0
 }
 
 d76_ladder_mode() {
@@ -4270,6 +4371,124 @@ def select(argv):
     return 0 if stops == 0 else 1
 
 
+LOAD_MAX = 11.0
+W_STAGES = ("guard", "mesh", "stats", "render", "dxf", "rsvg_ink", "rsvg_pdf", "rsvg_png_transparent")
+
+
+def fnum(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_rows(path, tag):
+    if not path or not os.path.isfile(path):
+        return []
+    lines = open(path).read().splitlines()
+    sleep = set()
+    for l in lines:
+        if l.startswith("NOTE,key=contaminated_row,"):
+            d = kv(l)
+            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+                sleep.add(int(d["line"]))
+    sections, cur = [], None
+    for i, l in enumerate(lines, 1):
+        if l.startswith("HDR,group=") or l.startswith("HDR,mode=derive76_ladder") or l.startswith("HDR,mode=derive76_quiet"):
+            cur = {"hdr": fnum(kv(l).get("load1")), "rows": [], "end": None}
+            sections.append(cur)
+        elif l.startswith("BOUND76_ROW,"):
+            if cur is None:
+                cur = {"hdr": None, "rows": [], "end": None}
+                sections.append(cur)
+            d = kv(l)
+            d["_line"] = i
+            d["_src"] = tag
+            cur["rows"].append(d)
+        elif cur is not None and (l.startswith("GROUP_END,") or l.startswith("LADDER_END,") or l.startswith("QUIET_END,")):
+            if cur["end"] is None:
+                cur["end"] = fnum(kv(l).get("load1"))
+    out = []
+    for s in sections:
+        rs = s["rows"]
+        for j, r in enumerate(rs):
+            own = fnum(r.get("load1"))
+            why = []
+            if own is None or own > LOAD_MAX:
+                why.append("own")
+            if "load1_end" in r:
+                end = fnum(r.get("load1_end"))
+                if end is None or end > LOAD_MAX:
+                    why.append("end")
+                r["_prev"], r["_next"] = "gated", r.get("load1_end")
+            else:
+                prev = fnum(rs[j - 1].get("load1")) if j > 0 else s["hdr"]
+                nxt = fnum(rs[j + 1].get("load1")) if j + 1 < len(rs) else s["end"]
+                if prev is not None and prev > LOAD_MAX:
+                    why.append("preceding")
+                if nxt is not None and nxt > LOAD_MAX:
+                    why.append("following")
+                r["_prev"], r["_next"] = prev, nxt
+            r["_load_why"] = "+".join(why)
+            r["_sleep"] = r["_line"] in sleep
+            r["_clean"] = not why and not r["_sleep"]
+            out.append(r)
+    return out
+
+
+def all_rows(src, ladder, quiet):
+    return load_rows(src, "76-02") + load_rows(ladder, "76-03-ladders") + load_rows(quiet, "76-03-quiet")
+
+
+def wkey(r):
+    return (r["cell"], r["stage"], r.get("quality", "na"), r.get("view", "na"), r.get("background", "na"))
+
+
+def quiet_state(rows):
+    g = {}
+    for r in rows:
+        if r.get("setter") == "1" and r["stage"] in W_STAGES:
+            g.setdefault(wkey(r), []).append(r)
+    res = []
+    for k, rs in sorted(g.items()):
+        base = [r for r in rs if r["_src"] != "76-03-quiet"]
+        if not base:
+            continue
+        n = len({r["rep"] for r in base})
+        clean = len([r for r in rs if r["_clean"]])
+        mw = max([fnum(r.get("wall_s")) or 0 for r in rs])
+        res.append((k, n, clean, max(0, n - clean), mw, rs[0].get("format")))
+    return res
+
+
+def quiet(argv):
+    cmd, src, ladder, quietf = argv[0], argv[1], argv[2], argv[3] if len(argv) > 3 else ""
+    rows = all_rows(src, ladder, quietf)
+    if cmd == "notes":
+        per = {}
+        for r in rows:
+            if r.get("setter") == "1" and r["stage"] in W_STAGES and r["_load_why"] and r["_src"] != "76-03-quiet":
+                per[r["stage"]] = per.get(r["stage"], 0) + 1
+                print("NOTE,key=load_contaminated_row,file=%s,line=%d,cell=%s,stage=%s,quality=%s,view=%s,background=%s,rep=%s,load1=%s,preceding_load1=%s,following_load1=%s,why=%s,wall_s=%s,excluded_from_W=1" % (
+                    "76-02-bounds.txt" if r["_src"] == "76-02" else "76-03-ladders.txt", r["_line"], r["cell"], r["stage"], r.get("quality", "na"),
+                    r.get("view", "na"), r.get("background", "na"), r["rep"], r.get("load1"), r["_prev"], r["_next"], r["_load_why"], r.get("wall_s")))
+        for k, n, clean, miss, mw, fmt in quiet_state(rows):
+            if miss:
+                print("QUIET_PLAN,cell=%s,stage=%s,quality=%s,view=%s,background=%s,format=%s,n=%d,clean=%d,missing=%d,max_wall_s=%.2f" % (k + (fmt, n, clean, miss, mw)))
+        print("QUIET_COUNT,%s" % ",".join("%s=%d" % (k, v) for k, v in sorted(per.items())))
+        return 0
+    if cmd == "missing":
+        todo = [(mw, k, n, clean, miss, fmt) for k, n, clean, miss, mw, fmt in quiet_state(rows) if miss]
+        cmax = {}
+        for t in todo:
+            cmax[t[1][0]] = max(cmax.get(t[1][0], 0), t[0])
+        todo.sort(key=lambda t: (cmax[t[1][0]], t[1][0], t[0], t[1]))
+        for mw, k, n, clean, miss, fmt in todo:
+            print(" ".join(k) + " %s %d %d %d %.2f" % (fmt, n, clean, miss, mw))
+        return 0
+    return 64
+
+
 STAGE_OF = {"cad-guard": "guard", "cad-mesh": "mesh", "cad-render": "render", "cad-dxf": "dxf", "rsvg-convert": "rsvg"}
 ROUTES = ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")
 MIB = 1048576
@@ -4303,9 +4522,48 @@ def inworker_rows(paths):
     return rows, stages, hdrs
 
 
+ROUTE_STAGES = {
+    "convert_step": ("step", ("guard", "mesh")),
+    "convert_iges": ("iges", ("guard", "mesh")),
+    "render_step": ("step", ("guard", "mesh", "render")),
+    "render_iges": ("iges", ("guard", "mesh", "render")),
+    "render_stl": ("stl", ("stats", "render")),
+    "dxf_svg": ("dxf", ("guard", "dxf", "rsvg_ink")),
+    "dxf_pdf": ("dxf", ("guard", "dxf", "rsvg_ink", "rsvg_pdf")),
+    "dxf_png": ("dxf", ("guard", "dxf", "rsvg_ink", "rsvg_png_transparent")),
+}
+
+
+def inworker_clean(rows):
+    by_file = {}
+    for r in rows:
+        by_file.setdefault(r["_file"], []).append(r)
+    for f, rs in by_file.items():
+        for j, r in enumerate(rs):
+            own = fnum(r.get("load1"))
+            why = []
+            if own is None or own > LOAD_MAX:
+                why.append("own")
+            if "load1_end" in r:
+                end = fnum(r.get("load1_end"))
+                if end is None or end > LOAD_MAX:
+                    why.append("end")
+                if r.get("load_clean") == "0":
+                    why.append("flag")
+            else:
+                prev = fnum(rs[j - 1].get("load1")) if j > 0 else None
+                nxt = fnum(rs[j + 1].get("load1")) if j + 1 < len(rs) else None
+                if prev is not None and prev > LOAD_MAX:
+                    why.append("preceding")
+                if nxt is not None and nxt > LOAD_MAX:
+                    why.append("following")
+            r["_load_why"] = "+".join(why)
+            r["_clean"] = not why
+
+
 def derive(argv):
-    src, ladder, cellsfile, stack, b75, ink, inworker = argv[:7]
-    extra = [p for p in argv[7:] if p]
+    src, ladder, cellsfile, stack, b75, ink, inworker, quietf = argv[:8]
+    extra = [p for p in argv[8:] if p]
     budget = 886
     out = []
     stops = []
@@ -4316,14 +4574,22 @@ def derive(argv):
     def stop(s):
         stops.append("STOP,mode=derive76," + s)
 
-    rows, cells, contaminated, results = load_all(src, ladder)
+    _, cells, contaminated, results = load_all(src, ladder)
+    if quietf and os.path.isfile(quietf):
+        for l in open(quietf).read().splitlines():
+            if l.startswith("CELL,"):
+                d = kv(l)
+                cells.setdefault(d["cell"], d)
+    rows_all = [r for r in all_rows(src, ladder, quietf) if not r["_sleep"]]
     amend = amendments(cellsfile)
-    for k in ("render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else"):
+    for k in ("render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else", "quiet_host", "pod_per_route", "bytes_output", "rerun_eight_routes"):
         if k not in amend:
             stop("reason=amendment_missing,key=%s" % k)
     sect = last_section(cellsfile)
     if any(l.startswith("STOP,") for l in sect) or not any(l.startswith("SUMMARY,mode=derive76_select,") and "result=ok" in l for l in sect):
         stop("reason=last_select_section_not_ok")
+    if not (quietf and os.path.isfile(quietf) and any(l.startswith("QUIET_END,") and "result=ok" in l for l in open(quietf).read().splitlines())):
+        stop("reason=quiet_re-measure_not_ended_ok")
     gl = [l for l in open(stack).read().splitlines() if l.startswith("STACK_GLOBAL,")]
     rule = kv(gl[-1]).get("render_deadline_rule") if gl else None
     byte_bound = kv(gl[-1]).get("byte_bound", "none") if gl else "none"
@@ -4345,6 +4611,7 @@ def derive(argv):
     ceiling_iges = int(mem["ceiling_bytes"]) if mem else 0
     iw_paths = [inworker] + extra
     iw, iws, iwh = inworker_rows(iw_paths)
+    inworker_clean(iw)
     for p, h in iwh:
         if "tracked_dirt" in h and h["tracked_dirt"] != "0":
             stop("reason=inworker_tracked_dirt,file=%s" % p)
@@ -4354,16 +4621,27 @@ def derive(argv):
         if r.get("status") != "done" or r.get("attempts") != "1":
             stop("reason=inworker_row_not_done_attempts_1,job=%s" % r.get("job"))
     for route in ROUTES:
-        n = len([r for r in iw if r["route"] == route and r["_file"] == os.path.basename(inworker)])
+        n = len([r for r in iw if r["route"] == route and r["_file"] == os.path.basename(inworker) and r["_clean"]])
         if n < 3:
-            stop("reason=inworker_route_rows_below_3,route=%s,rows=%d" % (route, n))
+            stop("reason=inworker_route_clean_rows_below_3,route=%s,rows=%d" % (route, n))
     if stops:
         return finish(out, stops)
 
     def admitted_iges(c):
         return c.get("format") != "iges" or int(c.get("bytes", "0")) <= ceiling_iges
 
-    setter = [r for r in rows if r.get("setter") == "1"]
+    setter_all = [r for r in rows_all if r.get("setter") == "1"]
+    setter = [r for r in setter_all if r["_clean"]]
+    clean_jobs = {r["job"] for r in iw if r["_clean"]}
+    clean_reps = {(r["_file"], r["route"], r["rep"]) for r in iw if r["_clean"]}
+    iws_clean = [x for x in iws if (x["job"] in clean_jobs if "job" in x else (x["_file"], x["route"], x["rep"]) in clean_reps)]
+    iw_c = [r for r in iw if r["_clean"]]
+
+    per = {}
+    for r in setter_all:
+        if r["stage"] in W_STAGES and not r["_clean"]:
+            per[r["stage"]] = per.get(r["stage"], 0) + 1
+    emit("QUIET_EXCLUDED,%s,inworker_rows=%d" % (",".join("%s=%d" % kvp for kvp in sorted(per.items())), len([r for r in iw if not r["_clean"]])))
 
     def wmax(cands):
         best = None
@@ -4374,22 +4652,26 @@ def derive(argv):
                 best = (w, cell, route, src_)
         return best
 
-    def stage_rows(stages):
-        return [(wall(r), r["cell"], "stage_" + r["stage"], r["_src"]) for r in setter if r["stage"] in stages]
+    def stage_rows(pool, stages):
+        return [(wall(r), r["cell"], "stage_" + r["stage"], r["_src"]) for r in pool if r["stage"] in stages]
 
-    def iw_stage(stage):
-        return [(float(s["wall_s"]), s["cell"], s["route"], "inworker") for s in iws if STAGE_OF.get(s["stage"]) == stage]
+    def iw_stage(pool, stage):
+        return [(float(s["wall_s"]), s["cell"], s["route"], "inworker") for s in pool if STAGE_OF.get(s["stage"]) == stage]
 
-    wg = wmax(stage_rows(("guard",)) + iw_stage("guard"))
-    wm = wmax(stage_rows(("mesh", "stats")) + iw_stage("mesh"))
-    wd = wmax(stage_rows(("dxf",)) + iw_stage("dxf") + [(float(r["wall_s"]), r["row"], "dxf", "75-05") for r in b75rows if r["stage"] == "dxf"]
-              + [(ink_dxf, "0og_C", "dxf", "0og")])
-    wr = wmax(stage_rows(("rsvg_ink", "rsvg_pdf", "rsvg_png_transparent")) + iw_stage("rsvg")
-              + [(float(r["wall_s"]), r["row"], r["stage"], "75-05") for r in b75rows if r["stage"].startswith("rsvg")]
-              + [(ink_rsvg, "0og_L170031", "rsvg_ink", "0og")])
+    onrec_dxf = [(float(r["wall_s"]), r["row"], "dxf", "75-05") for r in b75rows if r["stage"] == "dxf"] + [(ink_dxf, "0og_C", "dxf", "0og")]
+    onrec_rsvg = [(float(r["wall_s"]), r["row"], r["stage"], "75-05") for r in b75rows if r["stage"].startswith("rsvg")] + [(ink_rsvg, "0og_L170031", "rsvg_ink", "0og")]
+    spec = (("guard", ("guard",), "guard", [], []), ("mesh", ("mesh", "stats"), "mesh", [], []), ("dxf", ("dxf",), "dxf", onrec_dxf, onrec_dxf),
+            ("rsvg", ("rsvg_ink", "rsvg_pdf", "rsvg_png_transparent"), "rsvg", onrec_rsvg, onrec_rsvg))
+    W = {}
+    for name, stages, iwname, onrec_c, onrec_a in spec:
+        clean = wmax(stage_rows(setter, stages) + iw_stage(iws_clean, iwname) + onrec_c)
+        allw = wmax(stage_rows(setter_all, stages) + iw_stage(iws, iwname) + onrec_a)
+        W[name] = clean
+        emit("W,stage=%s,clean_max_s=%s,clean_cell=%s,clean_source=%s,all_rows_max_s=%s,all_rows_cell=%s,moved_s=%s" % (
+            name, fmt2(clean[0]), clean[1], clean[3], fmt2(allw[0]), allw[1], fmt2(clean[0] - allw[0])))
+    wg, wm, wd, wr = W["guard"], W["mesh"], W["dxf"], W["rsvg"]
     g, m, d, s = ceil15(wg[0]), ceil15(wm[0]), ceil15(wd[0]), ceil15(wr[0])
-    nonstage = [(float(r["nonstage_s"]), r["cell"], r["route"], r["_file"]) for r in iw]
-    wio = max(nonstage)
+    wio = max((float(r["nonstage_s"]), r["cell"], r["route"], r["_file"]) for r in iw_c)
     io = ceil15(wio[0])
     R = budget - g - m - io
     if R <= 0:
@@ -4399,122 +4681,150 @@ def derive(argv):
     sum_3d = g + m + R + io
     engine = max(sum_3d, sum_dxf)
 
-    for key, val, w, extra_s in (("cad_guard_timeout_s", g, wg, ""), ("cad_mesh_timeout_s", m, wm, ""), ("cad_dxf_timeout_s", d, wd, ""), ("cad_rsvg_timeout_s", s, wr, "")):
-        emit("DERIVED,key=%s,value=%d,derivation=ceil(1.5x%s)=%d_W_from_%s,worst_cell=%s,worst_route=%s" % (key, val, fmt2(w[0]), val, w[3], w[1], w[2]))
-    emit("DERIVED,key=cad_io_allowance_s,value=%d,derivation=ceil(1.5x%s)=%d_max_inworker_attempt_wall_minus_observed_stage_walls,worst_cell=%s,worst_route=%s" % (io, fmt2(wio[0]), io, wio[1], wio[2]))
+    for key, val, w in (("cad_guard_timeout_s", g, wg), ("cad_mesh_timeout_s", m, wm), ("cad_dxf_timeout_s", d, wd), ("cad_rsvg_timeout_s", s, wr)):
+        emit("DERIVED,key=%s,value=%d,derivation=ceil(1.5x%s)=%d_W_from_%s_load-clean_rows,worst_cell=%s,worst_route=%s" % (key, val, fmt2(w[0]), val, w[3], w[1], w[2]))
+    emit("DERIVED,key=cad_io_allowance_s,value=%d,derivation=ceil(1.5x%s)=%d_max_load-clean_inworker_attempt_wall_minus_observed_stage_walls,worst_cell=%s,worst_route=%s" % (io, fmt2(wio[0]), io, wio[1], wio[2]))
     emit("DERIVED,key=cad_render_timeout_s,value=%d,derivation=remainder_R=886-%d-%d-%d=%d_(76-01_STACK_GLOBAL_render_deadline_rule=remainder;render_remainder_all),worst_cell=%s,worst_route=render_iges" % (R, g, m, io, R, ren["cell"]))
 
+    def variant_rows(pool, name, q, v, b):
+        return [x for x in pool if x["cell"] == name and x["stage"] == "render" and x.get("quality") == q and x.get("view") == v and x.get("background") == b]
+
     rclass = []
+    vband = {}
     for name, c in sorted(cells.items()):
         if c.get("format") not in ("step", "iges", "stl"):
             continue
-        variants = sorted({(r.get("quality"), r.get("view"), r.get("background")) for r in rows if r["cell"] == name and r["stage"] == "render"})
+        variants = sorted({(r.get("quality"), r.get("view"), r.get("background")) for r in rows_all if r["cell"] == name and r["stage"] == "render"})
         for q, v, b in variants:
-            rr = [r for r in rows if r["cell"] == name and r["stage"] == "render" and r.get("quality") == q and r.get("view") == v and r.get("background") == b]
+            rr = [x for x in variant_rows(rows_all, name, q, v, b) if x.get("setter") == "0" or x["_clean"]]
             band, w = render_band(rr, R)
+            vband[(name, q, v, b)] = band
             rclass.append((c.get("format"), name, int(c.get("bytes", "0")), q, v, b, band, w, admitted_iges(c)))
-            emit("RENDER_CLASS,format=%s,cell=%s,bytes=%s,quality=%s,view=%s,background=%s,max_wall_s=%s,ceil15=%d,R=%d,band=%s,admitted=%d" % (
-                c.get("format"), name, c.get("bytes"), q, v, b, fmt2(w or 0), ceil15(w or 0), R, band, 1 if admitted_iges(c) else 0))
+            emit("RENDER_CLASS,format=%s,cell=%s,bytes=%s,quality=%s,view=%s,background=%s,clean_rows=%d,max_wall_s=%s,ceil15=%d,R=%d,band=%s,admitted=%d" % (
+                c.get("format"), name, c.get("bytes"), q, v, b, len(rr), fmt2(w or 0), ceil15(w or 0), R, band, 1 if admitted_iges(c) else 0))
     for route in ("render_step", "render_iges", "render_stl"):
-        ws = [float(x["wall_s"]) for x in iws if x["route"] == route and STAGE_OF.get(x["stage"]) == "render"]
+        ws = [float(x["wall_s"]) for x in iws_clean if x["route"] == route and STAGE_OF.get(x["stage"]) == "render"]
         if ws:
             wmx = max(ws)
             band = "margin" if ceil15(wmx) <= R else ("no_margin" if wmx <= R else "refused")
-            emit("RENDER_CLASS,route=%s,source=inworker,max_wall_s=%s,ceil15=%d,R=%d,band=%s" % (route, fmt2(wmx), ceil15(wmx), R, band))
+            emit("RENDER_CLASS,route=%s,source=inworker_load-clean,max_wall_s=%s,ceil15=%d,R=%d,band=%s" % (route, fmt2(wmx), ceil15(wmx), R, band))
 
     ceil_step, ceil_stl, ceil_dxf = 66060288, 190840832, 123731968
     worst_route = "3d" if sum_3d >= sum_dxf else "dxf"
     emit("DERIVED,key=cad_engine_timeout_s,value=%d,derivation=max(guard+mesh+render+io=%d+%d+%d+%d=%d;guard+dxf+2xrsvg+io=%d+%d+2x%d+%d=%d),worst_cell=%s,worst_route=%s,ceilings=step:%d;iges:%d;stl:%d;dxf:%d" % (
         engine, g, m, R, io, sum_3d, g, d, s, io, sum_dxf, ren["cell"] if worst_route == "3d" else wd[1],
         "render_iges" if worst_route == "3d" else "dxf_png", ceil_step, ceiling_iges, ceil_stl, ceil_dxf))
+    emit("CHECK,key=route_sum_3d,value=%d,limit=886,result=%s" % (sum_3d, "ok" if sum_3d <= budget else "fail"))
+    emit("CHECK,key=route_sum_dxf,value=%d,derivation=%d+%d+2x%d+%d,limit=886,result=%s" % (sum_dxf, g, d, s, io, "ok" if sum_dxf <= budget else "fail"))
     if engine > budget:
-        stop("reason=engine_over_886,engine=%d,byte_bound=%s" % (engine, byte_bound))
+        stop("reason=engine_over_886,engine=%d,route_sum_3d=%d,route_sum_dxf=%d,byte_bound=%s" % (engine, sum_3d, sum_dxf, byte_bound))
     emit("DERIVED,key=cad_pod_grace_s,value=%d,derivation=engine+20=%d+20,worst_cell=%s,worst_route=%s" % (engine + 20, engine, ren["cell"], "render_iges"))
 
-    def route_of(r):
-        return r["route"]
-
     for route in ROUTES:
-        aw = max((float(r["attempt_wall_s"]), r["cell"]) for r in iw if r["route"] == route)
+        aw = max((float(r["attempt_wall_s"]), r["cell"]) for r in iw_c if r["route"] == route)
         need = ceil15(aw[0])
         ok = engine >= need
         emit("CHECK,key=crosscheck_%s,engine=%d,max_attempt_wall_s=%s,ceil15=%d,cell=%s,result=%s" % (route, engine, fmt2(aw[0]), need, aw[1], "ok" if ok else "fail"))
         if not ok:
             stop("reason=crosscheck_failed,route=%s,engine=%d,need=%d" % (route, engine, need))
 
-    adm = []
-    for r in setter:
-        c = cells.get(r["cell"], {})
-        if not admitted_iges(c):
-            continue
-        if r.get("band") not in ("within",):
-            continue
-        if r["stage"] == "render":
-            rr = [x for x in rows if x["cell"] == r["cell"] and x["stage"] == "render" and x.get("quality") == r.get("quality") and x.get("view") == r.get("view") and x.get("background") == r.get("background")]
-            if render_band(rr, R)[0] != "margin":
-                continue
+    def peak(r):
         try:
-            adm.append((float(r["peak_mib"]), r["cell"], r["stage"], r.get("quality", "na"), r["_src"]))
+            return float(r["peak_mib"])
         except (KeyError, ValueError):
-            pass
-    sp = max(adm)
-    refused_peak = max([(float(r["peak_mib"]), r["cell"], r["stage"]) for r in setter if r.get("peak_mib", "na") not in ("na", "") and admitted_iges(cells.get(r["cell"], {}))])
-    gp = max((float(r["go_vmhwm_mib"]), r["cell"], r["route"], r["_file"]) for r in iw)
+            return None
+
+    def admitted_row(r):
+        c = cells.get(r["cell"], {})
+        if not admitted_iges(c) or r.get("band") != "within":
+            return False
+        if r["stage"] == "render":
+            return vband.get((r["cell"], r.get("quality"), r.get("view"), r.get("background"))) == "margin"
+        return True
+
+    route_pairs = []
+    svg_route_peak = None
+    for route in ROUTES:
+        fmt, stages = ROUTE_STAGES[route]
+        sp = max([(peak(r), r["cell"], r["stage"], r.get("quality", "na")) for r in setter_all
+                  if r.get("format") == fmt and r["stage"] in stages and admitted_row(r) and peak(r) is not None])
+        gp = max((float(r["go_vmhwm_mib"]), r["cell"], r["_file"]) for r in iw if r["route"] == route)
+        total = sp[0] + gp[0]
+        route_pairs.append((route, sp, gp, total))
+        if route == "dxf_svg":
+            svg_route_peak = (sp, gp)
+        emit("POD_ROUTE,route=%s,stage_peak_mib=%s,stage_cell=%s,stage=%s,quality=%s,go_peak_mib=%s,go_cell=%s,sum_mib=%s,limit_mib=%s,result=%s" % (
+            route, fmt2(sp[0]), sp[1], sp[2], sp[3], fmt2(gp[0]), gp[1], fmt2(total), fmt2(POD), "ok" if total <= POD else "fail"))
+        if total > POD:
+            stop("reason=pod_per_route,route=%s,stage_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s" % (route, fmt2(sp[0]), fmt2(gp[0]), fmt2(total), fmt2(POD)))
+    worst_pair = max(route_pairs, key=lambda t: t[3])
+    sp_all = max(route_pairs, key=lambda t: t[1][0])[1]
+    gp_all = max(route_pairs, key=lambda t: t[2][0])[2]
+    emit("DERIVED,key=cad_stage_peak_mib,value=%d,derivation=max_over_routes_of_the_route_stage_peak=%s_(%s_%s_%s);pod_rule_per_route;worst_pair=%s:%s+%s=%s,worst_cell=%s,worst_route=%s" % (
+        int(math.ceil(sp_all[0])), fmt2(sp_all[0]), sp_all[1], sp_all[2], sp_all[3], worst_pair[0], fmt2(worst_pair[1][0]), fmt2(worst_pair[2][0]),
+        fmt2(worst_pair[3]), sp_all[1], [p[0] for p in route_pairs if p[1] is sp_all][0]))
+    emit("DERIVED,key=cad_go_peak_mib,value=%d,derivation=max_over_routes_of_the_route_go_peak=%s_(%s),worst_cell=%s,worst_route=%s" % (
+        int(math.ceil(gp_all[0])), fmt2(gp_all[0]), gp_all[2], gp_all[1], [p[0] for p in route_pairs if p[2] is gp_all][0]))
     cp = max((float(r["container_peak_mib"]), r["cell"], r["route"]) for r in iw)
     ooms = sum(int(r["oom_kill"]) for r in iw)
-    total = sp[0] + gp[0]
-    sp_i, gp_i = int(math.ceil(sp[0])), int(math.ceil(gp[0]))
-    emit("DERIVED,key=cad_stage_peak_mib,value=%d,derivation=max_peak_mib_over_admitted_setter_rows=%s_(%s_%s_%s;IGES_admitted_up_to_%d_bytes),worst_cell=%s,worst_route=%s" % (
-        sp_i, fmt2(sp[0]), sp[1], sp[2], sp[3], ceiling_iges, sp[1], sp[2]))
-    emit("DERIVED,key=cad_go_peak_mib,value=%d,derivation=max_VmHWM_of_PID_1_over_in-worker_rows=%s_(%s),worst_cell=%s,worst_route=%s" % (gp_i, fmt2(gp[0]), gp[3], gp[1], gp[2]))
-    pod_ok = total <= POD
-    emit("CHECK,key=pod_rule,stage_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s,int_sum=%d,result=%s" % (fmt2(sp[0]), fmt2(gp[0]), fmt2(total), fmt2(POD), sp_i + gp_i, "ok" if pod_ok else "fail"))
+    emit("CHECK,key=pod_rule,mode=per_route,worst_route=%s,sum_mib=%s,limit_mib=%s,result=%s" % (worst_pair[0], fmt2(worst_pair[3]), fmt2(POD), "ok" if worst_pair[3] <= POD else "fail"))
     emit("CHECK,key=oom,inworker_oom_kill_total=%d,max_container_peak_mib=%s,cell=%s,route=%s,result=%s" % (ooms, fmt2(cp[0]), cp[1], cp[2], "ok" if ooms == 0 and cp[0] < 4096 else "fail"))
-    emit("NOTE,key=stage_peak_any_band,max_peak_mib=%s,cell=%s,stage=%s,note=the_largest_peak_of_any_setter_row_at_or_below_the_ceilings_whatever_its_band_(a_refused_render_still_runs_until_its_deadline)" % (fmt2(refused_peak[0]), refused_peak[1], refused_peak[2]))
-    if not pod_ok:
-        stop("reason=pod_rule,stage_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s" % (fmt2(sp[0]), fmt2(gp[0]), fmt2(total), fmt2(POD)))
     if ooms or cp[0] >= 4096:
         stop("reason=inworker_oom_or_container_peak,oom=%d,peak=%s" % (ooms, fmt2(cp[0])))
+    imp = [peak(r) for r in rows_all if r["cell"] == mem["cell"] and r["stage"] == "mesh" and r.get("quality") == "fine" and peak(r) is not None]
+    img = [float(r["go_vmhwm_mib"]) for r in iw if r["route"] == "convert_iges" and r["cell"] == mem["cell"]]
+    imt = max(imp) + max(img)
+    emit("CHECK,key=iges_memory_ladder_recheck,cell=%s,mesh_fine_rows=%d,mesh_fine_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s,result=%s" % (
+        mem["cell"], len(imp), fmt2(max(imp)), fmt2(max(img)), fmt2(imt), fmt2(POD), "ok" if imt <= POD else "fail"))
+    if imt > POD:
+        stop("reason=iges_memory_ladder_recheck,sum_mib=%s" % fmt2(imt))
 
     def nb(r, k):
         v = r.get(k, "na")
         return int(v) if v not in ("na", "") else 0
 
-    svg = max([(max(nb(r, "svg_bytes"), nb(r, "render_svg_bytes")), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] == "dxf" and r.get("band") == "within"]
-              + [(nb(r, "out_bytes"), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] in ("svg_client", "svg_render") and r.get("band") == "within"])
-    pdf = max((int(r["out_bytes"]), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] == "rsvg_pdf" and r.get("band") == "within" and r.get("out_bytes", "na") != "na")
-    pngs = [(int(r["out_bytes"]), r["cell"]) for r in rows if r["stage"] in ("rsvg_png_transparent", "render") and r.get("out_bytes", "na") not in ("na", "")]
+    svg = max([(max(nb(r, "svg_bytes"), nb(r, "render_svg_bytes")), r["cell"]) for r in setter_all if r.get("format") == "dxf" and r["stage"] == "dxf" and r.get("band") == "within"]
+              + [(nb(r, "out_bytes"), r["cell"]) for r in setter_all if r.get("format") == "dxf" and r["stage"] in ("svg_client", "svg_render") and r.get("band") == "within"])
+    pdf = max((nb(r, "out_bytes"), r["cell"]) for r in setter_all if r.get("format") == "dxf" and r["stage"] == "rsvg_pdf" and r.get("band") == "within")
+    pngs = [(nb(r, "out_bytes"), r["cell"]) for r in rows_all if r["stage"] in ("rsvg_png_transparent", "render") and r.get("out_bytes", "na") not in ("na", "")]
     svg_b = int(math.ceil(1.5 * svg[0] / MIB)) * MIB
     pdf_b = int(math.ceil(1.5 * pdf[0] / MIB)) * MIB
-    emit("DERIVED,key=cad_dxf_svg_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB,worst_cell=%s,worst_route=dxf_svg" % (svg_b, svg[0], svg_b // MIB, svg[1]))
-    emit("DERIVED,key=cad_dxf_pdf_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB,worst_cell=%s,worst_route=dxf_pdf" % (pdf_b, pdf[0], pdf_b // MIB, pdf[1]))
+    emit("DERIVED,key=cad_dxf_svg_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB_(RULE_bytes;bytes_output),worst_cell=%s,worst_route=dxf_svg" % (svg_b, svg[0], svg_b // MIB, svg[1]))
+    emit("DERIVED,key=cad_dxf_pdf_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB_(RULE_bytes;bytes_output),worst_cell=%s,worst_route=dxf_pdf" % (pdf_b, pdf[0], pdf_b // MIB, pdf[1]))
+    ssp, sgp = svg_route_peak
+    scaled = sgp[0] * svg_b / svg[0]
+    emit("POD_ROUTE,route=dxf_svg,mode=go_scaled_to_svg_cap,stage_peak_mib=%s,go_peak_mib=%s,scale=%d/%d,go_scaled_mib=%s,sum_mib=%s,limit_mib=%s,result=%s" % (
+        fmt2(ssp[0]), fmt2(sgp[0]), svg_b, svg[0], fmt2(scaled), fmt2(ssp[0] + scaled), fmt2(POD), "ok" if ssp[0] + scaled <= POD else "fail"))
+    if ssp[0] + scaled > POD:
+        stop("reason=bytes_output_scaled_pod,sum_mib=%s" % fmt2(ssp[0] + scaled))
     png = max(pngs) if pngs else (0, "none")
     emit("CHECK,key=png_max,max_png_bytes=%d,cell=%s,limit_bytes=%d,result=%s" % (png[0], png[1], 96 * MIB, "ok" if png[0] <= 96 * MIB else "fail"))
     if png[0] > 96 * MIB:
         stop("reason=png_over_96MiB,bytes=%d" % png[0])
 
     emit("DERIVED,key=cad_step_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=M1,worst_route=render_step" % ceil_step)
-    emit("DERIVED,key=cad_iges_ceiling_bytes,value=%d,derivation=iges_memory_ceiling_ladder_highest_passing_rung_%s_(mesh_fine_peak_%s+go_peak_%s=%s<=2867.2),worst_cell=%s,worst_route=convert_iges" % (
-        ceiling_iges, mem["cell"], mem["mesh_fine_peak_mib"], mem["go_peak_mib"], mem["sum_mib"], mem["cell"]))
+    emit("DERIVED,key=cad_iges_ceiling_bytes,value=%d,derivation=iges_memory_ceiling_ladder_highest_passing_rung_%s_(mesh_fine_peak_%s+go_peak_%s=%s<=2867.2;recheck_%s),worst_cell=%s,worst_route=convert_iges" % (
+        ceiling_iges, mem["cell"], mem["mesh_fine_peak_mib"], mem["go_peak_mib"], mem["sum_mib"], fmt2(imt), mem["cell"]))
     emit("DERIVED,key=cad_stl_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=M4,worst_route=render_stl" % ceil_stl)
     emit("DERIVED,key=cad_dxf_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=R123731968,worst_route=dxf_png" % ceil_dxf)
 
     for f in ("step", "iges", "stl", "dxf"):
-        why = "not_byte_bound_in_76-01_STACK_DECISION" if f != "dxf" else "dxf_route_sum_%d_within_886" % sum_dxf
+        why = "not_byte_bound_in_76-01_STACK_DECISION" if f != "dxf" else "no_76-01_byte_bound_decision_for_dxf;dxf_route_sum_%d" % sum_dxf
         if f == "iges":
             why += ";iges_ceiling_lowered_by_the_iges_memory_ceiling_amendment_not_by_Path-B"
         emit("PATHB,format=%s,fired=0,reason=%s" % (f, why))
 
-    emit("CHECK,key=route_sum_3d,value=%d,limit=886,result=%s" % (sum_3d, "ok" if sum_3d <= budget else "fail"))
-    emit("CHECK,key=route_sum_dxf,value=%d,limit=886,result=%s" % (sum_dxf, "ok" if sum_dxf <= budget else "fail"))
     emit("CHECK,key=window,engine_plus_20=%d,pod_grace_below=910,reconciler_window=900,engine=%d,result=%s" % (engine + 20, engine, "ok" if engine + 20 < 910 and engine <= 900 else "fail"))
     emit("CHECK,key=stabilization,scale_down_stabilization_s=900,engine=%d,result=%s" % (engine, "ok" if 900 >= engine else "fail"))
     emit("CHECK,key=onrecord,dxf_0og=%s,rsvg_0og=%s,dxf_timeout=%d,rsvg_timeout=%d,floors=186+145,result=%s" % (fmt2(ink_dxf), fmt2(ink_rsvg), d, s, "ok" if d >= 186 and s >= 145 else "fail"))
     if engine + 20 >= 910 or engine > 900:
         stop("reason=window,engine=%d" % engine)
 
-    rpeak = max([(float(r["peak_mib"]), r["cell"]) for r in setter if r["cell"] == "R123731968" and r.get("peak_mib", "na") not in ("na", "")] or [(0, "none")])
-    emit("GAP_CLOSED,key=go_worker_rss_dxf,go_peak_mib=%s,stage_peak_mib=%s,sum_mib=%s,limit_mib=%s,source=evidence/76-03-inworker.txt" % (fmt2(gp[0]), fmt2(sp[0]), fmt2(total), fmt2(POD)))
+    rpeak = max([(peak(r), r["cell"]) for r in setter_all if r["cell"] == "R123731968" and peak(r) is not None] or [(0, "none")])
+    dxfp = [p for p in route_pairs if p[0] in ("dxf_svg", "dxf_pdf", "dxf_png")]
+    wdx = max(dxfp, key=lambda t: t[3])
+    emit("GAP_CLOSED,key=go_worker_rss_dxf,route=%s,go_peak_mib=%s,stage_peak_mib=%s,sum_mib=%s,limit_mib=%s,source=evidence/76-03-inworker.txt" % (
+        wdx[0], fmt2(wdx[2][0]), fmt2(wdx[1][0]), fmt2(wdx[3]), fmt2(POD)))
     emit("GAP_CLOSED,key=dxf_top_1.26pct,cell=R123731968,bytes=123731968,row_peak_mib=%s,source=evidence/76-02-bounds.txt" % fmt2(rpeak[0]))
 
     for f in ("step", "iges", "stl"):
@@ -4524,8 +4834,9 @@ def derive(argv):
     emit("KNOWN_LIMIT,key=iges_ceiling_lowered_by_memory,from_bytes=141557760,to_bytes=%d,cell=%s,note=the_IGES_mesh_peak_is_driven_by_input_bytes;the_pod_rule_0.70x4096_holds_only_up_to_the_lowered_ceiling" % (ceiling_iges, mem["cell"]))
     emit("KNOWN_LIMIT,key=iges_instancing_unprobed,note=76-01_STACK_DECISION_iges_reason_iges_308_408_subfigure_instancing_unprobed")
     emit("KNOWN_LIMIT,key=arm64_only,note=every_bound_measured_on_arm64_(OrbStack);no_amd64_host")
+    emit("KNOWN_LIMIT,key=quiet_host_bounds,note=the_bounds_are_measured_on_a_host_with_load1<=11_(hw.ncpu);a_loaded_node_runs_slower")
     emit("KNOWN_LIMIT,key=short_stages_in_io,note=the_0.2_s_proc_watcher_misses_stages_shorter_than_0.2_s_(cad-guard_on_small_inputs);their_wall_is_in_nonstage_and_io")
-    return finish(out, stops, "engine=%d,io=%d,render=%d,iges_ceiling=%d,stage_peak=%s,go_peak=%s" % (engine, io, R, ceiling_iges, fmt2(sp[0]), fmt2(gp[0])))
+    return finish(out, stops, "engine=%d,io=%d,render=%d,iges_ceiling=%d,worst_pod_route=%s,worst_pod_sum=%s" % (engine, io, R, ceiling_iges, worst_pair[0], fmt2(worst_pair[3])))
 
 
 def finish(out, stops, facts=""):
@@ -4549,6 +4860,8 @@ if __name__ == "__main__":
         sys.exit(select(sys.argv[2:]))
     if cmd == "derive":
         sys.exit(derive(sys.argv[2:]))
+    if cmd == "quiet":
+        sys.exit(quiet(sys.argv[2:]))
     sys.exit(64)
 PY
 }
@@ -4592,7 +4905,7 @@ d76_derive_mode() {
   need_tool python3
   need_tool git
   ev="$REPO_ROOT/$(dirname "$D76_INWORKER_REL")"
-  for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$B76_STACK_REL" "$D76_B75_REL" "$D76_INK_REL" "$D76_INWORKER_REL"; do
+  for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$B76_STACK_REL" "$D76_B75_REL" "$D76_INK_REL" "$D76_INWORKER_REL" "$D76_QUIET_REL"; do
     [ -f "$REPO_ROOT/$f" ] || fail "missing $f"
   done
   rung=$(sed -n 's/^LADDER_RESULT,ladder=memory_iges,cell=\([A-Za-z0-9]*\),.*/\1/p' "$REPO_ROOT/$D76_LADDER_REL" | tail -n 1)
@@ -4604,9 +4917,9 @@ d76_derive_mode() {
   EVID_NAME=$(basename "$out")
   {
     printf 'HDR,mode=derive76,date_utc=%s,commit=%s,tracked_dirt=%s,inputs=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" \
-      "$(for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$D76_INWORKER_REL" ${extra:+"${extra#"$REPO_ROOT"/}"}; do printf '%s:%s;' "$(basename "$f")" "$(sha_of "$REPO_ROOT/$f" | cut -c1-12)"; done | sed 's/;$//')"
+      "$(for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$D76_INWORKER_REL" "$D76_QUIET_REL" ${extra:+"${extra#"$REPO_ROOT"/}"}; do printf '%s:%s;' "$(basename "$f")" "$(sha_of "$REPO_ROOT/$f" | cut -c1-12)"; done | sed 's/;$//')"
     python3 "$WORK/tools/d76.py" derive "$REPO_ROOT/$B76_EVID_REL" "$REPO_ROOT/$D76_LADDER_REL" "$REPO_ROOT/$D76_CELLS_REL" "$REPO_ROOT/$B76_STACK_REL" \
-      "$REPO_ROOT/$D76_B75_REL" "$REPO_ROOT/$D76_INK_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$extra" || rc=$?
+      "$REPO_ROOT/$D76_B75_REL" "$REPO_ROOT/$D76_INK_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$REPO_ROOT/$D76_QUIET_REL" "$extra" || rc=$?
   } > "$WORK/out.txt"
   mkdir -p "$(dirname "$out")"
   cp "$WORK/out.txt" "$out"
@@ -4640,6 +4953,7 @@ while [ $# -gt 0 ]; do
     --finish) b76_sub finish; shift ;;
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
     --select-cells) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=select; shift ;;
+    --quiet) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=quiet; shift ;;
     --derive) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=derive; shift ;;
     --ladder) [ $# -ge 2 ] && [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=ladder; D76_LADDER=$2; shift 2 ;;
     --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
@@ -4678,6 +4992,9 @@ case "$MODE" in
       select)
         [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_CELLS_REL"
         d76_mode "$EVID" ;;
+      quiet)
+        [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_QUIET_REL"
+        d76_quiet_mode "$EVID" ;;
       derive)
         [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_DERIVED_REL"
         d76_derive_mode "$EVID" ;;

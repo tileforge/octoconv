@@ -16,7 +16,9 @@ Every row restarts the cad-worker, records the preflight-only memory.peak, watch
 /proc every 0.2 s for cad-guard, cad-mesh, cad-render, cad-dxf and rsvg-convert, creates one job through
 the API and waits for it, then reads started_at, finished_at and attempts of the job row, VmHWM of the
 Go worker (PID 1), memory.peak and the oom_kill counter of the container. A row is written only for a
-job that is done with attempts=1.
+job that is done with attempts=1. Before each row the run waits until the host load1 is at most
+CAD_INWORKER_LOAD_MAX (default 11; gives up after 7200 s); a row whose load1 at the start or the end is
+above it is written with load_clean=0 and its rep is measured again (at most 5 tries).
 
 --smoke   one render_step row of public/LinearSlide-MGN15x-Block.step to png at size 1280
           (default output: a file under TMPDIR).
@@ -46,6 +48,8 @@ SERVICES="postgres redis minio api cad-worker"
 OVERRIDE=docker-compose.override.yml
 SMOKE_FILE=internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step
 JOB_LIMIT_S=4000
+LOAD_MAX="${CAD_INWORKER_LOAD_MAX:-11}"
+GATE_GIVEUP_S=7200
 WANT_ENV="CAD_GUARD_TIMEOUT=120s CAD_MESH_TIMEOUT=900s CAD_RENDER_TIMEOUT=900s CAD_DXF_TIMEOUT=600s CAD_RSVG_TIMEOUT=600s CAD_ENGINE_TIMEOUT=3600s"
 
 SMOKE=0
@@ -129,6 +133,21 @@ quiet_wait() {
 		[ "$waited" -lt 7200 ] || fail "a go test or docker build kept running for 7200 s"
 		log "a go test or docker build is running; waiting"
 		sleep 30
+	done
+}
+
+load_gate() {
+	LOAD_WAIT=0
+	LOAD_START=$(load1_now)
+	while awk -v l="$LOAD_START" -v m="$LOAD_MAX" 'BEGIN { exit !(l > m) }'; do
+		if [ "$LOAD_WAIT" -ge "$GATE_GIVEUP_S" ]; then
+			printf 'FAIL,mode=inworker,reason=host_load,load1=%s,waited_s=%s,limit=%s\n' "$LOAD_START" "$LOAD_WAIT" "$LOAD_MAX" >> "$OUT"
+			exit 1
+		fi
+		log "load1 $LOAD_START above $LOAD_MAX; waiting"
+		sleep 30
+		LOAD_WAIT=$((LOAD_WAIT + 30))
+		LOAD_START=$(load1_now)
 	done
 }
 
@@ -369,9 +388,9 @@ watch_stop() {
 }
 
 stage_lines() {
-	python3 - "$W/watch.out" "$1" "$2" "$3" "$4" "$5" <<'PY'
+	python3 - "$W/watch.out" "$1" "$2" "$3" "$4" "$5" "$6" <<'PY'
 import sys
-path, started, finished, route, cell, rep = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6]
+path, started, finished, route, cell, rep, job = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7]
 b = None
 procs = {}
 ends = {}
@@ -404,18 +423,20 @@ rows.sort()
 total = 0.0
 for start_up, p, name, wall, s_ep, e_ep in rows:
     total += wall
-    print("INWORKER_STAGE,route=%s,cell=%s,rep=%s,stage=%s,pid=%s,wall_s=%.2f,start_after_started_at_s=%.2f,end_before_finished_at_s=%.2f,btime_minus_uptime_base_s=%.2f" % (
-        route, cell, rep, name, p, wall, s_ep - started, finished - e_ep, btime - offset))
+    print("INWORKER_STAGE,route=%s,cell=%s,rep=%s,stage=%s,pid=%s,wall_s=%.2f,start_after_started_at_s=%.2f,end_before_finished_at_s=%.2f,btime_minus_uptime_base_s=%.2f,job=%s" % (
+        route, cell, rep, name, p, wall, s_ep - started, finished - e_ep, btime - offset, job))
 print("SUM %.2f %d" % (total, len(rows)))
 PY
 }
 
 measure_row() {
 	local route=$1 cell=$2 rep=$3 file=$4 target=$5 op=$6 opts=$7 tok load free pre facts started finished attempts status out sum nstages hwm peak oom nonstage wall
+	ROW_CLEAN=0
 	quiet_wait
 	disk_check
 	free=$FREE
-	load=$(load1_now)
+	load_gate
+	load=$LOAD_START
 	restart_worker
 	pre=$(cg_read /sys/fs/cgroup/memory.peak)
 	tok="$(date +%s)-$$-$rep"
@@ -427,6 +448,7 @@ measure_row() {
 	fi
 	log "route=$route cell=$cell rep=$rep job=$JOB_ID"
 	wait_job "$JOB_ID"
+	load_end=$(load1_now)
 	facts=$(psqlq "select status, attempts, extract(epoch from started_at), extract(epoch from finished_at) from jobs where id = '$JOB_ID'")
 	watch_stop "$tok"
 	status=$(printf '%s' "$facts" | cut -d, -f1)
@@ -437,7 +459,7 @@ measure_row() {
 		ev "FAIL,mode=inworker,route=$route,cell=$cell,rep=$rep,job=$JOB_ID,status=${status:-none},api_status=${JOB_STATUS:-none},attempts=${attempts:-none},error_code=$(jq -r '.error_code // .error.code // "none"' "$W/job.json" 2>/dev/null | tr ',' ';')"
 		exit 1
 	fi
-	out=$(stage_lines "$started" "$finished" "$route" "$cell" "$rep") || fail "route=$route cell=$cell rep=$rep stage walls: $out"
+	out=$(stage_lines "$started" "$finished" "$route" "$cell" "$rep" "$JOB_ID") || fail "route=$route cell=$cell rep=$rep stage walls: $out"
 	sum=$(printf '%s\n' "$out" | awk '$1 == "SUM" { print $2 }')
 	nstages=$(printf '%s\n' "$out" | awk '$1 == "SUM" { print $3 }')
 	[ "$nstages" -ge 1 ] || fail "route=$route cell=$cell rep=$rep: the watcher saw no stage process"
@@ -447,9 +469,10 @@ measure_row() {
 	[ -n "$hwm" ] && [ -n "$peak" ] && [ -n "$oom" ] || fail "route=$route cell=$cell rep=$rep: cannot read VmHWM, memory.peak or oom_kill"
 	wall=$(awk -v a="$started" -v b="$finished" 'BEGIN { printf "%.2f", b - a }')
 	nonstage=$(awk -v w="$wall" -v s="$sum" 'BEGIN { printf "%.2f", w - s }')
+	if awk -v a="$load" -v b="$load_end" -v m="$LOAD_MAX" 'BEGIN { exit !(a <= m && b <= m) }'; then ROW_CLEAN=1; fi
 	printf '%s\n' "$out" | grep '^INWORKER_STAGE,' | while IFS= read -r l; do ev "$l"; done
-	ev "INWORKER_ROW,route=$route,cell=$cell,rep=$rep,job=$JOB_ID,status=done,attempts=1,attempt_wall_s=$wall,stage_sum_s=$sum,nonstage_s=$nonstage,go_vmhwm_mib=$(awk -v k="$hwm" 'BEGIN { printf "%.1f", k / 1024 }'),container_peak_mib=$(mib "$peak"),preflight_peak_mib=$(mib "$pre"),oom_kill=$oom,load1=$load,vm_free_gib=$free,stages=$nstages,file_bytes=$(wc -c < "$file" | tr -d ' '),target=$target,operation=$op"
-	ROWS=$((ROWS + 1))
+	ev "INWORKER_ROW,route=$route,cell=$cell,rep=$rep,job=$JOB_ID,status=done,attempts=1,attempt_wall_s=$wall,stage_sum_s=$sum,nonstage_s=$nonstage,go_vmhwm_mib=$(awk -v k="$hwm" 'BEGIN { printf "%.1f", k / 1024 }'),container_peak_mib=$(mib "$peak"),preflight_peak_mib=$(mib "$pre"),oom_kill=$oom,load1=$load,vm_free_gib=$free,stages=$nstages,file_bytes=$(wc -c < "$file" | tr -d ' '),target=$target,operation=$op,load1_end=$load_end,gate_wait_s=$LOAD_WAIT,load_clean=$ROW_CLEAN"
+	[ "$ROW_CLEAN" = 0 ] || ROWS=$((ROWS + 1))
 }
 
 opts_json() {
@@ -502,6 +525,7 @@ ev "HDR,mode=$MODE_NAME,load1=$(load1_now),vm_free_gib=$FREE,limits=cpus_$(docke
 
 if [ "$SMOKE" = 1 ]; then
 	measure_row render_step smoke 1 "$SMOKE_FILE" png render '{"size":1280}'
+	[ "$ROW_CLEAN" = 1 ] || fail "the smoke row was not load-clean"
 	found=$(sleeps_since "$HDR_DATE")
 	[ -z "$found" ] || fail "the host slept during the run: $found"
 	ev "SUMMARY,mode=inworker_smoke,rows=$ROWS,result=ok"
@@ -527,7 +551,14 @@ while IFS= read -r spec <&3; do
 	op=$(f operation)
 	opts=$(opts_json "$(f opts)")
 	for rep in $(seq 1 "$N_REPS"); do
-		measure_row "$route" "$cell" "$rep" "$file" "$target" "$op" "$opts" < /dev/null
+		tries=0
+		while :; do
+			measure_row "$route" "$cell" "$rep" "$file" "$target" "$op" "$opts" < /dev/null
+			[ "$ROW_CLEAN" = 0 ] || break
+			tries=$((tries + 1))
+			[ "$tries" -lt 5 ] || fail "route=$route rep=$rep had no load-clean row in 5 tries"
+			log "route=$route rep=$rep not load-clean (load1_end above $LOAD_MAX); repeating"
+		done
 	done
 done 3< "$W/cells.txt"
 found=$(sleeps_since "$HDR_DATE")
