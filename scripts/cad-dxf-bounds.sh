@@ -4049,6 +4049,7 @@ d76_quiet_mode() {
   if [ -f "$B76_OUT" ] && grep -q '^QUIET_END,.*result=ok' "$B76_OUT"; then fail "$B76_OUT already ended ok"; fi
   b76_caffeinated
   b76_setup
+  d76_tools
   [ "$TAG" = octoconv-cad-worker:engine76-31b85807c654 ] || b76_stop "reason=engine_inputs_differ_from_76-02,tag=$TAG"
   mkdir -p "$(dirname "$B76_OUT")"
   src="$REPO_ROOT/$B76_EVID_REL"
