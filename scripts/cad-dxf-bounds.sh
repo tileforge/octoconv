@@ -3456,16 +3456,19 @@ b76_sleep_groups() {
 }
 
 b76_caffeinated() {
-  local pid=$$ comm
+  local pid=$$ ancestors="" a
   B76_CAFF_PID=""
   while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||')
-    if [ "$comm" = caffeinate ]; then B76_CAFF_PID=$pid; break; fi
+    ancestors="$ancestors $pid"
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
   done
-  [ -n "$B76_CAFF_PID" ] || fail "the host_sleep re-run must run under caffeinate -dimsu"
-  pmset -g assertions | grep -q "pid $B76_CAFF_PID(caffeinate): .* PreventSystemSleep named" \
-    || fail "caffeinate pid $B76_CAFF_PID holds no PreventSystemSleep assertion"
+  for a in $ancestors; do
+    B76_CAFF_PID=$(pmset -g assertions | awk -v want="$a" '
+      /\(caffeinate\):/ { cp = $2; sub(/\(.*/, "", cp); ps = ($0 ~ / PreventSystemSleep named/) }
+      /asserting on behalf of/ && ps { w = $NF; gsub(/[()]/, "", w); if (w == want) { print cp; exit } }')
+    if [ -n "$B76_CAFF_PID" ]; then B76_CAFF_FOR=$a; break; fi
+  done
+  [ -n "$B76_CAFF_PID" ] || fail "the host_sleep re-run must run under caffeinate -dimsu holding PreventSystemSleep for this process or an ancestor"
 }
 
 b76_sleep_check() {
@@ -3694,7 +3697,7 @@ b76_mode() {
           "$B76_RERUN_KEY" "$B76_JUDGE_COMMIT" "$B76_DIFF_CLASS" "$B76_GO_SRC" "$(b76_go_bin_shas)")
       fi
       if [ "$B76_RERUN_KEY" = rerun_after_host_sleep ]; then
-        B76_HDR_FIX="$B76_HDR_FIX,stopped_hdr_commit=$B76_SLEEP_COMMIT,inputs_identical_to_stopped_hdr=1,image_id_match_stopped_hdr=1,caffeinate=-dimsu,caffeinate_pid=$B76_CAFF_PID,prevent_system_sleep=1"
+        B76_HDR_FIX="$B76_HDR_FIX,stopped_hdr_commit=$B76_SLEEP_COMMIT,inputs_identical_to_stopped_hdr=1,image_id_match_stopped_hdr=1,caffeinate=-dimsu,caffeinate_pid=$B76_CAFF_PID,caffeinate_on_behalf_of=$B76_CAFF_FOR,prevent_system_sleep=1"
       fi
       B76_HDR_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s,rerun=%s,init_commit=%s,inputs_identical=%s,init_image_id=%s,image_id_match=%s%s\n' "$B76_GROUP" \
