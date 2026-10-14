@@ -4070,7 +4070,12 @@ d76_quiet_mode() {
     python3 "$WORK/tools/d76.py" quiet missing "$src" "$lad" "$B76_OUT" > "$WORK/missing.txt"
     [ -s "$WORK/missing.txt" ] || break
     read -r name stage q v bg fmt n clean miss mw < "$WORK/missing.txt"
-    if [ "$fmt" = dxf ]; then kk="$name:chain"; else kk="$name:$stage:$q:$v:$bg"; fi
+    if [ "$fmt" = dxf ]; then
+      kk="$name:chain"
+      miss=$(awk -v c="$name" '$1 == c && $9 > m { m = $9 } END { print m + 0 }' "$WORK/missing.txt")
+    else
+      kk="$name:$stage:$q:$v:$bg"
+    fi
     tries=$(awk -v k="$kk" '$1 == k { print $2 }' "$tf")
     limit=$(awk -v k="$kk" '$1 == k { print $3 }' "$tf")
     [ -n "$tries" ] || { tries=0; limit=$((3 * miss + 2)); }
