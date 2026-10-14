@@ -3465,7 +3465,7 @@ b76_caffeinated() {
   for a in $ancestors; do
     B76_CAFF_PID=$(pmset -g assertions | awk -v want="$a" '
       /\(caffeinate\):/ { cp = $2; sub(/\(.*/, "", cp); ps = ($0 ~ / PreventSystemSleep named/) }
-      /asserting on behalf of/ && ps { w = $NF; gsub(/[()]/, "", w); if (w == want) { print cp; exit } }')
+      /asserting on behalf of/ && ps && !found { w = $NF; gsub(/[()]/, "", w); if (w == want) { print cp; found = 1 } }' || true)
     if [ -n "$B76_CAFF_PID" ]; then B76_CAFF_FOR=$a; break; fi
   done
   [ -n "$B76_CAFF_PID" ] || fail "the host_sleep re-run must run under caffeinate -dimsu holding PreventSystemSleep for this process or an ancestor"
