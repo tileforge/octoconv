@@ -122,6 +122,7 @@ cleanup() {
 	exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 143' TERM INT
 
 vm_free_gib() { docker run --rm alpine df -k / | awk 'NR == 2 { print int($4 / 1048576) }'; }
 load1_now() { sysctl -n vm.loadavg | awk '{print $2}'; }
