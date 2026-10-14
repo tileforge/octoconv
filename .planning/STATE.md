@@ -5,17 +5,17 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: "76-02 Task 3: step re-run STOP on the M2 transparent render judge"
-last_updated: "2026-10-13T22:51:02.969Z"
+stopped_at: Completed 76-02-PLAN.md
+last_updated: "2026-10-14T11:41:19.643Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: c9b6445b190756f62170cd155fd546160541465d
+state_head: 26f14d6b96f488928d2da5d914b14e739f7d31c7
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 39
-  percent: 80
+  completed_plans: 40
+  percent: 82
 ---
 
 # Project State
@@ -30,11 +30,11 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 2 of 11
-Status: In progress
+Plan: 3 of 11
+Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
-Progress: [████████░░] 80% (0/6 phases)
+Progress: [████████░░] 82% (0/6 phases)
 
 ## Performance Metrics
 
@@ -134,6 +134,7 @@ Progress: [████████░░] 80% (0/6 phases)
 | Phase 69 P04 | 50min | 3 tasks | 5 files |
 | Phase 69 P05 | 40 min | 2 tasks | 7 files |
 | Phase 76 P01 | 94min | 2 tasks | 3 files |
+| Phase 76 P02 | about 20h wall | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -198,6 +199,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-05: G-69-3 closed -- chromium-worker chart/compose/live-gate no longer mount or size /dev/shm; each now cross-references SANDBOX-PATHS.md instead of restating a pre-Landlock rationale
 - [Phase 76]: 76-01: bytes do not bound 3D render cost; step, iges and stl are not_byte_bound and STACK_GLOBAL render_deadline_rule=remainder (no Path-B render byte ceiling; render deadline R = 886 - guard - mesh - io)
 - [Phase 76]: 76-01: S6 coincident NAUO (--nauo-pitch 0) added before any row because the S3 grid does not stack; S6 n100 (598732 bytes) broke STEP at 900 s
+- [Phase 76]: 76-02 step group re-run once after the render-judge fix (rerun_after_product_fix, judge 056a8d2); dxf and stl judge rows were all ok under the old judge, PNGs not retained
+- [Phase 76]: 76-02 iges group re-run once under caffeinate after host sleep (rerun_after_host_sleep); the one row overlapping pmset sleep is contaminated=1 and excluded from W
+- [Phase 76]: 76-02 3D render walls at the ceilings exceed 886 s (M1 up to 1223.74 s, M3 at the 1800 s budget) and the M3 mesh peak 3083 MiB exceeds 0.70x4096; resolution is 76-03's derive76 under the pre-registered rules
 
 ### Quick Tasks Completed
 
@@ -307,8 +311,8 @@ Carried from v1.12:
 - Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
 - Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
-- 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
-- 76-02 STOP (not a watchdog stop, no re-run allowed): the step re-run stopped at 2026-10-13T21:24Z on M2 (step-nauo n=1518 grid, draft, 2705076 triangles) render iso transparent: cad-pixel-judge (JudgeCADPNG, the production render judge) refused the PNG, transparent fraction 0.9564 outside 0.05..0.95 = ErrCADRenderRejected. Pre-registered rule failures: a judge that is not ok is STOP. iges group and --finish not run; a rule decision is needed
+- RESOLVED 2026-10-14 (rerun_after_watchdog): 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
+- RESOLVED 2026-10-14 (quick 261014-0lo judge fix, then rerun_after_product_fix; step ended ok): 76-02 STOP: the step re-run stopped at 2026-10-13T21:24Z on M2 (step-nauo n=1518 grid, draft, 2705076 triangles) render iso transparent: cad-pixel-judge (JudgeCADPNG, the production render judge) refused the PNG, transparent fraction 0.9564 outside 0.05..0.95 = ErrCADRenderRejected. Pre-registered rule failures: a judge that is not ok is STOP. iges group and --finish not run; a rule decision is needed
 
 ## Deferred Items
 
@@ -430,8 +434,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-13T21:24:57.430Z
-Stopped at: 76-02 Task 3: step re-run STOP on the M2 transparent render judge
+Last session: 2026-10-14T11:41:19.440Z
+Stopped at: Completed 76-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

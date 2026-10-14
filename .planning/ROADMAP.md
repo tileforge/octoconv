@@ -350,7 +350,7 @@ Plans:
 - [x] 76-01-PLAN.md — tracer and premise test: pre-registered stacking probe on the production engine image; per-format byte_bound decision and the render-deadline rule (AR-1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 76-02-PLAN.md — bounds76: exact-ceiling cells, N=5 stage rows at the admissible maxima, the L170031 refusal row
+- [x] 76-02-PLAN.md — bounds76: exact-ceiling cells, N=5 stage rows at the admissible maxima, the L170031 refusal row
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 76-03-PLAN.md — in-worker rows (I/O, Go peak, attempt wall) and the derivation of every bound into 76-03-derived.txt
@@ -390,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 2/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт
