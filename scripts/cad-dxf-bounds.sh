@@ -43,6 +43,7 @@ Usage:
   scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G [--rerun]|--amend-rerun [--row-log LOG]|--finish [--out FILE]
   scripts/cad-dxf-bounds.sh derive76 --select-cells [--out FILE]
   scripts/cad-dxf-bounds.sh derive76 --ladder render_iges|memory_iges [--out FILE]
+  scripts/cad-dxf-bounds.sh derive76 --derive [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -102,6 +103,9 @@ derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells wri
        render_iges renders IGES copies at 16, 8, 4 and 2 MiB until ceil(1.5W) <= 402; memory_iges meshes IGES copies at
        128 down to 96 MiB and runs scripts/cad-inworker-measure.sh on a rung whose mesh peak fits, until mesh peak plus
        go peak <= 2867.2 MiB.
+       --derive applies the 76-02 RULE lines and the RULE_AMEND lines to 76-02-bounds.txt, 76-03-ladders.txt, the in-worker
+       rows and the on-record walls (75-05 and quick 0og), with no docker, and writes the DERIVED, PATHB, CHECK,
+       GAP_CLOSED, KNOWN_LIMIT and SUMMARY lines (default evidence/76-03-derived.txt); a STOP writes no DERIVED line.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -4039,6 +4043,7 @@ d76_tools() {
 import hashlib
 import math
 import os
+import re
 import sys
 
 
@@ -4265,10 +4270,285 @@ def select(argv):
     return 0 if stops == 0 else 1
 
 
+STAGE_OF = {"cad-guard": "guard", "cad-mesh": "mesh", "cad-render": "render", "cad-dxf": "dxf", "rsvg-convert": "rsvg"}
+ROUTES = ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")
+MIB = 1048576
+POD = 0.70 * 4096
+
+
+def fmt2(x):
+    return "%.2f" % x
+
+
+def last_section(path):
+    lines = open(path).read().splitlines()
+    idx = max([i for i, l in enumerate(lines) if l.startswith("HDR,mode=derive76_select,")] or [-1])
+    return lines[idx + 1:] if idx >= 0 else lines
+
+
+def inworker_rows(paths):
+    rows, stages, hdrs = [], [], []
+    for p in paths:
+        for l in open(p).read().splitlines():
+            if l.startswith("INWORKER_ROW,"):
+                d = kv(l)
+                d["_file"] = os.path.basename(p)
+                rows.append(d)
+            elif l.startswith("INWORKER_STAGE,"):
+                d = kv(l)
+                d["_file"] = os.path.basename(p)
+                stages.append(d)
+            elif l.startswith("HDR,"):
+                hdrs.append((os.path.basename(p), kv(l)))
+    return rows, stages, hdrs
+
+
+def derive(argv):
+    src, ladder, cellsfile, stack, b75, ink, inworker = argv[:7]
+    extra = [p for p in argv[7:] if p]
+    budget = 886
+    out = []
+    stops = []
+
+    def emit(s):
+        out.append(s)
+
+    def stop(s):
+        stops.append("STOP,mode=derive76," + s)
+
+    rows, cells, contaminated, results = load_all(src, ladder)
+    amend = amendments(cellsfile)
+    for k in ("render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else"):
+        if k not in amend:
+            stop("reason=amendment_missing,key=%s" % k)
+    sect = last_section(cellsfile)
+    if any(l.startswith("STOP,") for l in sect) or not any(l.startswith("SUMMARY,mode=derive76_select,") and "result=ok" in l for l in sect):
+        stop("reason=last_select_section_not_ok")
+    gl = [l for l in open(stack).read().splitlines() if l.startswith("STACK_GLOBAL,")]
+    rule = kv(gl[-1]).get("render_deadline_rule") if gl else None
+    byte_bound = kv(gl[-1]).get("byte_bound", "none") if gl else "none"
+    if rule != "remainder":
+        stop("reason=stack_global_rule_is_%s" % rule)
+    ink_lines = open(ink).read().splitlines()[124:130]
+    ink_dxf = max([float(m) for l in ink_lines for m in re.findall(r"(?:^|,)dxf_wall_s=([0-9.]+)", l)] or [0])
+    ink_rsvg = max([float(m) for l in ink_lines for m in re.findall(r"(?:^|,)rsvg_wall_s=([0-9.]+)", l)] or [0])
+    if abs(ink_dxf - 123.61) > 1e-9 or abs(ink_rsvg - 96.60) > 1e-9:
+        stop("reason=onrecord_0og_values_differ,dxf=%s,rsvg=%s" % (ink_dxf, ink_rsvg))
+    b75rows = [kv(l) for l in open(b75).read().splitlines() if l.startswith("BOUND_ROW,")]
+
+    mem = results.get("memory_iges")
+    ren = results.get("render_iges")
+    if not mem:
+        stop("reason=iges_memory_ladder_has_no_result")
+    if not ren:
+        stop("reason=render_iges_ladder_has_no_result")
+    ceiling_iges = int(mem["ceiling_bytes"]) if mem else 0
+    iw_paths = [inworker] + extra
+    iw, iws, iwh = inworker_rows(iw_paths)
+    for p, h in iwh:
+        if "tracked_dirt" in h and h["tracked_dirt"] != "0":
+            stop("reason=inworker_tracked_dirt,file=%s" % p)
+    if not any(l.startswith("SUMMARY,mode=inworker,") and "result=ok" in l for l in open(inworker).read().splitlines()):
+        stop("reason=inworker_summary_not_ok")
+    for r in iw:
+        if r.get("status") != "done" or r.get("attempts") != "1":
+            stop("reason=inworker_row_not_done_attempts_1,job=%s" % r.get("job"))
+    for route in ROUTES:
+        n = len([r for r in iw if r["route"] == route and r["_file"] == os.path.basename(inworker)])
+        if n < 3:
+            stop("reason=inworker_route_rows_below_3,route=%s,rows=%d" % (route, n))
+    if stops:
+        return finish(out, stops)
+
+    def admitted_iges(c):
+        return c.get("format") != "iges" or int(c.get("bytes", "0")) <= ceiling_iges
+
+    setter = [r for r in rows if r.get("setter") == "1"]
+
+    def wmax(cands):
+        best = None
+        for w, cell, route, src_ in cands:
+            if w is None:
+                continue
+            if best is None or w > best[0]:
+                best = (w, cell, route, src_)
+        return best
+
+    def stage_rows(stages):
+        return [(wall(r), r["cell"], "stage_" + r["stage"], r["_src"]) for r in setter if r["stage"] in stages]
+
+    def iw_stage(stage):
+        return [(float(s["wall_s"]), s["cell"], s["route"], "inworker") for s in iws if STAGE_OF.get(s["stage"]) == stage]
+
+    wg = wmax(stage_rows(("guard",)) + iw_stage("guard"))
+    wm = wmax(stage_rows(("mesh", "stats")) + iw_stage("mesh"))
+    wd = wmax(stage_rows(("dxf",)) + iw_stage("dxf") + [(float(r["wall_s"]), r["row"], "dxf", "75-05") for r in b75rows if r["stage"] == "dxf"]
+              + [(ink_dxf, "0og_C", "dxf", "0og")])
+    wr = wmax(stage_rows(("rsvg_ink", "rsvg_pdf", "rsvg_png_transparent")) + iw_stage("rsvg")
+              + [(float(r["wall_s"]), r["row"], r["stage"], "75-05") for r in b75rows if r["stage"].startswith("rsvg")]
+              + [(ink_rsvg, "0og_L170031", "rsvg_ink", "0og")])
+    g, m, d, s = ceil15(wg[0]), ceil15(wm[0]), ceil15(wd[0]), ceil15(wr[0])
+    nonstage = [(float(r["nonstage_s"]), r["cell"], r["route"], r["_file"]) for r in iw]
+    wio = max(nonstage)
+    io = ceil15(wio[0])
+    R = budget - g - m - io
+    if R <= 0:
+        stop("reason=render_remainder_not_positive,R=%d" % R)
+        return finish(out, stops)
+    sum_dxf = g + d + 2 * s + io
+    sum_3d = g + m + R + io
+    engine = max(sum_3d, sum_dxf)
+
+    for key, val, w, extra_s in (("cad_guard_timeout_s", g, wg, ""), ("cad_mesh_timeout_s", m, wm, ""), ("cad_dxf_timeout_s", d, wd, ""), ("cad_rsvg_timeout_s", s, wr, "")):
+        emit("DERIVED,key=%s,value=%d,derivation=ceil(1.5x%s)=%d_W_from_%s,worst_cell=%s,worst_route=%s" % (key, val, fmt2(w[0]), val, w[3], w[1], w[2]))
+    emit("DERIVED,key=cad_io_allowance_s,value=%d,derivation=ceil(1.5x%s)=%d_max_inworker_attempt_wall_minus_observed_stage_walls,worst_cell=%s,worst_route=%s" % (io, fmt2(wio[0]), io, wio[1], wio[2]))
+    emit("DERIVED,key=cad_render_timeout_s,value=%d,derivation=remainder_R=886-%d-%d-%d=%d_(76-01_STACK_GLOBAL_render_deadline_rule=remainder;render_remainder_all),worst_cell=%s,worst_route=render_iges" % (R, g, m, io, R, ren["cell"]))
+
+    rclass = []
+    for name, c in sorted(cells.items()):
+        if c.get("format") not in ("step", "iges", "stl"):
+            continue
+        variants = sorted({(r.get("quality"), r.get("view"), r.get("background")) for r in rows if r["cell"] == name and r["stage"] == "render"})
+        for q, v, b in variants:
+            rr = [r for r in rows if r["cell"] == name and r["stage"] == "render" and r.get("quality") == q and r.get("view") == v and r.get("background") == b]
+            band, w = render_band(rr, R)
+            rclass.append((c.get("format"), name, int(c.get("bytes", "0")), q, v, b, band, w, admitted_iges(c)))
+            emit("RENDER_CLASS,format=%s,cell=%s,bytes=%s,quality=%s,view=%s,background=%s,max_wall_s=%s,ceil15=%d,R=%d,band=%s,admitted=%d" % (
+                c.get("format"), name, c.get("bytes"), q, v, b, fmt2(w or 0), ceil15(w or 0), R, band, 1 if admitted_iges(c) else 0))
+    for route in ("render_step", "render_iges", "render_stl"):
+        ws = [float(x["wall_s"]) for x in iws if x["route"] == route and STAGE_OF.get(x["stage"]) == "render"]
+        if ws:
+            wmx = max(ws)
+            band = "margin" if ceil15(wmx) <= R else ("no_margin" if wmx <= R else "refused")
+            emit("RENDER_CLASS,route=%s,source=inworker,max_wall_s=%s,ceil15=%d,R=%d,band=%s" % (route, fmt2(wmx), ceil15(wmx), R, band))
+
+    ceil_step, ceil_stl, ceil_dxf = 66060288, 190840832, 123731968
+    worst_route = "3d" if sum_3d >= sum_dxf else "dxf"
+    emit("DERIVED,key=cad_engine_timeout_s,value=%d,derivation=max(guard+mesh+render+io=%d+%d+%d+%d=%d;guard+dxf+2xrsvg+io=%d+%d+2x%d+%d=%d),worst_cell=%s,worst_route=%s,ceilings=step:%d;iges:%d;stl:%d;dxf:%d" % (
+        engine, g, m, R, io, sum_3d, g, d, s, io, sum_dxf, ren["cell"] if worst_route == "3d" else wd[1],
+        "render_iges" if worst_route == "3d" else "dxf_png", ceil_step, ceiling_iges, ceil_stl, ceil_dxf))
+    if engine > budget:
+        stop("reason=engine_over_886,engine=%d,byte_bound=%s" % (engine, byte_bound))
+    emit("DERIVED,key=cad_pod_grace_s,value=%d,derivation=engine+20=%d+20,worst_cell=%s,worst_route=%s" % (engine + 20, engine, ren["cell"], "render_iges"))
+
+    def route_of(r):
+        return r["route"]
+
+    for route in ROUTES:
+        aw = max((float(r["attempt_wall_s"]), r["cell"]) for r in iw if r["route"] == route)
+        need = ceil15(aw[0])
+        ok = engine >= need
+        emit("CHECK,key=crosscheck_%s,engine=%d,max_attempt_wall_s=%s,ceil15=%d,cell=%s,result=%s" % (route, engine, fmt2(aw[0]), need, aw[1], "ok" if ok else "fail"))
+        if not ok:
+            stop("reason=crosscheck_failed,route=%s,engine=%d,need=%d" % (route, engine, need))
+
+    adm = []
+    for r in setter:
+        c = cells.get(r["cell"], {})
+        if not admitted_iges(c):
+            continue
+        if r.get("band") not in ("within",):
+            continue
+        if r["stage"] == "render":
+            rr = [x for x in rows if x["cell"] == r["cell"] and x["stage"] == "render" and x.get("quality") == r.get("quality") and x.get("view") == r.get("view") and x.get("background") == r.get("background")]
+            if render_band(rr, R)[0] != "margin":
+                continue
+        try:
+            adm.append((float(r["peak_mib"]), r["cell"], r["stage"], r.get("quality", "na"), r["_src"]))
+        except (KeyError, ValueError):
+            pass
+    sp = max(adm)
+    refused_peak = max([(float(r["peak_mib"]), r["cell"], r["stage"]) for r in setter if r.get("peak_mib", "na") not in ("na", "") and admitted_iges(cells.get(r["cell"], {}))])
+    gp = max((float(r["go_vmhwm_mib"]), r["cell"], r["route"], r["_file"]) for r in iw)
+    cp = max((float(r["container_peak_mib"]), r["cell"], r["route"]) for r in iw)
+    ooms = sum(int(r["oom_kill"]) for r in iw)
+    total = sp[0] + gp[0]
+    sp_i, gp_i = int(math.ceil(sp[0])), int(math.ceil(gp[0]))
+    emit("DERIVED,key=cad_stage_peak_mib,value=%d,derivation=max_peak_mib_over_admitted_setter_rows=%s_(%s_%s_%s;IGES_admitted_up_to_%d_bytes),worst_cell=%s,worst_route=%s" % (
+        sp_i, fmt2(sp[0]), sp[1], sp[2], sp[3], ceiling_iges, sp[1], sp[2]))
+    emit("DERIVED,key=cad_go_peak_mib,value=%d,derivation=max_VmHWM_of_PID_1_over_in-worker_rows=%s_(%s),worst_cell=%s,worst_route=%s" % (gp_i, fmt2(gp[0]), gp[3], gp[1], gp[2]))
+    pod_ok = total <= POD
+    emit("CHECK,key=pod_rule,stage_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s,int_sum=%d,result=%s" % (fmt2(sp[0]), fmt2(gp[0]), fmt2(total), fmt2(POD), sp_i + gp_i, "ok" if pod_ok else "fail"))
+    emit("CHECK,key=oom,inworker_oom_kill_total=%d,max_container_peak_mib=%s,cell=%s,route=%s,result=%s" % (ooms, fmt2(cp[0]), cp[1], cp[2], "ok" if ooms == 0 and cp[0] < 4096 else "fail"))
+    emit("NOTE,key=stage_peak_any_band,max_peak_mib=%s,cell=%s,stage=%s,note=the_largest_peak_of_any_setter_row_at_or_below_the_ceilings_whatever_its_band_(a_refused_render_still_runs_until_its_deadline)" % (fmt2(refused_peak[0]), refused_peak[1], refused_peak[2]))
+    if not pod_ok:
+        stop("reason=pod_rule,stage_peak_mib=%s,go_peak_mib=%s,sum_mib=%s,limit_mib=%s" % (fmt2(sp[0]), fmt2(gp[0]), fmt2(total), fmt2(POD)))
+    if ooms or cp[0] >= 4096:
+        stop("reason=inworker_oom_or_container_peak,oom=%d,peak=%s" % (ooms, fmt2(cp[0])))
+
+    def nb(r, k):
+        v = r.get(k, "na")
+        return int(v) if v not in ("na", "") else 0
+
+    svg = max([(max(nb(r, "svg_bytes"), nb(r, "render_svg_bytes")), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] == "dxf" and r.get("band") == "within"]
+              + [(nb(r, "out_bytes"), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] in ("svg_client", "svg_render") and r.get("band") == "within"])
+    pdf = max((int(r["out_bytes"]), r["cell"]) for r in setter if r.get("format") == "dxf" and r["stage"] == "rsvg_pdf" and r.get("band") == "within" and r.get("out_bytes", "na") != "na")
+    pngs = [(int(r["out_bytes"]), r["cell"]) for r in rows if r["stage"] in ("rsvg_png_transparent", "render") and r.get("out_bytes", "na") not in ("na", "")]
+    svg_b = int(math.ceil(1.5 * svg[0] / MIB)) * MIB
+    pdf_b = int(math.ceil(1.5 * pdf[0] / MIB)) * MIB
+    emit("DERIVED,key=cad_dxf_svg_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB,worst_cell=%s,worst_route=dxf_svg" % (svg_b, svg[0], svg_b // MIB, svg[1]))
+    emit("DERIVED,key=cad_dxf_pdf_max_bytes,value=%d,derivation=ceil(1.5x%d_bytes)_rounded_up_to_%d_MiB,worst_cell=%s,worst_route=dxf_pdf" % (pdf_b, pdf[0], pdf_b // MIB, pdf[1]))
+    png = max(pngs) if pngs else (0, "none")
+    emit("CHECK,key=png_max,max_png_bytes=%d,cell=%s,limit_bytes=%d,result=%s" % (png[0], png[1], 96 * MIB, "ok" if png[0] <= 96 * MIB else "fail"))
+    if png[0] > 96 * MIB:
+        stop("reason=png_over_96MiB,bytes=%d" % png[0])
+
+    emit("DERIVED,key=cad_step_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=M1,worst_route=render_step" % ceil_step)
+    emit("DERIVED,key=cad_iges_ceiling_bytes,value=%d,derivation=iges_memory_ceiling_ladder_highest_passing_rung_%s_(mesh_fine_peak_%s+go_peak_%s=%s<=2867.2),worst_cell=%s,worst_route=convert_iges" % (
+        ceiling_iges, mem["cell"], mem["mesh_fine_peak_mib"], mem["go_peak_mib"], mem["sum_mib"], mem["cell"]))
+    emit("DERIVED,key=cad_stl_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=M4,worst_route=render_stl" % ceil_stl)
+    emit("DERIVED,key=cad_dxf_ceiling_bytes,value=%d,derivation=restated_unchanged,worst_cell=R123731968,worst_route=dxf_png" % ceil_dxf)
+
+    for f in ("step", "iges", "stl", "dxf"):
+        why = "not_byte_bound_in_76-01_STACK_DECISION" if f != "dxf" else "dxf_route_sum_%d_within_886" % sum_dxf
+        if f == "iges":
+            why += ";iges_ceiling_lowered_by_the_iges_memory_ceiling_amendment_not_by_Path-B"
+        emit("PATHB,format=%s,fired=0,reason=%s" % (f, why))
+
+    emit("CHECK,key=route_sum_3d,value=%d,limit=886,result=%s" % (sum_3d, "ok" if sum_3d <= budget else "fail"))
+    emit("CHECK,key=route_sum_dxf,value=%d,limit=886,result=%s" % (sum_dxf, "ok" if sum_dxf <= budget else "fail"))
+    emit("CHECK,key=window,engine_plus_20=%d,pod_grace_below=910,reconciler_window=900,engine=%d,result=%s" % (engine + 20, engine, "ok" if engine + 20 < 910 and engine <= 900 else "fail"))
+    emit("CHECK,key=stabilization,scale_down_stabilization_s=900,engine=%d,result=%s" % (engine, "ok" if 900 >= engine else "fail"))
+    emit("CHECK,key=onrecord,dxf_0og=%s,rsvg_0og=%s,dxf_timeout=%d,rsvg_timeout=%d,floors=186+145,result=%s" % (fmt2(ink_dxf), fmt2(ink_rsvg), d, s, "ok" if d >= 186 and s >= 145 else "fail"))
+    if engine + 20 >= 910 or engine > 900:
+        stop("reason=window,engine=%d" % engine)
+
+    rpeak = max([(float(r["peak_mib"]), r["cell"]) for r in setter if r["cell"] == "R123731968" and r.get("peak_mib", "na") not in ("na", "")] or [(0, "none")])
+    emit("GAP_CLOSED,key=go_worker_rss_dxf,go_peak_mib=%s,stage_peak_mib=%s,sum_mib=%s,limit_mib=%s,source=evidence/76-03-inworker.txt" % (fmt2(gp[0]), fmt2(sp[0]), fmt2(total), fmt2(POD)))
+    emit("GAP_CLOSED,key=dxf_top_1.26pct,cell=R123731968,bytes=123731968,row_peak_mib=%s,source=evidence/76-02-bounds.txt" % fmt2(rpeak[0]))
+
+    for f in ("step", "iges", "stl"):
+        ref = sorted((b, n) for (ff, n, b, q, v, bg, band, w, ok) in rclass if ff == f and band == "refused")
+        emit("KNOWN_LIMIT,key=render_cost_not_bounded_by_input_bytes,format=%s,smallest_refused_cell=%s,smallest_refused_bytes=%s,R=%d,note=3D_render_cost_is_not_bounded_by_input_bytes;heavy_assemblies_of_any_format_may_be_refused_cad_too_complex_at_the_render_deadline_(render_remainder_all)" % (
+            f, ref[0][1] if ref else "none", ref[0][0] if ref else "none", R))
+    emit("KNOWN_LIMIT,key=iges_ceiling_lowered_by_memory,from_bytes=141557760,to_bytes=%d,cell=%s,note=the_IGES_mesh_peak_is_driven_by_input_bytes;the_pod_rule_0.70x4096_holds_only_up_to_the_lowered_ceiling" % (ceiling_iges, mem["cell"]))
+    emit("KNOWN_LIMIT,key=iges_instancing_unprobed,note=76-01_STACK_DECISION_iges_reason_iges_308_408_subfigure_instancing_unprobed")
+    emit("KNOWN_LIMIT,key=arm64_only,note=every_bound_measured_on_arm64_(OrbStack);no_amd64_host")
+    emit("KNOWN_LIMIT,key=short_stages_in_io,note=the_0.2_s_proc_watcher_misses_stages_shorter_than_0.2_s_(cad-guard_on_small_inputs);their_wall_is_in_nonstage_and_io")
+    return finish(out, stops, "engine=%d,io=%d,render=%d,iges_ceiling=%d,stage_peak=%s,go_peak=%s" % (engine, io, R, ceiling_iges, fmt2(sp[0]), fmt2(gp[0])))
+
+
+def finish(out, stops, facts=""):
+    if stops:
+        for l in out:
+            if not l.startswith("DERIVED,"):
+                print(l)
+        for l in stops:
+            print(l)
+        print("SUMMARY,mode=derive76,derived=0,stops=%d,result=STOP" % len(stops))
+        return 1
+    for l in out:
+        print(l)
+    print("SUMMARY,mode=derive76,derived=%d,%s,result=ok" % (len([l for l in out if l.startswith("DERIVED,")]), facts))
+    return 0
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1]
     if cmd == "select":
         sys.exit(select(sys.argv[2:]))
+    if cmd == "derive":
+        sys.exit(derive(sys.argv[2:]))
     sys.exit(64)
 PY
 }
@@ -4302,6 +4582,38 @@ d76_mode() {
   exit "$rc"
 }
 
+D76_DERIVED_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt
+D76_INWORKER_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-inworker.txt
+D76_B75_REL=.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt
+D76_INK_REL=.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-ink.txt
+
+d76_derive_mode() {
+  local out=$1 ev rung extra="" rc=0
+  need_tool python3
+  need_tool git
+  ev="$REPO_ROOT/$(dirname "$D76_INWORKER_REL")"
+  for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$B76_STACK_REL" "$D76_B75_REL" "$D76_INK_REL" "$D76_INWORKER_REL"; do
+    [ -f "$REPO_ROOT/$f" ] || fail "missing $f"
+  done
+  rung=$(sed -n 's/^LADDER_RESULT,ladder=memory_iges,cell=\([A-Za-z0-9]*\),.*/\1/p' "$REPO_ROOT/$D76_LADDER_REL" | tail -n 1)
+  [ -z "$rung" ] || [ ! -f "$ev/76-03-inworker-$rung.txt" ] || extra="$ev/76-03-inworker-$rung.txt"
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-d76.XXXXXX")
+  trap cleanup EXIT
+  mkdir -p "$WORK/tools"
+  d76_tools
+  EVID_NAME=$(basename "$out")
+  {
+    printf 'HDR,mode=derive76,date_utc=%s,commit=%s,tracked_dirt=%s,inputs=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" \
+      "$(for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$D76_INWORKER_REL" ${extra:+"${extra#"$REPO_ROOT"/}"}; do printf '%s:%s;' "$(basename "$f")" "$(sha_of "$REPO_ROOT/$f" | cut -c1-12)"; done | sed 's/;$//')"
+    python3 "$WORK/tools/d76.py" derive "$REPO_ROOT/$B76_EVID_REL" "$REPO_ROOT/$D76_LADDER_REL" "$REPO_ROOT/$D76_CELLS_REL" "$REPO_ROOT/$B76_STACK_REL" \
+      "$REPO_ROOT/$D76_B75_REL" "$REPO_ROOT/$D76_INK_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$extra" || rc=$?
+  } > "$WORK/out.txt"
+  mkdir -p "$(dirname "$out")"
+  cp "$WORK/out.txt" "$out"
+  grep -E '^(DERIVED|STOP|SUMMARY|CHECK),' "$out" | cut -c1-240 >&2
+  exit "$rc"
+}
+
 MODE=${1:-}
 [ -n "$MODE" ] || usage
 shift
@@ -4328,6 +4640,7 @@ while [ $# -gt 0 ]; do
     --finish) b76_sub finish; shift ;;
     --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
     --select-cells) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=select; shift ;;
+    --derive) [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=derive; shift ;;
     --ladder) [ $# -ge 2 ] && [ "$MODE" = derive76 ] && [ -z "$D76_SUB" ] || usage; D76_SUB=ladder; D76_LADDER=$2; shift 2 ;;
     --rerun) [ "$MODE" = bounds76 ] || usage; B76_RERUN=1; shift ;;
     --amend-rerun) b76_sub amend; shift ;;
@@ -4365,6 +4678,9 @@ case "$MODE" in
       select)
         [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_CELLS_REL"
         d76_mode "$EVID" ;;
+      derive)
+        [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_DERIVED_REL"
+        d76_derive_mode "$EVID" ;;
       ladder)
         [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$D76_LADDER_REL"
         d76_ladder_mode "$D76_LADDER" ;;
