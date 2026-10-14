@@ -9,7 +9,7 @@ usage() {
 	cat >&2 <<'USAGE'
 Usage:
   scripts/cad-inworker-measure.sh --smoke [--out FILE]
-  scripts/cad-inworker-measure.sh --cells FILE --out FILE
+  scripts/cad-inworker-measure.sh --cells FILE --out FILE [--no-build COMMIT API_IMAGE_ID CAD_IMAGE_ID]
 
 Measures cad jobs inside the production cad-worker of the compose stack of this checkout (plan 76-03).
 Every row restarts the cad-worker, records the preflight-only memory.peak, watches the container's
@@ -22,6 +22,9 @@ above it is written with load_clean=0 and its rep is measured again (at most 5 t
 
 --smoke   one render_step row of public/LinearSlide-MGN15x-Block.step to png at size 1280
           (default output: a file under TMPDIR).
+--no-build  start the stack from the existing octoconv-api:latest and octoconv-cad-worker:latest only when their
+          image ids are the two given and git diff COMMIT HEAD over cmd, internal, Dockerfile*, go.mod, go.sum and
+          deploy/cad is empty; the running containers must use those ids.
 --cells   the CELLSPEC lines of the last derive76 --select-cells section of FILE (the whole file when it has no
           section header), CAD_INWORKER_N rows each (default 3); a STOP line in that section refuses the run.
 
@@ -55,11 +58,17 @@ GATE_GIVEUP_S=7200
 WANT_ENV="CAD_GUARD_TIMEOUT=120s CAD_MESH_TIMEOUT=900s CAD_RENDER_TIMEOUT=900s CAD_DXF_TIMEOUT=600s CAD_RSVG_TIMEOUT=600s CAD_ENGINE_TIMEOUT=3600s"
 
 SMOKE=0
+NO_BUILD=0
+NB_COMMIT=""
+NB_API=""
+NB_CAD=""
+NB_DIFF=""
 CELLS=""
 OUT=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--smoke) SMOKE=1; shift ;;
+	--no-build) [ $# -ge 4 ] || usage; NO_BUILD=1; NB_COMMIT=$2; NB_API=$3; NB_CAD=$4; shift 4 ;;
 	--cells) [ $# -ge 2 ] || usage; CELLS=$2; shift 2 ;;
 	--out) [ $# -ge 2 ] || usage; OUT=$2; shift 2 ;;
 	-h | --help) usage ;;
@@ -511,7 +520,18 @@ write_watcher
 
 log "starting the stack (not running before:${STARTED_BY_ME:- none})"
 UP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-dc up -d --build postgres redis minio createbucket api cad-worker >&2
+if [ "$NO_BUILD" = 1 ]; then
+	got=$(docker image inspect -f '{{.Id}}' octoconv-api:latest 2>/dev/null || true)
+	[ "$got" = "$NB_API" ] || fail "octoconv-api:latest is ${got:-absent}, want $NB_API"
+	got=$(docker image inspect -f '{{.Id}}' octoconv-cad-worker:latest 2>/dev/null || true)
+	[ "$got" = "$NB_CAD" ] || fail "octoconv-cad-worker:latest is ${got:-absent}, want $NB_CAD"
+	git rev-parse --verify -q "$NB_COMMIT^{commit}" >/dev/null || fail "image build commit $NB_COMMIT is not in this clone"
+	NB_DIFF=$(git diff --name-only "$NB_COMMIT" HEAD -- cmd internal 'Dockerfile*' go.mod go.sum deploy/cad | tr '\n' ';' | sed 's/;$//')
+	[ -z "$NB_DIFF" ] || fail "sources of the images differ from $NB_COMMIT: $NB_DIFF"
+	dc up -d --no-build postgres redis minio createbucket api cad-worker >&2
+else
+	dc up -d --build postgres redis minio createbucket api cad-worker >&2
+fi
 for _ in $(seq 1 60); do
 	curl -fsS -o /dev/null "$API_BASE/healthz" 2>/dev/null && break
 	sleep 2
@@ -519,6 +539,10 @@ done
 curl -fsS -o /dev/null "$API_BASE/healthz" || fail "api /healthz not reachable at $API_BASE"
 wait_proven "$UP_AT"
 check_env
+if [ "$NO_BUILD" = 1 ]; then
+	[ "$(docker inspect -f '{{.Image}}' "$(dc ps -q api)")" = "$NB_API" ] || fail "the running api container does not use $NB_API"
+	[ "$(docker inspect -f '{{.Image}}' "$CNAME")" = "$NB_CAD" ] || fail "the running cad-worker container does not use $NB_CAD"
+fi
 
 SALT=$(dc exec -T api printenv API_KEY_SALT | tr -d '\r\n')
 [ -n "$SALT" ] || fail "cannot read API_KEY_SALT from the api container"
@@ -536,7 +560,7 @@ MODE_NAME=inworker
 ev "HDR,mode=$MODE_NAME,date_utc=$HDR_DATE,commit=$(git rev-parse HEAD),tracked_dirt=$DIRT,server_arch=$(docker version --format '{{.Server.Arch}}')"
 ev "HDR,mode=$MODE_NAME,api_image_id=$(docker inspect -f '{{.Image}}' "$(dc ps -q api)"),cad_worker_image_id=$(docker inspect -f '{{.Image}}' "$CNAME")"
 ev "HDR,mode=$MODE_NAME,override_sha256=$(shasum -a 256 "$OVERRIDE" | awk '{print $1}'),override_env=$ENVLINE,api_cad_engine_timeout=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(dc ps -q api)" | sed -n 's/^CAD_ENGINE_TIMEOUT=//p')"
-ev "HDR,mode=$MODE_NAME,load1=$(load1_now),vm_free_gib=$FREE,limits=cpus_$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$CNAME")_nano;memory_$(docker inspect -f '{{.HostConfig.Memory}}' "$CNAME")_bytes,pid1_comm=$(cg_read /proc/1/comm),caffeinate_pid=$CAFF_PID,caffeinate_on_behalf_of=$CAFF_FOR,prevent_system_sleep=1,job_objects=deleted_after_each_row,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
+ev "HDR,mode=$MODE_NAME,load1=$(load1_now),vm_free_gib=$FREE,limits=cpus_$(docker inspect -f '{{.HostConfig.NanoCpus}}' "$CNAME")_nano;memory_$(docker inspect -f '{{.HostConfig.Memory}}' "$CNAME")_bytes,pid1_comm=$(cg_read /proc/1/comm),caffeinate_pid=$CAFF_PID,caffeinate_on_behalf_of=$CAFF_FOR,prevent_system_sleep=1,job_objects=deleted_after_each_row,no_build=$NO_BUILD,image_build_commit=${NB_COMMIT:-na},image_diff_paths=cmd+internal+Dockerfile*+go.mod+go.sum+deploy/cad,image_diff_result=$( [ "$NO_BUILD" = 1 ] && echo "${NB_DIFF:-empty}" || echo na),started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
 
 if [ "$SMOKE" = 1 ]; then
 	measure_row render_step smoke 1 "$SMOKE_FILE" png render '{"size":1280}'
