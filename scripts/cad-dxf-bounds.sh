@@ -3901,7 +3901,7 @@ def select(argv):
                 route = "convert_" + fmt
                 seen[route].append("%s:%s:%s:%.2f" % (name, q, "eligible" if ok else "not_within", s))
                 if ok:
-                    cand[route].append((s, name, {"quality": q}, "guard+mesh_%s" % q, None))
+                    cand[route].append((s, name, {"quality": q}, "guard+mesh_%s" % q, "within"))
             variants = sorted({(r["quality"], r["view"], r["background"]) for r in of(name, "render")})
             for q, v, b in variants:
                 rr = of(name, "render", quality=q, view=v, background=b)
