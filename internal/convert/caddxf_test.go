@@ -465,6 +465,9 @@ func TestCADDXFConvertRejectsUntrustedHelperOutputs(t *testing.T) {
 		{"the render-only SVG is above the SVG ceiling", func(o *cadDXFOutputs) {
 			o.post = fmt.Sprintf("dd if=/dev/null of=\"$R\" bs=1 seek=%d 2>/dev/null", CADMaxDXFSVGBytes+1)
 		}, ErrCADTooComplex},
+		{"texts.json is above the SVG ceiling", func(o *cadDXFOutputs) {
+			o.post = fmt.Sprintf("dd if=/dev/null of=\"$T\" bs=1 seek=%d 2>/dev/null", CADMaxDXFSVGBytes+1)
+		}, ErrCADTooComplex},
 		{"an ok verdict without the client SVG", func(o *cadDXFOutputs) { o.client = "" }, ErrCADDrawingFailed},
 		{"an ok verdict without the render-only SVG", func(o *cadDXFOutputs) { o.render = "" }, ErrCADDrawingFailed},
 		{"an ok verdict without texts.json", func(o *cadDXFOutputs) { o.texts = "" }, ErrCADDrawingFailed},

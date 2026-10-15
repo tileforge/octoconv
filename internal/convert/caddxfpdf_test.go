@@ -5,6 +5,11 @@ import (
 	"compress/zlib"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -321,5 +326,212 @@ func TestCADDXFTextsRejectsWhatTheContractDoesNotAllow(t *testing.T) {
 	}
 	if _, err := parseCADDXFTexts(filepath.Join(t.TempDir(), "none.json"), 1<<10); err == nil || errors.Is(err, ErrCADPDFRejected) {
 		t.Fatalf("a missing file gave %v, want a plain error", err)
+	}
+}
+
+func cadPDFRequireTooComplex(t *testing.T, err, sentinel error, rule string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("accepted, want a %q rejection", rule)
+	}
+	if !errors.Is(err, ErrCADTooComplex) {
+		t.Fatalf("err = %v, want it to wrap ErrCADTooComplex", err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want it to keep %v in its chain", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), rule) {
+		t.Fatalf("err = %v, want it to name %q", err, rule)
+	}
+}
+
+func TestCADDXFPDFOverTheByteLimitIsTooComplex(t *testing.T) {
+	path := filepath.Join(cadSVGTestDir, "white_one_black.pdf")
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = JudgeCADPDF(path, st.Size()-1, "")
+	cadPDFRequireTooComplex(t, err, ErrCADPDFRejected, fmt.Sprintf("the PDF is %d bytes, over the %d byte limit", st.Size(), st.Size()-1))
+	if _, err := JudgeCADPDF(path, st.Size(), ""); err != nil {
+		t.Fatalf("the same PDF at its exact size is rejected: %v", err)
+	}
+}
+
+func TestCADDXFPDFOverTheInflateCapIsTooComplex(t *testing.T) {
+	data := cadPDFWithFonts(string(make([]byte, 4<<20))+" 0 0 m 10 10 l S", "")
+	if int64(len(data))*cadPDFInflateFactor >= 4<<20 {
+		t.Fatalf("the %d-byte PDF does not inflate past %d times its size", len(data), cadPDFInflateFactor)
+	}
+	_, err := JudgeCADPDF(cadPDFWrite(t, data), int64(len(data)), "")
+	cadPDFRequireTooComplex(t, err, ErrCADPDFRejected, fmt.Sprintf("the inflated content exceeds %d times the PDF byte limit", cadPDFInflateFactor))
+}
+
+func TestCADDXFArtifactVolumeCapsAreTooComplex(t *testing.T) {
+	stroke := "0 0 m 10 10 l S"
+	head := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
+		cadPDFStream("", []byte(stroke), true),
+	}
+	objects := append([]string{}, head...)
+	for len(objects) <= cadPDFMaxObjects {
+		objects = append(objects, "null")
+	}
+	values := append(append([]string{}, head...), "["+strings.Repeat("0 ", cadPDFMaxValues)+"]")
+	longString := "BT /F1 12 Tf (" + strings.Repeat("a", cadPDFMaxString+1) + ") Tj ET " + stroke
+	shown := "(" + strings.Repeat("a", cadPDFMaxString) + ") Tj "
+	text := "BT /F1 12 Tf " + strings.Repeat(shown, cadPDFMaxText/cadPDFMaxString+1) + "ET " + stroke
+	svg := cadPDFFixture(t, "white_one_black.svg")
+	cases := []struct {
+		name     string
+		judge    func() error
+		sentinel error
+		rule     string
+	}{
+		{"pdf_objects", func() error {
+			_, err := JudgeCADPDF(cadPDFWrite(t, cadPDFFile(objects...)), 64<<20, "")
+			return err
+		}, ErrCADPDFRejected, fmt.Sprintf("more than %d objects", cadPDFMaxObjects)},
+		{"pdf_values", func() error {
+			_, err := JudgeCADPDF(cadPDFWrite(t, cadPDFFile(values...)), 64<<20, "")
+			return err
+		}, ErrCADPDFRejected, fmt.Sprintf("more than %d values outside streams", cadPDFMaxValues)},
+		{"pdf_string", func() error {
+			_, err := JudgeCADPDF(cadPDFWrite(t, cadPDFTwoFonts(longString)), 1<<20, "")
+			return err
+		}, ErrCADPDFRejected, fmt.Sprintf("a string longer than %d bytes", cadPDFMaxString)},
+		{"pdf_text", func() error {
+			_, err := JudgeCADPDF(cadPDFWrite(t, cadPDFTwoFonts(text)), 1<<20, "")
+			return err
+		}, ErrCADPDFRejected, fmt.Sprintf("more than %d bytes of decoded text", cadPDFMaxText)},
+		{"texts_json_bytes", func() error {
+			_, err := parseCADDXFTexts(cadTextsWrite(t, `{"texts":[]}`), 4)
+			return err
+		}, ErrCADPDFRejected, "texts.json exceeds 4 bytes"},
+		{"svg_bytes", func() error {
+			_, err := ValidateCADSVG(bytes.NewReader(svg), io.Discard, int64(len(svg)/2))
+			return err
+		}, ErrCADSVGRejected, fmt.Sprintf("the SVG exceeds %d bytes", len(svg)/2)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cadPDFRequireTooComplex(t, c.judge(), c.sentinel, c.rule)
+		})
+	}
+	t.Run("a_shape_cap_is_not_too_complex", func(t *testing.T) {
+		deep := append(append([]string{}, head...), strings.Repeat("[", cadPDFMaxDepth+2)+strings.Repeat("]", cadPDFMaxDepth+2))
+		_, err := JudgeCADPDF(cadPDFWrite(t, cadPDFFile(deep...)), 1<<20, "")
+		cadPDFRequireRejected(t, err, fmt.Sprintf("objects nested deeper than %d", cadPDFMaxDepth))
+		if errors.Is(err, ErrCADTooComplex) {
+			t.Fatalf("err = %v wraps ErrCADTooComplex: nesting depth is a shape our own PDF writer never makes, not a volume of the drawing", err)
+		}
+	})
+}
+
+var cadArtifactCaps = map[string]bool{
+	"maxBytes":            true,
+	"errCADPDFInflateCap": true,
+	"cadPDFInflateFactor": true,
+	"cadPDFMaxObjects":    true,
+	"cadPDFMaxValues":     true,
+	"cadPDFMaxString":     true,
+	"cadPDFMaxText":       true,
+	"cadPDFMaxDepth":      false,
+	"cadPDFMaxOperands":   false,
+	"cadPDFMaxWord":       false,
+	"cadPDFMaxCMap":       false,
+	"cadPDFMaxRefChain":   false,
+	"cadSVGMaxDepth":      false,
+}
+
+func TestCADDXFArtifactVolumeRejectionsWrapTooComplex(t *testing.T) {
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, ".", func(fi fs.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capName := regexp.MustCompile(`^cad(PDF|SVG)(Max[A-Z]\w*|InflateFactor)$`)
+	rejects, volume := 0, 0
+	for _, f := range pkgs["convert"].Files {
+		for _, d := range f.Decls {
+			g, ok := d.(*ast.GenDecl)
+			if !ok || g.Tok != token.CONST {
+				continue
+			}
+			for _, s := range g.Specs {
+				for _, n := range s.(*ast.ValueSpec).Names {
+					if _, known := cadArtifactCaps[n.Name]; capName.MatchString(n.Name) && !known {
+						t.Errorf("%s: the cap %s is not classified as a volume of the drawing or a shape our writers never make; add it to cadArtifactCaps", fset.Position(n.Pos()), n.Name)
+					}
+				}
+			}
+		}
+		var stack []ast.Node
+		ast.Inspect(f, func(n ast.Node) bool {
+			if n == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, n)
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			fn, ok := call.Fun.(*ast.Ident)
+			if !ok || (fn.Name != "cadPDFReject" && fn.Name != "cadSVGReject") {
+				return true
+			}
+			rejects++
+			names := map[string]bool{}
+			collect := func(e ast.Node) {
+				ast.Inspect(e, func(m ast.Node) bool {
+					if id, ok := m.(*ast.Ident); ok {
+						names[id.Name] = true
+					}
+					return true
+				})
+			}
+			for _, a := range call.Args {
+				collect(a)
+			}
+			for i := len(stack) - 2; i >= 0; i-- {
+				if s, ok := stack[i].(*ast.IfStmt); ok {
+					collect(s.Cond)
+					break
+				}
+				if _, ok := stack[i].(*ast.FuncDecl); ok {
+					break
+				}
+			}
+			isVolume := false
+			for name := range names {
+				if cadArtifactCaps[name] {
+					isVolume = true
+				}
+			}
+			wrapped := false
+			if p, ok := stack[len(stack)-2].(*ast.CallExpr); ok && len(p.Args) == 3 && p.Args[2] == call {
+				sel, okSel := p.Fun.(*ast.SelectorExpr)
+				lit, okLit := p.Args[0].(*ast.BasicLit)
+				id, okID := p.Args[1].(*ast.Ident)
+				wrapped = okSel && sel.Sel.Name == "Errorf" && okLit && lit.Value == `"%w: %w"` && okID && id.Name == "ErrCADTooComplex"
+			}
+			at := fset.Position(call.Pos())
+			if isVolume {
+				volume++
+			}
+			switch {
+			case isVolume && !wrapped:
+				t.Errorf("%s: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf(\"%%w: %%w\", ErrCADTooComplex, ...), so a client gets the wrong code", at)
+			case !isVolume && wrapped:
+				t.Errorf("%s: a rejection names no volume cap but is wrapped as ErrCADTooComplex", at)
+			}
+			return true
+		})
+	}
+	if rejects < 40 || volume < 7 {
+		t.Fatalf("found %d rejections and %d over a volume cap, want at least 40 and 7: the scan read nothing", rejects, volume)
 	}
 }
