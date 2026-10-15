@@ -13,6 +13,8 @@ audit_acknowledged:
 
 # SEED-007: File-preview / thumbnail engine
 
+Contract: docs/PREVIEW.md, pinned on the cad class in phase 76; the other classes are not yet bound by it.
+
 A first-class `preview` engine that generates a preview image / thumbnail for arbitrary uploaded file types — documents (first-page render), images (downscaled thumb), video (representative frame), etc. — so any file in the system can get a lightweight visual representation for listings/UIs.
 
 ## Why This Matters
