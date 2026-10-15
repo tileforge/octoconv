@@ -359,7 +359,7 @@ Plans:
 - [x] 76-04-PLAN.md — measured constants pinned to the evidence, IN-02 and grace chain, inspect estimate flipped to measured
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 76-05-PLAN.md — Path-B operation-aware render ceiling where the evidence fired it, else nothing changes
+- [x] 76-05-PLAN.md — Path-B operation-aware render ceiling where the evidence fired it, else nothing changes
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 76-06-PLAN.md — D-07 PDF backstop code, docs/CAD.md and docs/PREVIEW.md held to the code both ways, SEED-007 pointer
@@ -390,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 4/11 | In Progress | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 5/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт
