@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -285,6 +287,101 @@ func TestCADCeilingsAtTheDefaults(t *testing.T) {
 			}
 			if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
 				t.Errorf("a refused file must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+			}
+		})
+	}
+}
+
+const cad76DerivedEvidence = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+
+func cad76DerivedCeiling(t *testing.T, format string) int64 {
+	t.Helper()
+	raw, err := os.ReadFile(cad76DerivedEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^DERIVED,key=cad_` + regexp.QuoteMeta(format) + `_ceiling_bytes,value=(\d+),`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("no DERIVED cad_%s_ceiling_bytes line in %s", format, cad76DerivedEvidence)
+	}
+	n, err := strconv.ParseInt(string(m[1]), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func cadZeroSTLAbove(size int64) []byte {
+	n := (size - 84 + 50) / 50
+	data := make([]byte, 84+n*50)
+	binary.LittleEndian.PutUint32(data[80:], uint32(n))
+	return data
+}
+
+func TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds inputs above the STEP, IGES and STL ceilings")
+	}
+	type route struct{ target, operation string }
+	for _, tc := range []struct {
+		format   string
+		filename string
+		build    func(t *testing.T, ceiling int64) []byte
+		routes   []route
+	}{
+		{"step", "big.step", func(t *testing.T, c int64) []byte { return cadStepPaddedTo(t, int(c)+1) },
+			[]route{{"stl", convert.OperationConvert}, {"png", convert.OperationRender}}},
+		{"iges", "big.iges", func(t *testing.T, c int64) []byte { return cadIGESPaddedTo(t, int(c)+1) },
+			[]route{{"stl", convert.OperationConvert}, {"png", convert.OperationRender}}},
+		{"stl", "big.stl", func(t *testing.T, c int64) []byte { return cadZeroSTLAbove(c) },
+			[]route{{"png", convert.OperationRender}}},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			ceiling := cad76DerivedCeiling(t, tc.format)
+			if ceiling%(1<<20) != 0 {
+				t.Fatalf("the derived %s ceiling %d is not whole MiB", tc.format, ceiling)
+			}
+			data := tc.build(t, ceiling)
+			if int64(len(data)) <= ceiling {
+				t.Fatalf("built %d bytes, want more than the ceiling %d", len(data), ceiling)
+			}
+			message := fmt.Sprintf("%s file exceeds the %d MiB limit for this conversion", tc.format, ceiling>>20)
+			for _, r := range tc.routes {
+				repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+				srv := newCADCeilingServer(repo, store, q)
+				body, ct := multipartBodyWithOperation(t, tc.filename, r.target, r.operation, data)
+				req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+				req.Header.Set("Content-Type", ct)
+				rec := httptest.NewRecorder()
+				srv.Routes().ServeHTTP(rec, req)
+				if rec.Code != http.StatusRequestEntityTooLarge {
+					t.Fatalf("%s %s: status = %d, want 413; body=%.300s", r.operation, r.target, rec.Code, rec.Body.String())
+				}
+				if !strings.Contains(rec.Body.String(), `"code":"`+errcode.PayloadTooLarge+`"`) || !strings.Contains(rec.Body.String(), message) {
+					t.Errorf("%s %s: body = %s, want code %s and message %q", r.operation, r.target, rec.Body.String(), errcode.PayloadTooLarge, message)
+				}
+				if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+					t.Errorf("%s %s: a refused file must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", r.operation, r.target, store.uploadCalls, repo.created != nil, q.enqueueCalls)
+				}
+			}
+			rep := postCADInspect(t, newCADCeilingServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}), tc.filename, data)
+			seen := map[route]bool{}
+			for _, o := range rep.Operations {
+				if o.Engine != convert.EngineCAD {
+					continue
+				}
+				seen[route{o.Target, o.Operation}] = true
+				if o.MaxBytes != ceiling || o.Available || o.UnavailableReason != errcode.PayloadTooLarge {
+					t.Errorf("offer %+v: want MaxBytes %d, Available false and %s", o, ceiling, errcode.PayloadTooLarge)
+				}
+			}
+			for _, r := range tc.routes {
+				if !seen[r] {
+					t.Errorf("no cad %s %s offer for a %s file above its ceiling; operations=%+v", r.operation, r.target, tc.format, rep.Operations)
+				}
+			}
+			if len(seen) != len(tc.routes) {
+				t.Errorf("cad offers %v for a %s file, want exactly %v", seen, tc.format, tc.routes)
 			}
 		})
 	}
