@@ -5,17 +5,17 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Completed 76-02-PLAN.md
-last_updated: "2026-10-14T11:41:19.643Z"
+stopped_at: Completed 76-03-PLAN.md
+last_updated: "2026-10-15T00:40:53.956Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 26f14d6b96f488928d2da5d914b14e739f7d31c7
+state_head: 99a67d057901290fda12e0db164074b58b3bb78b
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 40
-  percent: 82
+  completed_plans: 41
+  percent: 83
 ---
 
 # Project State
@@ -30,11 +30,11 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 3 of 11
+Plan: 4 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
-Progress: [████████░░] 82% (0/6 phases)
+Progress: [████████░░] 83% (0/6 phases)
 
 ## Performance Metrics
 
@@ -135,6 +135,7 @@ Progress: [████████░░] 82% (0/6 phases)
 | Phase 69 P05 | 40 min | 2 tasks | 7 files |
 | Phase 76 P01 | 94min | 2 tasks | 3 files |
 | Phase 76 P02 | about 20h wall | 3 tasks | 5 files |
+| Phase 76 P03 | 15h | 3 tasks | 14 files |
 
 ## Accumulated Context
 
@@ -202,6 +203,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-02 step group re-run once after the render-judge fix (rerun_after_product_fix, judge 056a8d2); dxf and stl judge rows were all ok under the old judge, PNGs not retained
 - [Phase 76]: 76-02 iges group re-run once under caffeinate after host sleep (rerun_after_host_sleep); the one row overlapping pmset sleep is contaminated=1 and excluded from W
 - [Phase 76]: 76-02 3D render walls at the ceilings exceed 886 s (M1 up to 1223.74 s, M3 at the 1800 s budget) and the M3 mesh peak 3083 MiB exceeds 0.70x4096; resolution is 76-03's derive76 under the pre-registered rules
+- [Phase 76]: 76-03: CAD engine timeout 886 s measured (guard 21, mesh 324, render 521 by remainder, io 20); DXF route 661 s
+- [Phase 76]: 76-03: IGES input ceiling lowered to 125829120 bytes (120 MiB) by the iges_memory_ceiling ladder; 128 MiB revoked by its own clean rep
+- [Phase 76]: 76-03: quiet_host - timed rows count only at host load1 <= 11 at start and end; pod rule checked per route
 
 ### Quick Tasks Completed
 
@@ -434,8 +438,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-14T11:41:19.440Z
-Stopped at: Completed 76-02-PLAN.md
+Last session: 2026-10-15T00:40:53.814Z
+Stopped at: Completed 76-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

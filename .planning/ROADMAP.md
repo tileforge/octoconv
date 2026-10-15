@@ -353,7 +353,7 @@ Plans:
 - [x] 76-02-PLAN.md — bounds76: exact-ceiling cells, N=5 stage rows at the admissible maxima, the L170031 refusal row
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 76-03-PLAN.md — in-worker rows (I/O, Go peak, attempt wall) and the derivation of every bound into 76-03-derived.txt
+- [x] 76-03-PLAN.md — in-worker rows (I/O, Go peak, attempt wall) and the derivation of every bound into 76-03-derived.txt
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 76-04-PLAN.md — measured constants pinned to the evidence, IN-02 and grace chain, inspect estimate flipped to measured
