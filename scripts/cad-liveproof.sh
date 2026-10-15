@@ -340,10 +340,10 @@ inspect_offers() {
 	[ "$(jq -r .format "$W/inspect.json")" = "$fmt" ] || fail "inspect format of $upname is $(jq -r .format "$W/inspect.json"), want $fmt"
 	offer=$(jq -c --arg op "$op" --arg t "$target" '[.operations[] | select(.operation == $op and .target == $t and .engine == "cad")] | .[0] // empty' "$W/inspect.json")
 	[ -n "$offer" ] || fail "inspect of $upname offers no $op $fmt->$target on engine cad: $(jq -c .operations "$W/inspect.json")"
-	[ "$(echo "$offer" | jq -r .estimate_source)" = unmeasured ] || fail "estimate_source of $upname $op is $(echo "$offer" | jq -r .estimate_source), want unmeasured"
+	[ "$(echo "$offer" | jq -r .estimate_source)" = measured ] || fail "estimate_source of $upname $op is $(echo "$offer" | jq -r .estimate_source), want measured"
 	[ "$(echo "$offer" | jq -r .max_bytes)" = "$want_max" ] || fail "max_bytes of $upname $op is $(echo "$offer" | jq -r .max_bytes), want $want_max"
 	[ "$(echo "$offer" | jq -r .available)" = true ] || fail "the cad offer of $upname $op is not available: $offer"
-	ev "INSPECT,format=$fmt,operation=$op,target=$target,engine=cad,estimate_source=unmeasured,estimated_max_seconds=$(echo "$offer" | jq -r .estimated_max_seconds),max_bytes=$want_max,available=true,result=ok"
+	ev "INSPECT,format=$fmt,operation=$op,target=$target,engine=cad,estimate_source=measured,estimated_max_seconds=$(echo "$offer" | jq -r .estimated_max_seconds),max_bytes=$want_max,available=true,result=ok"
 	N_INSPECT=$((N_INSPECT + 1))
 }
 

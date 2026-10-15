@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -327,8 +328,8 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 				if !o.Available {
 					t.Errorf("offer %+v: a small %s file must be available", o, tc.name)
 				}
-				if o.EstimateSource != EstimateSourceUnmeasured {
-					t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
+				if o.EstimateSource != EstimateSourceMeasured || o.EstimatedMaxSeconds != int(convert.CADDefaultEngineTimeout/time.Second) {
+					t.Errorf("offer %+v: EstimateSource = %q and EstimatedMaxSeconds = %d, want %q and the measured %s", o, o.EstimateSource, o.EstimatedMaxSeconds, EstimateSourceMeasured, convert.CADDefaultEngineTimeout)
 				}
 			}
 			for key := range tc.wantOffers {
