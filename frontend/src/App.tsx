@@ -11,10 +11,16 @@ import {
   listFormats,
   subscribeJobEvents,
 } from './api';
-import { sourceFormatOfFilename, targetFormatsFor, targetFormatsOf } from './formats';
+import {
+  operationTable,
+  operationsOf,
+  sourceFormatOfFilename,
+  targetFormatsForOperation,
+} from './formats';
 
 const apiKeyStorageKey = 'octoconv.apiKey';
 const pollIntervalMs = 1800;
+const defaultOperation = 'convert';
 
 // describeError selects the user-facing message primarily from the
 // machine-readable error.code (docs/ERROR-CODES.md) -- never by matching
@@ -82,6 +88,7 @@ export default function App() {
   );
   const [file, setFile] = useState<File | null>(null);
   const [target, setTarget] = useState<string>('');
+  const [operation, setOperation] = useState<string>(defaultOperation);
   const [formatsResp, setFormatsResp] = useState<FormatsResponse | null>(null);
   const [formatsNotice, setFormatsNotice] = useState<string | null>(null);
   const [opts, setOpts] = useState('');
@@ -138,12 +145,37 @@ export default function App() {
   // union (targetFormatsOf) before a file is picked. This replaces the
   // previous alphabetical-first default, which could land on an
   // engine-incompatible target (e.g. `alto` for a .docx upload).
+  const formatRows = useMemo(() => (formatsResp ? operationTable(formatsResp) : []), [formatsResp]);
+
+  const availableOperations = useMemo(() => (formatsResp ? operationsOf(formatsResp) : []), [formatsResp]);
+
+  useEffect(() => {
+    setOperation((prev) =>
+      availableOperations.length === 0 || availableOperations.includes(prev)
+        ? prev
+        : availableOperations.includes(defaultOperation)
+          ? defaultOperation
+          : availableOperations[0],
+    );
+  }, [availableOperations]);
+
+  const operationGroups = useMemo(() => {
+    const groups = new Map<string, typeof formatRows>();
+    for (const row of formatRows) {
+      groups.set(row.operation, [...(groups.get(row.operation) ?? []), row]);
+    }
+    return Array.from(groups.entries());
+  }, [formatRows]);
+
   const availableTargets = useMemo(() => {
     if (!formatsResp) {
       return [];
     }
-    return file ? targetFormatsFor(formatsResp, sourceFormatOfFilename(file.name)) : targetFormatsOf(formatsResp);
-  }, [formatsResp, file]);
+    if (file) {
+      return targetFormatsForOperation(formatsResp, operation, sourceFormatOfFilename(file.name));
+    }
+    return Array.from(new Set(formatRows.filter((row) => row.operation === operation).map((row) => row.to))).sort();
+  }, [formatsResp, formatRows, file, operation]);
 
   useEffect(() => {
     setTarget((prev) => (prev && availableTargets.includes(prev) ? prev : (availableTargets[0] ?? '')));
@@ -264,7 +296,13 @@ export default function App() {
     setJob(null);
 
     try {
-      const createdJob = await createJob({ apiKey: apiKey.trim(), file, target, opts });
+      const createdJob = await createJob({
+        apiKey: apiKey.trim(),
+        file,
+        target,
+        opts,
+        operation: operation === defaultOperation ? undefined : operation,
+      });
       setJob({
         job_id: createdJob.job_id,
         status: createdJob.status,
@@ -331,6 +369,18 @@ export default function App() {
             <label className="field">
               <span>File</span>
               <input type="file" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+            </label>
+
+            <label className="field">
+              <span>Operation</span>
+              <select value={operation} onChange={(event) => setOperation(event.target.value)}>
+                {availableOperations.length === 0 && <option value={operation}>{operation}</option>}
+                {availableOperations.map((op) => (
+                  <option key={op} value={op}>
+                    {op}
+                  </option>
+                ))}
+              </select>
             </label>
 
             <label className="field">
@@ -431,6 +481,22 @@ export default function App() {
                 </>
               )}
 
+              {job.status === 'done' && job.outputs && job.outputs.length > 0 && (
+                <div className="result-row">
+                  <span>Outputs</span>
+                  <ul className="outputs">
+                    {job.outputs.map((output) => (
+                      <li key={`${output.role}-${output.ordinal}`}>
+                        <strong>{output.role}</strong> {output.format}, {output.size_bytes} bytes{' '}
+                        <a href={output.url} target="_blank" rel="noopener noreferrer">
+                          download
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {job.status === 'failed' && (
                 <p className="error">
                   {job.error_message || job.error_code || 'Conversion failed.'}
@@ -439,6 +505,35 @@ export default function App() {
             </>
           )}
           {error && <p className="error">{error}</p>}
+        </section>
+      )}
+
+      {operationGroups.length > 0 && (
+        <section className="card" aria-label="Supported conversions">
+          <h2>Supported conversions</h2>
+          {operationGroups.map(([op, rows]) => (
+            <div key={op} className="operation-group">
+              <h3>{op}</h3>
+              <table className="formats-table">
+                <thead>
+                  <tr>
+                    <th>engine</th>
+                    <th>from</th>
+                    <th>to</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={`${row.engine}-${row.from}-${row.to}`}>
+                      <td>{row.engine}</td>
+                      <td>{row.from}</td>
+                      <td>{row.to}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
         </section>
       )}
     </main>
