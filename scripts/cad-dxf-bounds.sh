@@ -4896,6 +4896,7 @@ def derive(argv):
         ref = sorted((b, n) for (ff, n, b, q, v, bg, band, w, ok) in rclass if ff == f and band == "refused")
         emit("KNOWN_LIMIT,key=render_cost_not_bounded_by_input_bytes,format=%s,smallest_refused_cell=%s,smallest_refused_bytes=%s,R=%d,note=3D_render_cost_is_not_bounded_by_input_bytes;heavy_assemblies_of_any_format_may_be_refused_cad_too_complex_at_the_render_deadline_(render_remainder_all)" % (
             f, ref[0][1] if ref else "none", ref[0][0] if ref else "none", R))
+    emit("KNOWN_LIMIT,key=stacked_render_refused,widened_to=render_cost_not_bounded_by_input_bytes,R=%d,note=the_76-01_remainder_rule_limit_applies_to_every_3D_render_stacked_or_not_(render_remainder_all);the_smallest_refused_cell_per_format_is_on_the_render_cost_not_bounded_by_input_bytes_lines" % R)
     emit("KNOWN_LIMIT,key=iges_ceiling_lowered_by_memory,from_bytes=141557760,to_bytes=%d,cell=%s,note=the_IGES_mesh_peak_is_driven_by_input_bytes;the_pod_rule_0.70x4096_holds_only_up_to_the_lowered_ceiling" % (ceiling_iges, mem["cell"]))
     emit("KNOWN_LIMIT,key=iges_instancing_unprobed,note=76-01_STACK_DECISION_iges_reason_iges_308_408_subfigure_instancing_unprobed")
     emit("KNOWN_LIMIT,key=arm64_only,note=every_bound_measured_on_arm64_(OrbStack);no_amd64_host")
