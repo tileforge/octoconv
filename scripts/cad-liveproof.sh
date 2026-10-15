@@ -999,14 +999,21 @@ while [ "$i" -lt 12000 ]; do
 		c=$(cat "$d/comm" 2>/dev/null) || continue
 		hit=""
 		case "$c" in
-		"$n") hit=1 ;;
-		python*) grep -qa "$n" "$d/cmdline" 2>/dev/null && hit=1 ;;
+		"$n" | python*) ;;
+		*) continue ;;
 		esac
-		if [ -n "$hit" ] && [ -n "$skip" ] && grep -qaF -- "$skip" "$d/cmdline" 2>/dev/null; then
-			hit=""
+		st=$(sed 's/^.*) //' "$d/stat" 2>/dev/null | cut -d' ' -f1)
+		[ -n "$st" ] && [ "$st" != Z ] && [ "$st" != X ] || continue
+		cmd=$(tr '\000' ' ' 2>/dev/null < "$d/cmdline")
+		[ -n "$cmd" ] || continue
+		case "$c" in
+		"$n") hit=1 ;;
+		python*) case "$cmd" in *"$n"*) hit=1 ;; esac ;;
+		esac
+		if [ -n "$hit" ] && [ -n "$skip" ]; then
+			case "$cmd" in *"$skip"*) hit="" ;; esac
 		fi
 		if [ -n "$hit" ]; then
-			cmd=$(tr '\000' ' ' 2>/dev/null < "$d/cmdline")
 			echo "$p $c"
 			echo "cmdline $cmd"
 			kill -s "$sig" "$p"
@@ -1893,6 +1900,8 @@ create_job "$REPL50" "$REPL50_NAME" pdf
 [ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_RETRY rsvg-convert: create returned $HTTP: $(cat "$W/create.json")"
 inject_wait || fail "DXF_RETRY rsvg-convert: no rsvg-convert process was found to signal for job $JOB_ID"
 case "$INJ_CMD" in *ink.png*) fail "DXF_RETRY rsvg-convert: the signalled rsvg-convert is the ink check: $INJ_CMD" ;; esac
+case "$INJ_CMD" in *rsvg-convert*" -f pdf "*" -o "*) ;; *) fail "DXF_RETRY rsvg-convert: the signalled process is not the PDF raster run: '$INJ_CMD'" ;; esac
+DR_CMD=$INJ_CMD
 DR_HIT=$INJ_HIT
 DR_JOB=$JOB_ID
 wait_job "$DR_JOB" "$ENGINE_TIMEOUT"
@@ -1904,7 +1913,7 @@ DR_FACTS=$(output_facts "$DR_JOB")
 [ "${DR_FACTS%%,*}" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f2)" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f4)" = pdf ] || fail "DXF_RETRY rsvg-convert: job_outputs facts '$DR_FACTS'"
 download_output "$W/retry_rsvg.pdf" || fail "DXF_RETRY rsvg-convert: no download_url on the done job"
 pdf_judged "DXF_RETRY rsvg-convert" "$W/retry_rsvg.pdf"
-ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=pdf,signal=TERM,signalled=rsvg-convert,target_stage=pdf_raster,ink_check=0,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,result=ok"
+ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=pdf,signal=TERM,signalled=rsvg-convert,target_stage=pdf_raster,ink_check=0,hit=$(echo "$DR_HIT" | tr ' ' ':'),signalled_cmdline=$(printf '%s' "$DR_CMD" | sed -e 's/,/;/g' -e 's/ *$//' -e 's/ /_/g'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,result=ok"
 N_DXF_RETRY=$((N_DXF_RETRY + 1))
 
 inject_start cad-dxf 0 "$W/inj_dxf_cancel.out" || fail "DXF_CANCEL: the watcher did not start"
