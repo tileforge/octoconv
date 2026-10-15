@@ -251,7 +251,7 @@ func newCADCeilingServer(repo *fakeRepo, store *fakeStorage, q *fakeQueue) *Serv
 
 func TestCADCeilingsAtTheDefaults(t *testing.T) {
 	if testing.Short() {
-		t.Skip("builds inputs above 63 MiB and 135 MiB")
+		t.Skip("builds inputs above the STEP and IGES ceilings")
 	}
 	cases := []struct {
 		name     string
@@ -259,10 +259,10 @@ func TestCADCeilingsAtTheDefaults(t *testing.T) {
 		data     func(t *testing.T) []byte
 		message  string
 	}{
-		{"step", "big.step", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, "step file exceeds the 63 MiB limit for this conversion"},
-		{"stp_alias", "big.stp", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, "step file exceeds the 63 MiB limit for this conversion"},
-		{"iges", "big.iges", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, "iges file exceeds the 135 MiB limit for this conversion"},
-		{"igs_alias", "big.igs", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, "iges file exceeds the 135 MiB limit for this conversion"},
+		{"step", "big.step", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, fmt.Sprintf("step file exceeds the %d MiB limit for this conversion", convert.CADMaxSTEPBytes>>20)},
+		{"stp_alias", "big.stp", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, fmt.Sprintf("step file exceeds the %d MiB limit for this conversion", convert.CADMaxSTEPBytes>>20)},
+		{"iges", "big.iges", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, fmt.Sprintf("iges file exceeds the %d MiB limit for this conversion", convert.CADMaxIGESBytes>>20)},
+		{"igs_alias", "big.igs", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, fmt.Sprintf("iges file exceeds the %d MiB limit for this conversion", convert.CADMaxIGESBytes>>20)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -399,7 +399,7 @@ func TestCADDXFCeilingAtTheDefaultRefusesBeforeUpload(t *testing.T) {
 			if rec.Code != http.StatusRequestEntityTooLarge {
 				t.Fatalf("status = %d, want 413; body=%.300s", rec.Code, rec.Body.String())
 			}
-			want := "dxf file exceeds the 118 MiB limit for this conversion"
+			want := fmt.Sprintf("dxf file exceeds the %d MiB limit for this conversion", convert.CADMaxDXFBytes>>20)
 			if !strings.Contains(rec.Body.String(), `"code":"`+errcode.PayloadTooLarge+`"`) || !strings.Contains(rec.Body.String(), want) {
 				t.Errorf("body = %s, want code %s and message %q", rec.Body.String(), errcode.PayloadTooLarge, want)
 			}

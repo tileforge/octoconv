@@ -349,8 +349,8 @@ inspect_offers() {
 
 inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step convert stl 66060288
 inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step render png 66060288
-inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl 141557760
-inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png 141557760
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl 125829120
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png 125829120
 inspect_offers "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl stl render png 190840832
 inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert svg 123731968
 inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert pdf 123731968

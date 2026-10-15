@@ -117,6 +117,16 @@ func TestErrorCodesDocStatesTheCADCeilingsOfTheCode(t *testing.T) {
 			t.Errorf("docs/ERROR-CODES.md's DXF paragraph does not state %q", want)
 		}
 	}
+	tooComplex := docRow(t, doc, errorCodesPath, "| `cad_too_complex` |")
+	for _, want := range []string{
+		fmt.Sprintf("`CAD_RENDER_TIMEOUT`, %d s by default", int(convert.CADDefaultRenderTimeout.Seconds())),
+		"not bounded by the input bytes",
+		"any 3D format, STEP, IGES or STL",
+	} {
+		if !strings.Contains(tooComplex, want) {
+			t.Errorf("docs/ERROR-CODES.md's cad_too_complex row does not state %q", want)
+		}
+	}
 }
 
 func TestMeasurementsDocStatesThePDFTextFloorOfTheCode(t *testing.T) {

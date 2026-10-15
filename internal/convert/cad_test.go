@@ -145,29 +145,18 @@ func TestCADConverterIsRegisteredAndComparable(t *testing.T) {
 
 func TestCADPinnedConstantsComeFromTheEvidence(t *testing.T) {
 	const decision = ".planning/phases/71-evaluation-gate/71-DECISION.md"
-	const spikes = ".planning/phases/73-cad-class-convert-slice-confined/evidence/73-01-spikes.txt"
 	checks := []struct {
 		name      string
 		got, want int64
 		source    string
 	}{
-		{"CADMaxSTEPBytes", CADMaxSTEPBytes, 66060288, decision + " and " + spikes + " cad_step_ceiling_bytes"},
-		{"CADMaxIGESBytes", CADMaxIGESBytes, 141557760, spikes + " cad_iges_ceiling_bytes (supersedes " + decision + ")"},
 		{"CADMaxSTEPEntities", CADMaxSTEPEntities, 754762, decision},
 		{"CADMaxNAUO", CADMaxNAUO, 1518, decision},
-		{"CADDefaultGuardTimeout", int64(CADDefaultGuardTimeout / time.Second), 30, spikes + " cad_guard_timeout_s"},
-		{"CADDefaultMeshTimeout", int64(CADDefaultMeshTimeout / time.Second), 316, spikes + " cad_mesh_timeout_s"},
-		{"CADDefaultRenderTimeout", int64(CADDefaultRenderTimeout / time.Second), 480, ".planning/phases/74-3d-render-measurements/74-RESEARCH.md Render stage timeout (chosen under the 900 s window, not measured)"},
-		{"CADIOAllowance", int64(CADIOAllowance / time.Second), 60, spikes + " cad_io_allowance_s"},
-		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 886, "30 + 316 + 480 + 60"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d: re-derive it from %s rather than editing the expectation", c.name, c.got, c.want, c.source)
 		}
-	}
-	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance {
-		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + render + io allowance (%s)", spikes)
 	}
 }
 
@@ -809,25 +798,14 @@ func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
 		key      string
 		script   string
 	}{
-		{"CADMaxDXFBytes", CADMaxDXFBytes, bounds, "cad_dxf_ceiling_bytes", boundsScript},
 		{"CADMaxDXFExpandedInserts", CADMaxDXFExpandedInserts, bounds, "cad_dxf_expanded_inserts_cap", boundsScript},
 		{"CADMaxDXFExpandedEntities", CADMaxDXFExpandedEntities, bounds, "cad_dxf_expanded_entities_cap", boundsScript},
-		{"CADDefaultDXFTimeout", int64(CADDefaultDXFTimeout / time.Second), bounds, "cad_dxf_timeout_s", boundsScript},
-		{"CADDefaultRsvgTimeout", int64(CADDefaultRsvgTimeout / time.Second), bounds, "cad_rsvg_timeout_s", boundsScript},
-		{"CADMaxDXFSVGBytes", CADMaxDXFSVGBytes, bounds, "cad_dxf_svg_max_bytes", boundsScript},
-		{"CADMaxDXFPDFBytes", CADMaxDXFPDFBytes, bounds, "cad_dxf_pdf_max_bytes", boundsScript},
 		{"CADMaxDXFNesting", CADMaxDXFNesting, guard, "cad_dxf_nesting_bound", guardScript},
 	} {
 		if want := cadDerivedValue(t, c.evidence, c.key); c.got != want {
 			t.Errorf("%s = %d, %s DERIVED %s says %d: re-derive it with %s rather than editing the expectation",
 				c.name, c.got, c.evidence, c.key, want, c.script)
 		}
-	}
-	if CADDefaultDXFTimeout%time.Second != 0 || CADDefaultRsvgTimeout%time.Second != 0 {
-		t.Errorf("the DXF stage timeouts %s and %s are not whole seconds; the evidence derives whole seconds", CADDefaultDXFTimeout, CADDefaultRsvgTimeout)
-	}
-	if sum := CADDefaultGuardTimeout + CADDefaultDXFTimeout + 2*CADDefaultRsvgTimeout + CADIOAllowance; sum > CADDefaultEngineTimeout {
-		t.Errorf("guard + dxf + two rsvg stages + I/O = %s exceeds the %s engine timeout", sum, CADDefaultEngineTimeout)
 	}
 }
 

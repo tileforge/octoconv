@@ -22,25 +22,25 @@ import (
 
 const (
 	CADMaxSTEPBytes         = 63 << 20
-	CADMaxIGESBytes         = 135 << 20
+	CADMaxIGESBytes         = 120 << 20
 	CADMaxSTEPEntities      = 754762
 	CADMaxNAUO              = 1518
 	CADMaxRenderTriangles   = 3835382
 	CADMaxSTLBytes          = 190840832
-	CADDefaultGuardTimeout  = 30 * time.Second
-	CADDefaultMeshTimeout   = 316 * time.Second
-	CADDefaultRenderTimeout = 480 * time.Second
-	CADIOAllowance          = 60 * time.Second
-	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADDefaultRenderTimeout + CADIOAllowance
+	CADDefaultGuardTimeout  = 21 * time.Second
+	CADDefaultMeshTimeout   = 324 * time.Second
+	CADDefaultRenderTimeout = 521 * time.Second
+	CADIOAllowance          = 20 * time.Second
+	CADDefaultEngineTimeout = max(CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance, CADDefaultGuardTimeout+CADDefaultDXFTimeout+2*CADDefaultRsvgTimeout+CADIOAllowance)
 
 	CADMaxDXFBytes            = 118 << 20
 	CADMaxDXFExpandedInserts  = 170031
 	CADMaxDXFExpandedEntities = 850155
 	CADMaxDXFNesting          = 16
-	CADMaxDXFSVGBytes         = 129 << 20
+	CADMaxDXFSVGBytes         = 134 << 20
 	CADMaxDXFPDFBytes         = 19 << 20
-	CADDefaultDXFTimeout      = 162 * time.Second
-	CADDefaultRsvgTimeout     = 141 * time.Second
+	CADDefaultDXFTimeout      = 186 * time.Second
+	CADDefaultRsvgTimeout     = 217 * time.Second
 
 	cadOutputLimit   = 1 << 20
 	cadVerdictPrefix = "CADVERDICT "
