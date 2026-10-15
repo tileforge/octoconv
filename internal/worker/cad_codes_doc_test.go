@@ -17,12 +17,16 @@ import (
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
-const cadCodesDocPath = "../../docs/CAD.md"
+const (
+	cadCodesDocPath     = "../../docs/CAD.md"
+	cadCodesOpenAPIPath = "../../docs/openapi.yaml"
+)
 
 var (
 	cadCodesSentinelName = regexp.MustCompile(`^ErrCAD[A-Za-z]*$`)
 	cadCodesSyncWord     = regexp.MustCompile(`\bsync\b`)
 	cadCodesAsyncWord    = regexp.MustCompile(`\basync\b`)
+	cadCodesWord         = regexp.MustCompile(`[a-z][a-z0-9_]*`)
 )
 
 var cadCodesSentinels = map[string]struct {
@@ -338,6 +342,25 @@ func TestCADCodesDocMatchesTheMapping(t *testing.T) {
 		t.Error("docs/CAD.md does not link docs/ERROR-CODES.md")
 	}
 
+	spec := cadCodesOpenAPIErrorCode(t)
+	named := map[string]bool{}
+	for _, w := range cadCodesWord.FindAllString(spec, -1) {
+		named[w] = true
+	}
+	for _, c := range cadCodesSorted(async) {
+		if !named[c] {
+			t.Errorf("a cad job can end with %q, but the error_code description of docs/openapi.yaml does not name it", c)
+		}
+	}
+	for _, w := range cadCodesSorted(named) {
+		if strings.HasPrefix(w, "cad_") && !want[w] {
+			t.Errorf("the error_code description of docs/openapi.yaml names %q, which no cad job or request can end with", w)
+		}
+	}
+	if !strings.Contains(spec, "docs/CAD.md") {
+		t.Error("the error_code description of docs/openapi.yaml does not point to docs/CAD.md")
+	}
+
 	outputs := cadCodesOutputs(t, doc)
 	for _, role := range []string{jobs.OutputRolePrimary, jobs.OutputRoleMeasurements} {
 		if !outputs[role] {
@@ -372,4 +395,51 @@ func cadCodesOutputs(t *testing.T, doc string) map[string]bool {
 		t.Fatalf("%s has no ## Outputs section", cadCodesDocPath)
 	}
 	return out
+}
+
+func cadCodesOpenAPIErrorCode(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(cadCodesOpenAPIPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text []string
+	state := 0
+	for _, line := range strings.Split(string(b), "\n") {
+		trimmed := strings.TrimSpace(line)
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		switch state {
+		case 0:
+			if line == "    JobStatus:" {
+				state = 1
+			}
+		case 1:
+			if trimmed != "" && indent <= 4 {
+				t.Fatalf("%s JobStatus has no error_code property", cadCodesOpenAPIPath)
+			}
+			if line == "        error_code:" {
+				state = 2
+			}
+		case 2:
+			if trimmed != "" && indent <= 8 {
+				t.Fatalf("%s JobStatus.error_code has no description", cadCodesOpenAPIPath)
+			}
+			if indent == 10 && strings.HasPrefix(trimmed, "description:") {
+				rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+				if rest != ">-" && rest != ">" && rest != "|" {
+					return rest
+				}
+				state = 3
+			}
+		case 3:
+			if trimmed != "" && indent <= 10 {
+				return strings.Join(text, "\n")
+			}
+			text = append(text, trimmed)
+		}
+	}
+	if state != 3 {
+		t.Fatalf("%s has no JobStatus.error_code description", cadCodesOpenAPIPath)
+	}
+	return strings.Join(text, "\n")
 }
