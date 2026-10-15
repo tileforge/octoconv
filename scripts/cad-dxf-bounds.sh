@@ -3973,24 +3973,67 @@ d76_render_ladder() {
   b76_stop "reason=render_iges_ladder_no_rung_fits,r_upper_s=$D76_R_UPPER"
 }
 
+d76_clean_count() {
+  python3 - "$B76_OUT" "$1" "$2" "$3" <<'PY'
+import sys
+path, cell, stage, quality = sys.argv[1:5]
+n = 0
+for line in open(path):
+    if not line.startswith("BOUND76_ROW,"):
+        continue
+    d = dict(p.split("=", 1) for p in line.rstrip("\n").split(",")[1:] if "=" in p)
+    if d.get("cell") != cell or d.get("stage") != stage or (quality != "any" and d.get("quality") != quality):
+        continue
+    try:
+        if float(d.get("load1", "99")) <= 11 and float(d.get("load1_end", "99")) <= 11:
+            n += 1
+    except ValueError:
+        pass
+print(n)
+PY
+}
+
+d76_clean_reps() {
+  local name=$1 stage=$2 q=$3 keepdir=$4 rep=$5 tries=0
+  while [ "$(d76_clean_count "$name" "$stage" "$q")" -lt "$B76_N" ]; do
+    [ "$tries" -lt $((3 * B76_N + 2)) ] || b76_stop "reason=quiet_reps_not_reached,cell=$name,stage=$stage,quality=$q,tries=$tries"
+    tries=$((tries + 1))
+    rep=$((rep + 1))
+    if [ "$stage" = guard ]; then b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; else b76_mesh_row "$name" "$q" "$rep" 1 "$B76_SETTER_S" "$keepdir"; fi
+  done
+}
+
 d76_inworker_rung() {
   local name=$1 out=$2 rc=0
+  local -a nb=()
+  [ -z "${D76_NB_COMMIT:-}" ] || nb=(--no-build "$D76_NB_COMMIT" "$D76_NB_API" "$D76_NB_CAD")
   printf 'CELLSPEC,route=convert_iges,cell=%s,file=%s,sha256=%s,target=stl,operation=convert,opts=quality:fine,source=iges_memory_ceiling_ladder\n' \
     "$name" "$CELL_PATH" "$CELL_SHA" > "$WORK/rung-cells.txt"
   [ -f "$REPO_ROOT/docker-compose.override.yml" ] || b76_stop "reason=inworker_override_missing"
-  CAD_INWORKER_N=3 "$REPO_ROOT/scripts/cad-inworker-measure.sh" --cells "$WORK/rung-cells.txt" --out "$out" || rc=$?
+  CAD_INWORKER_N=3 "$REPO_ROOT/scripts/cad-inworker-measure.sh" --cells "$WORK/rung-cells.txt" --out "$out" ${nb[@]+"${nb[@]}"} || rc=$?
   [ "$rc" = 0 ] || b76_stop "reason=inworker_failed,cell=$name,rc=$rc,out=$(basename "$out")"
 }
 
 d76_memory_ladder() {
   local spec name target keepdir rep q n peak oom out go cpk iooms total verdict reason
+  local skip=0
+  [ -z "${D76_FROM_RUNG:-}" ] || skip=1
   for spec in "${D76_MEMORY_RUNGS[@]}"; do
     name=${spec%%:*}
     target=${spec#*:}
+    if [ "$skip" = 1 ]; then
+      [ "$name" = "$D76_FROM_RUNG" ] || continue
+      skip=0
+    fi
     b76_cell "$name" "$B76_OUT"
     keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
-    for rep in $(seq 1 "$B76_N"); do b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; done
-    for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" fine "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    if [ "${D76_GATE:-0}" = 1 ]; then
+      d76_clean_reps "$name" guard na "$keepdir" 0
+      d76_clean_reps "$name" mesh fine "$keepdir" 0
+    else
+      for rep in $(seq 1 "$B76_N"); do b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; done
+      for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" fine "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    fi
     for q in standard draft; do b76_mesh_row "$name" "$q" 1 0 "$B76_CLASS_S" "$keepdir"; done
     rm -rf "$keepdir"
     read -r n peak _ <<< "$(d76_rows_of "$name" mesh fine)"
@@ -4120,14 +4163,21 @@ d76_ladder_mode() {
   D76_EVID_DIR=$(cd "$(dirname "$EVID")" && pwd -P)
   grep -q '^RULE_AMEND,key=render_route_cell,' "$REPO_ROOT/$D76_CELLS_REL" || fail "the render_route_cell amendment is not in $D76_CELLS_REL"
   grep -q '^RULE_AMEND,key=iges_memory_ceiling,' "$REPO_ROOT/$D76_CELLS_REL" || fail "the iges_memory_ceiling amendment is not in $D76_CELLS_REL"
-  if [ -f "$B76_OUT" ] && grep -q "^LADDER_RESULT,ladder=$ladder," "$B76_OUT"; then fail "ladder $ladder already has a result in $B76_OUT"; fi
+  if [ -f "$B76_OUT" ] && grep -q "^LADDER_RESULT,ladder=$ladder," "$B76_OUT"; then
+    [ -n "${D76_FROM_RUNG:-}" ] || fail "ladder $ladder already has a result in $B76_OUT"
+    for c in $(sed -n "s/^LADDER_RESULT,ladder=$ladder,cell=\([A-Za-z0-9]*\),.*/\1/p" "$B76_OUT"); do
+      grep -q "^NOTE,key=ladder_rung_revoked,ladder=$ladder,cell=$c," "$B76_OUT" || fail "the $ladder result $c is not revoked; refusing to resume"
+    done
+  fi
   if [ -f "$B76_OUT" ] && grep -q "^STOP,mode=bounds76,group=$B76_GROUP," "$B76_OUT"; then fail "ladder $ladder already stopped in $B76_OUT"; fi
   b76_caffeinated
   b76_setup
   [ "$TAG" = octoconv-cad-worker:engine76-31b85807c654 ] || b76_stop "reason=engine_inputs_differ_from_76-02,tag=$TAG"
   mkdir -p "$(dirname "$B76_OUT")"
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  [ -z "${D76_FROM_RUNG:-}" ] || D76_GATE=1
   d76_hdr "$ladder"
+  [ -z "${D76_FROM_RUNG:-}" ] || printf 'NOTE,key=ladder_resume,ladder=%s,from_rung=%s,gate=load1<=%s_at_start_and_end,clean_reps=%s_per_setter_key,inworker=%s\n' "$ladder" "$D76_FROM_RUNG" "$D76_LOAD_MAX" "$B76_N" "$( [ -n "${D76_NB_COMMIT:-}" ] && echo "no-build_${D76_NB_COMMIT}" || echo build)" >> "$B76_OUT"
   B76_T0=$(date +%s)
   case "$ladder" in
     render_iges) d76_render_ladder ;;
@@ -4614,6 +4664,8 @@ def derive(argv):
         stop("reason=iges_memory_ladder_has_no_result")
     if not ren:
         stop("reason=render_iges_ladder_has_no_result")
+    if mem and any(l.startswith("NOTE,key=ladder_rung_revoked,ladder=memory_iges,cell=%s," % mem["cell"]) for l in open(ladder).read().splitlines()):
+        stop("reason=iges_memory_ladder_result_revoked,cell=%s" % mem["cell"])
     ceiling_iges = int(mem["ceiling_bytes"]) if mem else 0
     iw_paths = [inworker] + extra
     iw, iws, iwh = inworker_rows(iw_paths)
@@ -4627,7 +4679,10 @@ def derive(argv):
         if r.get("status") != "done" or r.get("attempts") != "1":
             stop("reason=inworker_row_not_done_attempts_1,job=%s" % r.get("job"))
     for route in ROUTES:
-        n = len([r for r in iw if r["route"] == route and r["_file"] == os.path.basename(inworker) and r["_clean"]])
+        if route == "convert_iges" and mem:
+            n = len([r for r in iw if r["route"] == route and r["cell"] == mem["cell"] and r["_clean"]])
+        else:
+            n = len([r for r in iw if r["route"] == route and r["_file"] == os.path.basename(inworker) and r["_clean"]])
         if n < 3:
             stop("reason=inworker_route_clean_rows_below_3,route=%s,rows=%d" % (route, n))
     if stops:
@@ -4636,6 +4691,10 @@ def derive(argv):
     def admitted_iges(c):
         return c.get("format") != "iges" or int(c.get("bytes", "0")) <= ceiling_iges
 
+    for name, c in sorted(cells.items()):
+        if c.get("format") == "iges" and not admitted_iges(c):
+            emit("ABOVE_CEILING,cell=%s,format=iges,bytes=%s,iges_ceiling_bytes=%d,rows_on_file=%d,inworker_rows=%d,use=walls_only_not_stage_peak" % (
+                name, c.get("bytes"), ceiling_iges, len([r for r in rows_all if r["cell"] == name]), len([r for r in iw if r["cell"] == name])))
     setter_all = [r for r in rows_all if r.get("setter") == "1"]
     setter = [r for r in setter_all if r["_clean"]]
     clean_jobs = {r["job"] for r in iw if r["_clean"]}
@@ -4907,7 +4966,8 @@ D76_B75_REL=.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt
 D76_INK_REL=.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-ink.txt
 
 d76_derive_mode() {
-  local out=$1 ev rung extra="" rc=0
+  local out=$1 ev rung rc=0 f
+  local -a extra=()
   need_tool python3
   need_tool git
   ev="$REPO_ROOT/$(dirname "$D76_INWORKER_REL")"
@@ -4915,7 +4975,8 @@ d76_derive_mode() {
     [ -f "$REPO_ROOT/$f" ] || fail "missing $f"
   done
   rung=$(sed -n 's/^LADDER_RESULT,ladder=memory_iges,cell=\([A-Za-z0-9]*\),.*/\1/p' "$REPO_ROOT/$D76_LADDER_REL" | tail -n 1)
-  [ -z "$rung" ] || [ ! -f "$ev/76-03-inworker-$rung.txt" ] || extra="$ev/76-03-inworker-$rung.txt"
+  [ -z "$rung" ] || [ ! -f "$ev/76-03-inworker-$rung.txt" ] || extra+=("$ev/76-03-inworker-$rung.txt")
+  if [ -f "$ev/76-03-inworker-IM128MiB.txt" ] && [ "$rung" != IM128MiB ]; then extra+=("$ev/76-03-inworker-IM128MiB.txt"); fi
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-d76.XXXXXX")
   trap cleanup EXIT
   mkdir -p "$WORK/tools"
@@ -4923,9 +4984,9 @@ d76_derive_mode() {
   EVID_NAME=$(basename "$out")
   {
     printf 'HDR,mode=derive76,date_utc=%s,commit=%s,tracked_dirt=%s,inputs=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" \
-      "$(for f in "$B76_EVID_REL" "$D76_LADDER_REL" "$D76_CELLS_REL" "$D76_INWORKER_REL" "$D76_QUIET_REL" ${extra:+"${extra#"$REPO_ROOT"/}"}; do printf '%s:%s;' "$(basename "$f")" "$(sha_of "$REPO_ROOT/$f" | cut -c1-12)"; done | sed 's/;$//')"
+      "$(for f in "$REPO_ROOT/$B76_EVID_REL" "$REPO_ROOT/$D76_LADDER_REL" "$REPO_ROOT/$D76_CELLS_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$REPO_ROOT/$D76_QUIET_REL" ${extra[@]+"${extra[@]}"}; do printf '%s:%s;' "$(basename "$f")" "$(sha_of "$f" | cut -c1-12)"; done | sed 's/;$//')"
     python3 "$WORK/tools/d76.py" derive "$REPO_ROOT/$B76_EVID_REL" "$REPO_ROOT/$D76_LADDER_REL" "$REPO_ROOT/$D76_CELLS_REL" "$REPO_ROOT/$B76_STACK_REL" \
-      "$REPO_ROOT/$D76_B75_REL" "$REPO_ROOT/$D76_INK_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$REPO_ROOT/$D76_QUIET_REL" "$extra" || rc=$?
+      "$REPO_ROOT/$D76_B75_REL" "$REPO_ROOT/$D76_INK_REL" "$REPO_ROOT/$D76_INWORKER_REL" "$REPO_ROOT/$D76_QUIET_REL" ${extra[@]+"${extra[@]}"} || rc=$?
   } > "$WORK/out.txt"
   mkdir -p "$(dirname "$out")"
   cp "$WORK/out.txt" "$out"
