@@ -137,12 +137,12 @@ func cadDocSameSet(t *testing.T, what string, doc, code map[string]bool) {
 	t.Helper()
 	for _, k := range cadDocSorted(code) {
 		if !doc[k] {
-			t.Errorf("%s: the code has %q, docs/CAD.md does not", what, k)
+			t.Errorf("%s: the code has %q, the document does not", what, k)
 		}
 	}
 	for _, k := range cadDocSorted(doc) {
 		if !code[k] {
-			t.Errorf("%s: docs/CAD.md has %q, the code does not", what, k)
+			t.Errorf("%s: the document has %q, the code does not", what, k)
 		}
 	}
 }
