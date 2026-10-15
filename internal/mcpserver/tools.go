@@ -65,10 +65,10 @@ func classifyAPIError(err error) error {
 // ConvertFileInput is the input to the convert_file tool.
 type ConvertFileInput struct {
 	Path         string         `json:"path" jsonschema:"absolute or relative path to an existing local regular file to convert"`
-	Operation    string         `json:"operation,omitempty" jsonschema:"operation to perform on the file, defaults to convert when omitted -- see the operations key of the list_supported_formats/GET /v1/formats response for the full set of currently available operations; leave empty for a plain format conversion"`
+	Operation    string         `json:"operation,omitempty" jsonschema:"operation to perform on the file, defaults to convert when omitted: convert is a plain format conversion; sanitize rebuilds the file with the enumerated classes of construct removed and adds a report output (docs/SANITIZE.md); render draws a CAD file (step, iges, stl or dxf) as a png and adds a measurements output. The operations key of the list_supported_formats/GET /v1/formats response lists the pairs each operation serves; docs/CAD.md describes render and the cad class"`
 	TargetFormat string         `json:"target_format,omitempty" jsonschema:"desired output format, e.g. jpg/png/webp -- provide exactly one of target_format or preset, never both, never neither"`
 	Preset       string         `json:"preset,omitempty" jsonschema:"name of a saved conversion preset to apply -- provide exactly one of target_format or preset, never both, never neither"`
-	Opts         map[string]any `json:"opts,omitempty" jsonschema:"engine-specific conversion options; only meaningful alongside target_format, not preset"`
+	Opts         map[string]any `json:"opts,omitempty" jsonschema:"engine-specific conversion options; only meaningful alongside target_format, not preset. For the cad class (render, and convert of a step or iges file) the options are view, size, quality, background and assume_unit -- see docs/CAD.md for their values, defaults and which operation and format accepts each"`
 	// Optional. Without it an agent could READ a correlation id on jobs
 	// created elsewhere and never SET one on its own conversions (codex,
 	// PR #23).

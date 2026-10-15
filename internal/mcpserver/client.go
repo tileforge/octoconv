@@ -109,7 +109,7 @@ func NewClientForKey(base Config, apiKey string) (*Client, error) {
 // Shape mirrors internal/api/handlers.go's render exactly (role, ordinal,
 // format, size_bytes, url) -- do not add fields the API does not emit.
 type JobOutput struct {
-	Role      string `json:"role" jsonschema:"what this artifact is -- primary is the conversion result itself; report, preview and thumbnail are secondary artifacts. Never assume the first element is the primary one; select by this field"`
+	Role      string `json:"role" jsonschema:"what this artifact is -- primary is the result itself; report (sanitize) and measurements (cad render) are secondary outputs; preview and thumbnail are reserved and never produced. Never assume the first element is the primary one; select by this field"`
 	Ordinal   int    `json:"ordinal" jsonschema:"position of this output within the job, assigned by the worker; carries no meaning about which output is the main result"`
 	Format    string `json:"format" jsonschema:"the artifact's format, e.g. webp or json"`
 	SizeBytes int64  `json:"size_bytes" jsonschema:"size of the artifact in bytes"`
