@@ -342,6 +342,44 @@ func TestCADRenderStlAboveTheCeilingIsRefusedBeforeAnyEngine(t *testing.T) {
 	}
 }
 
+func TestCADRenderReChecksTheDerivedCeilingOfEveryFormat(t *testing.T) {
+	ran := "touch \"$(dirname \"$0\")/e.ran\"\nexit 1\n"
+	for _, format := range []string{"step", "iges", "stl"} {
+		ceiling := cadDerivedValue(t, cad76Evidence, "cad_"+format+"_ceiling_bytes")
+		t.Run(format+" one byte over", func(t *testing.T) {
+			f := newCADRenderFixture(t, format)
+			f.setEngines(t, ran, ran, ran)
+			if err := os.Truncate(f.in, ceiling+1); err != nil {
+				t.Fatal(err)
+			}
+			err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
+			if !errors.Is(err, ErrCADInputTooLarge) {
+				t.Fatalf("err = %v, want ErrCADInputTooLarge", err)
+			}
+			if !strings.Contains(err.Error(), strconv.FormatInt(ceiling, 10)) {
+				t.Errorf("err %q does not name the derived ceiling %d", err, ceiling)
+			}
+			if f.exists("e.ran") {
+				t.Errorf("an engine ran for a %s render above the ceiling", format)
+			}
+		})
+		t.Run(format+" exactly at the ceiling reaches an engine", func(t *testing.T) {
+			f := newCADRenderFixture(t, format)
+			f.setEngines(t, ran, ran, ran)
+			if err := os.Truncate(f.in, ceiling); err != nil {
+				t.Fatal(err)
+			}
+			err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
+			if errors.Is(err, ErrCADInputTooLarge) {
+				t.Fatalf("err = %v, a %s render exactly at the convert ceiling is refused", err, format)
+			}
+			if !f.exists("e.ran") {
+				t.Errorf("no engine ran for a %s render exactly at the ceiling: err = %v", format, err)
+			}
+		})
+	}
+}
+
 func TestCADRenderRefusesQualityOnAnStlSource(t *testing.T) {
 	f := newCADRenderFixture(t, "stl")
 	f.setEngines(t, cadOKGuard(), "exit 9\n", "exit 9\n")

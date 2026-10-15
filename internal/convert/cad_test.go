@@ -786,6 +786,59 @@ func TestCADEngineTimeoutIsTheLongerRoute(t *testing.T) {
 	}
 }
 
+const cad76StackEvidence = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt"
+
+func TestCADPathBFiredForNoFormat(t *testing.T) {
+	raw, err := os.ReadFile(cad76Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack, err := os.ReadFile(cad76StackEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?m)^STACK_DECISION,format=([a-z]+),decision=([a-z_]+),`).FindAllSubmatch(stack, -1) {
+		decisions[string(m[1])] = string(m[2])
+	}
+	if len(decisions) == 0 {
+		t.Fatalf("no STACK_DECISION line in %s", cad76StackEvidence)
+	}
+	all := regexp.MustCompile(`(?m)^PATHB,`).FindAllIndex(raw, -1)
+	lines := regexp.MustCompile(`(?m)^PATHB,format=([a-z]+),fired=([01]),reason=([^\n]+)$`).FindAllSubmatch(raw, -1)
+	if len(lines) != len(all) {
+		t.Fatalf("%s has %d PATHB lines and %d of them parse", cad76Evidence, len(all), len(lines))
+	}
+	seen := map[string]int{}
+	for _, m := range lines {
+		format, fired, reason := string(m[1]), string(m[2]), string(m[3])
+		seen[format]++
+		if fired != "0" {
+			t.Errorf("PATHB fired=%s for %s in %s: D-04 then needs an operation-aware render ceiling for %s at create, in inspect and in the worker (76-05-PLAN, fired branch), and the code has none", fired, format, cad76Evidence, format)
+		}
+		switch {
+		case strings.HasPrefix(reason, "not_byte_bound_in_76-01_STACK_DECISION"):
+			if decisions[format] != "not_byte_bound" {
+				t.Errorf("PATHB %s says not_byte_bound in 76-01, but %s has decision %q", format, cad76StackEvidence, decisions[format])
+			}
+		case strings.HasPrefix(reason, "no_76-01_byte_bound_decision_for_"+format):
+			if d, ok := decisions[format]; ok {
+				t.Errorf("PATHB %s says 76-01 has no decision for it, but %s has decision %q", format, cad76StackEvidence, d)
+			}
+		default:
+			t.Errorf("PATHB %s reason %q is not one this test can check against %s", format, reason, cad76StackEvidence)
+		}
+	}
+	for _, format := range []string{"step", "iges", "stl", "dxf"} {
+		if seen[format] != 1 {
+			t.Errorf("%s has %d PATHB lines for %s, want 1", cad76Evidence, seen[format], format)
+		}
+	}
+	if len(seen) != 4 {
+		t.Errorf("%s has PATHB lines for %v, want exactly step, iges, stl and dxf", cad76Evidence, seen)
+	}
+}
+
 func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
 	const bounds = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
 	const guard = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt"
