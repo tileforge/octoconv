@@ -48,6 +48,11 @@ SCALED="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}/scaled"
 REPL50_NAME=dxf-replicate-uncommon-50MiB.dxf
 REPL50_SHA=5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652
 DXF_SPECIAL="A&B <x> \"q\" 'a' & <script>alert(1)</script>"
+P76=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence
+DERIVED_FILE="$P76/76-03-derived.txt"
+BOUNDS_FILE="$P76/76-02-bounds.txt"
+STOP_AFTER="${CAD_LIVEPROOF_STOP_AFTER:-}"
+RECONCILER_RE='^webhook-worker(-[0-9]+)?$'
 export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
 
 W=""
@@ -56,6 +61,7 @@ FINISHED=""
 N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_QUALITY=0 N_RENDER=0 N_VIEWS=0 N_MEAS=0 N_OPTS_REJECT=0 N_REJECT=0 N_BOMB=0
 N_RENDER_RETRY=0 N_MESH_SIGNAL=0 N_EMPTY=0 N_CANCEL_RENDER=0 N_CANCEL=0 N_KILL=0 N_IMAGE=0
 N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJECT=0 N_DXF_BOMB=0 N_DXF_EMPTY=0 N_DXF_CEILING=0 N_DXF_RETRY=0 N_DXF_CANCEL=0
+N_TIMEOUTS=0 N_DETERMINISM=0 N_GUARD_EDGE=0 N_STACKED_REFUSAL=0 N_RENDER_CEILING=0 N_KILL_RENDER=0 N_KILL_RSVG=0
 
 log() { echo "$*" >&2; }
 ev() { echo "$*" | tee -a "$EVID"; }
@@ -98,6 +104,10 @@ if command -v kubectl >/dev/null 2>&1; then
 	[ "$PODS" = "0" ] || fail "$PODS octoconv pods are running in k8s; compose and k8s must not run hot together"
 fi
 [ -z "${CAD_SANDBOX_DISABLED:-}" ] || fail "CAD_SANDBOX_DISABLED is set in the environment; the proof needs the confined worker"
+case "$STOP_AFTER" in '' | determinism3d) ;; *) fail "CAD_LIVEPROOF_STOP_AFTER is '$STOP_AFTER'; the only stop point is determinism3d" ;; esac
+[ -f "$DERIVED_FILE" ] || fail "missing $DERIVED_FILE"
+[ -f "$BOUNDS_FILE" ] || fail "missing $BOUNDS_FILE"
+grep -q '^SUMMARY,mode=derive76,.*,result=ok$' "$DERIVED_FILE" || fail "$DERIVED_FILE has no SUMMARY,mode=derive76 line with result=ok"
 DISK_GIB=$(df -k / | awk 'NR==2 { printf "%d", $4 / 1048576 }')
 [ "$DISK_GIB" -ge 6 ] || fail "free disk is ${DISK_GIB} GiB, below the 6 GiB floor"
 for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surfaces_only.iges public/nist_ctc_05_asme1_ap242-e1.stp public/nist-d2mi-827-9999-906.stp public/LinearSlide-MGN15x-Block.step public/nasa-hubble-all-pieces.stl; do
@@ -123,6 +133,7 @@ go build -o "$W/bin/cad-pixel-judge" ./scripts/cmd/cad-pixel-judge || fail "cann
 go build -o "$W/bin/cad-measurements-check" ./scripts/cmd/cad-measurements-check || fail "cannot build cad-measurements-check"
 go build -o "$W/bin/cad-svg-check" ./scripts/cmd/cad-svg-check || fail "cannot build cad-svg-check"
 go build -o "$W/bin/cad-pdf-check" ./scripts/cmd/cad-pdf-check || fail "cannot build cad-pdf-check"
+go build -o "$W/bin/cad-png-compare" ./scripts/cmd/cad-png-compare || fail "cannot build cad-png-compare"
 
 RUNNING=$(docker compose ps --status running --services 2>/dev/null || true)
 for s in $SERVICES; do
@@ -180,12 +191,67 @@ ev "HDR,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //
 ev "HDR,server_arch=$(docker version --format '{{.Server.Arch}}')"
 ev "HDR,disk_free_gib=$DISK_GIB"
 
+derive() {
+	local v
+	v=$(sed -n "s/^DERIVED,key=$2,value=\([0-9][0-9]*\),.*/\1/p" "$DERIVED_FILE")
+	case "$v" in '' | *[!0-9]*) fail "DERIVED key $2 is missing or repeated in $DERIVED_FILE (got '$v')" ;; esac
+	printf -v "$1" '%s' "$v"
+}
+
+derive D_GUARD cad_guard_timeout_s
+derive D_MESH cad_mesh_timeout_s
+derive D_RENDER cad_render_timeout_s
+derive D_DXF cad_dxf_timeout_s
+derive D_RSVG cad_rsvg_timeout_s
+derive D_ENGINE cad_engine_timeout_s
+derive D_STEP_CEIL cad_step_ceiling_bytes
+derive D_IGES_CEIL cad_iges_ceiling_bytes
+derive D_STL_CEIL cad_stl_ceiling_bytes
+derive D_DXF_CEIL cad_dxf_ceiling_bytes
+
+render_ceiling_of() {
+	local fmt=$1 conv=$2 fired
+	fired=$(sed -n "s/^PATHB,format=$fmt,fired=\([01]\),.*/\1/p" "$DERIVED_FILE")
+	case "$fired" in
+	0) RC_WANT=$conv ;;
+	1) derive RC_WANT "cad_${fmt}_render_ceiling_bytes" ;;
+	*) fail "PATHB line for $fmt is missing or repeated in $DERIVED_FILE (got '$fired')" ;;
+	esac
+}
+
+limit_message() {
+	if [ $(($2 % 1048576)) = 0 ]; then
+		echo "$1 file exceeds the $(($2 / 1048576)) MiB limit for this conversion"
+	else
+		echo "$1 file exceeds the $2 bytes limit for this conversion"
+	fi
+}
+
+ev "HDR,derived_source=$DERIVED_FILE,derived_sha256=$(shasum -a 256 "$DERIVED_FILE" | cut -d' ' -f1),guard=$D_GUARD,mesh=$D_MESH,render=$D_RENDER,dxf=$D_DXF,rsvg=$D_RSVG,engine=$D_ENGINE,step_ceiling=$D_STEP_CEIL,iges_ceiling=$D_IGES_CEIL,stl_ceiling=$D_STL_CEIL,dxf_ceiling=$D_DXF_CEIL"
+ev "HDR,stop_after=${STOP_AFTER:-none}"
+ev "RULE,key=determinism_tolerance,dims=equal,alpha=equal,verdicts=equal,bbox_px=1,mad_255_max=1,frac_over_16_max=0.001,json=canonical_bytes_equal,hash=never"
+
 LANDLOCK_LINE=$(printf '%s\n' "$WORKER_LOG" | grep 'cad sandbox: landlock via ' | tail -1)
 PROVEN_LINE=$(printf '%s\n' "$WORKER_LOG" | grep 'cad sandbox proven: ' | tail -1)
 case "$LANDLOCK_LINE" in *"(convert, render and dxf)"*) ;; *) fail "SANDBOX: the cad-worker log has no landlock line naming dxf: '$LANDLOCK_LINE'" ;; esac
 case "$PROVEN_LINE" in *cad-dxf*rsvg-convert*"ran inside the job directory and were denied a file outside it"*) ;; *) fail "SANDBOX: the proven line does not name cad-dxf and rsvg-convert: '$PROVEN_LINE'" ;; esac
 ev "SANDBOX,landlock_line=$(printf '%s' "${LANDLOCK_LINE#*cad sandbox: }" | sed 's/,/;/g'),proven_line=$(printf '%s' "${PROVEN_LINE#*cad sandbox proven: }" | sed 's/,/;/g'),names_cad_dxf=1,names_rsvg_convert=1,result=ok"
 N_SANDBOX=1
+
+cenv() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" | sed -n "s/^$2=//p"; }
+
+TO_LINE=""
+for pair in GUARD:$D_GUARD MESH:$D_MESH RENDER:$D_RENDER DXF:$D_DXF RSVG:$D_RSVG ENGINE:$D_ENGINE; do
+	name=${pair%%:*}
+	want=${pair#*:}s
+	got=$(cenv "$CNAME" "CAD_${name}_TIMEOUT")
+	[ "$got" = "$want" ] || fail "TIMEOUTS: the cad-worker has CAD_${name}_TIMEOUT='$got', the derived value is $want"
+	TO_LINE="$TO_LINE,$(echo "$name" | tr 'A-Z' 'a-z')=$got"
+done
+API_ENGINE=$(cenv "$API_CID" CAD_ENGINE_TIMEOUT)
+[ "$API_ENGINE" = "${D_ENGINE}s" ] || fail "TIMEOUTS: the api has CAD_ENGINE_TIMEOUT='$API_ENGINE', the derived value is ${D_ENGINE}s"
+ev "TIMEOUTS${TO_LINE},api_engine=$API_ENGINE,source=evidence/76-03-derived.txt,result=ok"
+N_TIMEOUTS=1
 
 CLIENT_OUT=$(DATABASE_URL="$DB_URL" API_KEY_SALT="$SALT" go run ./cmd/manage-clients create "cad-liveproof-$(date +%s)")
 KEY=$(printf '%s\n' "$CLIENT_OUT" | awk -F': ' '/^api key/ { print $2 }')
@@ -341,23 +407,28 @@ inspect_offers() {
 	offer=$(jq -c --arg op "$op" --arg t "$target" '[.operations[] | select(.operation == $op and .target == $t and .engine == "cad")] | .[0] // empty' "$W/inspect.json")
 	[ -n "$offer" ] || fail "inspect of $upname offers no $op $fmt->$target on engine cad: $(jq -c .operations "$W/inspect.json")"
 	[ "$(echo "$offer" | jq -r .estimate_source)" = measured ] || fail "estimate_source of $upname $op is $(echo "$offer" | jq -r .estimate_source), want measured"
+	[ "$(echo "$offer" | jq -r .estimated_max_seconds)" = "$D_ENGINE" ] || fail "estimated_max_seconds of $upname $op is $(echo "$offer" | jq -r .estimated_max_seconds), want the derived engine timeout $D_ENGINE"
 	[ "$(echo "$offer" | jq -r .max_bytes)" = "$want_max" ] || fail "max_bytes of $upname $op is $(echo "$offer" | jq -r .max_bytes), want $want_max"
 	[ "$(echo "$offer" | jq -r .available)" = true ] || fail "the cad offer of $upname $op is not available: $offer"
-	ev "INSPECT,format=$fmt,operation=$op,target=$target,engine=cad,estimate_source=measured,estimated_max_seconds=$(echo "$offer" | jq -r .estimated_max_seconds),max_bytes=$want_max,available=true,result=ok"
+	ev "INSPECT,format=$fmt,operation=$op,target=$target,engine=cad,estimate_source=measured,estimated_max_seconds=$D_ENGINE,derived_engine_timeout_s=$D_ENGINE,max_bytes=$want_max,available=true,result=ok"
 	N_INSPECT=$((N_INSPECT + 1))
 }
 
-inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step convert stl 66060288
-inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step render png 66060288
-inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl 125829120
-inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png 125829120
-inspect_offers "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl stl render png 190840832
-inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert svg 123731968
-inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert pdf 123731968
-inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf render png 123731968
+inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step convert stl "$D_STEP_CEIL"
+render_ceiling_of step "$D_STEP_CEIL"
+inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step render png "$RC_WANT"
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl "$D_IGES_CEIL"
+render_ceiling_of iges "$D_IGES_CEIL"
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png "$RC_WANT"
+render_ceiling_of stl "$D_STL_CEIL"
+inspect_offers "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl stl render png "$RC_WANT"
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert svg "$D_DXF_CEIL"
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf convert pdf "$D_DXF_CEIL"
+render_ceiling_of dxf "$D_DXF_CEIL"
+inspect_offers "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf dxf render png "$RC_WANT"
 DXF_OFFERS=$(jq -c '[.operations[] | select(.engine == "cad") | [.operation, .target]] | sort' "$W/inspect.json")
 [ "$DXF_OFFERS" = '[["convert","pdf"],["convert","svg"],["render","png"]]' ] || fail "INSPECT: the cad offers for a dxf are $DXF_OFFERS, want convert pdf, convert svg and render png"
-ev "INSPECT,format=dxf,cad_offers=convert>pdf;convert>svg;render>png,offers=3,max_bytes=123731968,result=ok"
+ev "INSPECT,format=dxf,cad_offers=convert>pdf;convert>svg;render>png,offers=3,max_bytes=$D_DXF_CEIL,result=ok"
 N_INSPECT=$((N_INSPECT + 1))
 
 convert_one() {
@@ -469,6 +540,42 @@ render_one nist_ctc_05_stp "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" nist_
 render_one festo_valve_igs "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.igs
 render_one festo_valve_iges "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.iges
 render_one stl_ascii_box_stl "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl
+
+determinism_pair() {
+	local class=$1 label=$2 file=$3 upname=$4 view=$5 background=$6 size=$7 opts=$8 svg=${9:-} a_png a_json job_a jline pline rc
+	render_job "det_${label}_a" "$file" "$upname" "$opts"
+	job_a=$JOB_ID
+	a_png=$R_PNG
+	a_json=$R_JSON
+	render_job "det_${label}_b" "$file" "$upname" "$opts"
+	rc=0
+	jline=$("$W/bin/cad-png-compare" --json "$a_json" "$R_JSON" 2>"$W/cmp.err") || rc=$?
+	[ "$rc" = 0 ] && [ "$(mfield equal "$jline")" = 1 ] || fail "DETERMINISM $label: the measurements of jobs $job_a and $JOB_ID differ after canonical encoding (exit $rc): $jline $(cat "$W/cmp.err")"
+	rc=0
+	if [ -n "$svg" ]; then
+		pline=$("$W/bin/cad-png-compare" --size "$size" --background "$background" --drawing --letterbox-svg "$svg" "$a_png" "$R_PNG" 2>"$W/cmp.err") || rc=$?
+	else
+		pline=$("$W/bin/cad-png-compare" --size "$size" --background "$background" "$a_png" "$R_PNG" 2>"$W/cmp.err") || rc=$?
+	fi
+	pline=${pline#PNG_COMPARE,}
+	[ "$rc" = 0 ] && [ "$(mfield within "$pline")" = 1 ] || fail "DETERMINISM $label: the PNGs of jobs $job_a and $JOB_ID are outside the tolerance (exit $rc): $pline $(cat "$W/cmp.err")"
+	[ "$(mfield verdict_a "$pline")" = ok ] && [ "$(mfield verdict_b "$pline")" = ok ] || fail "DETERMINISM $label: the worker's judge does not accept both PNGs: $pline"
+	ev "DETERMINISM,class=$class,input=$upname,view=$view,background=$background,size=$size,job_a=$job_a,job_b=$JOB_ID,json_equal=1,json_canonical_bytes=$(mfield canonical_bytes "$jline"),$pline,result=ok"
+	N_DETERMINISM=$((N_DETERMINISM + 1))
+}
+
+DET_STEP="$CORPUS/public/LinearSlide-MGN15x-Block.step"
+for variant in iso:opaque top:opaque iso:transparent top:transparent; do
+	view=${variant%%:*}
+	background=${variant#*:}
+	determinism_pair 3d "3d_${view}_${background}" "$DET_STEP" LinearSlide-MGN15x-Block.step "$view" "$background" 1280 "{\"view\":\"$view\",\"background\":\"$background\",\"size\":1280}"
+done
+
+if [ "$STOP_AFTER" = determinism3d ]; then
+	ev "SUMMARY,result=PARTIAL,stopped_after=determinism3d,sandbox=$N_SANDBOX,timeouts=$N_TIMEOUTS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,render=$N_RENDER,determinism=$N_DETERMINISM"
+	FINISHED=1
+	exit 0
+fi
 
 VIEW_SHAS=""
 for view in iso front top; do
@@ -681,21 +788,21 @@ CODE=$(http "$W/reject1.json" -X POST "$API_BASE/v1/jobs" -F "target=png" -F "fi
 ev "REJECT,name=lying_count_stl,bytes=$(wc -c < "$W/lying.stl" | tr -d ' '),http=422,code=truncated_cad_file,result=ok"
 N_REJECT=$((N_REJECT + 1))
 
-python3 - "$CORPUS/synthetic/units_inch.step" "$W/padded.step" <<'PY'
+python3 - "$CORPUS/synthetic/units_inch.step" "$W/padded.step" "$((D_STEP_CEIL + 1))" <<'PY'
 import sys
 src = open(sys.argv[1], "rb").read()
 at = src.index(b"DATA;") + len(b"DATA;")
-need = 63 * 1024 * 1024 + 1 - len(src)
+need = int(sys.argv[3]) - len(src)
 assert need > 0
 open(sys.argv[2], "wb").write(src[:at] + b" " * need + src[at:])
 PY
 PADDED_BYTES=$(wc -c < "$W/padded.step" | tr -d ' ')
-[ "$PADDED_BYTES" = 66060289 ] || fail "padded STEP is $PADDED_BYTES bytes, want 66060289"
+[ "$PADDED_BYTES" = "$((D_STEP_CEIL + 1))" ] || fail "padded STEP is $PADDED_BYTES bytes, want $((D_STEP_CEIL + 1))"
 CODE=$(http "$W/reject2.json" -X POST "$API_BASE/v1/jobs" -F "target=stl" -F "file=@$W/padded.step;filename=padded.step")
 [ "$CODE" = 413 ] && [ "$(jq -r .code "$W/reject2.json")" = payload_too_large ] || fail "REJECT padded STEP: got $CODE $(cat "$W/reject2.json")"
 MSG=$(jq -r .error "$W/reject2.json")
-case "$MSG" in *step*63\ MiB*) ;; *) fail "REJECT padded STEP: message '$MSG' does not name step and 63 MiB" ;; esac
-ev "REJECT,name=step_63mib_plus_1,bytes=$PADDED_BYTES,http=413,code=payload_too_large,message=$MSG,result=ok"
+[ "$MSG" = "$(limit_message step "$D_STEP_CEIL")" ] || fail "REJECT padded STEP: message '$MSG', want '$(limit_message step "$D_STEP_CEIL")'"
+ev "REJECT,name=step_ceiling_plus_1,bytes=$PADDED_BYTES,ceiling_bytes=$D_STEP_CEIL,http=413,code=payload_too_large,message=$MSG,result=ok"
 N_REJECT=$((N_REJECT + 1))
 rm -f "$W/padded.step"
 
@@ -1448,7 +1555,7 @@ done
 dxf_empty_one white_geometry png render '{"background":"transparent"}'
 dxf_empty_one white_text png render '{"size":2048,"background":"transparent"}'
 
-python3 - "$CORPUS/synthetic/legacy_cp1251.dxf" "$W/ceiling.dxf" 123731969 <<'PY' || fail "cannot build the padded dxf"
+python3 - "$CORPUS/synthetic/legacy_cp1251.dxf" "$W/ceiling.dxf" "$((D_DXF_CEIL + 1))" <<'PY' || fail "cannot build the padded dxf"
 import sys
 
 src = open(sys.argv[1], "rb").read()
@@ -1464,16 +1571,16 @@ assert len(out) == size, len(out)
 open(sys.argv[2], "wb").write(out)
 PY
 CEIL_BYTES=$(wc -c < "$W/ceiling.dxf" | tr -d ' ')
-[ "$CEIL_BYTES" = 123731969 ] || fail "DXF_CEILING: the padded dxf is $CEIL_BYTES bytes, want 123731969"
+[ "$CEIL_BYTES" = "$((D_DXF_CEIL + 1))" ] || fail "DXF_CEILING: the padded dxf is $CEIL_BYTES bytes, want $((D_DXF_CEIL + 1))"
 JOBS_BEFORE=$(psqlq "select count(*) from jobs")
 CODE=$(http "$W/ceiling.json" -X POST "$API_BASE/v1/jobs" -F "target=svg" -F "file=@$W/ceiling.dxf;filename=ceiling.dxf")
 [ "$CODE" = 413 ] && [ "$(jq -r .code "$W/ceiling.json")" = payload_too_large ] || fail "DXF_CEILING: got $CODE $(cat "$W/ceiling.json"), want 413 payload_too_large"
 CEIL_MSG=$(jq -r .error "$W/ceiling.json")
-case "$CEIL_MSG" in *dxf*118\ MiB*) ;; *) fail "DXF_CEILING: message '$CEIL_MSG' does not name dxf and 118 MiB" ;; esac
+[ "$CEIL_MSG" = "$(limit_message dxf "$D_DXF_CEIL")" ] || fail "DXF_CEILING: message '$CEIL_MSG', want '$(limit_message dxf "$D_DXF_CEIL")'"
 [ "$(jq 'has("job_id")' "$W/ceiling.json")" = false ] || fail "DXF_CEILING: the response carries a job_id"
 JOBS_AFTER=$(psqlq "select count(*) from jobs")
 [ "$JOBS_BEFORE" = "$JOBS_AFTER" ] || fail "DXF_CEILING: jobs rows moved $JOBS_BEFORE -> $JOBS_AFTER"
-ev "DXF_CEILING,name=dxf_118mib_plus_1,bytes=$CEIL_BYTES,ceiling_bytes=123731968,padding=999_comment_pairs,http=413,code=payload_too_large,message=$CEIL_MSG,jobs_created=0,result=ok"
+ev "DXF_CEILING,name=dxf_ceiling_plus_1,bytes=$CEIL_BYTES,ceiling_bytes=$D_DXF_CEIL,padding=999_comment_pairs,http=413,code=payload_too_large,message=$CEIL_MSG,jobs_created=0,result=ok"
 N_DXF_CEILING=1
 rm -f "$W/ceiling.dxf"
 
