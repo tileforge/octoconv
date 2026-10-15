@@ -88,3 +88,17 @@ export function targetFormatsOf(resp: FormatsResponse): string[] {
   }
   return Array.from(targets).sort();
 }
+
+export type OperationRow = { operation: string; engine: string; from: string; to: string };
+
+export function operationTable(_resp: FormatsResponse): OperationRow[] {
+  return [];
+}
+
+export function operationsOf(_resp: FormatsResponse): string[] {
+  return [];
+}
+
+export function targetFormatsForOperation(_resp: FormatsResponse, _operation: string, _source: string): string[] {
+  return [];
+}
