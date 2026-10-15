@@ -5,16 +5,16 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Completed 76-06-PLAN.md
-last_updated: "2026-10-15T08:52:59.444Z"
+stopped_at: Completed 76-07-PLAN.md
+last_updated: "2026-10-15T09:21:19.241Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: ffdfac4f337a6cd1aebe73c5773a112085ced827
+state_head: 1986b2fdc774beffd5da321808d8f47ba5992afe
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 44
+  completed_plans: 45
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 7 of 11
+Plan: 8 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
@@ -139,6 +139,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P04 | 34 min | 3 tasks | 13 files |
 | Phase 76 P05 | 35min | 3 tasks | 4 files |
 | Phase 76 P06 | 6h50m | 3 tasks | 17 files |
+| Phase 76 P07 | 23min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -215,6 +216,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-05 took the not-fired branch: all four PATHB lines are fired=0, so no render ceiling or operation-aware size map exists; TestCADPathBFiredForNoFormat fails if a re-derivation fires Path-B, and create, inspect and the worker are tested to refuse convert and render at the same DERIVED format ceiling
 - [Phase 76]: 76-06: every volume cap of a file drawn from a DXF (PDF bytes, inflate, objects, values, string, decoded text; texts.json and SVG bytes) is cad_too_complex; shape caps stay cad_empty_result
 - [Phase 76]: 76-06: docs/CAD.md and docs/PREVIEW.md are held both ways by TestCADDocMatchesTheCode, TestCADCodesDocMatchesTheMapping and TestPreviewDocMatchesTheCode; CAD sync codes are computed, not fixed
+- [Phase 76]: 76-07: openapi CADOpts, cad pairs, produced and reserved roles and every async cad code are held by TestCADOpenAPIMatchesTheCode and TestCADCodesDocMatchesTheMapping; reserved roles are computed from the role CHECK
+- [Phase 76]: 76-07: MCP convert_file tags and convertToolDescription are held to the registry and to what the server publishes by TestMCPDescriptionsMatchTheRegistry; the frontend table is operationTable(resp), proven by vitest
 
 ### Quick Tasks Completed
 
@@ -447,8 +450,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-15T08:52:59.296Z
-Stopped at: Completed 76-06-PLAN.md
+Last session: 2026-10-15T09:21:19.052Z
+Stopped at: Completed 76-07-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
