@@ -53,9 +53,14 @@ DERIVED_FILE="$P76/76-03-derived.txt"
 BOUNDS_FILE="$P76/76-02-bounds.txt"
 STOP_AFTER="${CAD_LIVEPROOF_STOP_AFTER:-}"
 RECONCILER_RE='^webhook-worker(-[0-9]+)?$'
+IMAGE_SOURCE="${CAD_LIVEPROOF_IMAGE_SOURCE:-}"
+EXPECT_API_IMAGE="${CAD_LIVEPROOF_EXPECT_API_IMAGE:-}"
+EXPECT_CAD_IMAGE="${CAD_LIVEPROOF_EXPECT_CAD_IMAGE:-}"
+IMAGE_PATHS="cmd internal Dockerfile.api Dockerfile.cad-worker go.mod go.sum deploy docker-compose.yml"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
 
 W=""
+LOADF=/dev/null
 STARTED_BY_ME=""
 FINISHED=""
 N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_QUALITY=0 N_RENDER=0 N_VIEWS=0 N_MEAS=0 N_OPTS_REJECT=0 N_REJECT=0 N_BOMB=0
@@ -64,7 +69,10 @@ N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJEC
 N_TIMEOUTS=0 N_DETERMINISM=0 N_GUARD_EDGE=0 N_STACKED_REFUSAL=0 N_RENDER_CEILING=0 N_KILL_RENDER=0 N_KILL_RSVG=0
 
 log() { echo "$*" >&2; }
-ev() { echo "$*" | tee -a "$EVID"; }
+ev() {
+	echo "$*" | tee -a "$EVID"
+	printf '%s,%s,%s,%s\n' "$(wc -l < "$EVID" | tr -d ' ')" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$( (sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg) | tr -d '{}' | awk '{ print $1 }')" "${*%%,*}" >> "$LOADF"
+}
 
 fail() {
 	log "FAIL: $*"
@@ -124,8 +132,19 @@ REPL50="$SCALED/$REPL50_NAME"
 LARGE_STL=$(ls -S "$ROOT"/$CORPUS/public/*.stl "$FETCHED"/*.stl | head -1)
 [ -f "$LARGE_STL" ] || fail "no STL found for the render retry"
 
+if [ -n "$IMAGE_SOURCE" ]; then
+	[ -n "$EXPECT_API_IMAGE" ] && [ -n "$EXPECT_CAD_IMAGE" ] || fail "CAD_LIVEPROOF_IMAGE_SOURCE needs CAD_LIVEPROOF_EXPECT_API_IMAGE and CAD_LIVEPROOF_EXPECT_CAD_IMAGE"
+	git cat-file -e "$IMAGE_SOURCE^{commit}" 2>/dev/null || fail "image source $IMAGE_SOURCE is not a commit of this checkout"
+	IMAGE_DIFF=$(git diff --name-only "$IMAGE_SOURCE" HEAD -- $IMAGE_PATHS)
+	[ -z "$IMAGE_DIFF" ] || fail "the image source $IMAGE_SOURCE differs from HEAD in the image inputs: $(echo $IMAGE_DIFF)"
+	for img in "$EXPECT_API_IMAGE:octoconv-api" "$EXPECT_CAD_IMAGE:octoconv-cad-worker"; do
+		[ "$(docker image inspect -f '{{.Id}}' "${img##*:}" 2>/dev/null)" = "${img%:*}" ] || fail "image ${img##*:} is $(docker image inspect -f '{{.Id}}' "${img##*:}" 2>/dev/null), want ${img%:*}"
+	done
+fi
 mkdir -p "$(dirname "$EVID")"
 : > "$EVID"
+LOADF="${EVID%.txt}-load.txt"
+: > "$LOADF"
 W=$(mktemp -d)
 chmod 755 "$W"
 mkdir -p "$W/bin"
@@ -144,7 +163,11 @@ if echo "$RUNNING" | grep -qE "$RECONCILER_RE"; then
 fi
 log "starting the stack (not running before:${STARTED_BY_ME:- none})"
 UP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-docker compose up -d --build postgres redis minio createbucket api cad-worker >&2
+if [ -n "$IMAGE_SOURCE" ]; then
+	docker compose up -d --no-build postgres redis minio createbucket api cad-worker >&2
+else
+	docker compose up -d --build postgres redis minio createbucket api cad-worker >&2
+fi
 
 for _ in $(seq 1 60); do
 	curl -fsS -o /dev/null "$API_BASE/healthz" 2>/dev/null && break
@@ -182,6 +205,12 @@ ev "HDR,tracked_dirt=$(printf '%s' "$DIRT" | grep -c . || true)"
 ev "HDR,tracked_dirt_paths=$(printf '%s' "$DIRT" | tr '\n' ';' | sed 's/;$//')"
 ev "HDR,api_image_id=$(docker inspect -f '{{.Image}}' "$API_CID")"
 ev "HDR,cad_worker_image_id=$CAD_IMAGE"
+if [ -n "$IMAGE_SOURCE" ]; then
+	[ "$(docker inspect -f '{{.Image}}' "$API_CID")" = "$EXPECT_API_IMAGE" ] && [ "$CAD_IMAGE" = "$EXPECT_CAD_IMAGE" ] || fail "the running containers use api $(docker inspect -f '{{.Image}}' "$API_CID") and cad-worker $CAD_IMAGE, want $EXPECT_API_IMAGE and $EXPECT_CAD_IMAGE"
+	ev "HDR,build=no_build_reused_images,image_source=$IMAGE_SOURCE,image_input_paths=$(echo $IMAGE_PATHS | tr ' ' ';'),image_input_diff_files=0,expected_api_image_id=$EXPECT_API_IMAGE,expected_cad_worker_image_id=$EXPECT_CAD_IMAGE,running_images_match=1"
+else
+	ev "HDR,build=compose_up_build"
+fi
 ev "HDR,cad_engine_timeout_s=$ENGINE_TIMEOUT"
 ev "HDR,cad_render_timeout_s=$RENDER_TIMEOUT"
 ev "HDR,cad_dxf_timeout_s=$DXF_TIMEOUT"
