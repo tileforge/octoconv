@@ -151,9 +151,11 @@ components:
           description: >-
             Present only when normalized opts were applied (echoes them
             back). Shape depends on the target engine — AudioOpts for
-            audio-engine jobs, an arbitrary engine-specific object otherwise.
+            audio-engine jobs, CADOpts for cad-engine jobs, an arbitrary
+            engine-specific object otherwise.
           anyOf:
             - $ref: "#/components/schemas/AudioOpts"
+            - $ref: "#/components/schemas/CADOpts"
             - type: object
               additionalProperties: true
       required: [job_id, status]
@@ -182,9 +184,11 @@ components:
         opts:
           description: >-
             Shape depends on the target engine — AudioOpts for audio-engine
-            jobs, an arbitrary engine-specific object otherwise.
+            jobs, CADOpts for cad-engine jobs, an arbitrary engine-specific
+            object otherwise.
           anyOf:
             - $ref: "#/components/schemas/AudioOpts"
+            - $ref: "#/components/schemas/CADOpts"
             - type: object
               additionalProperties: true
         download_url:
@@ -201,12 +205,16 @@ components:
             pre-Phase-57 shape. role values come from job_outputs.role, with
             "primary" being the one presigned into download_url.
 
-            A sanitize job produces a second output with role="report"; its
-            body is SanitizeReport. A render job produces a second output
-            with role="measurements"; its body is the measurements document
-            of docs/MEASUREMENTS.md. The role is not a closed enum here on
-            purpose -- later operations may add their own, and a client that
-            hard-codes the current set breaks on the first one.
+            The roles a job writes today: "primary" is the result itself
+            and the one presigned into download_url; "report" is the second
+            output of a sanitize job, whose body is SanitizeReport;
+            "measurements" is the second output of a cad render job, whose
+            body is the measurements document of docs/MEASUREMENTS.md.
+            preview and thumbnail are reserved role names and are never
+            produced. The role is not a closed enum here on purpose -- later
+            operations may add their own, and a client that hard-codes the
+            current set breaks on the first one. Select an output by role,
+            never by position.
           items:
             type: object
             properties:
@@ -231,6 +239,11 @@ components:
             (a tex job whose PDF exceeds the output ceiling). The complete
             list, held equal to the Go constants by a test, is in
             docs/ERROR-CODES.md. Only present when status=failed.
+
+            A cad job fails with cad_too_complex, cad_unreadable,
+            cad_empty_result, cad_mesh_timeout, input_too_large,
+            invalid_options, engine_error or reconciler_exhausted; when each
+            applies is in docs/CAD.md.
         error_message:
           type: string
           description: Human-readable failure detail. Only present when status=failed.
@@ -246,6 +259,46 @@ components:
           description: Omit for whisper's own language auto-detection.
         translate:
           type: boolean
+      additionalProperties: false
+
+    CADOpts:
+      type: object
+      description: >-
+        Options of the cad engine class, for operation=render and for the
+        convert of a step or iges file. Every option is optional and an
+        omitted one takes its default. An unknown option, a value outside
+        its set or a size outside its range is 422 invalid_options; a
+        well-formed option that does not apply to the operation and source
+        format is 422 opts_not_applicable. Which options each operation and
+        format accepts is in docs/CAD.md.
+      properties:
+        view:
+          type: string
+          enum: [back, bottom, front, iso, left, right, top]
+          default: iso
+          description: Camera of a 3D render. A dxf is drawn top-down and refuses view.
+        size:
+          type: integer
+          minimum: 256
+          maximum: 2048
+          default: 1280
+          description: Edge of the square png in pixels.
+        quality:
+          type: string
+          enum: [draft, fine, standard]
+          default: standard
+          description: Tessellation density of a step or iges model.
+        background:
+          type: string
+          enum: [opaque, transparent]
+          default: opaque
+          description: opaque is white #FFFFFF; transparent leaves the background at alpha 0.
+        assume_unit:
+          type: string
+          enum: [cm, foot, inch, m, micrometre, mm]
+          description: >-
+            Unit of a file that declares none. Omitted, nothing is assumed;
+            it never overrides a declared unit (docs/MEASUREMENTS.md).
       additionalProperties: false
 
     EngineFormats:
@@ -903,8 +956,10 @@ paths:
                   type: string
                   description: >-
                     A JSON-encoded string of engine-keyed options (e.g.
-                    AudioOpts for audio conversions). Mutually exclusive with
-                    preset.
+                    AudioOpts for audio conversions). For the cad class the
+                    JSON object is CADOpts; see docs/CAD.md for which options
+                    each operation and format accepts. Mutually exclusive
+                    with preset.
                 callback_url:
                   type: string
                   format: uri
@@ -946,8 +1001,11 @@ paths:
 
                     "render" draws a CAD file (step, iges, stl or dxf) as a
                     png preview and adds a second output with
-                    role=measurements. A dxf also converts to svg and pdf
-                    under "convert".
+                    role=measurements. The cad pairs are render step->png,
+                    iges->png, stl->png and dxf->png; and convert
+                    step->stl, iges->stl, dxf->svg and dxf->pdf. The options
+                    are CADOpts; the options each format accepts, the size
+                    ceilings and the error codes are in docs/CAD.md.
               required: [file]
               additionalProperties: false
             examples:

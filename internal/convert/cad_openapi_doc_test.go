@@ -118,14 +118,25 @@ func cadOpenAPIDescription(t *testing.T, block []string, what string) string {
 		if rest != ">-" && rest != ">" && rest != "|" {
 			return rest
 		}
-		var text []string
+		var paras []string
+		var para []string
 		for _, l := range block[i+1:] {
 			if strings.TrimSpace(l) != "" && cadOpenAPIIndent(l) <= in {
 				break
 			}
-			text = append(text, strings.TrimSpace(l))
+			if strings.TrimSpace(l) == "" {
+				if len(para) > 0 {
+					paras = append(paras, strings.Join(para, " "))
+					para = nil
+				}
+				continue
+			}
+			para = append(para, strings.TrimSpace(l))
 		}
-		return strings.TrimSpace(strings.Join(text, "\n"))
+		if len(para) > 0 {
+			paras = append(paras, strings.Join(para, " "))
+		}
+		return strings.Join(paras, "\n\n")
 	}
 	t.Fatalf("%s has no description", what)
 	return ""
