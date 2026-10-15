@@ -139,8 +139,8 @@ RUNNING=$(docker compose ps --status running --services 2>/dev/null || true)
 for s in $SERVICES; do
 	echo "$RUNNING" | grep -qx "$s" || STARTED_BY_ME="$STARTED_BY_ME $s"
 done
-if echo "$RUNNING" | grep -qx webhook-worker; then
-	fail "webhook-worker (the reconciler host) is running; WORKER_KILL needs it absent"
+if echo "$RUNNING" | grep -qE "$RECONCILER_RE"; then
+	fail "a reconciler host ($(echo "$RUNNING" | grep -E "$RECONCILER_RE" | tr '\n' ' ')) is running; the worker kill rows need it absent"
 fi
 log "starting the stack (not running before:${STARTED_BY_ME:- none})"
 UP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -240,17 +240,20 @@ N_SANDBOX=1
 
 cenv() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" | sed -n "s/^$2=//p"; }
 
-TO_LINE=""
-for pair in GUARD:$D_GUARD MESH:$D_MESH RENDER:$D_RENDER DXF:$D_DXF RSVG:$D_RSVG ENGINE:$D_ENGINE; do
-	name=${pair%%:*}
-	want=${pair#*:}s
-	got=$(cenv "$CNAME" "CAD_${name}_TIMEOUT")
-	[ "$got" = "$want" ] || fail "TIMEOUTS: the cad-worker has CAD_${name}_TIMEOUT='$got', the derived value is $want"
-	TO_LINE="$TO_LINE,$(echo "$name" | tr 'A-Z' 'a-z')=$got"
-done
-API_ENGINE=$(cenv "$API_CID" CAD_ENGINE_TIMEOUT)
-[ "$API_ENGINE" = "${D_ENGINE}s" ] || fail "TIMEOUTS: the api has CAD_ENGINE_TIMEOUT='$API_ENGINE', the derived value is ${D_ENGINE}s"
-ev "TIMEOUTS${TO_LINE},api_engine=$API_ENGINE,source=evidence/76-03-derived.txt,result=ok"
+timeout_is() {
+	local got
+	got=$(cenv "$1" "$2")
+	[ "$got" = "${3}s" ] || fail "TIMEOUTS: $1 has $2='$got', the derived value is ${3}s"
+}
+
+timeout_is "$CNAME" CAD_GUARD_TIMEOUT "$D_GUARD"
+timeout_is "$CNAME" CAD_MESH_TIMEOUT "$D_MESH"
+timeout_is "$CNAME" CAD_RENDER_TIMEOUT "$D_RENDER"
+timeout_is "$CNAME" CAD_DXF_TIMEOUT "$D_DXF"
+timeout_is "$CNAME" CAD_RSVG_TIMEOUT "$D_RSVG"
+timeout_is "$CNAME" CAD_ENGINE_TIMEOUT "$D_ENGINE"
+timeout_is "$API_CID" CAD_ENGINE_TIMEOUT "$D_ENGINE"
+ev "TIMEOUTS,guard=$(cenv "$CNAME" CAD_GUARD_TIMEOUT),mesh=$(cenv "$CNAME" CAD_MESH_TIMEOUT),render=$(cenv "$CNAME" CAD_RENDER_TIMEOUT),dxf=$(cenv "$CNAME" CAD_DXF_TIMEOUT),rsvg=$(cenv "$CNAME" CAD_RSVG_TIMEOUT),engine=$(cenv "$CNAME" CAD_ENGINE_TIMEOUT),api_engine=$(cenv "$API_CID" CAD_ENGINE_TIMEOUT),source=evidence/76-03-derived.txt,result=ok"
 N_TIMEOUTS=1
 
 CLIENT_OUT=$(DATABASE_URL="$DB_URL" API_KEY_SALT="$SALT" go run ./cmd/manage-clients create "cad-liveproof-$(date +%s)")
@@ -301,6 +304,10 @@ wait_job() {
 }
 
 psqlq() { docker compose exec -T postgres psql -U octo -d octo_db -At -F, -c "$1"; }
+
+reconciler_running() { docker compose ps --status running --services 2>/dev/null | grep -cE "$RECONCILER_RE" || true; }
+
+below() { awk -v v="$1" -v m="$2" 'BEGIN { exit !(v < m) }'; }
 
 output_facts() {
 	psqlq "select count(*), count(*) filter (where role = 'primary'), coalesce(max(size_bytes), 0), coalesce(max(format), '') from job_outputs where job_id = '$1'"
@@ -362,6 +369,67 @@ mesh_census() {
 			if [ "$s" -lt "$init" ]; then old=$((old + 1)); else new=$((new + 1)); fi
 		done
 		echo "$old $new"' 2>/dev/null || true
+}
+
+engine_census() {
+	docker exec "$CNAME" sh -c '
+		start() { set -- $(sed "s/^.*) //" /proc/$1/stat 2>/dev/null); echo "${20:-}"; }
+		init=$(start 1)
+		old=0
+		new=0
+		for d in /proc/[0-9]*; do
+			p=${d#/proc/}
+			c=$(cat "$d/comm" 2>/dev/null) || continue
+			case "$c" in
+			cad-guard | cad-mesh | cad-render | cad-dxf | rsvg-convert) ;;
+			python*) grep -qaE "cad-(guard|mesh|render|dxf)" "$d/cmdline" 2>/dev/null || continue ;;
+			*) continue ;;
+			esac
+			s=$(start "$p")
+			case "$s" in "" | *[!0-9]*) continue ;; esac
+			if [ "$s" -lt "$init" ]; then old=$((old + 1)); else new=$((new + 1)); fi
+		done
+		echo "$old $new"' 2>/dev/null || true
+}
+
+vm_census() {
+	local cid pid
+	cid=$(docker inspect -f '{{.Id}}' "$1" 2>/dev/null)
+	pid=$(docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null)
+	case "$pid" in '' | 0 | *[!0-9]*) echo "ERR no_init_pid=$pid" && return 0 ;; esac
+	case "$cid" in '' | *[!0-9a-f]*) echo "ERR no_container_id=$cid" && return 0 ;; esac
+	docker run --rm --pid host --cgroupns host --network none alpine sh -c '
+		init=$1
+		cid=$2
+		[ -r "/proc/$init/stat" ] || { echo "ERR init_unreadable=$init"; exit 0; }
+		grep -q "$cid" "/proc/$init/cgroup" 2>/dev/null || { echo "ERR init_cgroup=$(tr "\n" ";" < "/proc/$init/cgroup" 2>/dev/null)"; exit 0; }
+		start() { set -- $(sed "s/^.*) //" "/proc/$1/stat" 2>/dev/null); echo "${20:-}"; }
+		istart=$(start "$init")
+		case "$istart" in "" | *[!0-9]*) echo "ERR init_start=$istart"; exit 0 ;; esac
+		old=0
+		new=0
+		seen=0
+		list=""
+		for d in /proc/[0-9]*; do
+			p=${d#/proc/}
+			c=$(cat "$d/comm" 2>/dev/null) || continue
+			seen=$((seen + 1))
+			case "$c" in
+			cad-guard | cad-mesh | cad-render | cad-dxf | rsvg-convert) ;;
+			python*) grep -qaE "cad-(guard|mesh|render|dxf)" "$d/cmdline" 2>/dev/null || continue ;;
+			*) continue ;;
+			esac
+			s=$(start "$p")
+			case "$s" in "" | *[!0-9]*) continue ;; esac
+			if [ "$s" -lt "$istart" ]; then
+				old=$((old + 1))
+				list="$list;$p:$c:$s:old"
+			else
+				new=$((new + 1))
+				list="$list;$p:$c:$s:new"
+			fi
+		done
+		echo "OK $old $new init=$init init_start=$istart procs_seen=$seen engines=${list#;}"' sh "$pid" "$cid" 2>&1 || echo "ERR docker_run_failed"
 }
 
 wait_mesh() {
@@ -893,6 +961,7 @@ cat > "$W/watch.sh" <<'WATCH'
 echo ready
 n=$1
 sig=$2
+skip=${3:-}
 i=0
 while [ "$i" -lt 12000 ]; do
 	for d in /proc/[0-9]*; do
@@ -904,8 +973,13 @@ while [ "$i" -lt 12000 ]; do
 		"$n") hit=1 ;;
 		python*) grep -qa "$n" "$d/cmdline" 2>/dev/null && hit=1 ;;
 		esac
+		if [ -n "$hit" ] && [ -n "$skip" ] && grep -qaF -- "$skip" "$d/cmdline" 2>/dev/null; then
+			hit=""
+		fi
 		if [ -n "$hit" ]; then
+			cmd=$(tr '\000' ' ' 2>/dev/null < "$d/cmdline")
 			echo "$p $c"
+			echo "cmdline $cmd"
 			kill -s "$sig" "$p"
 			exit 0
 		fi
@@ -918,7 +992,7 @@ WATCH
 
 inject_start() {
 	: > "$3"
-	docker exec -i "$CNAME" sh -s "$1" "$2" < "$W/watch.sh" > "$3" 2>&1 &
+	docker exec -i "$CNAME" sh -s "$1" "$2" "${4:-}" < "$W/watch.sh" > "$3" 2>&1 &
 	INJ_BG=$!
 	INJ_OUT=$3
 	for _ in $(seq 1 100); do
@@ -932,6 +1006,7 @@ inject_wait() {
 	wait "$INJ_BG" || return 1
 	INJ_HIT=$(sed -n 2p "$INJ_OUT")
 	INJ_HIT_PID=${INJ_HIT%% *}
+	INJ_CMD=$(sed -n 's/^cmdline //p' "$INJ_OUT")
 	[ -n "$INJ_HIT_PID" ]
 }
 
@@ -1025,6 +1100,147 @@ wait_job "$CANCEL_JOB" 30
 [ "$(jq 'has("download_url")' "$W/job.json")" = false ] || fail "CANCEL: a canceled job exposes a download_url"
 ev "CANCEL,job=$CANCEL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,mesh_pids=$(echo $BEFORE_PIDS | tr ' ' ';'),pid_gone=1,gone_s=$GONE_S,status=canceled,download_url=absent,result=ok"
 N_CANCEL=1
+
+mf() {
+	local v
+	v=$(mfield "$1" "$2")
+	echo "${v:--}"
+}
+
+cell_lookup() {
+	local cell=$1 tuples n path
+	tuples=$(grep "^CELL,cell=$cell," "$BOUNDS_FILE" | while IFS= read -r l; do
+		echo "$(mf file "$l") $(mf sha256 "$l") $(mf entities "$l") $(mf format "$l") $(mf bytes "$l") $(mf guard "$l") $(mf stacked "$l") $(mf path "$l")"
+	done | sort -u)
+	n=$(printf '%s\n' "$tuples" | grep -c . || true)
+	[ "$n" = 1 ] || fail "CELL $cell: $n distinct CELL lines in $BOUNDS_FILE: $(printf '%s' "$tuples" | tr '\n' ';')"
+	set -- $tuples
+	CELL_UPNAME=$1
+	CELL_SHA=$2
+	CELL_ENTITIES=$3
+	CELL_FORMAT=$4
+	CELL_BYTES=$5
+	CELL_GUARD=$6
+	CELL_STACKED=$7
+	path=$8
+	CELL_PATH="$SCALED/${path#*/scaled/}"
+	[ -f "$CELL_PATH" ] || fail "CELL $cell: missing $CELL_PATH"
+	[ "$(wc -c < "$CELL_PATH" | tr -d ' ')" = "$CELL_BYTES" ] || fail "CELL $cell: $CELL_PATH is $(wc -c < "$CELL_PATH" | tr -d ' ') bytes, the CELL line says $CELL_BYTES"
+	[ "$(shasum -a 256 "$CELL_PATH" | cut -d' ' -f1)" = "$CELL_SHA" ] || fail "CELL $cell: $CELL_PATH is not the 76-02 file (sha256 differs from $CELL_SHA)"
+}
+
+SR_LINE=$(grep '^KNOWN_LIMIT,key=stacked_render_refused,' "$DERIVED_FILE" || true)
+if [ -z "$SR_LINE" ]; then
+	ev "NOT_APPLICABLE,row=STACKED_REFUSAL,reason=no_stacked_render_refused_known_limit,evidence=evidence/76-03-derived.txt"
+else
+	[ "$(printf '%s\n' "$SR_LINE" | grep -c .)" = 1 ] || fail "STACKED_REFUSAL: more than one stacked_render_refused line in $DERIVED_FILE"
+	if [ -n "$(mfield format "$SR_LINE")" ]; then
+		SR_SOURCES=$SR_LINE
+	else
+		SR_TO=$(mfield widened_to "$SR_LINE")
+		[ -n "$SR_TO" ] || fail "STACKED_REFUSAL: the stacked_render_refused line names no format and no widened_to: $SR_LINE"
+		SR_SOURCES=$(grep "^KNOWN_LIMIT,key=$SR_TO," "$DERIVED_FILE" || true)
+		[ -n "$SR_SOURCES" ] || fail "STACKED_REFUSAL: the stacked_render_refused line points to $SR_TO, which has no KNOWN_LIMIT line"
+	fi
+	SR_FMTS=$(printf '%s\n' "$SR_SOURCES" | sed -n 's/^KNOWN_LIMIT,.*,format=\([a-z]*\),.*/\1/p')
+	[ "$(printf '%s\n' "$SR_FMTS" | grep -c .)" = "$(printf '%s\n' "$SR_SOURCES" | grep -c .)" ] || fail "STACKED_REFUSAL: a source line names no format: $SR_SOURCES"
+	[ "$(printf '%s\n' "$SR_FMTS" | sort -u | grep -c .)" = "$(printf '%s\n' "$SR_FMTS" | grep -c .)" ] || fail "STACKED_REFUSAL: a format is named twice: $SR_FMTS"
+	for fmt in $SR_FMTS; do
+		l=$(printf '%s\n' "$SR_SOURCES" | grep ",format=$fmt,")
+		sr_cell=$(mfield smallest_refused_cell "$l")
+		if [ -z "$sr_cell" ]; then
+			ev "NOT_APPLICABLE,row=STACKED_REFUSAL,format=$fmt,reason=no_refused_rung,evidence=$l"
+			continue
+		fi
+		cell_lookup "$sr_cell"
+		[ "$CELL_FORMAT" = "$fmt" ] || fail "STACKED_REFUSAL $fmt: CELL $sr_cell is format $CELL_FORMAT"
+		[ "$CELL_STACKED" = 1 ] || fail "STACKED_REFUSAL $fmt: CELL $sr_cell is not a stacked rung (stacked=$CELL_STACKED)"
+		sr_want=$(mfield smallest_refused_bytes "$l")
+		[ -z "$sr_want" ] || [ "$sr_want" = "$CELL_BYTES" ] || fail "STACKED_REFUSAL $fmt: the KNOWN_LIMIT line says $sr_want bytes, CELL $sr_cell is $CELL_BYTES"
+		sr_row=$(grep "^BOUND76_ROW,cell=$sr_cell,.*,stage=render,.*,band=refused," "$BOUNDS_FILE" || true)
+		[ "$(printf '%s\n' "$sr_row" | grep -c .)" = 1 ] || fail "STACKED_REFUSAL $fmt: want exactly one refused render row of $sr_cell in $BOUNDS_FILE, got $(printf '%s\n' "$sr_row" | grep -c .)"
+		sr_q=$(mfield quality "$sr_row")
+		sr_view=$(mfield view "$sr_row")
+		sr_bg=$(mfield background "$sr_row")
+		sr_size=$(mfield size "$sr_row")
+		[ "$sr_view" = iso ] && [ "$sr_bg" = opaque ] && [ "$sr_size" = 2048 ] || fail "STACKED_REFUSAL $fmt: the refused row of $sr_cell is view=$sr_view background=$sr_bg size=$sr_size, want iso opaque 2048"
+		sr_opts="{\"view\":\"$sr_view\",\"background\":\"$sr_bg\",\"size\":$sr_size}"
+		if [ "$sr_q" != na ]; then
+			sr_opts="{\"view\":\"$sr_view\",\"background\":\"$sr_bg\",\"size\":$sr_size,\"quality\":\"$sr_q\"}"
+		fi
+		create_job "$CELL_PATH" "$CELL_UPNAME" png render "$sr_opts"
+		[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "STACKED_REFUSAL $fmt: create returned $HTTP: $(cat "$W/create.json")"
+		SR_JOB=$JOB_ID
+		wait_job "$SR_JOB" "$((ENGINE_TIMEOUT + 120))"
+		[ "$JOB_STATUS" = failed ] || fail "STACKED_REFUSAL $fmt: job $SR_JOB ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+		sr_code=$(jq -r '.error_code // empty' "$W/job.json")
+		[ "$sr_code" = cad_too_complex ] || fail "STACKED_REFUSAL $fmt: error_code '$sr_code', want cad_too_complex: $(cat "$W/job.json")"
+		sr_att=$(psqlq "select attempts from jobs where id = '$SR_JOB'")
+		[ "$sr_att" = 1 ] || fail "STACKED_REFUSAL $fmt: job $SR_JOB has attempts=$sr_att, want 1"
+		sr_events=$(job_events "$SR_JOB")
+		case ";$sr_events;" in *";active>active;"*) fail "STACKED_REFUSAL $fmt: job $SR_JOB was retried: $sr_events" ;; esac
+		[ "$(psqlq "select count(*) from job_outputs where job_id = '$SR_JOB'")" = 0 ] || fail "STACKED_REFUSAL $fmt: output rows exist for job $SR_JOB"
+		[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "STACKED_REFUSAL $fmt: the failed job exposes download_url or outputs"
+		sr_wall=$(psqlq "select round(extract(epoch from finished_at - started_at)::numeric, 3) from jobs where id = '$SR_JOB'")
+		awk -v w="$sr_wall" -v r="$D_RENDER" 'BEGIN { exit !(w + 0 >= r + 0) }' || fail "STACKED_REFUSAL $fmt: the attempt wall ${sr_wall}s is below CAD_RENDER_TIMEOUT ${D_RENDER}s, so the render deadline did not end it"
+		below "$sr_wall" "$ENGINE_TIMEOUT" || fail "STACKED_REFUSAL $fmt: the attempt wall ${sr_wall}s is not below CAD_ENGINE_TIMEOUT ${ENGINE_TIMEOUT}s"
+		sr_census=$(engine_census)
+		[ "$sr_census" = "0 0" ] || fail "STACKED_REFUSAL $fmt: engine processes are alive after job $SR_JOB ended (old new: '$sr_census')"
+		ev "STACKED_REFUSAL,format=$fmt,cell=$sr_cell,sha256=$CELL_SHA,job=$SR_JOB,status=failed,code=cad_too_complex,attempts=1,retried=0,outputs=0,attempt_wall_s=$sr_wall,cad_render_timeout_s=$D_RENDER,cad_engine_timeout_s=$ENGINE_TIMEOUT,census_old=0,census_new=0,bytes=$CELL_BYTES,stacked=1,quality=$sr_q,view=$sr_view,background=$sr_bg,size=$sr_size,events=$sr_events,result=ok"
+		N_STACKED_REFUSAL=$((N_STACKED_REFUSAL + 1))
+	done
+fi
+
+RC_FIRED=$(sed -nE 's/^PATHB,format=(step|iges|stl),fired=1,.*/\1/p' "$DERIVED_FILE")
+if [ -z "$RC_FIRED" ]; then
+	ev "NOT_APPLICABLE,row=RENDER_CEILING,reason=no_pathb_fired,pathb=$(grep '^PATHB,' "$DERIVED_FILE" | paste -sd ';' -)"
+else
+	for fmt in $RC_FIRED; do
+		derive RC_BYTES "cad_${fmt}_render_ceiling_bytes"
+		case "$fmt" in
+		step) rc_conv=$D_STEP_CEIL rc_kind=step-copies rc_base=/base/LinearSlide-MGN15x-Block.step rc_pad=1 ;;
+		iges) rc_conv=$D_IGES_CEIL rc_kind=iges-from-step rc_base=/base/LinearSlide-MGN15x-Block.step rc_pad=82 ;;
+		stl) rc_conv=$D_STL_CEIL rc_kind=stl-tile rc_base=/base/nasa-hubble-all-pieces.stl rc_pad=50 ;;
+		esac
+		rc_want=$((RC_BYTES + rc_pad))
+		[ "$rc_want" -gt "$RC_BYTES" ] && [ "$rc_want" -le "$rc_conv" ] || fail "RENDER_CEILING $fmt: $rc_want bytes is not above the render ceiling $RC_BYTES and at or below the convert ceiling $rc_conv"
+		rc_gen=$(image_python scripts/cad-corpus-gen.py --scaled-from "$rc_base" --kind "$rc_kind" --exact-bytes "$rc_want" --scaled-dir /out) || fail "RENDER_CEILING $fmt: cad-corpus-gen.py failed: $rc_gen"
+		rc_name=$(printf '%s\n' "$rc_gen" | sed -n 's/.*file[:=]\([^,;]*\).*/\1/p' | tail -1)
+		rc_file="$W/out/$rc_name"
+		[ -n "$rc_name" ] && [ -s "$rc_file" ] || fail "RENDER_CEILING $fmt: the generator named no output: $rc_gen"
+		rc_got=$(wc -c < "$rc_file" | tr -d ' ')
+		[ "$rc_got" -gt "$RC_BYTES" ] && [ "$rc_got" -le "$rc_conv" ] || fail "RENDER_CEILING $fmt: the generated file is $rc_got bytes, not above $RC_BYTES and at or below $rc_conv"
+		rc_before=$(psqlq "select count(*) from jobs")
+		create_job "$rc_file" "render_ceiling.$fmt" png render
+		[ "$HTTP" = 413 ] && [ "$(jq -r .code "$W/create.json")" = payload_too_large ] || fail "RENDER_CEILING $fmt: render create returned $HTTP $(cat "$W/create.json"), want 413 payload_too_large"
+		rc_after=$(psqlq "select count(*) from jobs")
+		[ "$rc_before" = "$rc_after" ] || fail "RENDER_CEILING $fmt: jobs rows moved $rc_before -> $rc_after"
+		rc_conv_http=none_offered
+		rc_conv_status=none_offered
+		if [ "$fmt" != stl ]; then
+			create_job "$rc_file" "render_ceiling.$fmt" stl
+			rc_conv_http=$HTTP
+			[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "RENDER_CEILING $fmt: convert create returned $HTTP: $(cat "$W/create.json")"
+			CODE=$(http "$W/cancel.json" -X POST "$API_BASE/v1/jobs/$JOB_ID/cancel")
+			[ "$CODE" = 200 ] || fail "RENDER_CEILING $fmt: cancel returned $CODE $(cat "$W/cancel.json")"
+			wait_job "$JOB_ID" 60
+			rc_conv_status=$JOB_STATUS
+			[ "$rc_conv_status" = canceled ] || fail "RENDER_CEILING $fmt: the convert job reads $rc_conv_status, want canceled"
+		fi
+		CODE=$(http "$W/inspect.json" -X POST "$API_BASE/v1/inspect" -F "file=@$rc_file;filename=render_ceiling.$fmt")
+		[ "$CODE" = 200 ] || fail "RENDER_CEILING $fmt: inspect returned $CODE"
+		rc_render=$(jq -c '[.operations[] | select(.operation == "render" and .engine == "cad")][0] // empty' "$W/inspect.json")
+		[ -n "$rc_render" ] && [ "$(echo "$rc_render" | jq -r .available)" = false ] && [ "$(echo "$rc_render" | jq -r .unavailable_reason)" = payload_too_large ] && [ "$(echo "$rc_render" | jq -r .max_bytes)" = "$RC_BYTES" ] || fail "RENDER_CEILING $fmt: the render offer is $rc_render"
+		rc_convert_max=none_offered
+		if [ "$fmt" != stl ]; then
+			rc_convert_max=$(jq -r '[.operations[] | select(.operation == "convert" and .engine == "cad")][0].max_bytes // empty' "$W/inspect.json")
+			[ "$rc_convert_max" = "$rc_conv" ] || fail "RENDER_CEILING $fmt: the convert offer max_bytes is '$rc_convert_max', want $rc_conv"
+		fi
+		ev "RENDER_CEILING,format=$fmt,bytes=$rc_got,render_ceiling=$RC_BYTES,convert_ceiling=$rc_conv,render_http=413,code=payload_too_large,jobs_delta=0,convert_http=$rc_conv_http,convert_status=$rc_conv_status,inspect_render_max_bytes=$RC_BYTES,inspect_render_available=false,inspect_convert_max_bytes=$rc_convert_max,result=ok"
+		N_RENDER_CEILING=$((N_RENDER_CEILING + 1))
+		rm -f "$rc_file"
+	done
+fi
 
 DXF="$CORPUS/dxf"
 DXF_OUT="$CORPUS/dxf-out"
@@ -1426,6 +1642,12 @@ dxf_render_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 1280 opaque ""
 dxf_render_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 1280 opaque ""
 dxf_render_one white_one_black "$DXF/white_one_black.dxf" white_one_black.dxf 1280 opaque ""
 
+lb_svg uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
+DET_LB=$LB_SVG
+for background in opaque transparent; do
+	determinism_pair dxf "dxf_$background" "$CORPUS/public/uncommon.dxf" uncommon.dxf na "$background" 1280 "{\"size\":1280,\"background\":\"$background\"}" "$DET_LB"
+done
+
 dxf_meas_one() {
 	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
 	if [ -n "$assume" ]; then
@@ -1527,6 +1749,37 @@ dxf_bomb_one "$CORPUS/public/3dsolids.dxf" 3dsolids.dxf cad_empty_result
 dxf_bomb_one "$DXF/all_hidden.dxf" all_hidden.dxf cad_empty_result
 dxf_bomb_one "$DXF/single_point.dxf" single_point.dxf cad_empty_result
 
+cell_lookup C
+[ "$CELL_FORMAT" = dxf ] && [ "$CELL_GUARD" = ok ] || fail "GUARD_EDGE: CELL C is format=$CELL_FORMAT guard=$CELL_GUARD, want a dxf the guard admits"
+GE_C_ENT=$CELL_ENTITIES
+GE_C_SHA=$CELL_SHA
+dxf_convert "GUARD_EDGE C" "$CELL_PATH" "$CELL_UPNAME" svg "$W/guard_c.svg"
+[ "$DC_CT" = image/svg+xml ] || fail "GUARD_EDGE C: the download content type is '$DC_CT', want image/svg+xml"
+GE_RC=0
+GE_SVG=$("$W/bin/cad-svg-check" "$W/guard_c.svg") || GE_RC=$?
+[ "$GE_RC" = 0 ] || fail "GUARD_EDGE C: cad-svg-check rejected the SVG: $GE_SVG"
+GE_ATT=$(psqlq "select attempts from jobs where id = '$DC_JOB'")
+GE_EVENTS=$(job_events "$DC_JOB")
+ev "GUARD_EDGE,cell=C,file=$CELL_UPNAME,sha256=$GE_C_SHA,entities=$GE_C_ENT,job=$DC_JOB,status=done,outputs=1,attempts=$GE_ATT,wall_s=$DC_SECS,input_bytes=$CELL_BYTES,svg_bytes=$DC_BYTES,content_type=$DC_CT,svg_check=ok,cad_dxf_timeout_s=$D_DXF,events=$GE_EVENTS,result=ok"
+N_GUARD_EDGE=$((N_GUARD_EDGE + 1))
+rm -f "$W/guard_c.svg"
+
+cell_lookup L170031
+[ "$CELL_FORMAT" = dxf ] && [ "$CELL_GUARD" = too_complex ] || fail "GUARD_EDGE: CELL L170031 is format=$CELL_FORMAT guard=$CELL_GUARD, want a dxf the guard refuses"
+[ "$CELL_ENTITIES" = "$((GE_C_ENT + 1))" ] || fail "GUARD_EDGE: L170031 expands to $CELL_ENTITIES entities, want one over C's $GE_C_ENT"
+create_job "$CELL_PATH" "$CELL_UPNAME" svg
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "GUARD_EDGE L170031: create returned $HTTP: $(cat "$W/create.json")"
+wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+[ "$JOB_STATUS" = failed ] || fail "GUARD_EDGE L170031: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+GE_CODE=$(jq -r '.error_code // empty' "$W/job.json")
+[ "$GE_CODE" = cad_too_complex ] || fail "GUARD_EDGE L170031: error_code '$GE_CODE', want cad_too_complex"
+GE_EVENTS=$(job_events "$JOB_ID")
+case ";$GE_EVENTS;" in *";active>active;"*) fail "GUARD_EDGE L170031: job $JOB_ID was retried: $GE_EVENTS" ;; esac
+[ "$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")" = 0 ] || fail "GUARD_EDGE L170031: output rows exist for job $JOB_ID"
+[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "GUARD_EDGE L170031: the failed job exposes download_url or outputs"
+ev "GUARD_EDGE,cell=L170031,file=$CELL_UPNAME,sha256=$CELL_SHA,entities=$CELL_ENTITIES,job=$JOB_ID,status=failed,code=cad_too_complex,retried=0,outputs=0,attempts=$(psqlq "select attempts from jobs where id = '$JOB_ID'"),events=$GE_EVENTS,result=ok"
+N_GUARD_EDGE=$((N_GUARD_EDGE + 1))
+
 dxf_empty_one() {
 	local name=$1 target=$2 op=$3 opts=${4:-} want_msg code msg events n
 	create_job "$DXF/$name.dxf" "$name.dxf" "$target" "$op" "$opts"
@@ -1605,11 +1858,12 @@ svg_judged "DXF_RETRY cad-dxf" "$W/retry_dxf.svg"
 ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=svg,signal=TERM,signalled=cad-dxf,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,svg_check=ok,reserialized_identical=1,texts=$SV_TEXTS,$SV_WALK,result=ok"
 N_DXF_RETRY=$((N_DXF_RETRY + 1))
 
-inject_start rsvg-convert TERM "$W/inj_rsvg.out" || fail "DXF_RETRY rsvg-convert: the signal watcher did not start"
+inject_start rsvg-convert TERM "$W/inj_rsvg.out" ink.png || fail "DXF_RETRY rsvg-convert: the signal watcher did not start"
 DR_T0=$(now)
 create_job "$REPL50" "$REPL50_NAME" pdf
 [ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_RETRY rsvg-convert: create returned $HTTP: $(cat "$W/create.json")"
 inject_wait || fail "DXF_RETRY rsvg-convert: no rsvg-convert process was found to signal for job $JOB_ID"
+case "$INJ_CMD" in *ink.png*) fail "DXF_RETRY rsvg-convert: the signalled rsvg-convert is the ink check: $INJ_CMD" ;; esac
 DR_HIT=$INJ_HIT
 DR_JOB=$JOB_ID
 wait_job "$DR_JOB" "$ENGINE_TIMEOUT"
@@ -1621,7 +1875,7 @@ DR_FACTS=$(output_facts "$DR_JOB")
 [ "${DR_FACTS%%,*}" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f2)" = 1 ] && [ "$(echo "$DR_FACTS" | cut -d, -f4)" = pdf ] || fail "DXF_RETRY rsvg-convert: job_outputs facts '$DR_FACTS'"
 download_output "$W/retry_rsvg.pdf" || fail "DXF_RETRY rsvg-convert: no download_url on the done job"
 pdf_judged "DXF_RETRY rsvg-convert" "$W/retry_rsvg.pdf"
-ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=pdf,signal=TERM,signalled=rsvg-convert,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,result=ok"
+ev "DXF_RETRY,job=$DR_JOB,input=$REPL50_NAME,bytes=$REPL50_BYTES,sha256=$REPL50_SHA,target=pdf,signal=TERM,signalled=rsvg-convert,target_stage=pdf_raster,ink_check=0,hit=$(echo "$DR_HIT" | tr ' ' ':'),status=done,retried=1,events=$DR_EVENTS,seconds=$DR_SECS,outputs=1,starts_pdf=1,pdfinfo_pages=$PD_PAGES,pdf_check=ok,$PD_LINE,result=ok"
 N_DXF_RETRY=$((N_DXF_RETRY + 1))
 
 inject_start cad-dxf 0 "$W/inj_dxf_cancel.out" || fail "DXF_CANCEL: the watcher did not start"
@@ -1698,8 +1952,8 @@ T_DONE=$(now)
 KILL_TO_DONE=$(elapsed "$T_KILL" "$T_DONE")
 [ "$JOB_STATUS" = "done" ] || fail "WORKER_KILL: job $KILL_JOB ended $JOB_STATUS after ${KILL_TO_DONE}s: $(cat "$W/job.json")"
 within "$KILL_TO_DONE" "$ENGINE_TIMEOUT" || fail "WORKER_KILL: kill-to-done ${KILL_TO_DONE}s is not below CAD_ENGINE_TIMEOUT ${ENGINE_TIMEOUT}s"
-RECONCILER=$(docker compose ps --status running --services 2>/dev/null | grep -cx webhook-worker || true)
-[ "$RECONCILER" = 0 ] || fail "WORKER_KILL: webhook-worker is running, the reconciler may have played a part"
+RECONCILER=$(reconciler_running)
+[ "$RECONCILER" = 0 ] || fail "WORKER_KILL: $RECONCILER reconciler host(s) running, the reconciler may have played a part"
 facts=$(output_facts "$KILL_JOB")
 [ "${facts%%,*}" = 1 ] && [ "$(echo "$facts" | cut -d, -f2)" = 1 ] || fail "WORKER_KILL: job_outputs facts '$facts'"
 KSTL="$W/worker_kill.stl"
@@ -1710,6 +1964,96 @@ EVENTS=$(psqlq "select string_agg(coalesce(from_status, '-') || '>' || to_status
 ev "WORKER_KILL,job=$KILL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,killed_mesh_pids=$(echo $KILLED_PIDS | tr ' ' ';'),restart=$RESTART_VIA,restarted_after_s=$BACK_S,started_at_before=$PRE_STARTED,started_at_after=$RESTARTED_AT,orphans=0,fresh_mesh_at_restart=$FRESH_MESH,kill_to_done_s=$KILL_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,events=$EVENTS,judge=ok,$JUDGE_FIELDS"
 N_KILL=1
 
+worker_kill_restart() {
+	local label=$1 back=0
+	K_PRE_STARTED=$(docker inspect -f '{{.State.StartedAt}}' "$CNAME")
+	docker kill --signal KILL "$CNAME" >/dev/null
+	K_T_KILL=$(now)
+	for _ in $(seq 1 60); do
+		if [ "$(docker inspect -f '{{.State.Running}}' "$CNAME")" = true ] && [ "$(docker inspect -f '{{.State.StartedAt}}' "$CNAME")" != "$K_PRE_STARTED" ]; then
+			back=1
+			break
+		fi
+		sleep 0.5
+	done
+	if [ "$back" != 1 ]; then
+		docker compose up -d cad-worker >&2
+		for _ in $(seq 1 60); do
+			[ "$(docker inspect -f '{{.State.Running}}' "$CNAME")" = true ] && [ "$(docker inspect -f '{{.State.StartedAt}}' "$CNAME")" != "$K_PRE_STARTED" ] && break
+			sleep 0.5
+		done
+		K_RESTART_VIA=compose_up
+	else
+		K_RESTART_VIA=restart_policy
+	fi
+	[ "$(docker inspect -f '{{.State.Running}}' "$CNAME")" = true ] || fail "$label: the cad-worker is not running after the kill"
+	K_STARTED_AT=$(docker inspect -f '{{.State.StartedAt}}' "$CNAME")
+	[ "$K_STARTED_AT" != "$K_PRE_STARTED" ] || fail "$label: the cad-worker StartedAt did not move after the kill"
+	K_BACK_S=$(elapsed "$K_T_KILL" "$(now)")
+}
+
+kill_census() {
+	local label=$1 census vm
+	census=$(engine_census)
+	[ -n "$census" ] || fail "$label: could not read the restarted container's process table"
+	K_ORPHANS=${census% *}
+	K_FRESH=${census#* }
+	[ "$K_ORPHANS" = 0 ] || fail "$label: $K_ORPHANS engine process(es) older than the restarted container's init ${K_BACK_S}s after the kill"
+	vm=$(vm_census "$CNAME")
+	case "$vm" in "OK "*) ;; *) fail "$label: the VM-wide census could not confirm the restarted container's init: $vm" ;; esac
+	set -- $vm
+	K_VM_ORPHANS=$2
+	K_VM_NEW=$3
+	K_VM_INIT=${4#init=}
+	K_VM_SEEN=${6#procs_seen=}
+	[ "$K_VM_ORPHANS" = 0 ] || fail "$label: $K_VM_ORPHANS engine process(es) in the VM started before the restarted container's init: $vm"
+}
+
+kill_finish() {
+	local label=$1
+	for _ in $(seq 1 60); do
+		curl -fsS -o /dev/null "$API_BASE/healthz" 2>/dev/null && break
+		sleep 1
+	done
+	render_finish "$2"
+	K_TO_DONE=$(elapsed "$K_T_KILL" "$(now)")
+	below "$K_TO_DONE" "$ENGINE_TIMEOUT" || fail "$label: kill-to-done ${K_TO_DONE}s is not below CAD_ENGINE_TIMEOUT ${ENGINE_TIMEOUT}s"
+	K_RECONCILER=$(reconciler_running)
+	[ "$K_RECONCILER" = 0 ] || fail "$label: $K_RECONCILER reconciler host(s) running, the reconciler may have played a part"
+	K_EVENTS=$(job_events "$JOB_ID")
+}
+
+inject_start cad-render 0 "$W/inj_kill_render.out" || fail "WORKER_KILL_RENDER: the watcher did not start"
+render_start worker_kill_render "$LARGE_STL" "$LARGE_NAME"
+KR_JOB=$JOB_ID
+inject_wait || fail "WORKER_KILL_RENDER: no cad-render process ever appeared for job $KR_JOB"
+KR_PID=$INJ_HIT_PID
+worker_kill_restart WORKER_KILL_RENDER
+kill_census WORKER_KILL_RENDER
+kill_finish WORKER_KILL_RENDER worker_kill_render
+[ "$JOB_ID" = "$KR_JOB" ] || fail "WORKER_KILL_RENDER: the finished job is $JOB_ID, not $KR_JOB"
+render_judged worker_kill_render 1280 opaque
+ev "WORKER_KILL_RENDER,job=$KR_JOB,input=$LARGE_NAME,killed_pid=$KR_PID,restart=$K_RESTART_VIA,restarted_after_s=$K_BACK_S,started_at_before=$K_PRE_STARTED,started_at_after=$K_STARTED_AT,orphans=0,fresh_engines_at_restart=$K_FRESH,vm_orphans=0,vm_init_pid=$K_VM_INIT,vm_engines_new=$K_VM_NEW,vm_procs_seen=$K_VM_SEEN,kill_to_done_s=$K_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,outputs=2,events=$K_EVENTS,judge=ok,measurements=valid,result=ok"
+N_KILL_RENDER=1
+
+inject_start rsvg-convert 0 "$W/inj_kill_rsvg.out" ink.png || fail "WORKER_KILL_RSVG: the watcher did not start"
+render_start worker_kill_rsvg "$REPL50" "$REPL50_NAME" '{"size":2048}'
+KV_JOB=$JOB_ID
+inject_wait || fail "WORKER_KILL_RSVG: no rsvg-convert raster run ever appeared for job $KV_JOB"
+KV_PID=$INJ_HIT_PID
+KV_CMD=$INJ_CMD
+case "$KV_CMD" in *ink.png*) fail "WORKER_KILL_RSVG: the rsvg-convert found is the ink check: $KV_CMD" ;; esac
+case "$KV_CMD" in *rsvg-convert*" -o "*) ;; *) fail "WORKER_KILL_RSVG: the hit's cmdline is not an rsvg-convert raster run: '$KV_CMD'" ;; esac
+worker_kill_restart WORKER_KILL_RSVG
+kill_census WORKER_KILL_RSVG
+kill_finish WORKER_KILL_RSVG worker_kill_rsvg
+[ "$JOB_ID" = "$KV_JOB" ] || fail "WORKER_KILL_RSVG: the finished job is $JOB_ID, not $KV_JOB"
+drawing_judge "$R_PNG" 2048 opaque "$W/retry_dxf.svg"
+[ "$DJ_RC" = 0 ] || fail "WORKER_KILL_RSVG: the drawing judge rejected the PNG: $DJ_LINE"
+dxf_meas_2d "WORKER_KILL_RSVG" "$R_JSON"
+ev "WORKER_KILL_RSVG,job=$KV_JOB,input=$REPL50_NAME,killed_pid=$KV_PID,ink_check=0,restart=$K_RESTART_VIA,restarted_after_s=$K_BACK_S,started_at_before=$K_PRE_STARTED,started_at_after=$K_STARTED_AT,orphans=0,fresh_engines_at_restart=$K_FRESH,vm_orphans=0,vm_init_pid=$K_VM_INIT,vm_engines_new=$K_VM_NEW,vm_procs_seen=$K_VM_SEEN,kill_to_done_s=$K_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,outputs=2,events=$K_EVENTS,killed_cmdline=$(printf '%s' "$KV_CMD" | sed -e 's/,/;/g' -e 's/ *$//' -e 's/ /_/g'),letterbox_svg=retry_dxf_svg,judge=drawing_ok,measurements=valid,result=ok"
+N_KILL_RSVG=1
+
 IMG_SIZE=$(docker image inspect -f '{{.Size}}' "$CAD_IMAGE")
 P73_ID=$(sed -n 's/^HDR,cad_worker_image_id=//p' .planning/phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt | head -1)
 P73_SIZE=absent
@@ -1719,5 +2063,5 @@ fi
 ev "IMAGE,cad_worker_image_id=$CAD_IMAGE,cad_worker_size_bytes=$IMG_SIZE,phase73_image_id=${P73_ID:-unknown},phase73_size_bytes=$P73_SIZE"
 N_IMAGE=1
 
-ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE,sandbox=$N_SANDBOX,dxf_svg=$N_DXF_SVG,dxf_pdf=$N_DXF_PDF,dxf_render=$N_DXF_RENDER,dxf_meas=$N_DXF_MEAS,dxf_opts_reject=$N_DXF_OPTS_REJECT,dxf_bomb=$N_DXF_BOMB,dxf_empty=$N_DXF_EMPTY,dxf_ceiling=$N_DXF_CEILING,dxf_retry=$N_DXF_RETRY,dxf_cancel=$N_DXF_CANCEL"
+ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE,sandbox=$N_SANDBOX,dxf_svg=$N_DXF_SVG,dxf_pdf=$N_DXF_PDF,dxf_render=$N_DXF_RENDER,dxf_meas=$N_DXF_MEAS,dxf_opts_reject=$N_DXF_OPTS_REJECT,dxf_bomb=$N_DXF_BOMB,dxf_empty=$N_DXF_EMPTY,dxf_ceiling=$N_DXF_CEILING,dxf_retry=$N_DXF_RETRY,dxf_cancel=$N_DXF_CANCEL,timeouts=$N_TIMEOUTS,determinism=$N_DETERMINISM,guard_edge=$N_GUARD_EDGE,stacked_refusal=$N_STACKED_REFUSAL,render_ceiling=$N_RENDER_CEILING,worker_kill_render=$N_KILL_RENDER,worker_kill_rsvg=$N_KILL_RSVG"
 FINISHED=1
