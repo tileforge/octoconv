@@ -5,16 +5,16 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Completed 76-03-PLAN.md
-last_updated: "2026-10-15T00:40:53.956Z"
+stopped_at: Completed 76-04-PLAN.md
+last_updated: "2026-10-15T01:18:08.004Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 99a67d057901290fda12e0db164074b58b3bb78b
+state_head: 764e02233153c22eedabe965804b51f9fc67981c
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 41
+  completed_plans: 42
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 4 of 11
+Plan: 5 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
@@ -136,6 +136,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P01 | 94min | 2 tasks | 3 files |
 | Phase 76 P02 | about 20h wall | 3 tasks | 5 files |
 | Phase 76 P03 | 15h | 3 tasks | 14 files |
+| Phase 76 P04 | 34 min | 3 tasks | 13 files |
 
 ## Accumulated Context
 
@@ -206,6 +207,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-03: CAD engine timeout 886 s measured (guard 21, mesh 324, render 521 by remainder, io 20); DXF route 661 s
 - [Phase 76]: 76-03: IGES input ceiling lowered to 125829120 bytes (120 MiB) by the iges_memory_ceiling ladder; 128 MiB revoked by its own clean rep
 - [Phase 76]: 76-03: quiet_host - timed rows count only at host load1 <= 11 at start and end; pod rule checked per route
+- [Phase 76]: 76-04: CADDefaultEngineTimeout = max(3D sum, DXF sum) = max(886, 661) = 886 s; CAD_ENGINE_TIMEOUT, grace 906 and stabilization 900 unchanged
+- [Phase 76]: 76-04: cad inspect estimate flipped to measured at 886 s in the same commit as the .env.example number
+- [Phase 76]: 76-04: ERROR-CODES cad_too_complex states CAD_RENDER_TIMEOUT 521 s and that 3D render cost is not bounded by input bytes, held by the docs sync test
 
 ### Quick Tasks Completed
 
@@ -438,8 +442,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-15T00:40:53.814Z
-Stopped at: Completed 76-03-PLAN.md
+Last session: 2026-10-15T01:18:07.851Z
+Stopped at: Completed 76-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
