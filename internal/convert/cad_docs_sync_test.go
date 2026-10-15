@@ -110,6 +110,7 @@ func TestErrorCodesDocStatesTheCADCeilingsOfTheCode(t *testing.T) {
 		fmt.Sprintf("or %d entities", convert.CADMaxDXFExpandedEntities),
 		fmt.Sprintf("deeper than %d levels", convert.CADMaxDXFNesting),
 		fmt.Sprintf("an SVG above %d MiB", int64(convert.CADMaxDXFSVGBytes)>>20),
+		fmt.Sprintf("a PDF above %d MiB", int64(convert.CADMaxDXFPDFBytes)>>20),
 		fmt.Sprintf("`CAD_DXF_TIMEOUT`, %d s by default", int(convert.CADDefaultDXFTimeout.Seconds())),
 		fmt.Sprintf("`CAD_RSVG_TIMEOUT`, %d s by default", int(convert.CADDefaultRsvgTimeout.Seconds())),
 	} {
@@ -122,6 +123,7 @@ func TestErrorCodesDocStatesTheCADCeilingsOfTheCode(t *testing.T) {
 		fmt.Sprintf("`CAD_RENDER_TIMEOUT`, %d s by default", int(convert.CADDefaultRenderTimeout.Seconds())),
 		"not bounded by the input bytes",
 		"any 3D format, STEP, IGES or STL",
+		"a DXF drawing's PDF above the PDF size limit or the inflate limit",
 	} {
 		if !strings.Contains(tooComplex, want) {
 			t.Errorf("docs/ERROR-CODES.md's cad_too_complex row does not state %q", want)

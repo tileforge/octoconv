@@ -478,7 +478,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 	for {
 		tok, err := dec.Token()
 		if cr.n > maxBytes {
-			return facts, cadSVGReject("the SVG exceeds %d bytes", maxBytes)
+			return facts, fmt.Errorf("%w: %w", ErrCADTooComplex, cadSVGReject("the SVG exceeds %d bytes", maxBytes))
 		}
 		if err == io.EOF {
 			break

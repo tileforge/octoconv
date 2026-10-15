@@ -178,7 +178,7 @@ func (l *cadPDFLexer) failed(fallback error) error {
 		return fallback
 	}
 	if errors.Is(l.ioErr, errCADPDFInflateCap) {
-		return cadPDFReject("the inflated content exceeds %d times the PDF byte limit", cadPDFInflateFactor)
+		return fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("the inflated content exceeds %d times the PDF byte limit", cadPDFInflateFactor))
 	}
 	if l.stream {
 		return cadPDFReject("corrupt stream: %v", l.ioErr)
@@ -254,7 +254,7 @@ func (l *cadPDFLexer) literal() (cadPDFTok, error) {
 	unterminated := cadPDFReject("unterminated literal string")
 	for {
 		if len(b) > cadPDFMaxString {
-			return cadPDFTok{}, cadPDFReject("a string longer than %d bytes", cadPDFMaxString)
+			return cadPDFTok{}, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("a string longer than %d bytes", cadPDFMaxString))
 		}
 		c, ok := l.readByte()
 		if !ok {
@@ -327,7 +327,7 @@ func (l *cadPDFLexer) hex() (cadPDFTok, error) {
 	half := false
 	for {
 		if len(b) > cadPDFMaxString {
-			return cadPDFTok{}, cadPDFReject("a string longer than %d bytes", cadPDFMaxString)
+			return cadPDFTok{}, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("a string longer than %d bytes", cadPDFMaxString))
 		}
 		c, ok := l.readByte()
 		if !ok {
@@ -457,7 +457,7 @@ func (l *cadPDFLexer) value(t cadPDFTok, depth int, refs bool, count *int) (any,
 	if count != nil {
 		*count++
 		if *count > cadPDFMaxValues {
-			return nil, cadPDFReject("more than %d values outside streams", cadPDFMaxValues)
+			return nil, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("more than %d values outside streams", cadPDFMaxValues))
 		}
 	}
 	if depth > cadPDFMaxDepth {
@@ -653,7 +653,7 @@ func (d *cadPDFDoc) scan() error {
 				return cadPDFReject("object %d defined twice", num)
 			}
 			if len(d.objs) >= cadPDFMaxObjects {
-				return cadPDFReject("more than %d objects", cadPDFMaxObjects)
+				return fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("more than %d objects", cadPDFMaxObjects))
 			}
 			vt, err := l.next()
 			if err != nil {
@@ -1254,7 +1254,7 @@ func (r *cadPDFRun) show(v any) (int, error) {
 		r.shows = append(r.shows, CADPDFShow{Text: r.text.String()[start:], SizePt: r.sizePt()})
 	}
 	if r.text.Len() > cadPDFMaxText {
-		return 0, cadPDFReject("more than %d bytes of decoded text", cadPDFMaxText)
+		return 0, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("more than %d bytes of decoded text", cadPDFMaxText))
 	}
 	return len(s) / width, nil
 }
@@ -1482,7 +1482,7 @@ func cadPDFDecode(path string, maxBytes int64, keep bool) (CADPDFFacts, []CADPDF
 	}
 	defer f.Close()
 	if st.Size() > maxBytes {
-		return facts, nil, cadPDFReject("the PDF is %d bytes, over the %d byte limit", st.Size(), maxBytes)
+		return facts, nil, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("the PDF is %d bytes, over the %d byte limit", st.Size(), maxBytes))
 	}
 	d := &cadPDFDoc{f: f, size: st.Size(), objs: map[int]*cadPDFObj{}, budget: cadPDFInflateFactor * maxBytes}
 	if err := d.scan(); err != nil {
@@ -1712,17 +1712,20 @@ func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("cad: texts.json byte limit %d is not positive", maxBytes)
 	}
-	f, _, err := OpenJobFile(path)
+	f, st, err := OpenJobFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cad: open texts.json: %w", err)
 	}
 	defer f.Close()
+	if st.Size() > maxBytes {
+		return nil, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("texts.json exceeds %d bytes", maxBytes))
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("cad: read texts.json: %w", err)
 	}
 	if int64(len(data)) > maxBytes {
-		return nil, cadPDFReject("texts.json exceeds %d bytes", maxBytes)
+		return nil, fmt.Errorf("%w: %w", ErrCADTooComplex, cadPDFReject("texts.json exceeds %d bytes", maxBytes))
 	}
 	var doc struct {
 		Texts *[]struct {
