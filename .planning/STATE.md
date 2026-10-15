@@ -5,16 +5,16 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Completed 76-05-PLAN.md
-last_updated: "2026-10-15T01:54:34.923Z"
+stopped_at: Completed 76-06-PLAN.md
+last_updated: "2026-10-15T08:52:59.444Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 16f09b89e7332c224bf157e5733e333b8a6d7c44
+state_head: ffdfac4f337a6cd1aebe73c5773a112085ced827
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 43
+  completed_plans: 44
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 6 of 11
+Plan: 7 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
@@ -138,6 +138,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P03 | 15h | 3 tasks | 14 files |
 | Phase 76 P04 | 34 min | 3 tasks | 13 files |
 | Phase 76 P05 | 35min | 3 tasks | 4 files |
+| Phase 76 P06 | 6h50m | 3 tasks | 17 files |
 
 ## Accumulated Context
 
@@ -212,6 +213,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-04: cad inspect estimate flipped to measured at 886 s in the same commit as the .env.example number
 - [Phase 76]: 76-04: ERROR-CODES cad_too_complex states CAD_RENDER_TIMEOUT 521 s and that 3D render cost is not bounded by input bytes, held by the docs sync test
 - [Phase 76]: 76-05 took the not-fired branch: all four PATHB lines are fired=0, so no render ceiling or operation-aware size map exists; TestCADPathBFiredForNoFormat fails if a re-derivation fires Path-B, and create, inspect and the worker are tested to refuse convert and render at the same DERIVED format ceiling
+- [Phase 76]: 76-06: every volume cap of a file drawn from a DXF (PDF bytes, inflate, objects, values, string, decoded text; texts.json and SVG bytes) is cad_too_complex; shape caps stay cad_empty_result
+- [Phase 76]: 76-06: docs/CAD.md and docs/PREVIEW.md are held both ways by TestCADDocMatchesTheCode, TestCADCodesDocMatchesTheMapping and TestPreviewDocMatchesTheCode; CAD sync codes are computed, not fixed
 
 ### Quick Tasks Completed
 
@@ -444,8 +447,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-15T01:54:34.769Z
-Stopped at: Completed 76-05-PLAN.md
+Last session: 2026-10-15T08:52:59.296Z
+Stopped at: Completed 76-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
