@@ -9,9 +9,13 @@ asynchronous job-failure half. It is the migration target for the frontend
 and both MCP servers; publishing this list into `openapi.yaml` as an enum
 (ERRC-V2-02) is a separate, deferred step.
 
-`MEASUREMENTS.md` is the contract for the measurements JSON a CAD job will report (schema, closed
-vocabularies, validation rules). It sits beside `ERROR-CODES.md` as a document a test holds equal to the
-code; no engine emits it yet.
+`CAD.md` is the client entry point of the `cad` class: formats and aliases, operations and pairs, render
+options and where they apply, the two outputs, size ceilings, time limits, error codes and known limits.
+Tests in `internal/convert` and `internal/worker` hold every table in it equal to the code.
+
+`MEASUREMENTS.md` is the contract for the measurements JSON of a CAD job (schema, closed vocabularies,
+validation rules). The `cad` engine's `render` operation emits it beside the PNG as the output with role
+`measurements`, and a test holds the document equal to the validator.
 
 ## Import into Yaak
 
