@@ -34,18 +34,10 @@ func NewServer(cfg Config, c *Client) *mcp.Server {
 		KeepAlive: serverKeepAlive,
 	})
 
-	convertDesc := "Convert a local file to a target format or via a named preset. " +
-		"Provide exactly one of target_format or preset -- never both, never neither. " +
-		"Blocks until the conversion finishes (or times out); reports progress on every poll tick. " +
-		"Returns a presigned URL and a local path under " + cfg.OutputDir + " -- never inlines file bytes."
+	convertDesc := convertToolDescription(cfg.ResultMode, cfg.OutputDir)
 	downloadDesc := "Download the result of a done conversion job into " + cfg.OutputDir + ". " +
 		"Requires the job to already be in the done status (see get_job_status)."
 	if cfg.ResultMode == ResultRemote {
-		convertDesc = "Convert a file on the MCP server host to a target format or via a named preset. " +
-			"Provide exactly one of target_format or preset -- never both, never neither. " +
-			"Blocks until the conversion finishes (or times out); reports progress on every poll tick. " +
-			"Returns a short-lived presigned URL for downloading the converted file -- " +
-			"no file is written server-side and no file bytes are inlined; fetch the URL promptly."
 		downloadDesc = "Return a fresh short-lived presigned URL for a done conversion job -- " +
 			"no file is written server-side; fetch the URL yourself. " +
 			"Requires the job to already be in the done status (see get_job_status)."
@@ -78,4 +70,18 @@ func NewServer(cfg Config, c *Client) *mcp.Server {
 	}, listPresetsHandler(c))
 
 	return s
+}
+
+func convertToolDescription(mode ResultMode, outputDir string) string {
+	if mode == ResultRemote {
+		return "Convert a file on the MCP server host to a target format or via a named preset. " +
+			"Provide exactly one of target_format or preset -- never both, never neither. " +
+			"Blocks until the conversion finishes (or times out); reports progress on every poll tick. " +
+			"Returns a short-lived presigned URL for downloading the converted file -- " +
+			"no file is written server-side and no file bytes are inlined; fetch the URL promptly."
+	}
+	return "Convert a local file to a target format or via a named preset. " +
+		"Provide exactly one of target_format or preset -- never both, never neither. " +
+		"Blocks until the conversion finishes (or times out); reports progress on every poll tick. " +
+		"Returns a presigned URL and a local path under " + outputDir + " -- never inlines file bytes."
 }
