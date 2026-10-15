@@ -5,11 +5,11 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: 76-08 Task 3 blocked at the 6 GiB VM disk floor (Tasks 1-2 committed)
-last_updated: "2026-10-15T10:23:58.077Z"
+stopped_at: 76-08 Task 3 attempt 2 stopped at the 6 GiB VM disk floor during GUARD_EDGE C
+last_updated: "2026-10-15T11:32:55.441Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 5b7a5171f1dc0d64ce48aa2092241bc0a01e09fb
+state_head: e07d6579bb9d7150358aee22728987ef1d297011
 progress:
   total_phases: 6
   completed_phases: 5
@@ -330,6 +330,7 @@ Carried from v1.12:
 - RESOLVED 2026-10-14 (rerun_after_watchdog): 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
 - RESOLVED 2026-10-14 (quick 261014-0lo judge fix, then rerun_after_product_fix; step ended ok): 76-02 STOP: the step re-run stopped at 2026-10-13T21:24Z on M2 (step-nauo n=1518 grid, draft, 2705076 triangles) render iso transparent: cad-pixel-judge (JudgeCADPNG, the production render judge) refused the PNG, transparent fraction 0.9564 outside 0.05..0.95 = ErrCADRenderRejected. Pre-registered rule failures: a judge that is not ok is STOP. iges group and --finish not run; a rule decision is needed
 - 76-08 Task 3 (official cad-liveproof from a fresh clone) blocked: OrbStack VM free space 5.42 GiB is below the 6 GiB D-18 floor with the octoconv stack stopped; attempt 1 at fa12a13 was stopped by the disk watchdog during the iges STACKED_REFUSAL row (10:16:56Z). Freeing VM space needs a human decision (build cache 4.5 GB, 3.2 GB reclaimable; no prune was run). CADW-04 and CADW-05 stay open.
+- 76-08 Task 3 attempt 2 (fresh clone e07d657, images reused from fa12a13 with --no-build, start 9.68 GiB free, load1 8.09) was stopped by the 6 GiB disk watchdog at 11:25:21Z during GUARD_EDGE C (6.93 to 5.74 GiB in 30 s). It passed every row up to there, including 3 STACKED_REFUSAL, 6 DETERMINISM and the RENDER_CEILING NOT_APPLICABLE. VM free is 5.68 GiB with octoconv stopped. Other projects rebuilt 1.26 GB of build cache during the run. A re-run needs a human decision on VM disk; CADW-04 and CADW-05 stay open.
 
 ## Deferred Items
 
@@ -451,8 +452,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-15T10:23:57.895Z
-Stopped at: 76-08 Task 3 blocked at the 6 GiB VM disk floor (Tasks 1-2 committed)
+Last session: 2026-10-15T11:32:55.299Z
+Stopped at: 76-08 Task 3 attempt 2 stopped at the 6 GiB VM disk floor during GUARD_EDGE C
 Resume file: .planning/phases/76-measured-bounds-keda-proof-client-docs/76-08-PLAN.md
 
 ## Operator Next Steps
