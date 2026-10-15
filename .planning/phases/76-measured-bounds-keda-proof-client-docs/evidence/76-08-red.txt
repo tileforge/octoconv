@@ -1,0 +1,55 @@
+RED,commit_parent=3010f3eaf1025d5fb9df56ade7439b05202be994,date_utc=2026-10-15T09:28:13Z,cmd=GOTOOLCHAIN=go1.26.4 go test ./scripts/cmd/cad-png-compare/ -count=1 -v
+=== RUN   TestPixelStatsIdenticalFrames
+--- PASS: TestPixelStatsIdenticalFrames (0.00s)
+=== RUN   TestMeanDifferenceBoundaryIsInclusive
+    compare_test.go:78: every channel off by 1: mad 0 frac 0, want 1 0
+--- FAIL: TestMeanDifferenceBoundaryIsInclusive (0.00s)
+=== RUN   TestFractionBoundaryIsInclusive
+    compare_test.go:105: 10 of 10000 pixels off by 17: frac 0, want 0.001
+--- FAIL: TestFractionBoundaryIsInclusive (0.00s)
+=== RUN   TestBoxDeltaBoundary
+    compare_test.go:135: boxDelta({X:10 Y:20 W:100 H:50}, {X:11 Y:20 W:99 H:50}) = 0, want 1
+    compare_test.go:135: boxDelta({X:10 Y:20 W:100 H:50}, {X:10 Y:20 W:101 H:50}) = 0, want 1
+    compare_test.go:135: boxDelta({X:10 Y:20 W:100 H:50}, {X:10 Y:19 W:100 H:52}) = 0, want 1
+    compare_test.go:135: boxDelta({X:10 Y:20 W:100 H:50}, {X:12 Y:20 W:98 H:50}) = 0, want 2
+    compare_test.go:135: boxDelta({X:10 Y:20 W:100 H:50}, {X:10 Y:20 W:100 H:52}) = 0, want 2
+    compare_test.go:143: a 1 px bbox shift must be within: {MAD255:0 FracOver16:0 BoxDelta:0 Within:true Reasons:[]}
+--- FAIL: TestBoxDeltaBoundary (0.00s)
+=== RUN   TestDimensionsAndAlphaModeMustMatch
+    compare_test.go:159: different dimensions must be outside with reason dims: {MAD255:0 FracOver16:0 BoxDelta:0 Within:true Reasons:[]}
+--- FAIL: TestDimensionsAndAlphaModeMustMatch (0.00s)
+=== RUN   TestVerdictsMustMatch
+    compare_test.go:193: a frame with a part: verdict "", want ok
+--- FAIL: TestVerdictsMustMatch (0.00s)
+=== RUN   TestCanonicalJSONSortsKeysOnly
+    compare_test.go:217: key order must not matter: "" vs ""
+--- FAIL: TestCanonicalJSONSortsKeysOnly (0.00s)
+=== RUN   TestCanonicalJSONRejectsEmptyAndTrailing
+    compare_test.go:233: canonicalJSON("") = "", want an error
+    compare_test.go:233: canonicalJSON("   ") = "", want an error
+    compare_test.go:233: canonicalJSON("{\"a\":1} x") = "", want an error
+    compare_test.go:233: canonicalJSON("{\"a\":1}{\"b\":2}") = "", want an error
+    compare_test.go:233: canonicalJSON("{\"a\":") = "", want an error
+    compare_test.go:233: canonicalJSON("nul") = "", want an error
+--- FAIL: TestCanonicalJSONRejectsEmptyAndTrailing (0.00s)
+=== RUN   TestCLIExitCodes
+    compare_test.go:281: identical pngs: stdout "", want prefix "PNG_COMPARE,"
+    compare_test.go:284: identical pngs: stdout "", want within=1
+    compare_test.go:278: zero-byte png: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:278: truncated png: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:278: not a png: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:278: missing png: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:281: equal json: stdout "", want prefix "JSON_COMPARE,equal=1,"
+    compare_test.go:278: unequal json: exit 0, want 1 (stdout "" stderr "")
+    compare_test.go:281: unequal json: stdout "", want prefix "JSON_COMPARE,equal=0,"
+    compare_test.go:278: empty json: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:278: trailing json: exit 0, want 2 (stdout "" stderr "")
+    compare_test.go:278: one png: exit 0, want 64 (stdout "" stderr "")
+    compare_test.go:278: no size: exit 0, want 64 (stdout "" stderr "")
+    compare_test.go:278: bad background: exit 0, want 64 (stdout "" stderr "")
+    compare_test.go:278: drawing without svg: exit 0, want 64 (stdout "" stderr "")
+    compare_test.go:278: json with three files: exit 0, want 64 (stdout "" stderr "")
+--- FAIL: TestCLIExitCodes (0.01s)
+FAIL
+FAIL	github.com/apaderin/octoconv/scripts/cmd/cad-png-compare	1.314s
+FAIL
