@@ -316,6 +316,15 @@ check "tectonic disabled log: FAIL" hasre "$F" '^STEP,name=tectonic,rc=1,result=
 PREP='echo TECTONIC_SANDBOX_DISABLED=true >> "$S/tect_env"' run_wrapper
 check "tectonic disabled env: FAIL" hasre "$F" '^STEP,name=tectonic,rc=1,result=FAIL,'
 
+PREP='echo TECTONIC_SANDBOX_DISABLED= >> "$S/tect_env"' run_wrapper
+check "tectonic empty env as compose forwards it: PASS" hasre "$F" '^STEP,name=tectonic,rc=0,result=PASS,'
+check "tectonic empty env: TECTONIC ok" hasre "$F" '^TECTONIC,e2e_pass=TestMultiFileLaTeXProjectE2E;TestMultiFileRefusalsE2E,landlock=1,sandbox_disabled=0,image_id=sha256:tect1,result=ok$'
+check "tectonic empty env: value recorded" hasre "$F" '^TECTONIC_DETAIL,.*disabled_env=0,disabled_env_value=empty,'
+
+PREP='echo TECTONIC_SANDBOX_DISABLED=false >> "$S/tect_env"' run_wrapper
+check "tectonic env false: PASS" hasre "$F" '^STEP,name=tectonic,rc=0,result=PASS,'
+check "tectonic env false: value recorded" hasre "$F" '^TECTONIC_DETAIL,.*disabled_env=0,disabled_env_value=false,'
+
 run_wrapper STUB_NO_TECT_PASS=1
 check "tectonic missing PASS line: FAIL" hasre "$F" '^STEP,name=tectonic,rc=1,result=FAIL,'
 
