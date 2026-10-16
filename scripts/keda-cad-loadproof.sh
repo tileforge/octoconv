@@ -21,14 +21,18 @@ FLOOR_KIB=6291456
 CORPUS="internal/convert/testdata/cad"
 IMAGES="api cad-worker webhook-worker mcp-http"
 EVIDENCE_DIR="$ROOT/.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence"
+QUIET_LOAD=11
+QUIET_WAIT_S=3600
 
-usage() { echo "usage: $0 [--evidence-dir DIR]" >&2; exit 64; }
+usage() { echo "usage: $0 [--evidence-dir DIR] [--quiet-load 11]" >&2; exit 64; }
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--evidence-dir) [ $# -ge 2 ] || usage; EVIDENCE_DIR=$2; shift 2 ;;
+	--quiet-load) [ $# -ge 2 ] || usage; QUIET_LOAD=$2; shift 2 ;;
 	*) usage ;;
 	esac
 done
+case "$QUIET_LOAD" in '' | *[!0-9]*) usage ;; esac
 
 for tool in kubectl helm docker jq curl perl awk lsof git go orbctl; do
 	command -v "$tool" >/dev/null || { echo "error: $tool is required" >&2; exit 69; }
@@ -109,6 +113,28 @@ load1() { sysctl -n vm.loadavg | awk '{ print $2 }'; }
 vm_free_kib() { kt 120 docker run --rm alpine df -k / | awk 'NR == 2 { print $4 }'; }
 
 gib() { awk -v k="$1" 'BEGIN { printf "%.2f", k / 1048576 }'; }
+
+over() { awk -v l="$1" -v q="$QUIET_LOAD" 'BEGIN { exit !(l > q) }'; }
+
+wait_quiet() {
+	local waited=0 l
+	while :; do
+		l=$(load1)
+		if ! over "$l"; then
+			echo "$l"
+			return 0
+		fi
+		[ "$waited" -lt "$QUIET_WAIT_S" ] || return 1
+		sleep 15
+		waited=$((waited + 15))
+	done
+}
+
+quiet_line() {
+	local step=$1 l0=$2 l1=$3 lmax=$4 c=0
+	if over "$l0" || over "$l1"; then c=1; fi
+	ev "QUIET,step=$step,load1_start=$l0,load1_end=$l1,load1_max_sampled=$lmax,quiet_load=$QUIET_LOAD,contaminated=$c"
+}
 
 cad_value() {
 	awk -v key="$1" '
@@ -251,6 +277,7 @@ ev "HDR,mode=keda_cad_loadproof,date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ),commit=$
 ev "HDR,keda_cad_threshold=$THRESHOLD,min_replica_count=$MINR,max_replica_count=$MAXR,polling_interval=$POLL,cooldown_period=$COOLDOWN,scale_down_stabilization_seconds=$STABILIZATION,cad_worker_concurrency=$CONCURRENCY,cad_engine_timeout_s=$ENGINE_S,drain_bound_s=$DRAIN_BOUND"
 ev "RULE,key=zero,rule=before each trigger cad-worker status.replicas is 0, the ScaledObject Fallback condition is not True and the external metric is present with value 0"
 ev "RULE,key=max,rule=three jobs reach replicas 2 and readyReplicas 2 within 300 s and no 2 s sample sees more than $MAXR"
+ev "RULE,key=quiet_host,rule=each trigger waits for load1 <= $QUIET_LOAD; a step whose load1 is above $QUIET_LOAD at its start or its end is recorded contaminated=1 and its timings do not count"
 ev "RULE,key=drain,rule=drain_s = first sample with status.replicas 0 minus the last finished_at; drain_s <= cooldownPeriod + scaleDownStabilizationSeconds + 300 = $DRAIN_BOUND"
 
 for img in $IMAGES; do
@@ -425,6 +452,7 @@ FIT=$(jq -rn --argjson node "$NODE" --argjson pods "$PODS_JSON" --argjson res "$
 ev "CALIBRATION_STEP,check=node_fit,$FIT"
 case "$FIT" in *fits=1) pass "the node fits two cad pods" ;; *) fail "the node does not fit two cad pods: $FIT" ;; esac
 
+CAL_L0=$(wait_quiet) || fail "load1 stayed above $QUIET_LOAD for $QUIET_WAIT_S s before the calibration"
 CAL_T0=$(nowf)
 CAL_JOB=$(submit "$CAL_INPUT" units_inch.step png render)
 [ -n "$CAL_JOB" ] || fail "no job id for the calibration render"
@@ -475,6 +503,7 @@ while le "$(diff_s "$CAL_DONE" "$(nowf)")" "$DRAIN_BOUND"; do
 done
 [ -n "$ok" ] || fail "cad-worker did not drain to 0 within $DRAIN_BOUND s of the calibration job"
 CAL_DRAINED=$(diff_s "$CAL_DONE" "$(nowf)")
+quiet_line calibration "$CAL_L0" "$(load1)" na
 ev "CALIBRATION,job=$CAL_JOB,pod=$CAL_POD,submit_utc=$(iso_at "$CAL_T0"),ready_utc=$READY_TS,submit_to_ready_s=$SUBMIT_TO_READY,scheduled_to_started_s=$(diff_s "$(epoch_of "$SCHED")" "$(epoch_of "$STARTED")"),pull_events=$([ -n "$PULLING" ] && echo present || echo absent),pod_image_id=$POD_IMAGE_ID,sandbox_proven=1,status=done,drained_s=$CAL_DRAINED,drain_bound_s=$DRAIN_BOUND,result=ok"
 pass "calibration"
 
@@ -494,7 +523,7 @@ sampler() {
 			spec=${c%% *}
 			r=$(echo "$c" | awk '{ print $2 }')
 			ready=$(echo "$c" | awk '{ print $3 }')
-			echo "$t $spec $r $ready" >> "$W/samples"
+			echo "$t $spec $r $ready $(load1)" >> "$W/samples"
 			cur="$r $ready"
 			if [ "$cur" != "$prev" ]; then
 				t0=$(cat "$W/t0" 2>/dev/null || echo "$t")
@@ -523,6 +552,7 @@ sampler &
 SAMPLER_PID=$!
 set +m
 sleep 3
+T_L0=$(wait_quiet) || fail "load1 stayed above $QUIET_LOAD for $QUIET_WAIT_S s before the timed step"
 T0=$(nowf)
 echo "$T0" > "$W/t0"
 JOBS=""
@@ -584,6 +614,7 @@ while read -r pod rt; do
 	pod_events "$pod" "$([ "$rt" = - ] && echo "" || echo "$rt")"
 done < "$W/pods"
 le "$DRAIN_S" "$DRAIN_BOUND" || fail "drain took $DRAIN_S s, above the bound $DRAIN_BOUND s"
+quiet_line timed "$T_L0" "$(load1)" "$(awk '$2 != "err" { if ($5 > m) m = $5 } END { print m + 0 }' "$W/samples")"
 ev "DRAIN,last_done_utc=$(iso_at "$LAST_DONE"),zero_utc=$(iso_at "$ZERO_AT"),drain_s=$DRAIN_S,bound_s=$DRAIN_BOUND,path=$DRAIN_PATH,result=ok"
 pass "drained to 0 in $DRAIN_S s ($DRAIN_PATH)"
 
