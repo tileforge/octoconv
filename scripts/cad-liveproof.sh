@@ -54,6 +54,7 @@ BOUNDS_FILE="$P76/76-02-bounds.txt"
 STOP_AFTER="${CAD_LIVEPROOF_STOP_AFTER:-}"
 RECONCILER_RE='^webhook-worker(-[0-9]+)?$'
 IMAGE_SOURCE="${CAD_LIVEPROOF_IMAGE_SOURCE:-}"
+QUIET_LOAD="${CAD_LIVEPROOF_QUIET_LOAD:-}"
 EXPECT_API_IMAGE="${CAD_LIVEPROOF_EXPECT_API_IMAGE:-}"
 EXPECT_CAD_IMAGE="${CAD_LIVEPROOF_EXPECT_CAD_IMAGE:-}"
 IMAGE_PATHS="cmd internal Dockerfile.api Dockerfile.cad-worker go.mod go.sum deploy docker-compose.yml"
@@ -69,9 +70,21 @@ N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJEC
 N_TIMEOUTS=0 N_DETERMINISM=0 N_GUARD_EDGE=0 N_STACKED_REFUSAL=0 N_RENDER_CEILING=0 N_KILL_RENDER=0 N_KILL_RSVG=0
 
 log() { echo "$*" >&2; }
+load1() { (sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg) | tr -d '{}' | awk '{ print $1 }'; }
+
 ev() {
+	local end waited=0 after
 	echo "$*" | tee -a "$EVID"
-	printf '%s,%s,%s,%s\n' "$(wc -l < "$EVID" | tr -d ' ')" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$( (sysctl -n vm.loadavg 2>/dev/null || cat /proc/loadavg) | tr -d '{}' | awk '{ print $1 }')" "${*%%,*}" >> "$LOADF"
+	end=$(load1)
+	after=$end
+	if [ -n "$QUIET_LOAD" ]; then
+		while ! awk -v l="$after" -v m="$QUIET_LOAD" 'BEGIN { exit !(l <= m) }' && [ "$waited" -lt 3600 ]; do
+			sleep 10
+			waited=$((waited + 10))
+			after=$(load1)
+		done
+	fi
+	printf '%s,%s,%s,%s,%s,%s\n' "$(wc -l < "$EVID" | tr -d ' ')" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$end" "${*%%,*}" "$after" "$waited" >> "$LOADF"
 }
 
 fail() {
@@ -211,6 +224,7 @@ if [ -n "$IMAGE_SOURCE" ]; then
 else
 	ev "HDR,build=compose_up_build"
 fi
+ev "HDR,quiet_gate_load1=${QUIET_LOAD:-off}"
 ev "HDR,cad_engine_timeout_s=$ENGINE_TIMEOUT"
 ev "HDR,cad_render_timeout_s=$RENDER_TIMEOUT"
 ev "HDR,cad_dxf_timeout_s=$DXF_TIMEOUT"
