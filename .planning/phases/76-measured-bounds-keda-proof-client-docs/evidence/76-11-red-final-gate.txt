@@ -1,0 +1,179 @@
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: smoke: exit 2
+FAIL: smoke: INCOMPLETE
+FAIL: smoke: four NOT_RUN
+FAIL: smoke: frontend PASS
+FAIL: smoke: preflight PASS
+PASS: smoke: no ALL PASS
+FAIL: smoke: HDR date_utc
+FAIL: smoke: HDR commit
+FAIL: smoke: HDR tracked_dirt
+FAIL: smoke: HDR branch
+FAIL: smoke: HDR clone
+FAIL: smoke: HDR go
+FAIL: smoke: HDR server_arch
+FAIL: smoke: HDR load1
+FAIL: smoke: HDR vm_free_gib
+FAIL: smoke: HDR go is go1.26.4
+FAIL: smoke: HDR tracked_dirt 0
+FAIL: smoke: volumes before
+FAIL: smoke: volumes equal
+cat: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case1/state/npm.log: No such file or directory
+FAIL: smoke: npm ci test build
+PASS: smoke: override removed
+PASS: smoke: e2e ports file removed
+FAIL: smoke: frontend transcript
+PASS: smoke: ci-local never ran
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: full: exit 0
+FAIL: full: ALL PASS
+FAIL: full: STEP preflight PASS
+FAIL: full: STEP ci-local PASS
+FAIL: full: STEP tectonic PASS
+FAIL: full: STEP sandbox PASS
+FAIL: full: STEP cad PASS
+FAIL: full: STEP frontend PASS
+FAIL: full: no NOT_RUN
+FAIL: full: CONVERT_TIME from the gate tier
+FAIL: full: TECTONIC
+FAIL: full: IMAGES e2e
+FAIL: full: IMAGES_CHECK e2e
+FAIL: full: IMAGES cad
+grep: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case2/state/ci-local.env: No such file or directory
+FAIL: full: ci-local knobs
+FAIL: full: ci-local toolchain
+FAIL: full: ci-local evidence dir
+cat: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case2/state/ci-local.args: No such file or directory
+FAIL: full: ci-local tiers
+cat: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case2/state/sandbox.args: No such file or directory
+FAIL: full: sandbox classes
+FAIL: full: cad api base
+FAIL: full: cad quiet gate
+FAIL: full: cad toolchain
+FAIL: full: QUIET clean
+FAIL: full: cad cleanup line
+FAIL: full: sandbox cleanup line
+grep: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case2/state/docker.log: No such file or directory
+FAIL: full: mc rm only for the two jobs
+FAIL: full: mc rm job 1 uploads
+FAIL: full: mc rm job 2 results
+FAIL: full: compose stop
+PASS: full: no down
+PASS: full: no prune
+PASS: full: no rmi
+FAIL: full: sandbox transcript
+FAIL: full: cad transcript
+FAIL: full: tectonic log kept
+FAIL: full: watchdog sampled
+FAIL: full: DISK line
+PASS: full: overrides removed
+tail: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case2/ev/76-11-final-gate.txt: No such file or directory
+FAIL: full: last line SUMMARY
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: sandbox not run: exit 2
+FAIL: sandbox not run: INCOMPLETE
+FAIL: sandbox not run: NOT_RUN line
+FAIL: sandbox not run: STEP NOT_RUN
+FAIL: sandbox not run: cad still ran
+PASS: sandbox not run: never ALL PASS
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: sandbox fail: exit 1
+FAIL: sandbox fail: STEP FAIL
+FAIL: sandbox fail: cad not run after fail
+FAIL: sandbox fail: SUMMARY FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: d19 stop: exit 1
+FAIL: d19 stop: STOP line
+FAIL: d19 stop: CONVERT_TIME STOP
+FAIL: d19 stop: ci-local FAIL
+FAIL: d19 stop: tectonic not run
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: d19 loaded: exit 2
+FAIL: d19 loaded: contaminated
+FAIL: d19 loaded: NOT_RUN ci-local
+PASS: d19 loaded: no STOP
+FAIL: d19 loaded: INCOMPLETE
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: ci-local rc1: FAIL
+FAIL: ci-local rc1: exit 1
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tectonic no landlock: FAIL
+FAIL: tectonic no landlock: line
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tectonic disabled log: FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tectonic disabled env: FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tectonic missing PASS line: FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tectonic step sees a FAIL line
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: cad other commit: FAIL
+FAIL: cad other commit: exit 1
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: e2e tag mismatch: ci-local FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: e2e missing service: FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: ids present before: recorded
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: volumes changed: equal 0
+FAIL: volumes changed: FAIL
+FAIL: volumes changed: exit 1
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: existing transcript: exit 64
+PASS: existing transcript: untouched
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: bad steps: exit 64
+FAIL: no evidence dir: exit 64
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: port taken: preflight FAIL
+FAIL: port taken: holder named
+FAIL: port taken: exit 1
+FAIL: port taken: ci-local not run
+PASS: port taken: no ci-local
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: keda pod: preflight FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: compose running: preflight FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: no bundle: preflight FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: pre-existing override: preflight FAIL
+PASS: pre-existing override: kept
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: low disk at preflight: exit 3
+FAIL: low disk at preflight: STOP
+PASS: low disk at preflight: no ci-local
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: tracked dirt: HDR 1
+PASS: tracked dirt: never ALL PASS
+FAIL: tracked dirt: FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: lock changed: frontend FAIL
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+grep: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case28/state/docker.log: No such file or directory
+FAIL: bad job id: never rm outside a job prefix
+PASS: bad job id: no bare prefix
+FAIL: bad job id: cleanup fail recorded
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: quiet rerun: cad PASS
+FAIL: quiet rerun: run 1 contaminated
+FAIL: quiet rerun: coverage
+FAIL: quiet rerun: rerun transcript
+cat: /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.NtVWJT1RO4/case29/state/cad.count: No such file or directory
+FAIL: quiet rerun: two cad runs
+FAIL: quiet rerun: two cleanups
+FAIL: quiet rerun: ALL PASS
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: quiet both: NOT_RUN
+FAIL: quiet both: INCOMPLETE
+cp: /Users/apaderin/dev/octoconv/scripts/final-live-gate.sh: No such file or directory
+FAIL: watchdog: exit 3
+FAIL: watchdog: STOP
+FAIL: watchdog: ci-local NOT_RUN
+FAIL: watchdog: remaining NOT_RUN
+FAIL: watchdog: summary
+PASS: watchdog: step killed
+PASS: watchdog: overrides removed
+RESULT: 18 passed, 121 failed
