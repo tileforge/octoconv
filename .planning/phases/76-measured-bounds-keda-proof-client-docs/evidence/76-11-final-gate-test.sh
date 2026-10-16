@@ -228,7 +228,7 @@ check "smoke: HDR go is go1.26.4" hasre "$F" '^HDR,go=go1.26.4$'
 check "smoke: HDR tracked_dirt 0" hasre "$F" '^HDR,tracked_dirt=0$'
 check "smoke: volumes before" hasre "$F" '^VOLUMES,phase=before,count=2,sha256=[0-9a-f]{64}$'
 check "smoke: volumes equal" hasre "$F" '^VOLUMES,equal=1$'
-check "smoke: npm ci test build" test "$(cat "$S/npm.log" | tr '\n' '|')" = "--prefix frontend ci|--prefix frontend test|--prefix frontend run build|"
+check "smoke: npm ci test build" test "$(cat "$S/npm.log" | tr '\n' '|')" = "npm --prefix frontend ci|npm --prefix frontend test|npm --prefix frontend run build|"
 check "smoke: override removed" test ! -e "$R/docker-compose.override.yml"
 check "smoke: e2e ports file removed" test ! -e "$R/docker-compose.e2e-ports.yml"
 check "smoke: frontend transcript" has "$E/76-11-frontend.txt" "Tests  12 passed (12)"
@@ -292,7 +292,7 @@ PREP='echo 3.00 > "$S/load"' run_wrapper STUB_CONVERT_S=600.5
 check "d19 stop: exit 1" test "$RC" = 1
 check "d19 stop: STOP line" hasre "$F" '^STOP,reason=convert_time_over_budget,seconds=600.5,load1=3.00,budget_s=540$'
 check "d19 stop: CONVERT_TIME STOP" hasre "$F" '^CONVERT_TIME,seconds=600.5,.*result=STOP$'
-check "d19 stop: ci-local FAIL" hasre "$F" '^STEP,name=ci-local,rc=0,result=FAIL,'
+check "d19 stop: ci-local FAIL" hasre "$F" '^STEP,name=ci-local,rc=1,result=FAIL,'
 check "d19 stop: tectonic not run" hasre "$F" '^NOT_RUN,step=tectonic,reason=after_fail$'
 
 PREP='echo 9.50 > "$S/load"' run_wrapper STUB_CONVERT_S=600.5
