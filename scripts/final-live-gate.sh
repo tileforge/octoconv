@@ -395,7 +395,7 @@ step_ci_local() {
 }
 
 step_tectonic() {
-	local p1 p2 failed landlock dlog denv img names="" ok=1 envout
+	local p1 p2 failed landlock dlog denv dval img names="" ok=1 envout
 	[ -n "$CI_LOG" ] || {
 		nr tectonic needs_ci_local_transcript
 		return 2
@@ -408,7 +408,13 @@ step_tectonic() {
 	landlock=$(grep -c 'tectonic sandbox: landlock via' "$EVD/76-11-tectonic-worker.log" || true)
 	dlog=$(grep -c 'TECTONIC_SANDBOX_DISABLED' "$EVD/76-11-tectonic-worker.log" || true)
 	envout=$(tmo 60 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' octoconv-tectonic-worker < /dev/null 2> /dev/null || true)
-	denv=$(printf '%s\n' "$envout" | grep -c '^TECTONIC_SANDBOX_DISABLED=' || true)
+	denv=$(printf '%s\n' "$envout" | grep -cx 'TECTONIC_SANDBOX_DISABLED=true' || true)
+	dval=$(printf '%s\n' "$envout" | sed -n 's/^TECTONIC_SANDBOX_DISABLED=//p' | head -1)
+	if ! printf '%s\n' "$envout" | grep -q '^TECTONIC_SANDBOX_DISABLED='; then
+		dval="unset"
+	elif [ -z "$dval" ]; then
+		dval="empty"
+	fi
 	img=$(tmo 60 docker inspect -f '{{.Image}}' octoconv-tectonic-worker < /dev/null 2> /dev/null || true)
 	[ "$p1" -ge 1 ] && names="TestMultiFileLaTeXProjectE2E"
 	[ "$p2" -ge 1 ] && names="${names:+$names;}TestMultiFileRefusalsE2E"
@@ -417,7 +423,7 @@ step_tectonic() {
 	[ "$landlock" -ge 1 ] || ok=0
 	[ "$((dlog + denv))" = 0 ] || ok=0
 	[ -n "$img" ] || ok=0
-	ev "TECTONIC_DETAIL,pass_latex=$p1,pass_refusals=$p2,failed_test_lines=$failed,landlock_lines=$landlock,disabled_log_lines=$dlog,disabled_env=$denv,since=$CI_START_UTC"
+	ev "TECTONIC_DETAIL,pass_latex=$p1,pass_refusals=$p2,failed_test_lines=$failed,landlock_lines=$landlock,disabled_log_lines=$dlog,disabled_env=$denv,disabled_env_value=$(san "$dval"),since=$CI_START_UTC"
 	if [ "$ok" = 1 ]; then
 		ev "TECTONIC,e2e_pass=$names,landlock=1,sandbox_disabled=0,image_id=$img,result=ok"
 		return 0
