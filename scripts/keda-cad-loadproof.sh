@@ -162,6 +162,25 @@ snapshot() {
 	[ -s "$f" ]
 }
 
+diag_ns() {
+	{
+		echo "## pods"
+		kt 60 kubectl -n "$NAMESPACE" get pods -o wide
+		echo "## deployments"
+		kt 60 kubectl -n "$NAMESPACE" get deployments
+		echo "## scaledobjects"
+		kt 60 kubectl -n "$NAMESPACE" get scaledobject
+		echo "## events"
+		kt 60 kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | tail -n 60
+		echo "## node requests"
+		kt 60 kubectl describe node | sed -n '/Allocated resources/,/Events/p'
+		echo "## api pods"
+		kt 60 kubectl -n "$NAMESPACE" describe pod -l app.kubernetes.io/component=api | tail -n 40
+		echo "## keda-operator"
+		kt 60 kubectl -n "$KEDA_NAMESPACE" logs -l app=keda-operator --tail=60
+	} 2>&1 | sed 's/^/DIAG: /'
+}
+
 was_absent() { ! grep -qx "$1" "$W/snap-before"; }
 
 deploy_counts() {
@@ -329,7 +348,7 @@ step "install octoconv with values-local.yaml only"
 INSTALLED_OCTOCONV=1
 kt 300 helm install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -n "$NAMESPACE" --create-namespace
 pass "helm install octoconv"
-kt 300 kubectl -n "$NAMESPACE" wait --for=condition=Available deployment/redis --timeout=280s || fail "deployment/redis not Available"
+kt 300 kubectl -n "$NAMESPACE" wait --for=condition=Available deployment/redis --timeout=280s || { diag_ns; fail "deployment/redis not Available"; }
 REDIS_POD=$(kn get pod -l app.kubernetes.io/component=redis -o jsonpath='{.items[0].metadata.name}') || REDIS_POD=""
 [ -n "$REDIS_POD" ] || fail "no redis pod"
 QUEUES=$(grep -ho 'queue="[a-z]*"' "$CHART_DIR"/templates/scaledobject-*.yaml | sed 's/queue="\(.*\)"/\1/' | LC_ALL=C sort -u | tr '\n' ' ')
@@ -343,7 +362,7 @@ for q in $QUEUES webhook; do
 done
 pass "asynq:queues seeded with every ScaledObject queue and webhook"
 for d in postgres minio api prometheus webhook-worker mcp-http; do
-	kt 320 kubectl -n "$NAMESPACE" wait --for=condition=Available "deployment/$d" --timeout=300s || fail "deployment/$d not Available"
+	kt 320 kubectl -n "$NAMESPACE" wait --for=condition=Available "deployment/$d" --timeout=300s || { diag_ns; fail "deployment/$d not Available"; }
 	pass "deployment/$d Available"
 done
 
@@ -444,7 +463,7 @@ settle_all() {
 		busy=$(kn get pods -o json | jq -r --arg c " $comps" '[.items[] | ((.metadata.labels."app.kubernetes.io/component" // "-") as $l | select($c | contains(" " + $l + " ")))] | map(.metadata.name) | join(";")') || busy=err
 		if [ -z "$busy" ]; then break; fi
 		if [ "$waited" -ge 300 ]; then
-			kn get pods -o wide 2>&1 | sed 's/^/DIAG: /'
+			diag_ns
 			fail "ScaledObject targets still hold pods after 300 s: $busy"
 		fi
 		sleep 5
