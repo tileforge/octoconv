@@ -1,0 +1,69 @@
+HDR,mode=keda_cad_downscale_calibration,date_utc=2026-10-16T16:04:57Z,commit=d862c792b7ed291848929ad863718a3d173b1215,tracked_dirt=0,load1=39.49,vm_free_gib=13.69,context=orbstack,keda_version=2.20.1,values=values-local.yaml+values-loadproof.yaml
+HDR,keda_cad_threshold=1,min_replica_count=0,max_replica_count=2,polling_interval=10,cooldown_period=90,scale_down_stabilization_seconds=15,production_scale_down_stabilization_seconds=900,cad_worker_concurrency=1,cad_engine_timeout_s=886,derived_engine_s=886,expected_grace_s=906,transport_cap_bytes=104857600,drain_bound_s=405
+RENDER_CHECK,overlay_window_s=15,production_window_s=900,overlay_grace_s=906,production_grace_s=906,expected_grace_s=906,result=ok
+RULE,key=long_select,source=evidence/76-03-cells.txt CELLSPEC lines of the last derive76_select block with result=ok;evidence/76-03-inworker.txt INWORKER_ROW lines with status=done;evidence/76-03-derived.txt format ceilings,transport_cap_bytes=104857600,ceilings=step:66060288;iges:125829120;stl:190840832;dxf:123731968,pathb_fired=0,rule=among CELLSPEC cells with operation=render whose bytes are at most the transport cap and at most the ceiling of their format (no PATHB fired so the render ceiling is the format ceiling) keep those whose largest in-worker attempt_wall_s lies in [band_low;band_high] and take the smallest such wall; the file is OCTOCONV_CAD_CACHE/scaled/<path after scaled/ in the CELLSPEC file> and its sha256 and bytes must equal the CELLSPEC line; no eligible cell writes STOP reason=no_long_candidate_in_band and exits 1
+RULE,key=band,low=180,high=590,derivation=high=floor(CAD_ENGINE_TIMEOUT/1.5)=floor(886/1.5),rule=the LONG attempt wall jobs.finished_at - jobs.started_at must lie in [low;high]
+RULE,key=survival,rule=LONG is active while exactly one cad pod runs; SHORT then takes the Deployment 1->2 with 2 Ready within 300 s; exactly one Running pod holds an engine process (cad-guard;cad-mesh;cad-render;cad-dxf by comm or python cmdline;rsvg-convert by comm) and it is the earliest-created pod and the pod LONG went active on; it is annotated controller.kubernetes.io/pod-deletion-cost=-1000 while spec.replicas is still 2; its spec.terminationGracePeriodSeconds equals the DERIVED engine + 20 = 906; after SHORT is done status.replicas reaches 1 within 240 s; LONG ends done with attempts 1 and one queued->active and its wall in the band; the busy pod's Killing event precedes LONG's finished_at; the busy pod terminates Completed with exit 0 within 906 s of the Killing event; the Deployment drains to 0 within 405 s of LONG's finished_at; TRANSITION timestamps never decrease
+RULE,key=zero,rule=before each trigger cad-worker status.replicas is 0; the ScaledObject Fallback condition is not True and the external metric is present with value 0
+RULE,key=quiet_host,rule=each trigger waits for load1 <= 11; a step whose load1 is above 11 at its start or its end is recorded contaminated=1 and does not count
+IMAGE,name=octoconv-api:dev,local_id=sha256:8cf7cb368526043b1c1341267cba3a17f48c95ec545647bd429aea8d07e46343
+IMAGE,name=octoconv-cad-worker:dev,local_id=sha256:4c541fc15ece7b2d884335429619058940f261ae69f01b5a6c99f724c7e334ca
+IMAGE,name=octoconv-webhook-worker:dev,local_id=sha256:3efc9eb33acb5222437b03ecb646fcee97cdb99bf03df3213715d64ff20242c5
+IMAGE,name=octoconv-mcp-http:dev,local_id=sha256:4540a5302a0b63e03ecad9bf5319204f107e1ace1ac5b14b6d8d2d594e92cf37
+SNAPSHOT_BEFORE,kind=apiservice,item=v1beta1.external.metrics.k8s.io,present=0
+SNAPSHOT_BEFORE,kind=helm,item=envoy-gateway-system/eg
+SNAPSHOT_BEFORE,kind=helm,item=identity-stand/identity-stand
+SNAPSHOT_BEFORE,kind=helm,item=identity-stand/identity-stand-router
+SNAPSHOT_BEFORE,kind=ns,item=default
+SNAPSHOT_BEFORE,kind=ns,item=envoy-gateway-system
+SNAPSHOT_BEFORE,kind=ns,item=identity-stand
+SNAPSHOT_BEFORE,kind=ns,item=kube-node-lease
+SNAPSHOT_BEFORE,kind=ns,item=kube-public
+SNAPSHOT_BEFORE,kind=ns,item=kube-system
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-fz8rv,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-kbfh8,restarts=3
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-m6wsh,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-identity-stand-identity-gateway-29a32e85-849f7cd688-h59d4,restarts=4
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-graphql-router-85b65b55cf-klcs4,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-graphql-router-86c97d4976-cg7h8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-5dc9848cf4-pjxjj,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-866857d44c-wfpc9,restarts=3
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-hx4ht,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-jqjf9,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-rmffm,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-wt4fg,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-keycloak-55fd5668cd-c25zs,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-messenger-5b8cd94b59-65pz8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-67bw2,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-6nnmf,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-8jqxz,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-q9t4f,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-presence-5994776db-cvfh8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-6xqkj,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-d7s42,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-f7mlk,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-z99zc,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-87vtp,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-96xk5,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-hqfdf,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-j8wbn,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-consumer-5968bbd7b9-mrknd,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-consumer-6b6d576b8-4vwwl,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-subgraph-749f6b79f6-7tg2k,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/coredns-64d64f99dd-m79h9,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/local-path-provisioner-5db9d5cbbb-rcmfb,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/svclb-envoy-identity-stand-identity-gateway-29a32e85-c5633m2gdp,restarts=2
+LONG_CANDIDATES,list=render_step:M2:194.90:eligible+render_iges:IR16MiB:64.27:below_band+render_stl:S1_k256:39.50:below_band+dxf_png:L170030:355.95:eligible
+LONG_SELECT,route=render_step,cell=M2,file=/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/M2.step,sha256=4e1361e24eb042ccf9bb6d4b5151edd38b8987683f9cdb69871d814b695abe91,bytes=1474086,target=png,operation=render,opts=size:2048;quality:draft;view:iso;background:opaque,format_ceiling_bytes=66060288,inworker_rows=3,expected_wall_s=194.90,band_low=180,band_high=590,result=ok
+FIXTURE,name=units_inch.step,bytes=15567,sha256=7ddac77097685f6702bda25d2d1ed5169d5b7d033e1154e79cced5ddfdeb6120
+INSTALL_ASSIST,scaled_to_zero=audio-worker;av-worker;chromium-worker;document-worker;ocr-worker;pandoc-worker;probe-worker;tectonic-worker;worker,count=9,assist_s=22.5,cad_worker=untouched,reason=every KEDA-owned Deployment starts at 1 replica at install and ten 2-CPU worker pods starve api or minio on this 11-CPU node (76-09 attempts 3 and 4)
+LIVE_CHECK,scaledobject_window_s=15,deployment_grace_s=906,expected_grace_s=906,result=ok
+SEED,key=asynq:queues,members=audio;av;cad;document;html;image;ocr;pandoc;probe;tectonic;webhook;
+CALIBRATION_STEP,check=healthz,http=200,via=port-forward,result=ok
+SETTLE,scaled_targets=audio-worker;av-worker;cad-worker;chromium-worker;document-worker;ocr-worker;pandoc-worker;probe-worker;tectonic-worker;worker,pods=0,settle_s=55,result=ok
+ZERO,phase=calibration,replicas=0,fallback=False,metric=s0-prometheus,metric_value=0,settle_s=0,result=ok
+CALIBRATION_STEP,check=node_fit,alloc_cpu=11,requested_cpu=2.86,free_cpu=8.14,need_cpu=4,alloc_mem_mib=16040,requested_mem_mib=2514,free_mem_mib=13526,need_mem_mib=8192,fits=1
+QUIET,step=calibration,load1_start=9.36,load1_end=8.38,load1_max_sampled=na,quiet_load=11,contaminated=0
+CALIBRATION,job=cfd89284-50ab-4bd5-8f79-70696379efa5,pod=cad-worker-b4bb77ddb-fz5ql,submit_utc=2026-10-16T16:07:36.270Z,ready_utc=2026-10-16T16:07:54Z,submit_to_ready_s=17.7,created_to_ready_s=15.0,pod_image_id=docker://sha256:4c541fc15ece7b2d884335429619058940f261ae69f01b5a6c99f724c7e334ca,grace_s=906,expected_grace_s=906,sandbox_proven=1,status=done,drained_s=85.0,drain_bound_s=405,result=ok
+RESTORE,snapshot_lines=43,diff_lines=0,octoconv_pods=0,k8s_enabled=true,result=ok
+SUMMARY,mode=keda_cad_downscale_calibration,checks=28,end_utc=2026-10-16T16:09:50Z,end_load1=7.85,result=PASS
