@@ -40,6 +40,10 @@ var cadDocScalingEvidence = []string{
 	"evidence/76-09-image-size.txt DECISION.cold_start_s",
 	"evidence/76-09-image-size.txt DECISION.premise_holds",
 	"evidence/76-09-image-size.txt DECISION.value",
+	"evidence/76-09-keda-loadproof.txt CALIBRATION.submit_to_ready_s",
+	"evidence/76-09-keda-loadproof.txt TRANSITION[ready=2].since_submit_s",
+	"evidence/76-09-keda-loadproof.txt DRAIN.drain_s",
+	"evidence/76-09-keda-loadproof.txt CALIBRATION.pull_events",
 }
 
 func cadDocKEDACAD(t *testing.T) map[string]string {
@@ -738,6 +742,14 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			t.Errorf("the DECISION line decides %q, want keda_cad_min_replica_count", k)
 		}
 		holds, _ := cadDocEvidenceValue(t, "evidence/76-09-image-size.txt DECISION.premise_holds")
+		if r, _ := cadDocEvidenceValue(t, "evidence/76-09-keda-loadproof.txt SUMMARY.result"); r != "PASS" {
+			t.Errorf("the loadproof evidence ends %q, want PASS", r)
+		}
+		for _, step := range []string{"calibration", "timed"} {
+			if c, _ := cadDocEvidenceValue(t, "evidence/76-09-keda-loadproof.txt QUIET[step="+step+"].contaminated"); c != "0" {
+				t.Errorf("the loadproof %s step is contaminated=%q, its timings do not count", step, c)
+			}
+		}
 		phrases := map[string]string{"1": "the premise holds", "0": "the premise does not hold"}
 		sec := cadDocSection(t, doc, "## Scaling")
 		for v, p := range phrases {
