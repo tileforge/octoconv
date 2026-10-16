@@ -633,7 +633,8 @@ MAXOBS=$(awk '$2 != "err" { if ($2 > m) m = $2; if ($3 > m) m = $3 } END { print
 NSAMPLES=$(grep -vc ' err$' "$W/samples" || true)
 NERR=$(grep -c ' err$' "$W/samples" || true)
 [ "$MAXOBS" = "$MAXR" ] || fail "the sampler's maximum was $MAXOBS replicas, want exactly $MAXR"
-ev "MAX_REPLICAS,observed=$MAXOBS,max_replica_count=$MAXR,samples=$NSAMPLES,sample_errors=$NERR,result=ok"
+ev "SAMPLER,interval_s=2,samples=$NSAMPLES,sample_errors=$NERR"
+ev "MAX_REPLICAS,observed=$MAXOBS,max_replica_count=$MAXR,result=ok"
 pass "maximum replicas exactly $MAXR"
 if grep -q ',from=2,to=1,' "$W/transitions"; then DRAIN_PATH="2->1->0"; else DRAIN_PATH="2->0"; fi
 while read -r pod rt; do
