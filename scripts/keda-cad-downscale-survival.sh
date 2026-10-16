@@ -722,4 +722,247 @@ if [ "$CALIBRATE_ONLY" = 1 ]; then
 	exit 0
 fi
 
-fail "the survival steps are not implemented yet; run with --calibrate-only"
+step "survival"
+zero_check survival
+: > "$W/samples"
+: > "$W/transitions"
+: > "$W/busy-watch"
+rm -f "$W/sampler.stop" "$W/watch.stop" "$W/t0"
+
+sampler() {
+	local prev="0 0" cur c t t0 r ready spec
+	while [ ! -f "$W/sampler.stop" ]; do
+		c=$(deploy_counts) || c=""
+		t=$(nowf)
+		if [ -n "$c" ]; then
+			spec=${c%% *}
+			r=$(echo "$c" | awk '{ print $2 }')
+			ready=$(echo "$c" | awk '{ print $3 }')
+			echo "$t $spec $r $ready $(load1)" >> "$W/samples"
+			cur="$r $ready"
+			if [ "$cur" != "$prev" ]; then
+				t0=$(cat "$W/t0" 2>/dev/null || echo "$t")
+				echo "TRANSITION,from=${prev%% *},to=$r,ready=$ready,spec=$spec,at_utc=$(iso_at "$t"),since_submit_s=$(diff_s "$t0" "$t")" >> "$W/transitions"
+				prev=$cur
+			fi
+		else
+			echo "$t err" >> "$W/samples"
+		fi
+		sleep 2
+	done
+}
+
+CENSUS_SH='for d in /proc/[0-9]*; do c=""; { read -r c < "$d/comm"; } 2>/dev/null || continue; n=""; case "$c" in rsvg-convert|cad-guard|cad-mesh|cad-render|cad-dxf) n=$c ;; python*) for a in $(tr "\0" "\n" < "$d/cmdline" 2>/dev/null); do case "${a##*/}" in cad-guard|cad-mesh|cad-render|cad-dxf) n=${a##*/}; break ;; esac; done ;; esac; [ -z "$n" ] || echo "$n:${d#/proc/}"; done; true'
+
+census() {
+	local out
+	out=$(kn exec "$1" -- sh -c "$CENSUS_SH" 2>/dev/null) || return 1
+	printf '%s\n' "$out" | tr -d '\r' | sed '/^$/d' | LC_ALL=C sort | tr '\n' '+' | sed 's/+$//'
+}
+
+watcher() {
+	while [ ! -f "$W/watch.stop" ]; do
+		kt $((EXPECTED_GRACE + 900)) kubectl -n "$NAMESPACE" get pod "$BUSY_POD" -w --output-watch-events \
+			-o jsonpath='{.type}{" phase="}{.object.status.phase}{" term_reason="}{.object.status.containerStatuses[0].state.terminated.reason}{" term_exit="}{.object.status.containerStatuses[0].state.terminated.exitCode}{" term_finished="}{.object.status.containerStatuses[0].state.terminated.finishedAt}{"\n"}' 2>/dev/null |
+			while IFS= read -r l; do echo "read_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ) $l" >> "$W/busy-watch"; done || true
+		kn get pod "$BUSY_POD" >/dev/null 2>&1 || break
+		sleep 1
+	done
+}
+
+set -m
+sampler &
+SAMPLER_PID=$!
+set +m
+sleep 3
+S_L0=$(wait_quiet) || fail "load1 stayed above $QUIET_LOAD for $QUIET_WAIT_S s before the LONG submit"
+T0=$(nowf)
+echo "$T0" > "$W/t0"
+LONG_JOB=$(submit "$L_FILE" "$L_NAME" "$L_TARGET" render "$L_OPTS_JSON")
+[ -n "$LONG_JOB" ] || fail "no job id for LONG"
+ev "LONG_SUBMIT,job=$LONG_JOB,submit_utc=$(iso_at "$T0"),file=$L_NAME,target=$L_TARGET,opts=$L_OPTS_JSON,load1=$S_L0"
+LS=""
+while le "$(diff_s "$T0" "$(nowf)")" "$SCALEUP_WINDOW_S"; do
+	LS=$(job_status "$LONG_JOB")
+	case "$LS" in active | done | failed | canceled) break ;; esac
+	sleep 2
+done
+[ "$LS" = active ] || { diag_ns; fail "LONG $LONG_JOB is $LS, not active, $SCALEUP_WINDOW_S s after the submit"; }
+LA=$(nowf)
+FIRST_PODS=$(live_cad_pods) || FIRST_PODS=""
+N_FIRST=$(printf '%s\n' "$FIRST_PODS" | sed '/^$/d' | wc -l | tr -d ' ')
+[ "$N_FIRST" = 1 ] || fail "LONG went active while $N_FIRST cad pods ran ($FIRST_PODS), want exactly 1"
+FIRST_POD=$FIRST_PODS
+ev "LONG_ACTIVE,job=$LONG_JOB,pod=$FIRST_POD,pods=1,active_seen_utc=$(iso_at "$LA"),since_submit_s=$(diff_s "$T0" "$LA"),load1=$(load1),result=ok"
+pass "LONG active on the only cad pod $FIRST_POD"
+TS0=$(nowf)
+SHORT_JOB=$(submit "$CAL_INPUT" units_inch.step png render)
+[ -n "$SHORT_JOB" ] || fail "no job id for SHORT"
+ev "SHORT_SUBMIT,job=$SHORT_JOB,submit_utc=$(iso_at "$TS0"),file=units_inch.step,target=png"
+ok=""
+last=""
+while le "$(diff_s "$TS0" "$(nowf)")" "$SCALEUP_WINDOW_S"; do
+	last=$(grep -v ' err$' "$W/samples" | tail -n 1)
+	if [ "$(echo "$last" | awk '{ print $3 }')" = 2 ] && [ "$(echo "$last" | awk '{ print $4 }')" = 2 ]; then ok=1; break; fi
+	sleep 2
+done
+[ -n "$ok" ] || { diag_ns; fail "cad-worker did not reach replicas 2 and readyReplicas 2 within $SCALEUP_WINDOW_S s of SHORT (last sample: $last)"; }
+pass "cad-worker 1->2 with 2 Ready"
+
+C0=$(nowf)
+TRIES=0
+HOLD_PROCS=""
+CENSUS_LINE=""
+EARLIEST=""
+while le "$(diff_s "$C0" "$(nowf)")" "$CENSUS_WINDOW_S"; do
+	TRIES=$((TRIES + 1))
+	PODS=$(live_cad_pods) || PODS=""
+	np=0
+	holders=0
+	hold=""
+	procs=""
+	errs=0
+	CENSUS_LINE=""
+	for p in $PODS; do
+		np=$((np + 1))
+		e=$(census "$p") || { e=ERR; errs=$((errs + 1)); }
+		CENSUS_LINE="$CENSUS_LINE;$p=${e:-none}"
+		if [ "$e" != ERR ] && [ -n "$e" ]; then holders=$((holders + 1)); hold=$p; procs=$e; fi
+	done
+	if [ "$np" = 2 ] && [ "$errs" = 0 ] && [ "$holders" = 1 ]; then
+		BUSY_POD=$hold
+		HOLD_PROCS=$procs
+		EARLIEST=$(printf '%s\n' "$PODS" | head -n 1)
+		break
+	fi
+	echo "census try $TRIES: pods=$np holders=$holders errors=$errs$CENSUS_LINE"
+	sleep 2
+done
+CENSUS_LINE=${CENSUS_LINE#;}
+[ -n "$BUSY_POD" ] || { ev "BUSY,pod=none,census=$CENSUS_LINE,tries=$TRIES,result=FAIL"; fail "no census within $CENSUS_WINDOW_S s found exactly one of two Running cad pods holding an engine process"; }
+IS_EARLIEST=0
+[ "$BUSY_POD" = "$EARLIEST" ] && [ "$BUSY_POD" = "$FIRST_POD" ] && IS_EARLIEST=1
+if [ "$IS_EARLIEST" != 1 ]; then
+	ev "BUSY,pod=$BUSY_POD,engine_procs=$HOLD_PROCS,earliest=0,first_pod=$FIRST_POD,earliest_pod=$EARLIEST,result=FAIL"
+	fail "the engine-holding pod $BUSY_POD is not both the earliest pod $EARLIEST and the pod LONG went active on $FIRST_POD"
+fi
+kn annotate pod "$BUSY_POD" controller.kubernetes.io/pod-deletion-cost=-1000 --overwrite >/dev/null || fail "annotating $BUSY_POD failed"
+ANN_AT=$(nowf)
+SPEC_AT_ANN=$(deploy_counts | awk '{ print $1 }')
+COST=$(kn get pod "$BUSY_POD" -o json | jq -r '.metadata.annotations["controller.kubernetes.io/pod-deletion-cost"] // empty') || COST=""
+[ "$COST" = "-1000" ] || fail "the busy pod's deletion cost reads $COST, want -1000"
+[ "$SPEC_AT_ANN" = 2 ] || fail "spec.replicas was $SPEC_AT_ANN when the annotation landed; the scale-down decision may already have been taken"
+BUSY_GRACE=$(kn get pod "$BUSY_POD" -o jsonpath='{.spec.terminationGracePeriodSeconds}') || BUSY_GRACE=""
+[ "$BUSY_GRACE" = "$EXPECTED_GRACE" ] || fail "the busy pod's terminationGracePeriodSeconds is $BUSY_GRACE, want $EXPECTED_GRACE"
+ev "BUSY_CENSUS,tries=$TRIES,census_s=$(diff_s "$C0" "$ANN_AT"),pods=$CENSUS_LINE,first_pod=$FIRST_POD,earliest_pod=$EARLIEST,annotated_utc=$(iso_at "$ANN_AT"),spec_replicas_at_annotation=$SPEC_AT_ANN"
+ev "BUSY,pod=$BUSY_POD,engine_procs=$HOLD_PROCS,earliest=1,deletion_cost=$COST,grace_s=$BUSY_GRACE,expected_grace_s=$EXPECTED_GRACE,result=ok"
+pass "busy pod $BUSY_POD holds $HOLD_PROCS and carries deletion cost -1000"
+set -m
+watcher &
+WATCH_PID=$!
+set +m
+
+SS=$(wait_job "$SHORT_JOB" 600)
+[ "$SS" = done ] || fail "SHORT $SHORT_JOB ended $SS"
+SHORT_FIN=$(psqlq "select extract(epoch from finished_at) from jobs where id = '$SHORT_JOB'")
+[ -n "$SHORT_FIN" ] || fail "no finished_at for SHORT"
+ev "SHORT,job=$SHORT_JOB,status=done,finished_at=$(iso_at "$SHORT_FIN")"
+pass "SHORT done"
+ok=""
+while le "$(diff_s "$SHORT_FIN" "$(nowf)")" "$DOWNSCALE_WINDOW_S"; do
+	if awk -v d="$SHORT_FIN" '$2 != "err" && $1 > d && $3 <= 1 { f = 1 } END { exit !f }' "$W/samples"; then ok=1; break; fi
+	sleep 2
+done
+SPEC_ONE=$(awk -v d="$SHORT_FIN" '$2 != "err" && $1 > d && $2 <= 1 { print $1; exit }' "$W/samples")
+STATUS_ONE=$(awk -v d="$SHORT_FIN" '$2 != "err" && $1 > d && $3 <= 1 { print $1; exit }' "$W/samples")
+[ -n "$ok" ] || { diag_ns; fail "status.replicas did not reach 1 within $DOWNSCALE_WINDOW_S s of SHORT done"; }
+ev "DOWNSCALE,short_done_utc=$(iso_at "$SHORT_FIN"),spec_one_utc=$([ -n "$SPEC_ONE" ] && iso_at "$SPEC_ONE" || echo absent),status_one_utc=$(iso_at "$STATUS_ONE"),since_short_done_s=$(diff_s "$SHORT_FIN" "$STATUS_ONE"),window_s=$DOWNSCALE_WINDOW_S,result=ok"
+pass "cad-worker 2->1 $(diff_s "$SHORT_FIN" "$STATUS_ONE") s after SHORT done"
+
+LSF=$(wait_job "$LONG_JOB" $((ENGINE_S + 120)))
+L_END_LOAD=$(load1)
+FACTS=$(psqlq "select status || ' ' || attempts || ' ' || extract(epoch from started_at) || ' ' || extract(epoch from finished_at) from jobs where id = '$LONG_JOB'")
+read -r L_STATUS L_ATT L_START L_FIN <<< "$FACTS"
+L_QA=$(psqlq "select count(*) from job_events where job_id = '$LONG_JOB' and from_status = 'queued' and to_status = 'active'")
+L_WALL=$(awk -v a="${L_START:-0}" -v b="${L_FIN:-0}" 'BEGIN { printf "%.2f", b - a }')
+IN_BAND=0
+if [ -n "${L_FIN:-}" ] && le "$BAND_LOW" "$L_WALL" && le "$L_WALL" "$BAND_HIGH"; then IN_BAND=1; fi
+ev "LONG,job=$LONG_JOB,attempts=${L_ATT:-na},queued_to_active=${L_QA:-na},status=${L_STATUS:-$LSF},started_at=$([ -n "${L_START:-}" ] && iso_at "$L_START" || echo absent),finished_at=$([ -n "${L_FIN:-}" ] && iso_at "$L_FIN" || echo absent),attempt_wall_s=$L_WALL,in_band=$IN_BAND"
+[ "$LSF" = done ] && [ "$L_STATUS" = done ] || fail "LONG $LONG_JOB ended $LSF ($L_STATUS)"
+[ "$L_ATT" = 1 ] || fail "LONG has attempts=$L_ATT, want 1"
+[ "$L_QA" = 1 ] || fail "LONG has $L_QA queued->active transitions, want 1"
+pass "LONG done once"
+
+SIGTERM_TS=$(event_ts "$BUSY_POD" Killing)
+[ -n "$SIGTERM_TS" ] || fail "no Killing event for the busy pod $BUSY_POD"
+SIGTERM_E=$(epoch_of "$SIGTERM_TS")
+ev "SIGTERM,pod=$BUSY_POD,killing_at=$SIGTERM_TS"
+SIGTERM_UB=$(awk -v s="$SIGTERM_E" 'BEGIN { printf "%.3f", s + 1 }')
+ORDER_OK=0
+lt "$SIGTERM_UB" "$L_FIN" && lt "$ANN_AT" "$SIGTERM_E" && ORDER_OK=1
+ev "ORDER_DETAIL,annotated_utc=$(iso_at "$ANN_AT"),killing_at=$SIGTERM_TS,long_finished_at=$(iso_at "$L_FIN"),sigterm_second_upper_bound=$(iso_at "$SIGTERM_UB"),sigterm_to_finish_s=$(diff_s "$SIGTERM_UB" "$L_FIN"),annotation_before_sigterm=$(lt "$ANN_AT" "$SIGTERM_E" && echo 1 || echo 0)"
+[ "$ORDER_OK" = 1 ] || { ev "ORDER,sigterm_before_finish=$(lt "$SIGTERM_UB" "$L_FIN" && echo 1 || echo 0),result=FAIL"; fail "the Killing event $SIGTERM_TS does not fall between the annotation and LONG's finished_at"; }
+ev "ORDER,sigterm_before_finish=1,result=ok"
+pass "SIGTERM reached the busy pod at least $(diff_s "$SIGTERM_UB" "$L_FIN") s before LONG finished"
+
+waited=0
+while [ "$waited" -lt "$EXPECTED_GRACE" ]; do
+	if grep 'term_finished=' "$W/busy-watch" 2>/dev/null | grep -qv 'term_finished=$'; then break; fi
+	if ! kn get pod "$BUSY_POD" >/dev/null 2>&1; then sleep 3; break; fi
+	sleep 3
+	waited=$((waited + 3))
+done
+T_REASON=$(kn get pod "$BUSY_POD" -o jsonpath='{.status.containerStatuses[0].state.terminated.reason}' 2>/dev/null || true)
+T_EXIT=$(kn get pod "$BUSY_POD" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || true)
+T_FIN=$(kn get pod "$BUSY_POD" -o jsonpath='{.status.containerStatuses[0].state.terminated.finishedAt}' 2>/dev/null || true)
+T_SRC=live
+if [ -z "$T_FIN" ]; then
+	T_LINE=$(grep 'term_finished=' "$W/busy-watch" | grep -v 'term_finished=$' | tail -n 1 || true)
+	T_REASON=$(printf '%s' "$T_LINE" | sed -n 's/.*term_reason=\([^ ]*\).*/\1/p')
+	T_EXIT=$(printf '%s' "$T_LINE" | sed -n 's/.*term_exit=\([^ ]*\).*/\1/p')
+	T_FIN=$(printf '%s' "$T_LINE" | sed -n 's/.*term_finished=\([^ ]*\).*/\1/p')
+	T_SRC=watch
+fi
+stop_watch
+sed 's/^/BUSY_WATCH,/' "$W/busy-watch" | tr ' ' ',' | tee -a "$OUT" >/dev/null
+[ -n "$T_FIN" ] || fail "no terminated state captured for the busy pod $BUSY_POD"
+T_FIN_E=$(epoch_of "$T_FIN")
+T_SINCE=$(diff_s "$SIGTERM_E" "$T_FIN_E")
+ev "POD_TERMINATION,pod=$BUSY_POD,reason=$T_REASON,exit=$T_EXIT,finished_at=$T_FIN,since_sigterm_s=$T_SINCE,grace_s=$BUSY_GRACE,source=$T_SRC"
+[ "$T_EXIT" != 137 ] || fail "the busy pod exited 137 (SIGKILL)"
+[ "$T_REASON" = Completed ] && [ "$T_EXIT" = 0 ] || fail "the busy pod terminated reason=$T_REASON exit=$T_EXIT, want Completed and 0"
+le "$T_SINCE" "$BUSY_GRACE" || fail "the busy pod exited $T_SINCE s after SIGTERM, above the grace $BUSY_GRACE s"
+le "$L_FIN" "$((${T_FIN_E%.*} + 1))" || fail "the busy pod exited before LONG finished"
+pass "the busy pod exited Completed 0, $T_SINCE s after SIGTERM"
+
+ok=""
+while le "$(diff_s "$L_FIN" "$(nowf)")" $((DRAIN_BOUND + 30)); do
+	if awk -v d="$L_FIN" '$2 != "err" && $1 > d && $3 == 0 { f = 1 } END { exit !f }' "$W/samples"; then ok=1; break; fi
+	sleep 3
+done
+sleep 6
+stop_sampler
+[ -n "$ok" ] || fail "cad-worker did not drain to 0 within $((DRAIN_BOUND + 30)) s of LONG's finish"
+ZERO_AT=$(awk -v d="$L_FIN" '$2 != "err" && $1 > d && $3 == 0 { print $1; exit }' "$W/samples")
+DRAIN_S=$(diff_s "$L_FIN" "$ZERO_AT")
+tee -a "$OUT" < "$W/transitions"
+TRANS_DUMPED=1
+NTRANS=$(wc -l < "$W/transitions" | tr -d ' ')
+[ "$NTRANS" -ge 3 ] || fail "only $NTRANS TRANSITION lines"
+head -n 1 "$W/transitions" | grep -q '^TRANSITION,from=0,' || fail "the first TRANSITION does not start from 0"
+grep -q '^TRANSITION,from=2,to=1,' "$W/transitions" || fail "no TRANSITION from 2 to 1"
+tail -n 1 "$W/transitions" | grep -q ',to=0,ready=0,' || fail "the last TRANSITION does not end at 0"
+awk -F'at_utc=' '{ split($2, a, ","); if (NR > 1 && a[1] < p) bad = 1; p = a[1] } END { exit bad }' "$W/transitions" || fail "TRANSITION timestamps decrease"
+MAXOBS=$(awk '$2 != "err" { if ($2 > m) m = $2; if ($3 > m) m = $3 } END { print m + 0 }' "$W/samples")
+[ "$MAXOBS" -le "$MAXR" ] || fail "the sampler saw $MAXOBS replicas, above $MAXR"
+ev "SAMPLER,interval_s=2,samples=$(grep -vc ' err$' "$W/samples" || true),sample_errors=$(grep -c ' err$' "$W/samples" || true),max_replicas=$MAXOBS"
+le "$DRAIN_S" "$DRAIN_BOUND" || fail "drain took $DRAIN_S s, above the bound $DRAIN_BOUND s"
+ev "DRAIN,long_done_utc=$(iso_at "$L_FIN"),zero_utc=$(iso_at "$ZERO_AT"),drain_s=$DRAIN_S,bound_s=$DRAIN_BOUND,result=ok"
+pass "drained to 0 in $DRAIN_S s"
+LMAX=$(awk '$2 != "err" { if ($5 > m) m = $5 } END { print m + 0 }' "$W/samples")
+quiet_line long "$S_L0" "$L_END_LOAD" "$LMAX" || fail "LONG's row is contaminated (load1 start $S_L0, end $L_END_LOAD); its wall does not count"
+[ "$IN_BAND" = 1 ] || fail "LONG's attempt wall $L_WALL s is outside the band [$BAND_LOW;$BAND_HIGH]"
+pass "LONG's wall $L_WALL s lies in [$BAND_LOW;$BAND_HIGH]"
+
+GATE_OK=1
+echo "=== ALL $PASS_COUNT CHECKS PASSED; teardown and restore follow ==="
