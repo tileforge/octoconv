@@ -82,6 +82,7 @@ INSTALLED_OCTOCONV=0
 SNAP_TAKEN=0
 BUSY_POD=""
 TRANS_DUMPED=0
+PORTS_FREE=0
 
 kt() {
 	local n=$1
@@ -238,12 +239,21 @@ stop_sampler() { stop_group "$SAMPLER_PID" sampler.stop; SAMPLER_PID=""; }
 stop_watch() { stop_group "$WATCH_PID" watch.stop; WATCH_PID=""; }
 
 stop_pf() {
-	local pid=$1
+	local pid=$1 pattern=$2
 	if [ -n "$pid" ]; then
-		pkill -KILL -P "$pid" >/dev/null 2>&1 || true
+		pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+		sleep 1
 		kill "$pid" >/dev/null 2>&1 || true
 		wait "$pid" 2>/dev/null || true
+		pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
 	fi
+}
+
+ports_free() {
+	local port
+	for port in "$API_LOCAL_PORT" "$DB_LOCAL_PORT"; do
+		if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then return 1; fi
+	done
 }
 
 teardown() {
@@ -254,8 +264,13 @@ teardown() {
 	stop_sampler
 	stop_watch
 	if [ "$TRANS_DUMPED" != 1 ] && [ -s "$W/transitions" ]; then sed 's/^/PARTIAL_/' "$W/transitions" | tee -a "$OUT"; fi
-	stop_pf "$API_PF_PID"
-	stop_pf "$DB_PF_PID"
+	stop_pf "$API_PF_PID" "kubectl port-forward -n $NAMESPACE svc/api ${API_LOCAL_PORT}:8090"
+	stop_pf "$DB_PF_PID" "kubectl port-forward -n $NAMESPACE svc/postgres ${DB_LOCAL_PORT}:5432"
+	PORTS_FREE=0
+	for _ in $(seq 1 10); do
+		if ports_free; then PORTS_FREE=1; break; fi
+		sleep 1
+	done
 	if [ "$INSTALLED_OCTOCONV" = 1 ]; then
 		kt 420 helm uninstall octoconv -n "$NAMESPACE" --wait --timeout 6m
 	fi
@@ -286,7 +301,8 @@ teardown() {
 			diff "$W/snap-before" "$W/snap-after"
 		fi
 		if [ "$(kt 30 orbctl config get k8s.enable 2>/dev/null)" != true ]; then restore=FAIL; fi
-		ev "RESTORE,snapshot_lines=$(wc -l < "$W/snap-before" | tr -d ' '),diff_lines=$(diff "$W/snap-before" "$W/snap-after" 2>/dev/null | grep -c '^[<>]'),octoconv_pods=${n:-unknown},k8s_enabled=$(kt 30 orbctl config get k8s.enable 2>/dev/null),result=$restore"
+		[ "$PORTS_FREE" = 1 ] || restore=FAIL
+		ev "RESTORE,snapshot_lines=$(wc -l < "$W/snap-before" | tr -d ' '),diff_lines=$(diff "$W/snap-before" "$W/snap-after" 2>/dev/null | grep -c '^[<>]'),octoconv_pods=${n:-unknown},k8s_enabled=$(kt 30 orbctl config get k8s.enable 2>/dev/null),local_ports_free=$PORTS_FREE,result=$restore"
 	else
 		restore=not_taken
 	fi
