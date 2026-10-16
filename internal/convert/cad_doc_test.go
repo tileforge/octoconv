@@ -17,13 +17,99 @@ const (
 	cadDocChart    = "../../deploy/chart/octoconv/templates/configmap.yaml"
 	cadDocWorker   = "../../cmd/cad-worker/main.go"
 	cadDocEstimate = "../../internal/api/estimate.go"
+	cadDocValues   = "../../deploy/chart/octoconv/values.yaml"
+	cadDocEvidDir  = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/"
 )
 
 var (
-	cadDocTick     = regexp.MustCompile("`([^`]+)`")
-	cadDocChartCap = regexp.MustCompile(`(?m)^\s+MAX_UPLOAD_BYTES:\s*"(\d+)"`)
-	cadDocEnv      = regexp.MustCompile(`envDuration\("(CAD_[A-Z_]+)", convert\.(\w+)\)`)
+	cadDocTick        = regexp.MustCompile("`([^`]+)`")
+	cadDocChartCap    = regexp.MustCompile(`(?m)^\s+MAX_UPLOAD_BYTES:\s*"(\d+)"`)
+	cadDocEnv         = regexp.MustCompile(`envDuration\("(CAD_[A-Z_]+)", convert\.(\w+)\)`)
+	cadDocConcurrency = regexp.MustCompile(`(?m)^\s+CAD_WORKER_CONCURRENCY:\s*"?([^"\s]+)"?\s*$`)
+	cadDocSource      = regexp.MustCompile(`^evidence/(\S+) ([A-Z_]+)(?:\[(\w+)=([^\]]+)\])?\.(\w+)$`)
 )
+
+var cadDocScalingEvidence = []string{
+	"evidence/76-09-image-size.txt IMAGE_SIZE.uncompressed_mib",
+	"evidence/76-09-image-size.txt IMAGE_SIZE.compressed_mib",
+	"evidence/76-09-image-size.txt COLD_PULL_DIST.wall_max",
+	"evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=100].transfer_s",
+	"evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=1000].transfer_s",
+	"evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=10000].transfer_s",
+	"evidence/76-09-image-size.txt PREFLIGHT_DIST.max",
+	"evidence/76-09-image-size.txt DECISION.cold_start_s",
+	"evidence/76-09-image-size.txt DECISION.premise_holds",
+	"evidence/76-09-image-size.txt DECISION.value",
+}
+
+func cadDocKEDACAD(t *testing.T) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	inKEDA, inCAD := false, false
+	for _, line := range strings.Split(cadDocRead(t, cadDocValues), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		switch {
+		case indent == 0:
+			inKEDA, inCAD = strings.TrimRight(line, " ") == "keda:", false
+		case inKEDA && indent == 2:
+			inCAD = trimmed == "cad:"
+		case inCAD && indent == 4:
+			k, v, ok := strings.Cut(trimmed, ":")
+			if !ok {
+				t.Fatalf("%s keda.cad line %q is not key: value", cadDocValues, line)
+			}
+			out[k] = strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s has no keda.cad block", cadDocValues)
+	}
+	return out
+}
+
+func cadDocEvidenceValue(t *testing.T, src string) (string, bool) {
+	t.Helper()
+	m := cadDocSource.FindStringSubmatch(src)
+	if m == nil {
+		t.Errorf("docs/CAD.md source %q is not evidence/<file> <LINE>[<key>=<value>].<field>", src)
+		return "", false
+	}
+	var hits []map[string]string
+	for _, line := range strings.Split(cadDocRead(t, cadDocEvidDir+m[1]), "\n") {
+		if !strings.HasPrefix(line, m[2]+",") {
+			continue
+		}
+		f := map[string]string{}
+		for _, kv := range strings.Split(line, ",")[1:] {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				if _, dup := f[k]; !dup {
+					f[k] = v
+				}
+			}
+		}
+		if m[3] != "" && f[m[3]] != m[4] {
+			continue
+		}
+		hits = append(hits, f)
+	}
+	if len(hits) == 0 {
+		t.Errorf("%s has no %s line for the source %q", m[1], m[2], src)
+		return "", false
+	}
+	if m[3] == "" && len(hits) > 1 {
+		t.Errorf("%s has %d %s lines, the source %q names no selector", m[1], len(hits), m[2], src)
+		return "", false
+	}
+	v, ok := hits[0][m[5]]
+	if !ok {
+		t.Errorf("the %s line of %s has no field %s", m[2], m[1], m[5])
+	}
+	return v, ok
+}
 
 func cadDocRead(t *testing.T, path string) string {
 	t.Helper()
@@ -586,6 +672,77 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			}
 			if b := l["to_bytes"]; b != "" && b != r[3] {
 				t.Errorf("docs/CAD.md %s states %s, the evidence lowered the ceiling to %s", l["key"], r[3], b)
+			}
+		}
+	})
+
+	t.Run("scaling", func(t *testing.T) {
+		keda := cadDocKEDACAD(t)
+		conc := cadDocConcurrency.FindStringSubmatch(cadDocRead(t, cadDocChart))
+		if conc == nil {
+			t.Fatalf("%s has no CAD_WORKER_CONCURRENCY", cadDocChart)
+		}
+		keys := map[string]bool{}
+		sources := map[string]bool{}
+		decision := ""
+		for _, r := range cadDocTable(t, doc, "## Scaling", "item", "value", "source") {
+			src := strings.Trim(r[2], "`")
+			if sources[src] {
+				t.Errorf("docs/CAD.md Scaling names the source %q twice", src)
+			}
+			sources[src] = true
+			var want string
+			switch {
+			case strings.HasPrefix(src, "values.yaml keda.cad."):
+				k := strings.TrimPrefix(src, "values.yaml keda.cad.")
+				keys[k] = true
+				v, ok := keda[k]
+				if !ok {
+					t.Errorf("docs/CAD.md Scaling names keda.cad.%s, which %s does not have", k, cadDocValues)
+					continue
+				}
+				want = v
+			case src == "configmap CAD_WORKER_CONCURRENCY":
+				want = conc[1]
+			case strings.HasPrefix(src, "evidence/"):
+				v, ok := cadDocEvidenceValue(t, src)
+				if !ok {
+					continue
+				}
+				want = v
+			default:
+				t.Errorf("docs/CAD.md Scaling row %s has the unknown source %q", r[0], src)
+				continue
+			}
+			if r[1] != want {
+				t.Errorf("docs/CAD.md Scaling %s = %q, %s gives %q", r[0], r[1], src, want)
+			}
+			if strings.HasSuffix(src, " DECISION.value") {
+				decision = r[1]
+			}
+		}
+		code := map[string]bool{}
+		for k := range keda {
+			code[k] = true
+		}
+		cadDocSameSet(t, "keda.cad keys", keys, code)
+		for _, s := range append([]string{"configmap CAD_WORKER_CONCURRENCY"}, cadDocScalingEvidence...) {
+			if !sources[s] {
+				t.Errorf("docs/CAD.md Scaling has no row for %s", s)
+			}
+		}
+		if decision != keda["minReplicaCount"] {
+			t.Errorf("docs/CAD.md Scaling decision %q differs from values.yaml keda.cad.minReplicaCount %q", decision, keda["minReplicaCount"])
+		}
+		if k, _ := cadDocEvidenceValue(t, "evidence/76-09-image-size.txt DECISION.key"); k != "keda_cad_min_replica_count" {
+			t.Errorf("the DECISION line decides %q, want keda_cad_min_replica_count", k)
+		}
+		holds, _ := cadDocEvidenceValue(t, "evidence/76-09-image-size.txt DECISION.premise_holds")
+		phrases := map[string]string{"1": "the premise holds", "0": "the premise does not hold"}
+		sec := cadDocSection(t, doc, "## Scaling")
+		for v, p := range phrases {
+			if strings.Contains(sec, p) != (v == holds) {
+				t.Errorf("docs/CAD.md Scaling and the evidence premise_holds=%s disagree on %q", holds, p)
 			}
 		}
 	})
