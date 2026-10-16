@@ -158,6 +158,10 @@ a value of the chart or a field of a measurement line in
 | cold start: cold pull + 100 Mbit/s transfer + preflight, seconds | 41.28 | `evidence/76-09-image-size.txt DECISION.cold_start_s` |
 | premise: cold start at most 0.1 x the 886 s engine timeout (1 holds, 0 fails) | 1 | `evidence/76-09-image-size.txt DECISION.premise_holds` |
 | decision: `minReplicaCount` | 0 | `evidence/76-09-image-size.txt DECISION.value` |
+| OrbStack: scale from zero, job submit to pod Ready, seconds | 31.6 | `evidence/76-09-keda-loadproof.txt CALIBRATION.submit_to_ready_s` |
+| OrbStack: three jobs above `maxReplicaCount`, submit to 2 Ready replicas, seconds | 46.9 | `evidence/76-09-keda-loadproof.txt TRANSITION[ready=2].since_submit_s` |
+| OrbStack: drain to 0 after the last job finished, seconds | 98.6 | `evidence/76-09-keda-loadproof.txt DRAIN.drain_s` |
+| OrbStack: image pull events of the cad pod | absent | `evidence/76-09-keda-loadproof.txt CALIBRATION.pull_events` |
 
 `minReplicaCount` is 0. A cold `cad` replica costs about 41 s before its first job: 7.11 s to pull and unpack
 the 315.5 MiB image, 26.5 s to move it over a 100 Mbit/s link and 7.67 s for the sandbox preflight. The check was
@@ -167,6 +171,13 @@ in contrast, holds 2 CPU and 4 GiB on every cluster all day. On the OrbStack sha
 0; the registry cold pull is measured separately, as for the 71-08 evaluation image and the v1.7 phase 33 audio
 worker. The image, the pull and the preflight were measured on arm64 with load1 at most 11 at the start and the
 end of every row.
+
+The OrbStack rows come from the chart with `values-local.yaml` only, so the cooldown, the stabilization window and
+the concurrency under test are the production values. One render took the worker from 0 to 1. Three converts
+against a maximum of 2 brought it to exactly 2 Ready replicas, each job ran once, and the Deployment went from 2
+straight to 0 one cooldown after the last job, without waiting for the 900 s stabilization window. These were
+measured on OrbStack's shared image store, where the image is already present and the pod logs no pull, and a
+registry-backed cluster adds the cold pull above.
 
 ## Error codes
 
