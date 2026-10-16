@@ -1,0 +1,15 @@
+HDR,mode=keda_cad_loadproof_cause,captured_utc=2026-10-16T15:12Z,source=kubectl get events -n octoconv on the namespace attempt 4 left Terminating,capture=by hand from the console; the namespace and its events were gone at 15:13:53Z
+EVENT,at=2026-10-16T14:47:04.285432Z,attempt=3,object=api-7c54d9f7df-n962r,reason=FailedScheduling,message=0/1 nodes are available: 1 Insufficient cpu. no new claims to deallocate; preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.
+EVENT,at=2026-10-16T14:56:44Z,attempt=4,object=minio-data,reason=WaitForFirstConsumer,message=waiting for first consumer to be created before binding
+EVENT,at=2026-10-16T14:56:44.840766Z,attempt=4,object=api-7c54d9f7df-h9zp6,reason=Scheduled,message=Successfully assigned octoconv/api-7c54d9f7df-h9zp6 to orbstack
+EVENT,at=2026-10-16T14:56:45.155176Z,attempt=4,object=octoconv-createbucket-ntn7k,reason=Scheduled,message=Successfully assigned octoconv/octoconv-createbucket-ntn7k to orbstack
+EVENT,at=2026-10-16T14:56:46.671126Z,attempt=4,object=minio-7d58d77c8-llv6p,reason=FailedScheduling,message=0/1 nodes are available: 1 Insufficient cpu. no new claims to deallocate; preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.
+EVENT,at=2026-10-16T14:56:49.622502Z,attempt=4,object=minio-7d58d77c8-llv6p,reason=FailedScheduling,message=0/1 nodes are available: 1 Insufficient cpu. no new claims to deallocate; preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.
+EVENT,at=2026-10-16T14:57:32Z,attempt=4,object=minio-data,reason=WaitForPodScheduled,message=waiting for pod minio-7d58d77c8-llv6p to be scheduled
+EVENT,at=2026-10-16T14:58:45Z,attempt=4,object=octoconv-createbucket-ntn7k,reason=Killing,message=Stopping container wait-for-minio
+EVENT,at=2026-10-16T14:59:16Z,attempt=4,object=octoconv-createbucket,reason=DeadlineExceeded,message=Job was active longer than specified deadline
+EVENT,at=2026-10-16T14:59:17Z,attempt=4,object=api-7c54d9f7df-h9zp6,reason=Killing,message=Stopping container wait-for-bucket
+STUCK_POD,attempt=4,name=av-worker-857d4d6cd4-vwwdj,grace=783,deletion=2026-10-16T15:12:21Z,phase=Pending,init=wait-for-bucket:running,note=the init container ignores SIGTERM so the pod held the namespace for its full grace; teardown waited 400 s and recorded RESTORE FAIL
+RESTORE_RECHECK,attempt=4,at_utc=2026-10-16T15:13:53Z,method=the teardown's snapshot recomputed by hand and diffed against attempt 4's SNAPSHOT_BEFORE,lines=43,diff_lines=0,result=ok
+CAUSE,attempts=3;4,cause=every KEDA-owned worker Deployment is created without replicas and starts at 1; ten worker pods at 2 CPU each and api at 2 CPU ask for about 22 CPU on an 11-CPU node; when api (attempt 3) or minio (attempt 4) loses the scheduling race the queue metric never appears and KEDA's fallback keeps the workers at 1; attempts 1 and 2 won the race
+FIX,commit=next,change=the loadproof scales the nine non-cad ScaledObject targets to 0 while helm install runs and records an INSTALL_ASSIST line; cad-worker is untouched; the namespace wait in teardown is 960 s to outlast the longest grace (906 s)

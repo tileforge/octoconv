@@ -216,7 +216,7 @@ teardown() {
 	if [ "$SNAP_TAKEN" = 1 ]; then
 		for ns in "$NAMESPACE" "$KEDA_NAMESPACE"; do
 			if was_absent "ns,item=$ns" && k get ns "$ns" >/dev/null 2>&1; then
-				kt 420 kubectl delete ns "$ns" --wait=true --timeout=400s
+				kt 1000 kubectl delete ns "$ns" --wait=true --timeout=960s
 			fi
 		done
 		for crd in $(k get crd -o json | jq -r '.items[].metadata.name | select(endswith("keda.sh"))'); do
@@ -346,7 +346,27 @@ pass "$APISERVICE Available"
 
 step "install octoconv with values-local.yaml only"
 INSTALLED_OCTOCONV=1
-kt 300 helm install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -n "$NAMESPACE" --create-namespace
+read -r -a ASSIST <<< "$(grep -h -A2 'scaleTargetRef:' "$CHART_DIR"/templates/scaledobject-*.yaml | awk '$1 == "name:" { print $2 }' | grep -vx cad-worker | LC_ALL=C sort -u | tr '\n' ' ')"
+[ "${#ASSIST[@]}" -ge 1 ] || fail "no non-cad ScaledObject target found in the chart"
+kt 420 helm install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -n "$NAMESPACE" --create-namespace > "$W/helm-install.log" 2>&1 &
+HELM_PID=$!
+SCALED=()
+A0=$(nowf)
+while [ "${#SCALED[@]}" -lt "${#ASSIST[@]}" ] && le "$(diff_s "$A0" "$(nowf)")" 240; do
+	for d in "${ASSIST[@]}"; do
+		case " ${SCALED[*]:-} " in *" $d "*) continue ;; esac
+		if kn get deployment "$d" >/dev/null 2>&1 && kn scale deployment "$d" --replicas=0 >/dev/null 2>&1; then
+			SCALED+=("$d")
+		fi
+	done
+	sleep 1
+done
+HELM_RC=0
+wait "$HELM_PID" || HELM_RC=$?
+cat "$W/helm-install.log"
+[ "$HELM_RC" = 0 ] || { diag_ns; fail "helm install octoconv failed rc=$HELM_RC"; }
+[ "${#SCALED[@]}" = "${#ASSIST[@]}" ] || { diag_ns; fail "scaled ${#SCALED[@]} of ${#ASSIST[@]} non-cad ScaledObject targets to 0"; }
+ev "INSTALL_ASSIST,scaled_to_zero=$(IFS=';'; echo "${SCALED[*]}"),count=${#SCALED[@]},assist_s=$(diff_s "$A0" "$(nowf)"),cad_worker=untouched,reason=every KEDA-owned Deployment starts at 1 replica at install and ten 2-CPU worker pods starve api or minio on this 11-CPU node (attempts 3 and 4)"
 pass "helm install octoconv"
 kt 300 kubectl -n "$NAMESPACE" wait --for=condition=Available deployment/redis --timeout=280s || { diag_ns; fail "deployment/redis not Available"; }
 REDIS_POD=$(kn get pod -l app.kubernetes.io/component=redis -o jsonpath='{.items[0].metadata.name}') || REDIS_POD=""
