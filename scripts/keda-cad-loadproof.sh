@@ -434,7 +434,28 @@ pod_events() {
 	ev "POD_EVENTS,pod=$pod,scheduled=${s:-absent},pulling=${pl:-absent},pulled=${pd:-absent},pulled_already_present=$pm,started=${st:-absent},ready=${ready:-absent}"
 }
 
+settle_all() {
+	local waited=0 comps busy
+	while :; do
+		comps=$(kn get scaledobject -o json | jq -r '.items[].spec.scaleTargetRef.name' | while read -r d; do
+			kn get deployment "$d" -o json | jq -r '.spec.selector.matchLabels."app.kubernetes.io/component"'
+		done | LC_ALL=C sort -u | tr '\n' ' ') || comps=""
+		[ -n "$comps" ] || fail "cannot read the ScaledObject targets"
+		busy=$(kn get pods -o json | jq -r --arg c " $comps" '[.items[] | ((.metadata.labels."app.kubernetes.io/component" // "-") as $l | select($c | contains(" " + $l + " ")))] | map(.metadata.name) | join(";")') || busy=err
+		if [ -z "$busy" ]; then break; fi
+		if [ "$waited" -ge 300 ]; then
+			kn get pods -o wide 2>&1 | sed 's/^/DIAG: /'
+			fail "ScaledObject targets still hold pods after 300 s: $busy"
+		fi
+		sleep 5
+		waited=$((waited + 5))
+	done
+	ev "SETTLE,scaled_targets=$(printf '%s' "$comps" | sed 's/ $//' | tr ' ' ';'),pods=0,settle_s=$waited,result=ok"
+	pass "every ScaledObject target holds no pod"
+}
+
 step "calibration"
+settle_all
 zero_check calibration
 NODE=$(k get nodes -o json)
 PODS_JSON=$(k get pods -A -o json)
@@ -450,7 +471,13 @@ FIT=$(jq -rn --argjson node "$NODE" --argjson pods "$PODS_JSON" --argjson res "$
 	| (($a.memory | mem) - ($r | map(.memory | mem) | add // 0)) as $fm
 	| "alloc_cpu=\($a.cpu | cpu),requested_cpu=\(($r | map(.cpu | cpu) | add // 0) * 1000 | round / 1000),free_cpu=\($fc * 1000 | round / 1000),need_cpu=\(2 * $pc),alloc_mem_mib=\(($a.memory | mem) / 1048576 | floor),requested_mem_mib=\(($r | map(.memory | mem) | add // 0) / 1048576 | floor),free_mem_mib=\($fm / 1048576 | floor),need_mem_mib=\(2 * $pm / 1048576 | floor),fits=\(if ($fc >= 2 * $pc and $fm >= 2 * $pm) then 1 else 0 end)"')
 ev "CALIBRATION_STEP,check=node_fit,$FIT"
-case "$FIT" in *fits=1) pass "the node fits two cad pods" ;; *) fail "the node does not fit two cad pods: $FIT" ;; esac
+case "$FIT" in
+*fits=1) pass "the node fits two cad pods" ;;
+*)
+	jq -rn --argjson pods "$PODS_JSON" '$pods.items[] | select(.spec.nodeName != null and .status.phase != "Succeeded" and .status.phase != "Failed") | "DIAG: \(.metadata.namespace)/\(.metadata.name) \(.status.phase) cpu=\([.spec.containers[].resources.requests.cpu // "0"] | join("+")) mem=\([.spec.containers[].resources.requests.memory // "0"] | join("+"))"'
+	fail "the node does not fit two cad pods: $FIT"
+	;;
+esac
 
 CAL_L0=$(wait_quiet) || fail "load1 stayed above $QUIET_LOAD for $QUIET_WAIT_S s before the calibration"
 CAL_T0=$(nowf)
