@@ -133,6 +133,41 @@ and 21 + 186 + 2 x 217 + 20 = 661 for DXF. The worst route is render_iges, on th
 (`.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt`). For `cad`,
 `POST /v1/inspect` reports `estimate_source: measured` and an estimated maximum of 886 s at the default.
 
+## Scaling
+
+The `cad` worker scales with KEDA on the depth of its queue (pending, active and retrying tasks). Each source is
+a value of the chart or a field of a measurement line in
+`.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/`.
+
+| item | value | source |
+|---|---|---|
+| `threshold`, queued tasks per replica | 1 | `values.yaml keda.cad.threshold` |
+| `minReplicaCount` | 0 | `values.yaml keda.cad.minReplicaCount` |
+| `maxReplicaCount` | 2 | `values.yaml keda.cad.maxReplicaCount` |
+| `pollingInterval`, seconds | 10 | `values.yaml keda.cad.pollingInterval` |
+| `cooldownPeriod`, seconds | 90 | `values.yaml keda.cad.cooldownPeriod` |
+| `scaleDownStabilizationSeconds` | 900 | `values.yaml keda.cad.scaleDownStabilizationSeconds` |
+| `CAD_WORKER_CONCURRENCY`, jobs per replica | 1 | `configmap CAD_WORKER_CONCURRENCY` |
+| production image, uncompressed MiB | 1118.1 | `evidence/76-09-image-size.txt IMAGE_SIZE.uncompressed_mib` |
+| production image, compressed MiB | 315.5 | `evidence/76-09-image-size.txt IMAGE_SIZE.compressed_mib` |
+| cold pull from a local registry into an empty daemon, maximum of 3, seconds | 7.11 | `evidence/76-09-image-size.txt COLD_PULL_DIST.wall_max` |
+| transfer of the compressed image at 100 Mbit/s, seconds | 26.5 | `evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=100].transfer_s` |
+| transfer at 1000 Mbit/s, seconds | 2.6 | `evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=1000].transfer_s` |
+| transfer at 10000 Mbit/s, seconds | 0.3 | `evidence/76-09-image-size.txt PULL_CALC[bandwidth_mbit=10000].transfer_s` |
+| startup preflight, container start to `cad sandbox proven`, maximum of 3, seconds | 7.67 | `evidence/76-09-image-size.txt PREFLIGHT_DIST.max` |
+| cold start: cold pull + 100 Mbit/s transfer + preflight, seconds | 41.28 | `evidence/76-09-image-size.txt DECISION.cold_start_s` |
+| premise: cold start at most 0.1 x the 886 s engine timeout (1 holds, 0 fails) | 1 | `evidence/76-09-image-size.txt DECISION.premise_holds` |
+| decision: `minReplicaCount` | 0 | `evidence/76-09-image-size.txt DECISION.value` |
+
+`minReplicaCount` is 0. A cold `cad` replica costs about 41 s before its first job: 7.11 s to pull and unpack
+the 315.5 MiB image, 26.5 s to move it over a 100 Mbit/s link and 7.67 s for the sandbox preflight. The check was
+fixed before the measurement: the cold start must be at most a tenth of the 886 s engine timeout, 88.6 s. At
+41.28 s the premise holds, so a cold start costs little next to a job that may run for minutes. An idle replica,
+in contrast, holds 2 CPU and 4 GiB on every cluster all day. On the OrbStack shared image store the pull is near
+0; the registry cold pull is measured separately, as for the 71-08 evaluation image and the v1.7 phase 33 audio
+worker. The image, the pull and the preflight were measured on arm64 with load1 at most 11 at the start and the
+end of every row.
+
 ## Error codes
 
 Every code below is also in [docs/ERROR-CODES.md](ERROR-CODES.md), which owns the full wording and the
