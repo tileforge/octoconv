@@ -5,16 +5,16 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: 76-08 Task 3 attempt 3 FAIL at DXF_RETRY rsvg (watcher zombie race, fixed in fbf007c); attempt 4 pending
-last_updated: "2026-10-15T21:54:05.092Z"
+stopped_at: "Completed 76-08-PLAN.md (open: MinIO cleanup for attempts 5 and 6 and compose stop wait for Docker recovery)"
+last_updated: "2026-10-16T13:37:34.904Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: fbf007c242a13f4033fed426bf05ed838d99bfa9
+state_head: 967d897f5fd23191b03eedc3991036a62cd0ea4c
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 45
+  completed_plans: 46
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 8 of 11
+Plan: 9 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
@@ -140,6 +140,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P05 | 35min | 3 tasks | 4 files |
 | Phase 76 P06 | 6h50m | 3 tasks | 17 files |
 | Phase 76 P07 | 23min | 3 tasks | 11 files |
+| Phase 76 P08 | about 21 h wall (2026-10-15T09:25Z to 2026-10-16T06:35Z) incl. disk-floor stops, a docker wedge and quiet-window waits | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -218,6 +219,10 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-06: docs/CAD.md and docs/PREVIEW.md are held both ways by TestCADDocMatchesTheCode, TestCADCodesDocMatchesTheMapping and TestPreviewDocMatchesTheCode; CAD sync codes are computed, not fixed
 - [Phase 76]: 76-07: openapi CADOpts, cad pairs, produced and reserved roles and every async cad code are held by TestCADOpenAPIMatchesTheCode and TestCADCodesDocMatchesTheMapping; reserved roles are computed from the role CHECK
 - [Phase 76]: 76-07: MCP convert_file tags and convertToolDescription are held to the registry and to what the server publishes by TestMCPDescriptionsMatchTheRegistry; the frontend table is operationTable(resp), proven by vitest
+- [Phase 76]: 76-08: the D-12 PNG tolerance comparator judges re-runs with the worker's own judge; 3D and DXF re-runs are pixel-identical
+- [Phase 76]: 76-08: the liveproof signal watcher skips zombies and empty cmdlines (attempt 3 hit the zombie of the ink check)
+- [Phase 76]: 76-08: quiet_host per liveproof row; RULE_AMEND rerun_contaminated_rows clears a contaminated row only by a clean ALL PASS rerun (official attempt 5 plus attempt 6, 164 of 164 rows clean)
+- [Phase 76]: 76-08: CADW-04 complete; CADW-05 stays open for 76-09 to 76-11 (KEDA scale-from-zero, minReplicaCount, the final-commit all-class gate)
 
 ### Quick Tasks Completed
 
@@ -329,9 +334,10 @@ Carried from v1.12:
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
 - RESOLVED 2026-10-14 (rerun_after_watchdog): 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
 - RESOLVED 2026-10-14 (quick 261014-0lo judge fix, then rerun_after_product_fix; step ended ok): 76-02 STOP: the step re-run stopped at 2026-10-13T21:24Z on M2 (step-nauo n=1518 grid, draft, 2705076 triangles) render iso transparent: cad-pixel-judge (JudgeCADPNG, the production render judge) refused the PNG, transparent fraction 0.9564 outside 0.05..0.95 = ErrCADRenderRejected. Pre-registered rule failures: a judge that is not ok is STOP. iges group and --finish not run; a rule decision is needed
-- 76-08 Task 3 (official cad-liveproof from a fresh clone) blocked: OrbStack VM free space 5.42 GiB is below the 6 GiB D-18 floor with the octoconv stack stopped; attempt 1 at fa12a13 was stopped by the disk watchdog during the iges STACKED_REFUSAL row (10:16:56Z). Freeing VM space needs a human decision (build cache 4.5 GB, 3.2 GB reclaimable; no prune was run). CADW-04 and CADW-05 stay open.
-- 76-08 Task 3 attempt 2 (fresh clone e07d657, images reused from fa12a13 with --no-build, start 9.68 GiB free, load1 8.09) was stopped by the 6 GiB disk watchdog at 11:25:21Z during GUARD_EDGE C (6.93 to 5.74 GiB in 30 s). It passed every row up to there, including 3 STACKED_REFUSAL, 6 DETERMINISM and the RENDER_CEILING NOT_APPLICABLE. VM free is 5.68 GiB with octoconv stopped. Other projects rebuilt 1.26 GB of build cache during the run. A re-run needs a human decision on VM disk; CADW-04 and CADW-05 stay open.
-- 76-08 Task 3 attempt 3 (clone 24f30a8, images reused from fa12a13, start load1 7.59, 28 GiB free) FAILED at DXF_RETRY rsvg-convert: done with no retry. Cause: the signal watcher hit the zombie of the just-exited ink check (comm rsvg-convert, empty cmdline), reproduced in the cad-worker image; fixed in fbf007c. 80 of 177 lines had load1 above 11. Attempt 4 needs the go-ahead; CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-15 (user freed disk; builder prune approved and run by the coordinator): 76-08 Task 3 (official cad-liveproof from a fresh clone) blocked: OrbStack VM free space 5.42 GiB is below the 6 GiB D-18 floor with the octoconv stack stopped; attempt 1 at fa12a13 was stopped by the disk watchdog during the iges STACKED_REFUSAL row (10:16:56Z). Freeing VM space needs a human decision (build cache 4.5 GB, 3.2 GB reclaimable; no prune was run). CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-15 (user freed disk, VM 28 GiB free): 76-08 Task 3 attempt 2 (fresh clone e07d657, images reused from fa12a13 with --no-build, start 9.68 GiB free, load1 8.09) was stopped by the 6 GiB disk watchdog at 11:25:21Z during GUARD_EDGE C (6.93 to 5.74 GiB in 30 s). It passed every row up to there, including 3 STACKED_REFUSAL, 6 DETERMINISM and the RENDER_CEILING NOT_APPLICABLE. VM free is 5.68 GiB with octoconv stopped. Other projects rebuilt 1.26 GB of build cache during the run. A re-run needs a human decision on VM disk; CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-16 (watcher fix fbf007c proven; attempts 5 and 6 ALL PASS at f44489e, 164 of 164 rows clean): 76-08 Task 3 attempt 3 (clone 24f30a8, images reused from fa12a13, start load1 7.59, 28 GiB free) FAILED at DXF_RETRY rsvg-convert: done with no retry. Cause: the signal watcher hit the zombie of the just-exited ink check (comm rsvg-convert, empty cmdline), reproduced in the cad-worker image; fixed in fbf007c. 80 of 177 lines had load1 above 11. Attempt 4 needs the go-ahead; CADW-04 and CADW-05 stay open.
+- OPEN 2026-10-16 (waits for Docker recovery; OrbStack restart not approved): 76-08 post-run hygiene is not done. The docker daemon stopped responding at about 05:27Z during the cleanup after attempt 6. Still to do: the MinIO cleanup of the uploads and results of attempts 5 and 6 (scratchpad/76-08-minio-cleanup.sh, 76-08 clients only, then append to evidence/76-08-minio-cleanup.txt) and `docker compose -p octoconv stop`. No octoconv k8s or compose run should start before this is done.
 
 ## Deferred Items
 
@@ -453,9 +459,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-15T21:54:04.788Z
-Stopped at: 76-08 Task 3 attempt 3 FAIL at DXF_RETRY rsvg (watcher zombie race, fixed in fbf007c); attempt 4 pending
-Resume file: .planning/phases/76-measured-bounds-keda-proof-client-docs/76-08-PLAN.md
+Last session: 2026-10-16T13:37:34.728Z
+Stopped at: Completed 76-08-PLAN.md (open: MinIO cleanup for attempts 5 and 6 and compose stop wait for Docker recovery)
+Resume file: None
 
 ## Operator Next Steps
 

@@ -368,7 +368,7 @@ Plans:
 - [x] 76-07-PLAN.md — openapi CADOpts and codes, MCP descriptions against the registry, frontend operation table with vitest
 
 **Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 76-08-PLAN.md — cad-liveproof: kill mid-render and mid-PNG-rsvg, determinism by tolerance, guard cap edge, stacked refusal, measured inspect; official run
+- [x] 76-08-PLAN.md — cad-liveproof: kill mid-render and mid-PNG-rsvg, determinism by tolerance, guard cap edge, stacked refusal, measured inspect; official run
 
 **Wave 9** *(blocked on Wave 8 completion)*
 - [ ] 76-09-PLAN.md — production image size, cold pull and preflight; minReplicaCount 0 recorded; KEDA 0->2->0 loadproof; docs/CAD.md Scaling
@@ -390,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 7/11 | In Progress | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 8/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт
