@@ -5,7 +5,7 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: "Completed 76-08-PLAN.md (open: MinIO cleanup for attempts 5 and 6 and compose stop wait for Docker recovery)"
+stopped_at: "Completed 76-08-PLAN.md"
 last_updated: "2026-10-16T13:37:34.904Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
@@ -337,7 +337,7 @@ Carried from v1.12:
 - RESOLVED 2026-10-15 (user freed disk; builder prune approved and run by the coordinator): 76-08 Task 3 (official cad-liveproof from a fresh clone) blocked: OrbStack VM free space 5.42 GiB is below the 6 GiB D-18 floor with the octoconv stack stopped; attempt 1 at fa12a13 was stopped by the disk watchdog during the iges STACKED_REFUSAL row (10:16:56Z). Freeing VM space needs a human decision (build cache 4.5 GB, 3.2 GB reclaimable; no prune was run). CADW-04 and CADW-05 stay open.
 - RESOLVED 2026-10-15 (user freed disk, VM 28 GiB free): 76-08 Task 3 attempt 2 (fresh clone e07d657, images reused from fa12a13 with --no-build, start 9.68 GiB free, load1 8.09) was stopped by the 6 GiB disk watchdog at 11:25:21Z during GUARD_EDGE C (6.93 to 5.74 GiB in 30 s). It passed every row up to there, including 3 STACKED_REFUSAL, 6 DETERMINISM and the RENDER_CEILING NOT_APPLICABLE. VM free is 5.68 GiB with octoconv stopped. Other projects rebuilt 1.26 GB of build cache during the run. A re-run needs a human decision on VM disk; CADW-04 and CADW-05 stay open.
 - RESOLVED 2026-10-16 (watcher fix fbf007c proven; attempts 5 and 6 ALL PASS at f44489e, 164 of 164 rows clean): 76-08 Task 3 attempt 3 (clone 24f30a8, images reused from fa12a13, start load1 7.59, 28 GiB free) FAILED at DXF_RETRY rsvg-convert: done with no retry. Cause: the signal watcher hit the zombie of the just-exited ink check (comm rsvg-convert, empty cmdline), reproduced in the cad-worker image; fixed in fbf007c. 80 of 177 lines had load1 above 11. Attempt 4 needs the go-ahead; CADW-04 and CADW-05 stay open.
-- OPEN 2026-10-16 (waits for Docker recovery; OrbStack restart not approved): 76-08 post-run hygiene is not done. The docker daemon stopped responding at about 05:27Z during the cleanup after attempt 6. Still to do: the MinIO cleanup of the uploads and results of attempts 5 and 6 (scratchpad/76-08-minio-cleanup.sh, 76-08 clients only, then append to evidence/76-08-minio-cleanup.txt) and `docker compose -p octoconv stop`. No octoconv k8s or compose run should start before this is done.
+- RESOLVED 2026-10-16T13:46Z (Docker recovered by itself; the interrupted cleanup finished at 08:42:44Z, deleting 604 objects / 1829130978 bytes; bucket at the 3.1 GiB / 1314-object baseline; `docker compose -p octoconv stop` rc 0, nothing running; VM free 23.56 GiB): was OPEN 2026-10-16 (waits for Docker recovery; OrbStack restart not approved): 76-08 post-run hygiene is not done. The docker daemon stopped responding at about 05:27Z during the cleanup after attempt 6. Still to do: the MinIO cleanup of the uploads and results of attempts 5 and 6 (scratchpad/76-08-minio-cleanup.sh, 76-08 clients only, then append to evidence/76-08-minio-cleanup.txt) and `docker compose -p octoconv stop`. No octoconv k8s or compose run should start before this is done.
 
 ## Deferred Items
 
@@ -460,7 +460,7 @@ and the soak test that shares a database with parallel packages.
 ## Session Continuity
 
 Last session: 2026-10-16T13:37:34.728Z
-Stopped at: Completed 76-08-PLAN.md (open: MinIO cleanup for attempts 5 and 6 and compose stop wait for Docker recovery)
+Stopped at: Completed 76-08-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

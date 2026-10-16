@@ -874,3 +874,10 @@ MINIO_DELETED,prefix=uploads,job=bd6a3ae0-f15e-436a-9dcf-cc09c4d131a2,objects=1,
 MINIO_DELETED,prefix=results,job=bd6a3ae0-f15e-436a-9dcf-cc09c4d131a2,objects=2,bytes=165001
 MINIO_DELETED,prefix=uploads,job=1e5967d1-9788-4bd1-b275-4fef736ba21e,objects=1,bytes=51745292
 MINIO_DELETED,prefix=results,job=1e5967d1-9788-4bd1-b275-4fef736ba21e,objects=2,bytes=17340
+
+MINIO_CLEANUP,date_utc=2026-10-16T08:42:44Z,bucket=octoconv,scope=uploads_and_results_of_the_jobs_of_the_clients_minted_by_76-08_after_2026-10-15T09:25:31Z,clients=cad-liveproof-1792056992;cad-smoke-1792057634;cad-liveproof-1792058342;cad-liveproof-1792061107;cad-liveproof-1792097988;cad-smoke-fix-1792115621;cad-smoke-fix-1792115932;cad-liveproof-1792116683;cad-liveproof-1792120885;cad-liveproof-1792124045,jobs=825,objects_deleted=604,bytes_deleted=1829130978,bucket_before=4.8GiB_1918_objects,bucket_after=3.1GiB_1314_objects
+NOTE,run=2026-10-16T08:42:44Z,completed_after_docker_recovered,per_object_MINIO_DELETED_rows=lost_(the_13:45Z_verification_run_wrote_the_same_scratch_output_file);header_line_above_is_the_run's_own_stdout
+MINIO_CLEANUP,date_utc=2026-10-16T13:45:43Z,bucket=octoconv,scope=uploads_and_results_of_the_jobs_of_the_clients_minted_by_76-08_after_2026-10-16T03:19:15Z_(attempts_5_and_6),clients=cad-liveproof-1792120885;cad-liveproof-1792124045,other_clients_since=0,jobs=306,objects_deleted=0,bytes_deleted=0,bucket_before=3.1GiB_1314_objects,bucket_after=3.1GiB_1314_objects,baseline=3.1GiB_1314_objects
+VERIFY,date_utc=2026-10-16T13:46Z,probe=results/543b9553-76b8-46ad-91a9-bdba1391e416_(attempt5_DETERMINISM_job_a),objects=0,bucket=3367996426_bytes_1314_objects,baseline_match=1
+COMPOSE_STOP,date_utc=2026-10-16T13:46Z,cmd=docker_compose_-p_octoconv_stop,rc=0,running_after=0
+VM_FREE,date_utc=2026-10-16T13:46:25Z,vm_free_kib=24703856,vm_free_gib=23.56,host_free=28Gi

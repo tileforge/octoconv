@@ -201,9 +201,16 @@ Every commit after fa12a13 touches only scripts/cad-liveproof.sh or .planning. T
 8. **TDD.** The RED commit uses stubs so the tests fail on assertions, not on missing symbols.
 9. **Smoke runs.** Smoke runs on the main tree (extracted helpers, the 18090 override) were added. Their MinIO objects were deleted.
 
-## Open items (not done)
+## Open items
 
-- **MinIO cleanup for attempts 5 and 6, and `docker compose -p octoconv stop`.** These wait for Docker to recover. The docker daemon stopped responding at about 05:27Z on 2026-10-16, during the cleanup after attempt 6: `docker compose exec … mc du`, `docker compose stop`, `docker ps` and `docker version` all hung. The hung clients have since exited. No OrbStack restart was done; it is not approved.
+- **RESOLVED 2026-10-16T13:46Z: MinIO cleanup for attempts 5 and 6, and `docker compose -p octoconv stop`.**
+  - Docker recovered by itself.
+  - The interrupted cleanup completed at 08:42:44Z. It deleted 604 objects (1829130978 bytes) and took the bucket from 4.8 GiB / 1918 objects to the 3.1 GiB / 1314-object baseline.
+  - A scoped verification at 13:45Z covered the two clients created after the last cleanup (attempts 5 and 6, 153 jobs each, no other clients). It found 0 objects left, and a direct probe of an attempt-5 results prefix returned 0 objects.
+  - The per-object rows of the 08:42 run were lost: the verification run wrote the same scratch output file. Only that run's header line survives.
+  - `docker compose -p octoconv stop` ran with rc 0 and left nothing running. VM free 23.56 GiB, host 28 GiB.
+  - All of this is recorded in evidence/76-08-minio-cleanup.txt.
+- **Originally:** these waited for Docker to recover. The docker daemon stopped responding at about 05:27Z on 2026-10-16, during the cleanup after attempt 6: `docker compose exec … mc du`, `docker compose stop`, `docker ps` and `docker version` all hung. The hung clients have since exited. No OrbStack restart was done; it is not approved.
   - After recovery, run `scratchpad/76-08-minio-cleanup.sh` (it deletes only the uploads and results of the 76-08 clients), then `docker compose -p octoconv stop`, and append the result to evidence/76-08-minio-cleanup.txt.
   - Earlier cleanups returned the bucket to its 3.1 GiB / 1314-object baseline each time.
 - **CADW-05 stays open.** 76-09 (KEDA 0->2->0 and minReplicaCount), 76-10 and 76-11 (the final-commit all-class gate) still carry it. This plan delivered its cad-liveproof share.
