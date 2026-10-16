@@ -1,0 +1,27 @@
+VOLUMES_CMP,phase=e2e_smoke,before_count=49,after_count=49,cmp=identical,sha256=cdcf4a8a8d329625ef9bbbf397ec1f36f67d2a279913cf958534f82bc3e3e75c
+--- docker system df before the smoke
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          53        44        14.11GB   1.109GB (7%)
+Containers      113       48        1.312GB   1.088GB (82%)
+Local Volumes   49        32        7.624GB   1.801GB (23%)
+Build Cache     36        0         1.146GB   0B
+--- docker system df after the smoke
+TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
+Images          65        55        17.35GB   1.151GB (6%)
+Containers      124       48        1.303GB   1.078GB (82%)
+Local Volumes   49        32        7.626GB   1.801GB (23%)
+Build Cache     98        0         7.056GB   4.211GB
+--- octoconv image delta
+> hibiken/asynqmon:0.7.2 sha256:12c655de91010b720f858a5a8fdbe4cabcdb6c6ec22c0ff861c4750594533379 25.4MB
+< octoconv-av-worker:latest sha256:03a9e5d859882673f5f4d49f4c65888dc650860a3590bae6812d32d28c06f3a6 162MB
+> octoconv-audio-worker:latest sha256:bea1b277f6755172acd6c89f3262fbf060e1382889585110e56e49fc6bef6a11 687MB
+> octoconv-av-worker:latest sha256:a49a396ddeb5395d712a839ca4dfa07865942bd0bcc6f3c356c708e474ef6cab 162MB
+> octoconv-chromium-worker:latest sha256:84f0f46f192127074942927817e70159a8ad0be6bf86bae3bd2060882ffe16ab 690MB
+> octoconv-document-worker:latest sha256:f0e715e3f57c029cdd97d7e3ff14685a3bfb226f4d5f35f111b98f0df0e671f4 769MB
+> octoconv-ocr-worker:latest sha256:7f2ef05f9088934faa2e6bd3d7be589851a91f10cb276d2ccf4715c4e0d8241c 445MB
+> octoconv-pandoc-worker:latest sha256:18d67ce45265e4d99ac4489f02c46fb275781201f1630853ee005e5bb24950c7 322MB
+> octoconv-probe-worker:latest sha256:5ea59694202efb794630af5503222234f168e635957f185c76c918978c3424f1 234MB
+> octoconv-tectonic-worker:latest sha256:df6b60973f9b76c599643f8003277d097c981090f993d36caa36b8533242e48c 466MB
+> octoconv-webhook-worker-1:latest sha256:9de0ae848d3fe1e9e54f95d5f42b6e1c4c0d4465ecb8b29b3f84d2d967c5c200 141MB
+> octoconv-webhook-worker-2:latest sha256:509eae68b1a92491cb1778d296ff06ad285697dc476e68bb34260cdcd9a3a791 141MB
+> octoconv-worker:latest sha256:4b34bdbe48c95543c7233fdc7f20034e8b382b98f14db9acd0bdd99cd7066030 312MB
