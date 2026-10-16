@@ -371,7 +371,7 @@ Plans:
 - [x] 76-08-PLAN.md — cad-liveproof: kill mid-render and mid-PNG-rsvg, determinism by tolerance, guard cap edge, stacked refusal, measured inspect; official run
 
 **Wave 9** *(blocked on Wave 8 completion)*
-- [ ] 76-09-PLAN.md — production image size, cold pull and preflight; minReplicaCount 0 recorded; KEDA 0->2->0 loadproof; docs/CAD.md Scaling
+- [x] 76-09-PLAN.md — production image size, cold pull and preflight; minReplicaCount 0 recorded; KEDA 0->2->0 loadproof; docs/CAD.md Scaling
 
 **Wave 10** *(blocked on Wave 9 completion)*
 - [ ] 76-10-PLAN.md — KEDA downscale-survival of a long render; k8s restored to its pre-phase state
@@ -390,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 8/11 | In Progress | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 9/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт

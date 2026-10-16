@@ -5,16 +5,16 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: "Completed 76-08-PLAN.md"
-last_updated: "2026-10-16T13:37:34.904Z"
+stopped_at: Completed 76-09-PLAN.md
+last_updated: "2026-10-16T15:47:09.961Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 967d897f5fd23191b03eedc3991036a62cd0ea4c
+state_head: 8682a5fdbad85615b7e0121109a038d00616dd74
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 46
+  completed_plans: 47
   percent: 83
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 ## Current Position
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 9 of 11
+Plan: 10 of 11
 Status: Ready to execute
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
@@ -141,6 +141,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P06 | 6h50m | 3 tasks | 17 files |
 | Phase 76 P07 | 23min | 3 tasks | 11 files |
 | Phase 76 P08 | about 21 h wall (2026-10-15T09:25Z to 2026-10-16T06:35Z) incl. disk-floor stops, a docker wedge and quiet-window waits | 3 tasks | 6 files |
+| Phase 76 P09 | 125min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -223,6 +224,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-08: the liveproof signal watcher skips zombies and empty cmdlines (attempt 3 hit the zombie of the ink check)
 - [Phase 76]: 76-08: quiet_host per liveproof row; RULE_AMEND rerun_contaminated_rows clears a contaminated row only by a clean ALL PASS rerun (official attempt 5 plus attempt 6, 164 of 164 rows clean)
 - [Phase 76]: 76-08: CADW-04 complete; CADW-05 stays open for 76-09 to 76-11 (KEDA scale-from-zero, minReplicaCount, the final-commit all-class gate)
+- [Phase 76]: 76-09: keda.cad.minReplicaCount stays 0 (D-09); the measured cold start 41.28 s is under the 88.6 s premise limit (premise_holds=1)
+- [Phase 76]: 76-09: KEDA drains cad 2->0 directly one cooldown after the last job; the 900 s HPA window does not delay deactivation
+- [Phase 76]: 76-09: the cad loadproof scales the nine non-cad ScaledObject targets to 0 during helm install; the chart's install-time CPU starvation on an 11-CPU node is deferred (deferred-items.md)
 
 ### Quick Tasks Completed
 
@@ -459,8 +463,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-16T13:37:34.728Z
-Stopped at: Completed 76-08-PLAN.md
+Last session: 2026-10-16T15:47:08.664Z
+Stopped at: Completed 76-09-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
