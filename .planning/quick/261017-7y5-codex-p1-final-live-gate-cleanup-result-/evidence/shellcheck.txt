@@ -1,0 +1,24 @@
+shellcheck version: 0.11.0
+GREEN wrapper = the Task 2 GREEN scripts/final-live-gate.sh; base = 1003655bda35e6ee31521215e1dc3aa6e9dee250
+
+== shellcheck -S warning, GREEN wrapper
+rc=0
+== shellcheck -S warning, test file
+rc=0
+
+== full-severity codes, wrapper: base
+   1 SC2001
+   2 SC2012
+   1 SC2086
+   2 SC2329
+== full-severity codes, wrapper: GREEN
+   1 SC2001
+   2 SC2012
+   1 SC2086
+   2 SC2329
+== full-severity codes, test file: base
+  18 SC2016
+== full-severity codes, test file: GREEN
+  19 SC2016
+== the new SC2016 in the test file
+PREP='echo sha256:left1 > "$S/sandbox_left"' run_wrapper

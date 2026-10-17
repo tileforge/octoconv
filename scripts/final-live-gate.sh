@@ -207,11 +207,20 @@ bg_run() {
 
 volume_list() { tmo 60 docker volume ls -q < /dev/null | sort; }
 
+dirt_count() {
+	local out
+	if out=$(git status --porcelain --untracked-files=no); then
+		printf '%s\n' "$out" | grep -c . || true
+	else
+		echo unknown
+	fi
+}
+
 trap cleanup EXIT
 trap on_term TERM INT
 
 COMMIT=$(git rev-parse HEAD)
-TRACKED_DIRT=$(git status --porcelain --untracked-files=no | grep -c . || true)
+TRACKED_DIRT=$(dirt_count)
 FREE0=$(vm_free_kib || true)
 ev "HDR,date_utc=$(utc)"
 ev "HDR,commit=$COMMIT"
@@ -236,18 +245,24 @@ sampler &
 SAMPLER_PID=$!
 
 step_preflight() {
-	local ok=1 k n out krc h p r
+	local ok=1 k n out krc h p r prc
 	pf() {
 		ev "PREFLIGHT,check=$1,result=$2${3:+,$3}"
 		[ "$2" = ok ] || ok=0
 	}
 	if [ "$(git rev-parse --git-dir)" = ".git" ]; then pf git_dir ok; else pf git_dir fail "git_dir=$(git rev-parse --git-dir)"; fi
-	pf tracked_dirt ok "count=$TRACKED_DIRT"
+	if [ "$TRACKED_DIRT" = unknown ]; then pf tracked_dirt fail "count=unknown"; else pf tracked_dirt ok "count=$TRACKED_DIRT"; fi
 	for t in docker kubectl lsof jq perl shasum npm curl python3 go git; do
 		command -v "$t" > /dev/null 2>&1 || pf tool fail "missing=$t"
 	done
-	r=$(tmo 60 docker ps -q --filter label=com.docker.compose.project=octoconv < /dev/null 2>&1 | grep -c . || true)
-	if [ "$r" = 0 ]; then pf compose_running ok "count=0"; else pf compose_running fail "count=$r"; fi
+	prc=0
+	out=$(tmo 60 docker ps -q --filter label=com.docker.compose.project=octoconv < /dev/null 2>&1) || prc=$?
+	if [ "$prc" != 0 ]; then
+		pf compose_running fail "docker_ps_rc=$prc"
+	else
+		r=$(printf '%s\n' "$out" | grep -c . || true)
+		if [ "$r" = 0 ]; then pf compose_running ok "count=0"; else pf compose_running fail "count=$r"; fi
+	fi
 	krc=0
 	out=$(tmo 60 kubectl get pods -A --no-headers < /dev/null 2>&1) || krc=$?
 	if [ "$krc" != 0 ]; then
@@ -395,7 +410,7 @@ step_ci_local() {
 }
 
 step_tectonic() {
-	local p1 p2 failed landlock dlog denv dval img names="" ok=1 envout
+	local p1 p2 failed landlock dlog denv dval img names="" ok=1 envout erc=0
 	[ -n "$CI_LOG" ] || {
 		nr tectonic needs_ci_local_transcript
 		return 2
@@ -407,10 +422,13 @@ step_tectonic() {
 	tmo 60 docker logs --since "$CI_START_UTC" octoconv-tectonic-worker < /dev/null > "$EVD/76-11-tectonic-worker.log" 2>&1 || true
 	landlock=$(grep -c 'tectonic sandbox: landlock via' "$EVD/76-11-tectonic-worker.log" || true)
 	dlog=$(grep -c 'TECTONIC_SANDBOX_DISABLED' "$EVD/76-11-tectonic-worker.log" || true)
-	envout=$(tmo 60 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' octoconv-tectonic-worker < /dev/null 2> /dev/null || true)
+	envout=$(tmo 60 docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' octoconv-tectonic-worker < /dev/null 2> /dev/null) || erc=$?
 	denv=$(printf '%s\n' "$envout" | grep -cx 'TECTONIC_SANDBOX_DISABLED=true' || true)
 	dval=$(printf '%s\n' "$envout" | sed -n 's/^TECTONIC_SANDBOX_DISABLED=//p' | head -1)
-	if ! printf '%s\n' "$envout" | grep -q '^TECTONIC_SANDBOX_DISABLED='; then
+	if [ "$erc" != 0 ]; then
+		dval="unreadable"
+		ok=0
+	elif ! printf '%s\n' "$envout" | grep -q '^TECTONIC_SANDBOX_DISABLED='; then
 		dval="unset"
 	elif [ -z "$dval" ]; then
 		dval="empty"
@@ -434,7 +452,7 @@ step_tectonic() {
 }
 
 step_sandbox() {
-	local f="$EVD/76-11-sandbox-liveproof.txt" rc=0 last pairs left nrl
+	local f="$EVD/76-11-sandbox-liveproof.txt" rc=0 last pairs left nrl lout lrc=0 cres
 	STEP_TRANSCRIPT=76-11-sandbox-liveproof.txt
 	bg_run tmo 14400 env GOTOOLCHAIN=go1.26.4 scripts/sandbox-liveproof.sh $SANDBOX_CLASSES > "$f" 2>&1 || rc=$?
 	STEP_RC=$rc
@@ -442,14 +460,24 @@ step_sandbox() {
 	last=$(tail -1 "$f")
 	pairs=$(awk '/^== [a-z]+: building /{ c = $2; sub(/:$/, "", c) } /^image id: /{ printf "%s%s=%s", sep, c, $3; sep = ";" }' "$f")
 	ev "SANDBOX_IMAGES,${pairs:-none}"
-	left=$(tmo 60 docker images -q --filter 'reference=octoconv-*:sandbox-liveproof-*' < /dev/null 2> /dev/null | grep -c . || true)
-	ev "CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=$left,reason=no_api_stack_and_no_clients"
+	lout=$(tmo 60 docker images -q --filter 'reference=octoconv-*:sandbox-liveproof-*' < /dev/null 2> /dev/null) || lrc=$?
+	if [ "$lrc" != 0 ]; then
+		left=unknown
+	else
+		left=$(printf '%s\n' "$lout" | grep -c . || true)
+	fi
+	if [ "$lrc" = 0 ] && [ "$left" = 0 ]; then cres=ok; else cres=fail; fi
+	ev "CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=$left,reason=no_api_stack_and_no_clients,result=$cres"
 	ev "SANDBOX,rc=$rc,last_line=$(san "$last")"
 	nrl=$(grep -c '^NOT RUN: ' "$f" || true)
 	if [ "$nrl" -gt 0 ]; then
 		while IFS= read -r line; do
 			nr sandbox "${line#NOT RUN: }"
 		done < <(grep '^NOT RUN: ' "$f")
+	fi
+	if [ "$cres" = fail ]; then
+		[ "$rc" != 0 ] || STEP_RC=1
+		return 1
 	fi
 	if [ "$rc" = 0 ] && printf '%s\n' "$last" | grep -qE '^ALL PASS \([0-9]+ checks\)$' && [ "$nrl" = 0 ]; then
 		return 0
@@ -518,7 +546,7 @@ quiet_rows() {
 }
 
 run_cad() {
-	local n=$1 name=$2 since rc=0 f summ dirt cc ok=1 rows bad cres crc
+	local n=$1 name=$2 since rc=0 f summ dirt cc ok=1 rows bad cres crc lf qres
 	since=$(utc)
 	f="$EVD/$name"
 	bg_run tmo 21600 env CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090 CAD_LIVEPROOF_QUIET_LOAD="$ROW_QUIET_LOAD" GOTOOLCHAIN=go1.26.4 scripts/cad-liveproof.sh --out "$f" > "$EVD/${name%.txt}-console.txt" 2>&1 || rc=$?
@@ -549,9 +577,20 @@ run_cad() {
 	[ "$cc" = "$COMMIT" ] || ok=0
 	rows="$STATE/rows.$n"
 	bad="$STATE/bad.$n"
-	quiet_rows "${f%.txt}-load.txt" "$rows" "$bad"
+	lf="${f%.txt}-load.txt"
+	if [ -s "$lf" ]; then
+		quiet_rows "$lf" "$rows" "$bad"
+	else
+		: > "$rows"
+		: > "$bad"
+	fi
+	qres=ok
+	if [ ! -s "$lf" ] || ! grep -q . "$rows"; then
+		qres=fail
+		ok=0
+	fi
 	ev "CAD_RUN,run=$n,rc=$rc,all_pass=$summ,tracked_dirt=${dirt:-missing},commit=${cc:-missing},commit_match=$([ "$cc" = "$COMMIT" ] && echo 1 || echo 0),cleanup=$cres,transcript=$name,result=$([ "$ok" = 1 ] && echo ok || echo fail)"
-	ev "QUIET,step=cad,run=$n,rows=$(grep -c . "$rows" || true),contaminated=$(grep -c . "$bad" || true),bound=$ROW_QUIET_LOAD,contaminated_rows=$(tr '\n' ';' < "$bad" | sed 's/;$//')"
+	ev "QUIET,step=cad,run=$n,rows=$(grep -c . "$rows" || true),contaminated=$(grep -c . "$bad" || true),bound=$ROW_QUIET_LOAD,contaminated_rows=$(tr '\n' ';' < "$bad" | sed 's/;$//'),result=$qres"
 	[ "$ok" = 1 ]
 }
 
@@ -709,7 +748,7 @@ ev "VOLUMES,equal=$VEQ"
 if [ "$VEQ" = 0 ]; then
 	diff "$STATE/vol_before" "$STATE/vol_after" | sed -n 's/^\([<>]\) \(.*\)$/VOLUMES_DIFF,side=\1,name=\2/p' | sed 's/side=</side=before_only/; s/side=>/side=after_only/' >> "$OUT" || true
 fi
-DIRT_END=$(git status --porcelain --untracked-files=no | grep -c . || true)
+DIRT_END=$(dirt_count)
 ev "DIRT,phase=end,tracked_dirt=$DIRT_END"
 ev "DISK,$(awk '{ for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == "free_kib" && kv[2] ~ /^[0-9]+$/) { if (m == "" || kv[2] + 0 < m + 0) m = kv[2]; n++ } if (kv[1] == "host_free_kib" && kv[2] ~ /^[0-9]+$/) { if (h == "" || kv[2] + 0 < h + 0) h = kv[2] } } } END { printf "vm_free_min_kib=%s,samples=%d,host_free_min_kib=%s,floor_kib='"$FLOOR_KIB"'", (m == "" ? "unknown" : m), n, (h == "" ? "unknown" : h) }' "$WD_LOG")"
 
