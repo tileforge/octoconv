@@ -1,8 +1,8 @@
 ---
-status: awaiting_human_verify
+status: resolved
 trigger: "TestCADStageDeadlineIsNotTheAttemptDeadline mesh subtest: cad_test.go:508: took 30.592649542s (limit 5s) under full ./... run; err still ErrCADMeshTimeout"
 created: 2026-10-17T04:05:00Z
-updated: 2026-10-17T05:55:00Z
+updated: 2026-10-17T07:30:00Z
 ---
 
 ## Current Focus
