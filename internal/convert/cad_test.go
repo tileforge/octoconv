@@ -494,7 +494,7 @@ func TestCADSignalsAndSilenceAreClassifiedByWhatKilledTheHelper(t *testing.T) {
 
 func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 	t.Run("the mesh stage's own deadline is ErrCADMeshTimeout", func(t *testing.T) {
-		f := newCADFixture(t, "step", cadOKGuard(), "sleep 30\n")
+		f := newCADFixture(t, "step", cadOKGuard(), "exec sleep 30\n")
 		c := CADConverter{MeshTimeout: 300 * time.Millisecond}
 		start := time.Now()
 		err := c.Convert(context.Background(), f.in, f.out, nil)
@@ -509,7 +509,7 @@ func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 		}
 	})
 	t.Run("the attempt deadline stays a plain context error", func(t *testing.T) {
-		f := newCADFixture(t, "step", cadOKGuard(), "sleep 30\n")
+		f := newCADFixture(t, "step", cadOKGuard(), "exec sleep 30\n")
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		c := CADConverter{MeshTimeout: time.Minute}
@@ -523,7 +523,7 @@ func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 		requireNoCADSentinel(t, err)
 	})
 	t.Run("a guard deadline is no CAD sentinel and the mesh never runs", func(t *testing.T) {
-		f := newCADFixture(t, "step", "sleep 30\n", "touch \"$(dirname \"$0\")/mesh.ran\"\n"+cadSay("mesh", "ok", "", 0))
+		f := newCADFixture(t, "step", "exec sleep 30\n", "touch \"$(dirname \"$0\")/mesh.ran\"\n"+cadSay("mesh", "ok", "", 0))
 		c := CADConverter{GuardTimeout: 300 * time.Millisecond}
 		err := c.Convert(context.Background(), f.in, f.out, nil)
 		if err == nil {
