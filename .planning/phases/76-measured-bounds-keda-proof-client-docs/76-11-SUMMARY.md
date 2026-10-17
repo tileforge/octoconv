@@ -292,3 +292,5 @@ None new.
 ## Follow-up
 
 2026-10-17, quick 261017-7y5: on Codex review of PR #37, after the gate, the wrapper was hardened so that a failed cleanup or a masked command failure fails its step; the gate verdict is unaffected, because attempt 4's cad cleanup recorded `result=ok` (evidence/76-11-final-gate.txt line 44); the attempt-4 status of the other hardened checks is in `.planning/quick/261017-7y5-codex-p1-final-live-gate-cleanup-result-/261017-7y5-SUMMARY.md`.
+
+2026-10-17, quick 261017-f0i: on Codex round 3 of PR #37, the cad cleanup now finds job objects from one recursive bucket listing (`mc ls --recursive --json local/octoconv`), checked before and after deletion, and fails on a failed or unread listing, on a job without an `uploads/` key, and on any object left under a run prefix; attempt 4's CLEANUP line (evidence/76-11-final-gate.txt line 44) was computed with the per-prefix `mc du --json` listing unchecked, and although its objects_deleted=302 matches the bucket drop from 1884 to 1582 objects, that match cannot show a skipped prefix, so the absence of leftovers at attempt 4 is not re-proven.
