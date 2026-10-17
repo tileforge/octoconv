@@ -288,3 +288,7 @@ None new.
 - Commits b94e785, a3c8a5f, 40512a9, 8009913, 00c26b3, 54641ff, 07d1024, 14e4410 and 20977da are ancestors of HEAD. All are signed G, and none has a Co-Authored-By trailer.
 - `GOTOOLCHAIN=go1.26.4 go vet ./...` exits 0, and `gofmt -l .` is empty.
 - `git diff --exit-code main -- internal/convert/exec.go` exits 0. So does the frozen set: keda-ocr, keda-pandoc and keda-av downscale-survival, keda-load-proof, keda-ocr-loadproof, keda-pandoc-loadproof, cad-image-size-measure and sandbox-liveproof.
+
+## Follow-up
+
+2026-10-17, quick 261017-7y5: on Codex review of PR #37, after the gate, the wrapper was hardened so that a failed cleanup or a masked command failure fails its step; the gate verdict is unaffected, because attempt 4's cad cleanup recorded `result=ok` (evidence/76-11-final-gate.txt line 44); the attempt-4 status of the other hardened checks is in `.planning/quick/261017-7y5-codex-p1-final-live-gate-cleanup-result-/261017-7y5-SUMMARY.md`.
