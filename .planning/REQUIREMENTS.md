@@ -68,7 +68,7 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 - [x] **CADW-02**: Каждый этап движка работает под своим замеренным Landlock-ruleset; наборы путей записаны в `SANDBOX-PATHS.md` и удерживаются тестом; воркер без Landlock не стартует; preflight на реальном движке судит по выходу
 - [x] **CADW-03**: Ошибки классифицируются transient/terminal по этапам; убийство посреди джобы не оставляет живых процессов и не держит джобу до полного таймаута
 - [x] **CADW-04**: `CAD_ENGINE_TIMEOUT` замерен по обеим операциям и спарен с потолком размера входа; оценка времени в inspect помечена как замеренная
-- [ ] **CADW-05**: Живой гейт всех классов, включая `cad`, проходит на образах из финального коммита; scale-from-zero `cad` через KEDA доказан; `minReplicaCount` для `cad` выбран осознанно
+- [x] **CADW-05**: Живой гейт всех классов, включая `cad`, проходит на образах из финального коммита; scale-from-zero `cad` через KEDA доказан; `minReplicaCount` для `cad` выбран осознанно
 - [x] **CADW-06**: Клиентская документация: `docs/CAD.md`, коды ошибок, OpenAPI, MCP-описания и таблица форматов фронтенда
 
 ## v2 Requirements
@@ -126,7 +126,7 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 | CCONV-02 | Phase 75 | Complete |
 | CCONV-03 | Phase 75 | Complete |
 | CADW-04 | Phase 76 | Complete |
-| CADW-05 | Phase 76 | Pending |
+| CADW-05 | Phase 76 | Complete |
 | CADW-06 | Phase 76 | Complete |
 | PREV-01 | Phase 76 | Complete |
 

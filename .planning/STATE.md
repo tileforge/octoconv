@@ -4,17 +4,17 @@ milestone: v1.16
 milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
-status: executing
-stopped_at: Completed 76-10-PLAN.md
-last_updated: "2026-10-16T16:41:02.000Z"
+status: verifying
+stopped_at: Completed 76-11-PLAN.md
+last_updated: "2026-10-17T00:44:27.165Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 1468d8e4852be53231a56e6ff821b74d1d9ad5bc
+state_head: 20977da1bcae2930c961276ce5f25e4cdf1813d9
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 48
+  completed_plans: 49
   percent: 83
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
 Plan: 11 of 11
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
 Progress: [████████░░] 83% (0/6 phases)
@@ -143,6 +143,7 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 76 P08 | about 21 h wall (2026-10-15T09:25Z to 2026-10-16T06:35Z) incl. disk-floor stops, a docker wedge and quiet-window waits | 3 tasks | 6 files |
 | Phase 76 P09 | 125min | 3 tasks | 8 files |
 | Phase 76 P10 | 50min | 2 tasks | 7 files |
+| Phase 76 P11 | 8h02m | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -231,6 +232,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 76]: 76-10: LONG for the cad downscale-survival is render_step M2 by the pre-registered band rule (194.90 s in-worker, band 180-590); the k8s wall was 197.01 s
 - [Phase 76]: 76-10: a cad render in flight survives the KEDA/HPA 2->1 scale-down: SIGTERM at least 161.7 s before finish, one attempt, Completed exit 0 after 162.0 s against the 906 s grace
 - [Phase 76]: 76-10: the deletion-cost annotation raced the HPA by 0.26-1.26 s; hardening deferred (deferred-items.md); CADW-05 stays open for 76-11
+- [Phase 76]: 76-11: the all-class final gate passed from a fresh clone at 07d1024 (attempt 4, SUMMARY ALL PASS, not_run 0, tracked_dirt 0); attempts 1 INCOMPLETE, 2 FAIL (apt mirror), 3 FAIL (wrapper tectonic false negative) kept on record
+- [Phase 76]: 76-11: a gate run starts only with VM free >= the measured full-eviction peak 19 GiB plus the 6 GiB floor; the 60 s watchdog stays
+- [Phase 76]: 76-11: a sandbox escape hatch is judged by the value true (ResolveHelper's rule), never by the variable's presence
 
 ### Quick Tasks Completed
 
@@ -467,8 +471,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-16T16:41:02.000Z
-Stopped at: Completed 76-10-PLAN.md
+Last session: 2026-10-17T00:44:25.909Z
+Stopped at: Completed 76-11-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

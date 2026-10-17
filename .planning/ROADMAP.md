@@ -377,7 +377,7 @@ Plans:
 - [x] 76-10-PLAN.md — KEDA downscale-survival of a long render; k8s restored to its pre-phase state
 
 **Wave 11** *(blocked on Wave 10 completion)*
-- [ ] 76-11-PLAN.md — ci-local e2e knobs and the all-classes final gate from a fresh clone at the final commit, ALL PASS
+- [x] 76-11-PLAN.md — ci-local e2e knobs and the all-classes final gate from a fresh clone at the final commit, ALL PASS
 
 ## Progress
 
@@ -390,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 10/11 | In Progress | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 11/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт
