@@ -272,10 +272,11 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261012-u2s | Codex PR#36 round 3: a DXF with nothing visible is cad_empty_result on svg/pdf/render (helper nothing_visible, Go SVG Visible count, PDF judge InkOps from graphics-state alpha); font slant matches fontconfig (fsSelection bit 9, subfamily) | 2026-10-13 | e587004 | [261012-u2s-codex-pr36-round3-fully-transparent-dxf](./quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/) |
 | 261013-0og | Codex PR#36 round 4: a DXF is empty when its raster (confined rsvg, 2048 letterbox, white page) has no ink under the shared J1 judge, on svg/pdf/render alike; attribute checks kept only as early refusal; probe ink mode + crafted differential | 2026-10-13 | 59b9842 | [261013-0og-codex-pr36-round4-dxf-emptiness-judged-b](./quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/) |
 | 261014-0lo | One 3D/DXF render verdict on both backgrounds; alpha-only checks differ (ring), 95% transparent cap removed | 2026-10-14 | c9b6445 | [261014-0lo-render-judge-transparent-and-opaque-back](./quick/261014-0lo-render-judge-transparent-and-opaque-back/) |
+| 261017-7y5 | Codex PR#37 P1: a failed cad cleanup fails the cad step (CAD_RUN cleanup=ok/fail/not_run; STOPPED still returns 2); sweep: masked command failures fail the verdict they feed (sandbox leftover listing, tectonic env read, docker ps, tracked dirt, quiet rows); 76-11 verdict unaffected (cleanup result=ok) | 2026-10-17 | 23bd080 | [261017-7y5-codex-p1-final-live-gate-cleanup-result-](./quick/261017-7y5-codex-p1-final-live-gate-cleanup-result-/) |
 
 ### Pending Todos
 
-Ровно четыре, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно семь, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -290,6 +291,17 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - **Тест, строящий `ConfinedDocument`/`ConfinedChromium` и доходящий до `Convert`, чистит настоящий
   `/tmp` хоста** (находка 70-07). См.
   `.planning/todos/pending/2026-09-30-sweep-tests-must-not-touch-host-tmp.md`.
+- **CAD-задания не показывают прогресс:** `progress_pct` остаётся `null` до конца; предложены
+  этапы (`stage`, `stage_index`/`stage_count`) вместо выдуманного процента. См.
+  `.planning/todos/pending/2026-10-15-cad-stage-progress.md`.
+- **На darwin один групповой SIGKILL может не задеть потомка, форкнутого в этот момент**
+  (`runCommandCore`/`runCommandStreaming`; 9 из 400 прогонов под нагрузкой ждали ~30 с); Linux
+  не затронут; `internal/convert/exec.go` без отдельного решения не трогаем. См.
+  `.planning/todos/pending/2026-10-17-darwin-killpg-fork-race.md`.
+- **Очистка cad в финальном гейте читает упавший `mc du --json` по префиксу как «нечего
+  удалять»;** поведение `mc du` на отсутствующем префиксе не замерено, нужен живой замер
+  (быстрая задача 261017-7y5). См.
+  `.planning/todos/pending/2026-10-17-cad-cleanup-mc-du-absent-prefix.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
