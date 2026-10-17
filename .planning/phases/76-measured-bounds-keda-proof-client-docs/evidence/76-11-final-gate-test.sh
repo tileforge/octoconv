@@ -87,7 +87,6 @@ case "$a" in
     t=${t#local/octoconv/}
     grep -vF "\"key\":\"$t" "$S/bucket" > "$S/bucket.new" || true
     mv "$S/bucket.new" "$S/bucket" ;;
-  "compose exec -T minio mc du --json "*) echo '{"status":"success","prefix":"x","size":100,"objects":2}' ;;
   "compose exec -T minio mc du local/octoconv") printf '3.1GiB\t1314 objects\toctoconv\n' ;;
 esac
 exit 0

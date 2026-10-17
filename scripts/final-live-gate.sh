@@ -490,8 +490,19 @@ step_sandbox() {
 	return 1
 }
 
+cad_bucket_list() {
+	local out=$1 lrc=0 jrc=0
+	tmo 300 docker compose exec -T minio mc ls --recursive --json local/octoconv < /dev/null > "$out.raw" 2> /dev/null || lrc=$?
+	jq -r 'if type == "object" and .status == "success" and (.key | type) == "string" and (.size | type) == "number" then [.size, .key] | @tsv else "BAD" end' "$out.raw" > "$out" 2> /dev/null || jrc=$?
+	[ "$lrc" = 0 ] && [ "$jrc" = 0 ] && ! grep -qx BAD "$out"
+}
+
+cad_prefix_count() {
+	awk -F '\t' -v p="$2" 'index($2, p) == 1 { n++; s += $1 } END { printf "%d %d\n", n, s }' "$1"
+}
+
 cad_cleanup() {
-	local since=$1 run=$2 user pass clients others ids id p line b o nj=0 inv=0 obj=0 bytes=0 bbefore bafter res=ok q1=0 q2=0 q3=0
+	local since=$1 run=$2 user pass clients others ids id p pre c s plist="" nj=0 inv=0 obj=0 bytes=0 jwu=unknown left=unknown bbefore bafter res=ok q1=0 q2=0 q3=0
 	tmo 120 docker compose start postgres minio < /dev/null > /dev/null 2>&1 || res=fail
 	for _ in $(seq 1 30); do
 		tmo 30 docker compose exec -T postgres pg_isready -U octo -d octo_db < /dev/null > /dev/null 2>&1 && break
@@ -507,32 +518,47 @@ cad_cleanup() {
 	tmo 60 docker compose exec -T minio mc alias set local http://localhost:9000 "$user" "$pass" < /dev/null > /dev/null 2>&1 || res=fail
 	bbefore=$(tmo 300 docker compose exec -T minio mc du local/octoconv < /dev/null 2> /dev/null | awk '{ print $1 "_" $2 "_" $3 }' || true)
 	if [ "$res" = ok ]; then
-		while IFS= read -r id; do
-			[ -n "$id" ] || continue
-			nj=$((nj + 1))
-			if ! [[ $id =~ $UUID_RE ]]; then
-				inv=$((inv + 1))
-				continue
-			fi
-			for p in uploads results; do
-				line=$(tmo 120 docker compose exec -T minio mc du --json "local/octoconv/$p/$id/" < /dev/null 2> /dev/null | head -1 || true)
-				b=$(printf '%s' "$line" | sed -n 's/.*"size":\([0-9]*\).*/\1/p')
-				o=$(printf '%s' "$line" | sed -n 's/.*"objects":\([0-9]*\).*/\1/p')
-				if [ -n "$o" ] && [ "$o" != 0 ]; then
-					if tmo 300 docker compose exec -T minio mc rm --recursive --force "local/octoconv/$p/$id/" < /dev/null > /dev/null 2>&1; then
-						obj=$((obj + o))
-						bytes=$((bytes + ${b:-0}))
-					else
+		if ! cad_bucket_list "$STATE/cad-ls-before"; then
+			res=fail
+		else
+			jwu=0
+			while IFS= read -r id; do
+				[ -n "$id" ] || continue
+				nj=$((nj + 1))
+				if ! [[ $id =~ $UUID_RE ]]; then
+					inv=$((inv + 1))
+					continue
+				fi
+				for p in uploads results; do
+					pre="$p/$id/"
+					plist="$plist $pre"
+					read -r c s <<< "$(cad_prefix_count "$STATE/cad-ls-before" "$pre")"
+					if [ "$p" = uploads ] && [ "$c" = 0 ]; then
+						jwu=$((jwu + 1))
 						res=fail
 					fi
-				fi
-			done
-		done <<< "$ids"
+					if [ "$c" != 0 ]; then
+						if tmo 300 docker compose exec -T minio mc rm --recursive --force "local/octoconv/$p/$id/" < /dev/null > /dev/null 2>&1; then
+							obj=$((obj + c))
+							bytes=$((bytes + s))
+						else
+							res=fail
+						fi
+					fi
+				done
+			done <<< "$ids"
+			if ! cad_bucket_list "$STATE/cad-ls-after"; then
+				res=fail
+			else
+				left=$(awk -F '\t' -v ps="$plist" 'BEGIN { n = split(ps, pp, " ") } { for (i = 1; i <= n; i++) if (index($2, pp[i]) == 1) { c++; break } } END { print c + 0 }' "$STATE/cad-ls-after")
+				[ "$left" = 0 ] || res=fail
+			fi
+		fi
 	fi
 	[ "$inv" = 0 ] || res=fail
 	bafter=$(tmo 300 docker compose exec -T minio mc du local/octoconv < /dev/null 2> /dev/null | awk '{ print $1 "_" $2 "_" $3 }' || true)
 	tmo 120 docker compose stop postgres minio < /dev/null > /dev/null 2>&1 || true
-	ev "CLEANUP,step=cad,run=$run,scope=uploads_and_results_of_jobs_of_clients_named_cad-liveproof-*_created_since_$since,clients=${clients:-none},other_clients_since=${others:-unknown},jobs=$nj,objects_deleted=$obj,bytes_deleted=$bytes,invalid_ids=$inv,bucket_before=${bbefore:-unknown},bucket_after=${bafter:-unknown},result=$res"
+	ev "CLEANUP,step=cad,run=$run,scope=uploads_and_results_of_jobs_of_clients_named_cad-liveproof-*_created_since_$since,clients=${clients:-none},other_clients_since=${others:-unknown},jobs=$nj,objects_deleted=$obj,bytes_deleted=$bytes,jobs_without_upload=$jwu,leftover_objects=$left,invalid_ids=$inv,bucket_before=${bbefore:-unknown},bucket_after=${bafter:-unknown},result=$res"
 	[ "$res" = ok ]
 }
 
