@@ -9,6 +9,15 @@ STUB="$T/bin"
 mkdir -p "$STUB"
 U1=11111111-2222-3333-4444-555555555555
 U2=66666666-7777-8888-9999-000000000000
+REAL_MKTEMP=$(command -v mktemp)
+
+cat > "$STUB/mktemp" <<EOF
+#!/usr/bin/env bash
+if [ "\$*" = -d ] && [ -n "\${STUB_TMPDIR:-}" ]; then
+  exec "$REAL_MKTEMP" -d "\$STUB_TMPDIR/tmp.XXXXXXXX"
+fi
+exec "$REAL_MKTEMP" "\$@"
+EOF
 
 cat > "$STUB/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -25,8 +34,15 @@ case "$a" in
   "images --no-trunc --format {{.Repository}}:{{.Tag}} {{.ID}}") cat "$S/images_before" ;;
   "images -q --filter reference=octoconv-*:sandbox-liveproof-*") cat "$S/sandbox_left" 2>/dev/null ;;
   "version --format {{.Server.Arch}}") echo arm64 ;;
-  "compose -f docker-compose.yml config --format json"|"compose config --format json")
+  "compose -f docker-compose.yml config --format json")
     echo '{"name":"octoconv","services":{"api":{"build":{"context":"."}},"worker":{"build":{"context":"."}},"postgres":{"image":"postgres:18"},"minio":{"image":"m","environment":{"MINIO_ROOT_USER":"minioadmin","MINIO_ROOT_PASSWORD":"minioadmin"}}}}' ;;
+  "compose config --format json")
+    if [ -n "${STUB_NO_MINIO_CREDS:-}" ]; then
+      echo '{"name":"octoconv","services":{"api":{"build":{"context":"."}},"worker":{"build":{"context":"."}},"postgres":{"image":"postgres:18"},"minio":{"image":"m"}}}'
+    else
+      echo '{"name":"octoconv","services":{"api":{"build":{"context":"."}},"worker":{"build":{"context":"."}},"postgres":{"image":"postgres:18"},"minio":{"image":"m","environment":{"MINIO_ROOT_USER":"minioadmin","MINIO_ROOT_PASSWORD":"minioadmin"}}}}'
+    fi ;;
+  "compose start postgres minio") [ -z "${STUB_COMPOSE_START_FAIL:-}" ] || exit 1 ;;
   "logs --since "*" octoconv-tectonic-worker") cat "$S/tect_log" ;;
   "inspect -f {{.Image}} octoconv-tectonic-worker") echo sha256:tect1 ;;
   "inspect -f {{range .Config.Env}}{{println .}}{{end}} octoconv-tectonic-worker") cat "$S/tect_env" ;;
@@ -34,10 +50,12 @@ case "$a" in
   "image inspect -f {{.Id}} "*) awk -v n="${@: -1}" '$1 == n { print $2 }' "$S/images_now" ;;
   "compose exec -T postgres psql "*)
     case "$a" in
-      *string_agg*) echo "cad-liveproof-1760000000" ;;
-      *"count(*)"*) echo 0 ;;
-      *"select j.id"*) cat "$S/job_ids" ;;
+      *string_agg*) [ "${STUB_PSQL_FAIL:-}" != clients ] || exit 1; echo "cad-liveproof-1760000000" ;;
+      *"count(*)"*) [ "${STUB_PSQL_FAIL:-}" != others ] || exit 1; echo 0 ;;
+      *"select j.id"*) [ "${STUB_PSQL_FAIL:-}" != jobs ] || exit 1; cat "$S/job_ids" ;;
     esac ;;
+  "compose exec -T minio mc alias set "*) [ -z "${STUB_MC_ALIAS_FAIL:-}" ] || exit 1 ;;
+  "compose exec -T minio mc rm "*) [ -z "${STUB_MC_RM_FAIL:-}" ] || exit 1 ;;
   "compose exec -T minio mc du --json "*) echo '{"status":"success","prefix":"x","size":100,"objects":2}' ;;
   "compose exec -T minio mc du local/octoconv") printf '3.1GiB\t1314 objects\toctoconv\n' ;;
 esac
@@ -158,6 +176,10 @@ while read -r key; do
   printf '%s,%s,%s,%s,%s,%s\n' "$i" "$(date -u +%FT%TZ)" "$l" "$key" "$af" 0 >> "${out%.txt}-load.txt"
 done < <(cut -d, -f1 "$out")
 [ -z "${STUB_CAD_ADD_VOLUME:-}" ] || echo octoconv_newvol >> "$STUB_STATE/volumes"
+if [ -n "${STUB_CAD_HANG:-}" ]; then
+  touch "$STUB_STATE/cad.running"
+  sleep 30
+fi
 exit 0
 EOF
   chmod +x "$r/scripts/"*.sh
@@ -214,6 +236,43 @@ run_wrapper() {
   F="$E/76-11-final-gate.txt"
 }
 
+run_wrapper_term() {
+  local stop=$1 pid d
+  shift
+  N=$((N + 1))
+  R="$T/case$N/repo"
+  S="$T/case$N/state"
+  E="$T/case$N/ev"
+  mkrepo "$R"
+  reset_state "$S"
+  mkdir -p "$E" "$T/case$N/tmp"
+  [ -z "${PREP:-}" ] || eval "$PREP"
+  ( cd "$R" && exec env PATH="$STUB:$PATH" STUB_STATE="$S" TMPDIR="$T/case$N/tmp" STUB_TMPDIR="$T/case$N/tmp" "$@" bash scripts/final-live-gate.sh --evidence-dir "$E" > "$T/case$N/console" 2>&1 < /dev/null ) &
+  pid=$!
+  for _ in $(seq 1 100); do
+    [ ! -e "$S/cad.running" ] || break
+    sleep 0.2
+  done
+  if [ -n "$stop" ]; then
+    d=$(find "$T/case$N/tmp" -mindepth 1 -maxdepth 1 -type d)
+    printf '%s\n' "$stop" > "$d/stop"
+  fi
+  kill -TERM "$pid"
+  wait "$pid"
+  RC=$?
+  F="$E/76-11-final-gate.txt"
+}
+
+cleanup_fail_checks() {
+  local c=$1
+  check "$c: CAD_RUN cleanup=fail" hasre "$F" '^CAD_RUN,run=1,rc=0,all_pass=1,.*,cleanup=fail,transcript=76-11-liveproof.txt,result=fail$'
+  check "$c: cad FAIL" hasre "$F" '^STEP,name=cad,rc=1,result=FAIL,'
+  check "$c: frontend not run after fail" hasre "$F" '^NOT_RUN,step=frontend,reason=after_fail$'
+  check "$c: SUMMARY FAIL" hasre "$F" '^SUMMARY,result=FAIL,'
+  check "$c: exit 1" test "$RC" = 1
+  check "$c: never ALL PASS" hasnt "$F" "result=ALL PASS"
+}
+
 STEPS_ARG=preflight,frontend run_wrapper
 check "smoke: exit 2" test "$RC" = 2
 check "smoke: INCOMPLETE" hasre "$F" '^SUMMARY,result=INCOMPLETE,'
@@ -256,6 +315,7 @@ check "full: sandbox classes" test "$(cat "$S/sandbox.args")" = "image pandoc oc
 check "full: cad api base" has "$S/cad.env" "CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090"
 check "full: cad quiet gate" has "$S/cad.env" "CAD_LIVEPROOF_QUIET_LOAD=11"
 check "full: cad toolchain" has "$S/cad.env" "GOTOOLCHAIN=go1.26.4"
+check "full: CAD_RUN cleanup ok" hasre "$F" "^CAD_RUN,run=1,rc=0,all_pass=1,tracked_dirt=0,commit=$HEADC,commit_match=1,cleanup=ok,transcript=76-11-liveproof.txt,result=ok$"
 check "full: QUIET clean" hasre "$F" '^QUIET,step=cad,run=1,rows=3,contaminated=0,bound=11'
 check "full: cad cleanup line" hasre "$F" "^CLEANUP,step=cad,.*clients=cad-liveproof-1760000000,other_clients_since=0,jobs=2,objects_deleted=8,bytes_deleted=400,.*result=ok$"
 check "full: sandbox cleanup line" hasre "$F" '^CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=0,'
@@ -404,6 +464,20 @@ PREP='printf "%s\n\n../x\n" "$U1" > "$S/job_ids"' run_wrapper
 check "bad job id: never rm outside a job prefix" test "$(grep -c ' mc rm ' "$S/docker.log")" = 2
 check "bad job id: no bare prefix" hasnt "$S/docker.log" "local/octoconv/uploads//"
 check "bad job id: cleanup fail recorded" hasre "$F" '^CLEANUP,step=cad,.*invalid_ids=1,.*result=fail$'
+cleanup_fail_checks "bad job id"
+
+for k in STUB_COMPOSE_START_FAIL=1 STUB_NO_MINIO_CREDS=1 STUB_PSQL_FAIL=clients STUB_PSQL_FAIL=others STUB_PSQL_FAIL=jobs STUB_MC_ALIAS_FAIL=1 STUB_MC_RM_FAIL=1; do
+  run_wrapper "$k"
+  check "cleanup $k: CLEANUP fail" hasre "$F" '^CLEANUP,step=cad,.*,result=fail$'
+  cleanup_fail_checks "cleanup $k"
+  case "$k" in
+    STUB_PSQL_FAIL=jobs)
+      check "cleanup $k: jobs 0" hasre "$F" '^CLEANUP,step=cad,.*,jobs=0,'
+      check "cleanup $k: no mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 0 ;;
+    STUB_MC_RM_FAIL=1)
+      check "cleanup $k: objects_deleted 0" hasre "$F" '^CLEANUP,step=cad,.*,objects_deleted=0,' ;;
+  esac
+done
 
 run_wrapper STUB_CAD_LOADS_1="5 5 5 5 5 12 5 5" STUB_CAD_LOADS_2="5 5 5 5 5 5 5 5"
 check "quiet rerun: cad PASS" hasre "$F" '^STEP,name=cad,rc=0,result=PASS,'
@@ -413,10 +487,28 @@ check "quiet rerun: rerun transcript" has "$E/76-11-liveproof-rerun.txt" "SUMMAR
 check "quiet rerun: two cad runs" test "$(cat "$S/cad.count")" = 2
 check "quiet rerun: two cleanups" test "$(count "$F" '^CLEANUP,step=cad,')" = 2
 check "quiet rerun: ALL PASS" hasre "$F" '^SUMMARY,result=ALL PASS,'
+check "quiet rerun: both CAD_RUN cleanup ok" test "$(count "$F" '^CAD_RUN,.*,cleanup=ok,transcript=')" = 2
 
 run_wrapper STUB_CAD_LOADS_1="5 5 5 5 5 12 5 5" STUB_CAD_LOADS_2="5 5 5 5 5 12 5 5"
 check "quiet both: NOT_RUN" hasre "$F" '^NOT_RUN,step=cad,reason=quiet_host_uncovered_rows_1$'
 check "quiet both: INCOMPLETE" hasre "$F" '^SUMMARY,result=INCOMPLETE,'
+
+run_wrapper_term "" STUB_CAD_HANG=1 STUB_PSQL_FAIL=jobs
+check "term in cad: CLEANUP fail" hasre "$F" '^CLEANUP,step=cad,run=1,.*,result=fail$'
+check "term in cad: CAD_RUN cleanup=fail not_run" hasre "$F" '^CAD_RUN,run=1,rc=[0-9]+,cleanup=fail,transcript=76-11-liveproof.txt,result=not_run,reason=stopped_terminated$'
+check "term in cad: STOP" hasre "$F" '^STOP,reason=terminated$'
+check "term in cad: STEP NOT_RUN" hasre "$F" '^STEP,name=cad,rc=[0-9]+,result=NOT_RUN,'
+check "term in cad: frontend NOT_RUN" hasre "$F" '^NOT_RUN,step=frontend,reason=stopped_terminated$'
+check "term in cad: INCOMPLETE" hasre "$F" '^SUMMARY,result=INCOMPLETE,'
+check "term in cad: exit 2" test "$RC" = 2
+
+run_wrapper_term "docker_unresponsive,misses=3" STUB_CAD_HANG=1
+check "docker unresponsive in cad: CAD_RUN cleanup=not_run" hasre "$F" '^CAD_RUN,run=1,rc=[0-9]+,cleanup=not_run,transcript=76-11-liveproof.txt,result=not_run,reason=stopped_docker_unresponsive$'
+check "docker unresponsive in cad: no CLEANUP" test "$(count "$F" '^CLEANUP,step=cad,')" = 0
+check "docker unresponsive in cad: no compose start" hasnt "$S/docker.log" "compose start postgres minio"
+check "docker unresponsive in cad: STOP" hasre "$F" '^STOP,reason=docker_unresponsive,misses=3$'
+check "docker unresponsive in cad: INCOMPLETE" hasre "$F" '^SUMMARY,result=INCOMPLETE,'
+check "docker unresponsive in cad: exit 2" test "$RC" = 2
 
 run_wrapper STUB_LOW_DISK_SLEEP=100
 check "watchdog: exit 3" test "$RC" = 3
