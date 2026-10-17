@@ -10,6 +10,15 @@ mkdir -p "$STUB"
 U1=11111111-2222-3333-4444-555555555555
 U2=66666666-7777-8888-9999-000000000000
 REAL_MKTEMP=$(command -v mktemp)
+REAL_GIT=$(command -v git)
+
+cat > "$STUB/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ] && [ -n "\${STUB_GIT_STATUS_FAIL:-}" ]; then
+  exit 128
+fi
+exec "$REAL_GIT" "\$@"
+EOF
 
 cat > "$STUB/mktemp" <<EOF
 #!/usr/bin/env bash
@@ -29,10 +38,10 @@ case "$a" in
     echo "Filesystem 1K-blocks Used Available Use% Mounted on"
     echo "overlay 49545216 28086532 $(cat "$S/free_kib") 57% /" ;;
   "volume ls -q") cat "$S/volumes" ;;
-  "ps -q --filter label=com.docker.compose.project=octoconv") cat "$S/running" 2>/dev/null ;;
+  "ps -q --filter label=com.docker.compose.project=octoconv") [ -z "${STUB_PS_FAIL:-}" ] || exit 1; cat "$S/running" 2>/dev/null ;;
   "ps -aq --filter label=com.docker.compose.project=octoconv") echo c1; echo c2; echo c3 ;;
   "images --no-trunc --format {{.Repository}}:{{.Tag}} {{.ID}}") cat "$S/images_before" ;;
-  "images -q --filter reference=octoconv-*:sandbox-liveproof-*") cat "$S/sandbox_left" 2>/dev/null ;;
+  "images -q --filter reference=octoconv-*:sandbox-liveproof-*") [ -z "${STUB_SANDBOX_IMAGES_FAIL:-}" ] || exit 1; cat "$S/sandbox_left" 2>/dev/null ;;
   "version --format {{.Server.Arch}}") echo arm64 ;;
   "compose -f docker-compose.yml config --format json")
     echo '{"name":"octoconv","services":{"api":{"build":{"context":"."}},"worker":{"build":{"context":"."}},"postgres":{"image":"postgres:18"},"minio":{"image":"m","environment":{"MINIO_ROOT_USER":"minioadmin","MINIO_ROOT_PASSWORD":"minioadmin"}}}}' ;;
@@ -45,7 +54,7 @@ case "$a" in
   "compose start postgres minio") [ -z "${STUB_COMPOSE_START_FAIL:-}" ] || exit 1 ;;
   "logs --since "*" octoconv-tectonic-worker") cat "$S/tect_log" ;;
   "inspect -f {{.Image}} octoconv-tectonic-worker") echo sha256:tect1 ;;
-  "inspect -f {{range .Config.Env}}{{println .}}{{end}} octoconv-tectonic-worker") cat "$S/tect_env" ;;
+  "inspect -f {{range .Config.Env}}{{println .}}{{end}} octoconv-tectonic-worker") [ -z "${STUB_TECT_ENV_FAIL:-}" ] || exit 1; cat "$S/tect_env" ;;
   "inspect -f {{index .Config.Labels \"com.docker.compose.service\"}} {{.Config.Image}} {{.Image}} "*) cat "$S/inspect" ;;
   "image inspect -f {{.Id}} "*) awk -v n="${@: -1}" '$1 == n { print $2 }' "$S/images_now" ;;
   "compose exec -T postgres psql "*)
@@ -175,6 +184,7 @@ while read -r key; do
   af=$(awk -v l="$l" 'BEGIN { print (l <= 11) ? l : 10 }')
   printf '%s,%s,%s,%s,%s,%s\n' "$i" "$(date -u +%FT%TZ)" "$l" "$key" "$af" 0 >> "${out%.txt}-load.txt"
 done < <(cut -d, -f1 "$out")
+[ -z "${STUB_CAD_NO_LOAD:-}" ] || rm -f "${out%.txt}-load.txt"
 [ -z "${STUB_CAD_ADD_VOLUME:-}" ] || echo octoconv_newvol >> "$STUB_STATE/volumes"
 if [ -n "${STUB_CAD_HANG:-}" ]; then
   touch "$STUB_STATE/cad.running"
@@ -319,6 +329,8 @@ check "full: CAD_RUN cleanup ok" hasre "$F" "^CAD_RUN,run=1,rc=0,all_pass=1,trac
 check "full: QUIET clean" hasre "$F" '^QUIET,step=cad,run=1,rows=3,contaminated=0,bound=11'
 check "full: cad cleanup line" hasre "$F" "^CLEANUP,step=cad,.*clients=cad-liveproof-1760000000,other_clients_since=0,jobs=2,objects_deleted=8,bytes_deleted=400,.*result=ok$"
 check "full: sandbox cleanup line" hasre "$F" '^CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=0,'
+check "full: sandbox cleanup result ok" hasre "$F" '^CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=0,reason=no_api_stack_and_no_clients,result=ok$'
+check "full: QUIET result ok" hasre "$F" '^QUIET,step=cad,run=1,rows=3,contaminated=0,bound=11,contaminated_rows=,result=ok$'
 check "full: mc rm only for the two jobs" test "$(grep -c ' mc rm ' "$S/docker.log")" = 4
 check "full: mc rm job 1 uploads" has "$S/docker.log" "mc rm --recursive --force local/octoconv/uploads/$U1/"
 check "full: mc rm job 2 results" has "$S/docker.log" "mc rm --recursive --force local/octoconv/results/$U2/"
@@ -509,6 +521,39 @@ check "docker unresponsive in cad: no compose start" hasnt "$S/docker.log" "comp
 check "docker unresponsive in cad: STOP" hasre "$F" '^STOP,reason=docker_unresponsive,misses=3$'
 check "docker unresponsive in cad: INCOMPLETE" hasre "$F" '^SUMMARY,result=INCOMPLETE,'
 check "docker unresponsive in cad: exit 2" test "$RC" = 2
+
+PREP='echo sha256:left1 > "$S/sandbox_left"' run_wrapper
+check "sandbox leftover tag: CLEANUP fail" hasre "$F" '^CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=1,reason=no_api_stack_and_no_clients,result=fail$'
+check "sandbox leftover tag: STEP FAIL" hasre "$F" '^STEP,name=sandbox,rc=1,result=FAIL,'
+
+run_wrapper STUB_SANDBOX_IMAGES_FAIL=1
+check "sandbox listing fails: CLEANUP fail" hasre "$F" '^CLEANUP,step=sandbox,api_clients=0,minio_objects_deleted=0,leftover_tags=unknown,reason=no_api_stack_and_no_clients,result=fail$'
+check "sandbox listing fails: STEP FAIL" hasre "$F" '^STEP,name=sandbox,rc=1,result=FAIL,'
+check "sandbox listing fails: exit 1" test "$RC" = 1
+
+run_wrapper STUB_TECT_ENV_FAIL=1
+check "tectonic env unreadable: value recorded" hasre "$F" '^TECTONIC_DETAIL,.*disabled_env_value=unreadable,'
+check "tectonic env unreadable: TECTONIC fail" hasre "$F" '^TECTONIC,.*result=fail$'
+check "tectonic env unreadable: STEP FAIL" hasre "$F" '^STEP,name=tectonic,rc=1,result=FAIL,'
+check "tectonic env unreadable: exit 1" test "$RC" = 1
+
+run_wrapper STUB_PS_FAIL=1
+check "docker ps fails: compose_running fail" hasre "$F" '^PREFLIGHT,check=compose_running,result=fail,docker_ps_rc=1$'
+check "docker ps fails: preflight FAIL" hasre "$F" '^STEP,name=preflight,rc=1,result=FAIL,'
+check "docker ps fails: exit 1" test "$RC" = 1
+
+run_wrapper STUB_GIT_STATUS_FAIL=1
+check "git status fails: HDR unknown" hasre "$F" '^HDR,tracked_dirt=unknown$'
+check "git status fails: preflight tracked_dirt fail" hasre "$F" '^PREFLIGHT,check=tracked_dirt,result=fail,count=unknown$'
+check "git status fails: DIRT end unknown" hasre "$F" '^DIRT,phase=end,tracked_dirt=unknown$'
+check "git status fails: SUMMARY FAIL" hasre "$F" '^SUMMARY,result=FAIL,'
+check "git status fails: exit 1" test "$RC" = 1
+
+run_wrapper STUB_CAD_NO_LOAD=1
+check "no load file: QUIET fail" hasre "$F" '^QUIET,step=cad,run=1,rows=0,contaminated=0,bound=11,contaminated_rows=,result=fail$'
+check "no load file: CAD_RUN fail" hasre "$F" '^CAD_RUN,run=1,.*,result=fail$'
+check "no load file: cad FAIL" hasre "$F" '^STEP,name=cad,rc=1,result=FAIL,'
+check "no load file: exit 1" test "$RC" = 1
 
 run_wrapper STUB_LOW_DISK_SLEEP=100
 check "watchdog: exit 3" test "$RC" = 3
