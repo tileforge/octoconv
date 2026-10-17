@@ -64,7 +64,29 @@ case "$a" in
       *"select j.id"*) [ "${STUB_PSQL_FAIL:-}" != jobs ] || exit 1; cat "$S/job_ids" ;;
     esac ;;
   "compose exec -T minio mc alias set "*) [ -z "${STUB_MC_ALIAS_FAIL:-}" ] || exit 1 ;;
-  "compose exec -T minio mc rm "*) [ -z "${STUB_MC_RM_FAIL:-}" ] || exit 1 ;;
+  "compose exec -T minio mc ls --recursive --json local/octoconv")
+    n=$(cat "$S/ls.count" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$S/ls.count"
+    if [ "${STUB_MC_LS_KEYS:-}" = bucket ]; then
+      sed 's/"key":"/"key":"octoconv\//' "$S/bucket"
+    else
+      cat "$S/bucket"
+    fi
+    case "${STUB_MC_LS_TAIL:-}" in
+      error) printf '{\n "status": "error",\n "error": {\n  "message": "Unable to list folder.",\n  "cause": {}\n }\n}\n' ;;
+      text) echo "mc: <ERROR> Unable to list folder." ;;
+    esac
+    if [ -n "${STUB_MC_LS_RC:-}" ] && { [ -z "${STUB_MC_LS_ON:-}" ] || [ "$STUB_MC_LS_ON" = "$n" ]; }; then
+      exit "$STUB_MC_LS_RC"
+    fi ;;
+  "compose exec -T minio mc rm "*)
+    [ -z "${STUB_MC_RM_FAIL:-}" ] || exit 1
+    [ -z "${STUB_MC_RM_NOOP:-}" ] || exit 0
+    t=${@: -1}
+    t=${t#local/octoconv/}
+    grep -vF "\"key\":\"$t" "$S/bucket" > "$S/bucket.new" || true
+    mv "$S/bucket.new" "$S/bucket" ;;
   "compose exec -T minio mc du --json "*) echo '{"status":"success","prefix":"x","size":100,"objects":2}' ;;
   "compose exec -T minio mc du local/octoconv") printf '3.1GiB\t1314 objects\toctoconv\n' ;;
 esac
@@ -158,6 +180,11 @@ exit "${STUB_SANDBOX_RC:-0}"
 EOF
   cat > "$r/scripts/cad-liveproof.sh" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${STUB_CAD_SKIP_PREFIX:-}" ]; then
+  grep -vF "\"key\":\"$STUB_CAD_SKIP_PREFIX" "$STUB_STATE/run_objects" >> "$STUB_STATE/bucket" || true
+else
+  cat "$STUB_STATE/run_objects" >> "$STUB_STATE/bucket"
+fi
 out=""
 while [ $# -gt 0 ]; do case "$1" in --out) out=$2; shift 2 ;; *) shift ;; esac; done
 env | grep -E '^(CAD_LIVEPROOF_[A-Z_]+|GOTOOLCHAIN)=' | sort > "$STUB_STATE/cad.env"
@@ -203,9 +230,23 @@ EOF
   echo bundle > "$r/deploy/tectonic-bundle/octoconv-bundle.ttb"
 }
 
+mcobj() {
+  printf '{"status":"success","type":"file","lastModified":"2026-10-17T00:00:00.000Z","size":%s,"key":"%s","etag":"0123456789abcdef0123456789abcdef","url":"http://localhost:9000/octoconv/","versionOrdinal":1,"storageClass":"STANDARD"}\n' "$2" "$1"
+}
+
 reset_state() {
-  local s=$1
+  local s=$1 u k
   mkdir -p "$s"
+  {
+    mcobj "uploads/99999999-aaaa-bbbb-cccc-dddddddddddd/0-other.dxf" 7
+    mcobj "results/${U1}0/0-near.png" 7
+  } > "$s/bucket"
+  : > "$s/run_objects"
+  for u in "$U1" "$U2"; do
+    for k in "uploads/$u/0-a.dxf" "uploads/$u/1-b.dxf" "results/$u/0-a.png" "results/$u/1-a.json"; do
+      mcobj "$k" 50 >> "$s/run_objects"
+    done
+  done
   echo 21458684 > "$s/free_kib"
   printf 'octoconv_minio_data\nother_project_db\n' > "$s/volumes"
   : > "$s/running"
@@ -230,6 +271,10 @@ has() { grep -qF -- "$2" "$1" 2>/dev/null; }
 hasnt() { ! grep -qF -- "$2" "$1" 2>/dev/null; }
 hasre() { grep -qE -- "$2" "$1" 2>/dev/null; }
 count() { grep -cE -- "$2" "$1" 2>/dev/null || true; }
+
+CL="^CLEANUP,step=cad,run=1,scope=[^,]+,clients=cad-liveproof-1760000000,other_clients_since=0,"
+CE="invalid_ids=0,bucket_before=[^,]+,bucket_after=[^,]+,result="
+LSCALL="docker compose exec -T minio mc ls --recursive --json local/octoconv"
 
 N=0
 run_wrapper() {
@@ -334,6 +379,18 @@ check "full: QUIET result ok" hasre "$F" '^QUIET,step=cad,run=1,rows=3,contamina
 check "full: mc rm only for the two jobs" test "$(grep -c ' mc rm ' "$S/docker.log")" = 4
 check "full: mc rm job 1 uploads" has "$S/docker.log" "mc rm --recursive --force local/octoconv/uploads/$U1/"
 check "full: mc rm job 2 results" has "$S/docker.log" "mc rm --recursive --force local/octoconv/results/$U2/"
+check "full: mc rm targets exact" test "$(grep ' mc rm ' "$S/docker.log" | tr '\n' '|')" = "docker compose exec -T minio mc rm --recursive --force local/octoconv/uploads/$U1/|docker compose exec -T minio mc rm --recursive --force local/octoconv/results/$U1/|docker compose exec -T minio mc rm --recursive --force local/octoconv/uploads/$U2/|docker compose exec -T minio mc rm --recursive --force local/octoconv/results/$U2/|"
+check "full: CLEANUP new fields" hasre "$F" "${CL}jobs=2,objects_deleted=8,bytes_deleted=400,jobs_without_upload=0,leftover_objects=0,${CE}ok$"
+check "full: two bucket listings" test "$(grep -cxF "docker compose exec -T minio mc ls --recursive --json local/octoconv" "$S/docker.log")" = 2
+check "full: no per-prefix disk usage" hasnt "$S/docker.log" "mc du --json"
+check "full: bucket keeps two foreign lines" test "$(wc -l < "$S/bucket" | tr -d ' ')" = 2
+check "full: foreign upload kept" has "$S/bucket" "\"key\":\"uploads/99999999-aaaa-bbbb-cccc-dddddddddddd/0-other.dxf\""
+check "full: foreign near-prefix result kept" has "$S/bucket" "\"key\":\"results/${U1}0/0-near.png\""
+for u in "$U1" "$U2"; do
+  for p in uploads results; do
+    check "full: no $p key left for $u" hasnt "$S/bucket" "\"key\":\"$p/$u/"
+  done
+done
 check "full: compose stop" has "$S/docker.log" "docker compose -p octoconv stop"
 check "full: no down" hasnt "$S/docker.log" " down"
 check "full: no prune" hasnt "$S/docker.log" "prune"
@@ -491,6 +548,44 @@ for k in STUB_COMPOSE_START_FAIL=1 STUB_NO_MINIO_CREDS=1 STUB_PSQL_FAIL=clients 
   esac
 done
 
+run_wrapper STUB_MC_LS_RC=124
+check "ls timeout: CLEANUP fail unknown" hasre "$F" "${CL}jobs=0,objects_deleted=0,bytes_deleted=0,jobs_without_upload=unknown,leftover_objects=unknown,${CE}fail$"
+check "ls timeout: no mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 0
+check "ls timeout: one listing" test "$(grep -cxF "$LSCALL" "$S/docker.log")" = 1
+cleanup_fail_checks "ls timeout"
+
+run_wrapper STUB_MC_LS_RC=1 STUB_MC_LS_ON=2
+check "ls after rm fails: CLEANUP fail leftover unknown" hasre "$F" "${CL}jobs=2,objects_deleted=8,bytes_deleted=400,jobs_without_upload=0,leftover_objects=unknown,${CE}fail$"
+check "ls after rm fails: four mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 4
+check "ls after rm fails: two listings" test "$(grep -cxF "$LSCALL" "$S/docker.log")" = 2
+cleanup_fail_checks "ls after rm fails"
+
+for k in STUB_MC_LS_TAIL=error STUB_MC_LS_TAIL=text; do
+  run_wrapper "$k"
+  check "ls $k: CLEANUP fail unknown" hasre "$F" "${CL}jobs=0,objects_deleted=0,bytes_deleted=0,jobs_without_upload=unknown,leftover_objects=unknown,${CE}fail$"
+  check "ls $k: no mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 0
+  cleanup_fail_checks "ls $k"
+done
+
+run_wrapper STUB_MC_RM_NOOP=1
+check "rm leaves objects: CLEANUP leftover 8" hasre "$F" "${CL}jobs=2,objects_deleted=8,bytes_deleted=400,jobs_without_upload=0,leftover_objects=8,${CE}fail$"
+check "rm leaves objects: four mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 4
+cleanup_fail_checks "rm leaves objects"
+
+run_wrapper STUB_MC_LS_KEYS=bucket
+check "keys not bucket-relative: CLEANUP jobs_without_upload 2" hasre "$F" "${CL}jobs=2,objects_deleted=0,bytes_deleted=0,jobs_without_upload=2,leftover_objects=0,${CE}fail$"
+check "keys not bucket-relative: no mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 0
+cleanup_fail_checks "keys not bucket-relative"
+
+run_wrapper STUB_CAD_SKIP_PREFIX="results/$U2/"
+check "refused job: cad PASS" hasre "$F" '^STEP,name=cad,rc=0,result=PASS,'
+check "refused job: ALL PASS" hasre "$F" '^SUMMARY,result=ALL PASS,'
+check "refused job: exit 0" test "$RC" = 0
+check "refused job: three mc rm" test "$(grep -c ' mc rm ' "$S/docker.log")" = 3
+check "refused job: no rm of absent results" hasnt "$S/docker.log" "local/octoconv/results/$U2/"
+check "refused job: uploads of job 2 deleted" has "$S/docker.log" "mc rm --recursive --force local/octoconv/uploads/$U2/"
+check "refused job: CLEANUP ok" hasre "$F" "${CL}jobs=2,objects_deleted=6,bytes_deleted=300,jobs_without_upload=0,leftover_objects=0,${CE}ok$"
+
 run_wrapper STUB_CAD_LOADS_1="5 5 5 5 5 12 5 5" STUB_CAD_LOADS_2="5 5 5 5 5 5 5 5"
 check "quiet rerun: cad PASS" hasre "$F" '^STEP,name=cad,rc=0,result=PASS,'
 check "quiet rerun: run 1 contaminated" hasre "$F" '^QUIET,step=cad,run=1,rows=3,contaminated=1,'
@@ -498,6 +593,7 @@ check "quiet rerun: coverage" hasre "$F" '^QUIET_COVERAGE,step=cad,rows=3,uncove
 check "quiet rerun: rerun transcript" has "$E/76-11-liveproof-rerun.txt" "SUMMARY,result=ALL PASS"
 check "quiet rerun: two cad runs" test "$(cat "$S/cad.count")" = 2
 check "quiet rerun: two cleanups" test "$(count "$F" '^CLEANUP,step=cad,')" = 2
+check "quiet rerun: both cleanups found the run objects" test "$(count "$F" "^CLEANUP,step=cad,run=[12],.*,objects_deleted=8,bytes_deleted=400,jobs_without_upload=0,leftover_objects=0,${CE}ok$")" = 2
 check "quiet rerun: ALL PASS" hasre "$F" '^SUMMARY,result=ALL PASS,'
 check "quiet rerun: both CAD_RUN cleanup ok" test "$(count "$F" '^CAD_RUN,.*,cleanup=ok,transcript=')" = 2
 
