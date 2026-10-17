@@ -505,6 +505,7 @@ cad_cleanup() {
 	bafter=$(tmo 300 docker compose exec -T minio mc du local/octoconv < /dev/null 2> /dev/null | awk '{ print $1 "_" $2 "_" $3 }' || true)
 	tmo 120 docker compose stop postgres minio < /dev/null > /dev/null 2>&1 || true
 	ev "CLEANUP,step=cad,run=$run,scope=uploads_and_results_of_jobs_of_clients_named_cad-liveproof-*_created_since_$since,clients=${clients:-none},other_clients_since=${others:-unknown},jobs=$nj,objects_deleted=$obj,bytes_deleted=$bytes,invalid_ids=$inv,bucket_before=${bbefore:-unknown},bucket_after=${bafter:-unknown},result=$res"
+	[ "$res" = ok ]
 }
 
 quiet_rows() {
@@ -517,16 +518,28 @@ quiet_rows() {
 }
 
 run_cad() {
-	local n=$1 name=$2 since rc=0 f summ dirt cc ok=1 rows bad
+	local n=$1 name=$2 since rc=0 f summ dirt cc ok=1 rows bad cres crc
 	since=$(utc)
 	f="$EVD/$name"
 	bg_run tmo 21600 env CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090 CAD_LIVEPROOF_QUIET_LOAD="$ROW_QUIET_LOAD" GOTOOLCHAIN=go1.26.4 scripts/cad-liveproof.sh --out "$f" > "$EVD/${name%.txt}-console.txt" 2>&1 || rc=$?
 	STEP_RC=$rc
 	if [ "$STOPPED" = 1 ]; then
-		[ "$(stop_reason)" = stopped_docker_unresponsive ] || cad_cleanup "$since" "$n"
+		cres=not_run
+		if [ "$(stop_reason)" != stopped_docker_unresponsive ]; then
+			crc=0
+			cad_cleanup "$since" "$n" || crc=$?
+			if [ "$crc" = 0 ]; then cres=ok; else cres=fail; fi
+		fi
+		ev "CAD_RUN,run=$n,rc=$rc,cleanup=$cres,transcript=$name,result=not_run,reason=$(stop_reason)"
 		return 2
 	fi
-	cad_cleanup "$since" "$n"
+	cres=ok
+	crc=0
+	cad_cleanup "$since" "$n" || crc=$?
+	if [ "$crc" != 0 ]; then
+		cres=fail
+		ok=0
+	fi
 	summ=$(grep -c '^SUMMARY,result=ALL PASS' "$f" 2> /dev/null || true)
 	dirt=$(sed -n 's/^HDR,tracked_dirt=//p' "$f" 2> /dev/null | head -1)
 	cc=$(sed -n 's/^HDR,commit=//p' "$f" 2> /dev/null | head -1)
@@ -537,7 +550,7 @@ run_cad() {
 	rows="$STATE/rows.$n"
 	bad="$STATE/bad.$n"
 	quiet_rows "${f%.txt}-load.txt" "$rows" "$bad"
-	ev "CAD_RUN,run=$n,rc=$rc,all_pass=$summ,tracked_dirt=${dirt:-missing},commit=${cc:-missing},commit_match=$([ "$cc" = "$COMMIT" ] && echo 1 || echo 0),transcript=$name,result=$([ "$ok" = 1 ] && echo ok || echo fail)"
+	ev "CAD_RUN,run=$n,rc=$rc,all_pass=$summ,tracked_dirt=${dirt:-missing},commit=${cc:-missing},commit_match=$([ "$cc" = "$COMMIT" ] && echo 1 || echo 0),cleanup=$cres,transcript=$name,result=$([ "$ok" = 1 ] && echo ok || echo fail)"
 	ev "QUIET,step=cad,run=$n,rows=$(grep -c . "$rows" || true),contaminated=$(grep -c . "$bad" || true),bound=$ROW_QUIET_LOAD,contaminated_rows=$(tr '\n' ';' < "$bad" | sed 's/;$//')"
 	[ "$ok" = 1 ]
 }
