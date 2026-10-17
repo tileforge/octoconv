@@ -217,7 +217,7 @@ status) or as the `error_code` of a failed job (`async`). Codes every class shar
 | text_oblique | A DXF TEXT's oblique angle is not drawn; its width factor is | — | — |
 | font_family_style | A text style that asks for bold or italic by family name is drawn in that family's regular (Book) face | — | — |
 | font_fallback | A text style naming a font file the image does not ship is drawn with `DejaVuSans.ttf` | — | — |
-| near_white | Paint with any channel at or above the cutoff on a white page is no ink | `cadBackgroundCutoff` | 250 |
+| near_white | Paint that, laid over a white page, has every channel at or above the cutoff is no ink; one channel below it is ink, so (249, 255, 255) is ink and (250, 250, 250) is not. The 3D PNG check and the DXF checks apply the same rule | `cadBackgroundCutoff` | 250 |
 | empty_white_page | Empty means no ink on a white page of the maximum size, on every route; a transparent PNG is judged on the same white page, so a transparent PNG of only white lines is refused | `CADDXFInkSize` | 2048 |
 | empty_result_causes | A drawing whose every element is fully transparent, white, too faint, of zero area or a glyphless character is `cad_empty_result` as SVG, PDF and PNG alike | — | — |
 | iges_inch_unproven | IGES inch scaling is unproven: an IGES file that declares anything but millimetres is reported `unspecified` | — | — |
