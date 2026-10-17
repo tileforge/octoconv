@@ -274,10 +274,11 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261014-0lo | One 3D/DXF render verdict on both backgrounds; alpha-only checks differ (ring), 95% transparent cap removed | 2026-10-14 | c9b6445 | [261014-0lo-render-judge-transparent-and-opaque-back](./quick/261014-0lo-render-judge-transparent-and-opaque-back/) |
 | 261017-7y5 | Codex PR#37 P1: a failed cad cleanup fails the cad step (CAD_RUN cleanup=ok/fail/not_run; STOPPED still returns 2); sweep: masked command failures fail the verdict they feed (sandbox leftover listing, tectonic env read, docker ps, tracked dirt, quiet rows); 76-11 verdict unaffected (cleanup result=ok) | 2026-10-17 | 23bd080 | [261017-7y5-codex-p1-final-live-gate-cleanup-result-](./quick/261017-7y5-codex-p1-final-live-gate-cleanup-result-/) |
 | 261017-doa | Codex PR#37 round 2: a contaminated keda-cad-loadproof calibration or timed step fails the proof (stub suite 34/0, M1-M3 caught); downscale calibration exemption recorded in the evidence (NOTE quiet_calibration gates=0); near_white states the all-channel rule, probed through all three judges; seven-script contamination sweep, two fail-safe selection sites to a todo; 76-09/76-10 PASS stand (QUIET contaminated=0) | 2026-10-17 | dacbb97 | [261017-doa-codex-round-2-contaminated-loadproof-tim](./quick/261017-doa-codex-round-2-contaminated-loadproof-tim/) |
+| 261017-f0i | Codex PR#37 round 3: the cad cleanup in the final gate wrapper finds job objects from one `mc ls --recursive --json` of the bucket before and one after deletion; a failed, timed-out, error-carrying or unparseable listing, a job without an uploads key (jobs_without_upload) or an object left under a run prefix (leftover_objects) fails the cad step; stub suite 309/0, knobs 36/0, M1-M7 caught; mc JSON shape unmeasured live, owed in the renamed todo; attempt-4 leftovers not re-proven | 2026-10-17 | 1520527 | [261017-f0i-codex-round-3-cad-cleanup-fails-when-obj](./quick/261017-f0i-codex-round-3-cad-cleanup-fails-when-obj/) |
 
 ### Pending Todos
 
-Ровно семь, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно восемь, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -299,10 +300,16 @@ Decisions are logged in PROJECT.md Key Decisions table.
   (`runCommandCore`/`runCommandStreaming`; 9 из 400 прогонов под нагрузкой ждали ~30 с); Linux
   не затронут; `internal/convert/exec.go` без отдельного решения не трогаем. См.
   `.planning/todos/pending/2026-10-17-darwin-killpg-fork-race.md`.
-- **Очистка cad в финальном гейте читает упавший `mc du --json` по префиксу как «нечего
-  удалять»;** поведение `mc du` на отсутствующем префиксе не замерено, нужен живой замер
-  (быстрая задача 261017-7y5). См.
-  `.planning/todos/pending/2026-10-17-cad-cleanup-mc-du-absent-prefix.md`.
+- **Очистка cad в финальном гейте: остался только живой замер формы JSON у `mc ls`.** Листинг
+  `mc du --json` по каждому префиксу убран быстрой задачей 261017-f0i; очистка теперь читает один
+  `mc ls --recursive --json` по бакету до и после удаления и при неверной форме падает закрыто.
+  Должна только живая проверка этой формы. См.
+  `.planning/todos/pending/2026-10-17-cad-cleanup-mc-ls-json-live-confirmation.md`.
+- **Два шага отбора читают строки, загрязнённые нагрузкой:** long_select в
+  `scripts/keda-cad-downscale-survival.sh` и `select()` в `scripts/cad-dxf-bounds.sh` не смотрят на
+  флаг загрязнения; обе ошибки толкают только в строгую сторону, стабов у скриптов нет (быстрая
+  задача 261017-doa). См.
+  `.planning/todos/pending/2026-10-17-selection-steps-ignore-load-clean.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
