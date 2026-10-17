@@ -404,7 +404,7 @@ ev "RULE,key=long_select,source=evidence/76-03-cells.txt CELLSPEC lines of the l
 ev "RULE,key=band,low=$BAND_LOW,high=$BAND_HIGH,derivation=high=floor(CAD_ENGINE_TIMEOUT/1.5)=floor($DERIVED_ENGINE/1.5),rule=the LONG attempt wall jobs.finished_at - jobs.started_at must lie in [low;high]"
 ev "RULE,key=survival,rule=LONG is active while exactly one cad pod runs; SHORT then takes the Deployment 1->2 with 2 Ready within $SCALEUP_WINDOW_S s; exactly one Running pod holds an engine process (cad-guard;cad-mesh;cad-render;cad-dxf by comm or python cmdline;rsvg-convert by comm) and it is the earliest-created pod and the pod LONG went active on; it is annotated controller.kubernetes.io/pod-deletion-cost=-1000 while spec.replicas is still 2; its spec.terminationGracePeriodSeconds equals the DERIVED engine + 20 = $EXPECTED_GRACE; after SHORT is done status.replicas reaches 1 within $DOWNSCALE_WINDOW_S s; LONG ends done with attempts 1 and one queued->active and its wall in the band; the busy pod's Killing event precedes LONG's finished_at; the busy pod terminates Completed with exit 0 within $EXPECTED_GRACE s of the Killing event; the Deployment drains to 0 within $DRAIN_BOUND s of LONG's finished_at; TRANSITION timestamps never decrease"
 ev "RULE,key=zero,rule=before each trigger cad-worker status.replicas is 0; the ScaledObject Fallback condition is not True and the external metric is present with value 0"
-ev "RULE,key=quiet_host,rule=each trigger waits for load1 <= $QUIET_LOAD; a step whose load1 is above $QUIET_LOAD at its start or its end is recorded contaminated=1 and does not count"
+ev "RULE,key=quiet_host,rule=each trigger waits for load1 <= $QUIET_LOAD; a step whose load1 is above $QUIET_LOAD at its start or its end is recorded contaminated=1 and does not count; a contaminated LONG fails the run; the calibration QUIET line is recorded and gates nothing (a contaminated calibration writes NOTE key=quiet_calibration gates=0) because its checks are upper bounds that load only makes harder to pass and no file under docs/ internal/ or scripts/ reads a calibration timing"
 
 for img in $IMAGES; do
 	id=$(kt 30 docker image inspect "octoconv-$img:dev" --format '{{.Id}}' 2>/dev/null) || fail "missing image octoconv-$img:dev"
@@ -459,7 +459,7 @@ if [ -z "$PICK" ]; then
 	ev "STOP,reason=no_long_candidate_in_band,band_low=$BAND_LOW,band_high=$BAND_HIGH,candidates=$(awk -F'|' '{ printf "%s%s:%s:%s", (NR > 1 ? "+" : ""), $2, $12, $13 }' "$W/candidates")"
 	exit 1
 fi
-IFS='|' read -r L_ROUTE L_CELL L_SPECFILE L_SHA L_TARGET L_OPTS L_FMT L_BYTES L_CEIL L_ROWS _ L_WALL _ <<< "$PICK"
+IFS='|' read -r L_ROUTE L_CELL L_SPECFILE L_SHA L_TARGET L_OPTS _ L_BYTES L_CEIL L_ROWS _ L_WALL _ <<< "$PICK"
 case "$L_SPECFILE" in */scaled/*) ;; *) fail "the CELLSPEC file $L_SPECFILE is not under a scaled/ directory" ;; esac
 L_FILE="$CAD_CACHE/scaled/${L_SPECFILE#*/scaled/}"
 [ -s "$L_FILE" ] || fail "the LONG input $L_FILE is missing"
@@ -728,7 +728,7 @@ while le "$(diff_s "$CAL_DONE" "$(nowf)")" "$DRAIN_BOUND"; do
 done
 [ -n "$ok" ] || fail "cad-worker did not drain to 0 within $DRAIN_BOUND s of the calibration job"
 CAL_DRAINED=$(diff_s "$CAL_DONE" "$(nowf)")
-quiet_line calibration "$CAL_L0" "$(load1)" na || echo "calibration timings are contaminated; the calibration checks are not timings"
+quiet_line calibration "$CAL_L0" "$(load1)" na || ev "NOTE,key=quiet_calibration,step=calibration,contaminated=1,gates=0,reason=the calibration checks (0->1 within 180 s; Ready within 120 s of creation; drain within drain_bound_s) are upper bounds that load only makes harder to pass and no file under docs/ internal/ or scripts/ reads a calibration timing"
 ev "CALIBRATION,job=$CAL_JOB,pod=$CAL_POD,submit_utc=$(iso_at "$CAL_T0"),ready_utc=$READY_TS,submit_to_ready_s=$SUBMIT_TO_READY,created_to_ready_s=$CREATED_TO_READY,pod_image_id=$POD_IMAGE_ID,grace_s=$CAL_GRACE,expected_grace_s=$EXPECTED_GRACE,sandbox_proven=1,status=done,drained_s=$CAL_DRAINED,drain_bound_s=$DRAIN_BOUND,result=ok"
 pass "calibration"
 
@@ -879,7 +879,7 @@ WATCH_PID=$!
 set +m
 
 SS=$(wait_job "$SHORT_JOB" 600)
-[ "$SS" = done ] || fail "SHORT $SHORT_JOB ended $SS"
+[ "$SS" = "done" ] || fail "SHORT $SHORT_JOB ended $SS"
 SHORT_FIN=$(psqlq "select extract(epoch from finished_at) from jobs where id = '$SHORT_JOB'")
 [ -n "$SHORT_FIN" ] || fail "no finished_at for SHORT"
 ev "SHORT,job=$SHORT_JOB,status=done,finished_at=$(iso_at "$SHORT_FIN")"
@@ -904,7 +904,7 @@ L_WALL=$(awk -v a="${L_START:-0}" -v b="${L_FIN:-0}" 'BEGIN { printf "%.2f", b -
 IN_BAND=0
 if [ -n "${L_FIN:-}" ] && le "$BAND_LOW" "$L_WALL" && le "$L_WALL" "$BAND_HIGH"; then IN_BAND=1; fi
 ev "LONG,job=$LONG_JOB,attempts=${L_ATT:-na},queued_to_active=${L_QA:-na},status=${L_STATUS:-$LSF},started_at=$([ -n "${L_START:-}" ] && iso_at "$L_START" || echo absent),finished_at=$([ -n "${L_FIN:-}" ] && iso_at "$L_FIN" || echo absent),attempt_wall_s=$L_WALL,in_band=$IN_BAND"
-[ "$LSF" = done ] && [ "$L_STATUS" = done ] || fail "LONG $LONG_JOB ended $LSF ($L_STATUS)"
+[ "$LSF" = "done" ] && [ "$L_STATUS" = "done" ] || fail "LONG $LONG_JOB ended $LSF ($L_STATUS)"
 [ "$L_ATT" = 1 ] || fail "LONG has attempts=$L_ATT, want 1"
 [ "$L_QA" = 1 ] || fail "LONG has $L_QA queued->active transitions, want 1"
 pass "LONG done once"

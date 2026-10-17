@@ -1,0 +1,230 @@
+# raw sweep grep, pattern: contaminat|CONTAMINATED|load_clean|result=fail|result=FAIL|VERDICT|verdict
+# scripts: git diff --name-only main...HEAD -- scripts/ (shell files; ci-local.sh was swept in quick 261017-7y5)
+
+== scripts/keda-cad-loadproof.sh (5 lines)
+136:	ev "QUIET,step=$step,load1_start=$l0,load1_end=$l1,load1_max_sampled=$lmax,quiet_load=$QUIET_LOAD,contaminated=$c"
+248:		ev "SUMMARY,mode=keda_cad_loadproof,checks=$PASS_COUNT,exit=$exit_code,gate_ok=${GATE_OK:-0},restore=$restore,end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ),result=FAIL"
+300:ev "RULE,key=quiet_host,rule=each trigger waits for load1 <= $QUIET_LOAD; a step whose load1 is above $QUIET_LOAD at its start or its end is recorded contaminated=1, its timings do not count and it fails the proof; only a later clean ru
+574:quiet_line calibration "$CAL_L0" "$CAL_L1" na || fail "the calibration step is contaminated (load1 $CAL_L0 at its start, $CAL_L1 at its end, above $QUIET_LOAD); its timings do not count"
+687:quiet_line timed "$T_L0" "$T_L1" "$(awk '$2 != "err" { if ($5 > m) m = $5 } END { print m + 0 }' "$W/samples")" || fail "the timed step is contaminated (load1 $T_L0 at its start, $T_L1 at its end, above $QUIET_LOAD); its timings do not 
+
+== scripts/keda-cad-downscale-survival.sh (8 lines)
+165:	ev "QUIET,step=$step,load1_start=$l0,load1_end=$l1,load1_max_sampled=$lmax,quiet_load=$QUIET_LOAD,contaminated=$c"
+312:		ev "SUMMARY,mode=$MODE,checks=$PASS_COUNT,exit=$exit_code,gate_ok=${GATE_OK:-0},restore=$restore,end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ),result=FAIL"
+407:ev "RULE,key=quiet_host,rule=each trigger waits for load1 <= $QUIET_LOAD; a step whose load1 is above $QUIET_LOAD at its start or its end is recorded contaminated=1 and does not count; a contaminated LONG fails the run; the calibration 
+731:quiet_line calibration "$CAL_L0" "$(load1)" na || ev "NOTE,key=quiet_calibration,step=calibration,contaminated=1,gates=0,reason=the calibration checks (0->1 within 180 s; Ready within 120 s of creation; drain within drain_bound_s) are u
+858:[ -n "$BUSY_POD" ] || { ev "BUSY,pod=none,census=$CENSUS_LINE,tries=$TRIES,result=FAIL"; fail "no census within $CENSUS_WINDOW_S s found exactly one of two Running cad pods holding an engine process"; }
+862:	ev "BUSY,pod=$BUSY_POD,engine_procs=$HOLD_PROCS,earliest=0,first_pod=$FIRST_POD,earliest_pod=$EARLIEST,result=FAIL"
+920:[ "$ORDER_OK" = 1 ] || { ev "ORDER,sigterm_before_finish=$(lt "$SIGTERM_UB" "$L_FIN" && echo 1 || echo 0),result=FAIL"; fail "the Killing event $SIGTERM_TS does not fall between the annotation and LONG's finished_at"; }
+979:quiet_line long "$S_L0" "$L_END_LOAD" "$LMAX" || fail "LONG's row is contaminated (load1 start $S_L0, end $L_END_LOAD); its wall does not count"
+
+== scripts/cad-liveproof.sh (3 lines)
+92:	ev "SUMMARY,result=FAIL,reason=$*"
+275:ev "RULE,key=determinism_tolerance,dims=equal,alpha=equal,verdicts=equal,bbox_px=1,mad_255_max=1,frac_over_16_max=0.001,json=canonical_bytes_equal,hash=never"
+673:	[ "$(mfield verdict_a "$pline")" = ok ] && [ "$(mfield verdict_b "$pline")" = ok ] || fail "DETERMINISM $label: the worker's judge does not accept both PNGs: $pline"
+
+== scripts/cad-image-measure.sh (3 lines)
+196:emit "RULE,key=quiet_host,rule=a timed row counts only when load1 <= $QUIET_LOAD at its start and its end; a contaminated row is recorded as CONTAMINATED and repeated"
+274:    emit "CONTAMINATED,row=COLD_PULL,rep=$rep,attempt=$attempt,wall_s=$wall,load1_start=$l0,load1_end=$l1"
+308:    emit "CONTAMINATED,row=PREFLIGHT,rep=$rep,attempt=$attempt,load1_start=$l0,load1_end=$l1"
+
+== scripts/cad-dxf-bounds.sh (127 lines)
+89:       the pmset Sleep..Wake intervals, the rerun_after_host_sleep amendment and one contaminated=1 NOTE per row of
+107:       --quiet writes the load-contaminated rows of 76-02-bounds.txt and 76-03-ladders.txt (RULE_AMEND quiet_host) as NOTE
+280:        if line.startswith("CADVERDICT "):
+282:                obj = json.loads(line[len("CADVERDICT "):])
+285:    verdict = obj.get("verdict", "none")
+287:        verdict = "na"
+292:    print("M,%s,verdict=%s,reason=%s,out_bytes=%s,detail=%s" % (base, verdict, clean(reason), out_bytes, detail))
+409:                    if st in ("guard", "dxf") and m["verdict"] != "ok":
+410:                        return "failed:%s_verdict_%s:rep%d" % (st, m["verdict"], rep)
+462:                    m["stage"] == "guard" and m["verdict"] not in ("ok",) and m["wrap_ok"] == "1" for m in model.stages(row)):
+470:            r["stop"] = "guard_stress_wrong_verdict_or_failed"
+621:                  "verdict=%s,out_bytes=%s,svg_bytes=%s,render_svg_bytes=%s,pdf_bytes=%s,png_opaque_bytes=%s,"
+625:                      p / LIMIT, rp, rp / LIMIT, m["verdict"], m["out_bytes"], inf.get("svg_bytes", "na"),
+708:RULE,key=failures,mode=all,rule=every_stage_must_exit_0_within_its_1800_s_wrap_budget_with_guard_and_cad-dxf_verdict_ok_and_every_Go_judge_ok_else_STOP_stage_failed;a_stage_killed_by_the_cgroup_OOM_counts_as_over_LIMIT_(not_a_stop)_and_
+812:verdict_json() {
+819:        if line.startswith("CADVERDICT "):
+820:            obj = json.loads(line[len("CADVERDICT "):])
+821:print("%s %s %s" % (obj.get("verdict", "none"), obj.get("expanded_inserts", -1), obj.get("expanded_entities", -1)))
+833:  out=$(verdict_json "$job/count.out")
+862:    M) case "$step" in guard|dxf) tail -n 1 "$MEAS" | grep -q ',verdict=ok,' || return 1 ;; esac ;;
+868:  local row=$1 rep=$2 src=$3 group=$4 n=$5 caps_mode=$6 extra=$7 job ins ents counts cap_i cap_e verdict ci ce
+875:  read -r verdict ci ce <<< "$(count_pass "$job/in.dxf")"
+876:  counts="inserts:$ci+entities:$ce+verdict:$verdict"
+990:            if line.startswith("CADVERDICT "):
+991:                obj = json.loads(line[len("CADVERDICT "):])
+994:verdict = obj.get("verdict", "none")
+995:got = verdict if verdict == "ok" else "%s/%s" % (verdict, obj.get("reason") or "none")
+1099:    printf 'TEETH,name=%s,side=%s,file=%s,sha256=%s,result=fail,reason=no_text_on_this_side_of_the_floor\n' "$name" "$side" "$(basename "$src")" "$(sha_of "$src")" >> "$LINES"
+1194:        lines.append("FLOOR_FILE,row=%s,label=%s,file=%s,bytes=%s,sha256=%s,result=fail" % (row, label, name, size, digest))
+1290:  local i n path gline mib ci ce verdict b_line c_line ceil_src over
+1327:  read -r verdict ci ce <<< "$(count_pass "$ceil_src")"
+1328:  [ "$verdict" = ok ] || { printf 'X,stop=ceiling_replicate_count_failed,verdict=%s\n' "$verdict" >> "$MEAS"; finish 1; }
+1367:RULE,key=bands,mode=stack,rule=band=over_when_a_render_wall_exceeds_B_render_or_a_stats_or_mesh_wall_exceeds_B_mesh_or_the_stage_hit_the_900_s_wrap_budget_(timeout=1)_or_was_OOM-killed;band=refused_by_cap_for_a_guard_too_complex_verdic
+1416:def verdict_of(path):
+1423:                if line.startswith("CADVERDICT "):
+1425:                        obj = json.loads(line[len("CADVERDICT "):])
+1451:    v = verdict_of(log)
+1457:    verdict = v.get("verdict", "none")
+1469:    elif stage == "guard" and rc == "4" and verdict == "too_complex":
+1471:    elif stage in ("mesh", "stats") and rc == "4" and verdict == "too_complex" and reason == "out_of_memory":
+1476:        if n is None or vt != n or verdict != "ok":
+1478:            reason = "stl_count_%s_verdict_%s_%s" % (n, vt, verdict)
+1480:    if stage == "render" and cls == "ok" and (verdict != "ok" or v.get("size") != 2048 or v.get("view") != "iso"):
+1482:        reason = "render_verdict_%s_view_%s_size_%s" % (verdict, v.get("view"), v.get("size"))
+1483:    if stage == "guard" and cls == "ok" and verdict != "ok":
+1499:          "oom_kill=%s,timeout=%s,band=%s,load1=%s,vm_free_gib=%s,sha256=%s,verdict=%s,reason=%s,class=%s,threads_max=%s" % (
+1501:              oom, timeout, band, load1, vmfree, digest, clean(verdict), clean(reason), cls, f.get("threads_max", "na")))
+1797:    printf 'STACK_ROW,shape=%s,format=%s,rung=%s,bytes=%s,triangles=%s,stage=render,rc=na,wall_s=na,child_rss_mib=na,cg_peak_mib=na,oom_kill=na,timeout=na,band=refused_by_cap,load1=%s,vm_free_gib=%s,sha256=%s,verdict=not_run,reason=tri
+2035:  printf 'SUMMARY,mode=stack_smoke,rows=1,result=fail,stack_rows=%s,gen_identity=%s\n' "$(grep -c '^STACK_ROW,' "$LINES")" "$GEN_EQUAL" >> "$LINES"
+2088:RULE,key=qualities,mode=bounds76,rule=cad-mesh_rows_for_M1;M2;M3_at_draft;standard_and_fine:_fine_N=5_first;then_draft_and_standard_N=1_each;either_is_promoted_to_N=5_(reps_2..5)_if_its_N=1_wall_exceeds_fine's_maximum;M4_runs_cad-mesh_
+2091:RULE,key=refusal,mode=bounds76,rule=L170031=dxf-minsert_5-entity_block_170031_cells_(850156_expanded_entities)_through_the_production_guard_N=1;the_verdict_must_be_too_complex_(REFUSAL_ROW_result=ok)_else_STOP;its_guard_row_is_a_setter
+2092:RULE,key=guard_stress,mode=bounds76,rule=the_four_75-03_stress_shapes_chain;fanout;blocks;wide_at_118_MiB_(dxf-guard-stress;generated_in_the_engine_image)_through_the_production_guard_N=2;expected_chain=too_complex/nesting_too_deep;fan
+2108:RULE,key=failures,mode=bounds76,rule=a_setter_row_with_rc_other_than_0_that_is_not_a_timeout_or_OOM_kill_(and_not_an_expected_guard_refusal)_is_STOP;a_setter_row_with_a_timeout_or_OOM_kill_is_STOP_for_a_non-stacked_cell_and_band=refuse
+2154:def verdict_of(lines):
+2157:        if line.startswith("CADVERDICT "):
+2159:                obj = json.loads(line[len("CADVERDICT "):])
+2199:    v = verdict_of(lines)
+2204:    verdict = v.get("verdict", "none")
+2220:    elif stage == "guard" and rc == "4" and verdict == "too_complex":
+2222:    elif stage in ("mesh", "stats") and rc == "4" and verdict == "too_complex" and reason == "out_of_memory":
+2225:        why = "rc_%s_verdict_%s_reason_%s" % (rc, verdict, reason)
+2230:        got = "ok" if verdict == "ok" else "%s/%s" % (verdict, reason)
+2231:        if cls == "ok" and verdict != "ok":
+2232:            cls, why = "fail", "guard_rc_0_verdict_%s" % verdict
+2237:            elif not want_ok and not (got == expect or (expect == "too_complex" and verdict == "too_complex")):
+2242:            if n is None or v.get("triangles") != n or verdict != "ok":
+2243:                cls, why = "fail", "stl_count_%s_verdict_%s_%s" % (n, v.get("triangles"), verdict)
+2246:        if cls == "ok" and (verdict != "ok" or v.get("size") != int(a["size"]) or v.get("view") != a["view"] or v.get("background") != a["background"]):
+2247:            cls, why = "fail", "render_verdict_%s_view_%s_size_%s_background_%s" % (verdict, v.get("view"), v.get("size"), v.get("background"))
+2251:        if cls == "ok" and verdict != "ok":
+2252:            cls, why = "fail", "dxf_verdict_%s_%s" % (verdict, reason)
+2282:          "stacked=%s,bytes=%s,sha256=%s,verdict=%s,reason=%s,class=%s,why=%s,threads_max=%s,budget_s=%s,detail=%s%s" % (
+2285:              peak_s, out_bytes, setter, band, a["load1"], a["vmfree"], stacked, a["bytes"], a["sha"], clean(verdict), clean(reason), cls,
+2291:    v = verdict_of(lines)
+2292:    verdict = v.get("verdict", "none")
+2300:    print("%s %s %s %s %s %s" % (verdict, clean(reason), inserts, entities, instances, v.get("entities", "na")))
+2344:def contaminated_lines(lines):
+2347:        if line.startswith("NOTE,key=contaminated_row,"):
+2349:            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+2457:            notes.append("NOTE,key=contaminated_row,mode=bounds76,group=%s,line=%d,cell=%s,stage=%s,quality=%s,view=%s,background=%s,rep=%s,contaminated=1,"
+2468:    print("NOTE,key=host_sleep_attempt,mode=bounds76,group=%s,hdr_utc=%s,stopped_utc=%s,attempt_rows=%d,contaminated=%d,clean=%d,"
+2469:          "note=clean_rows_of_the_stopped_attempt_stay_and_count_in_W;contaminated_rows_are_excluded_from_W" % (
+2478:    skip = contaminated_lines(lines)
+2625:    contaminated = len(contaminated_lines(text))
+2626:    print("SUMMARY,mode=bounds76,groups=%s,rows=%d,setter_rows=%d,classification_rows=%d,refusal_rows=%d,cells=%d,not_run=%d,contaminated_rows=%d,result=ok" % (
+2627:        "+".join(groups), len(rows), setter, len(rows) - setter, refusals, cells, not_run, contaminated))
+2798:  read -r GP_VERDICT GP_REASON GP_INSERTS GP_ENTITIES GP_INSTANCES GP_RAW <<< "$(python3 "$WORK/tools/b76.py" guard_probe "$dir/out")"
+2809:  read -r CP_VERDICT _ CP_INSERTS CP_ENTITIES _ _ <<< "$(python3 "$WORK/tools/b76.py" guard_probe "$dir/out")"
+2858:    [ "$GP_VERDICT" = ok ] || b76_stop "reason=m1_calibration_refused,copies=$k"
+2859:    printf 'CELL_PICK,cell=M1,copies=%s,bytes=%s,guard=%s,entities=%s,role=calibration\n' "$k" "$(bytes_of "$GEN_PATH")" "$GP_VERDICT" "$GP_ENTITIES" >> "$extras"
+2871:    printf 'CELL_PICK,cell=M1,copies=%s,bytes=%s,guard=%s,reason=%s,entities=%s,role=search\n' "$k" "$(bytes_of "$GEN_PATH")" "$GP_VERDICT" "$GP_REASON" "$GP_ENTITIES" >> "$extras"
+2872:    if [ "$GP_VERDICT" = ok ]; then
+2878:    elif [ "$GP_VERDICT" = too_complex ]; then
+2886:      b76_stop "reason=m1_search_guard_verdict_$GP_VERDICT,copies=$k"
+2970:  [ "$CP_VERDICT" = ok ] || b76_stop "reason=c_replicate_count_failed,verdict=$CP_VERDICT"
+3071:    GP_VERDICT=na; GP_REASON=none; GP_INSERTS=na; GP_ENTITIES=na; GP_INSTANCES=na; GP_RAW=na
+3075:  got=$GP_VERDICT
+3076:  [ "$got" = ok ] || [ "$got" = na ] || got="$GP_VERDICT/$GP_REASON"
+3089:    "$GP_INSTANCES" "$GP_VERDICT" "$GP_REASON" "$GP_RAW" "$role" "$stacked" "$CELL_CACHED" "$(b76_match_7601 "$name")" "$CELL_PATH" \
+3427:  v=$(scaled_field verdict "$GUARD_LAST")
+3428:  [ "$v" = too_complex ] || b76_stop "reason=l170031_not_refused,verdict=$v"
+3429:  printf 'REFUSAL_ROW,cell=L170031,format=dxf,bytes=%s,sha256=%s,inserts=%s,entities=%s,guard_caps=%s+%s,wall_s=%s,peak_mib=%s,verdict=%s,reason=%s,expect=too_complex,result=ok\n' \
+3664:  printf 'RULE_AMEND,key=rerun_after_host_sleep,mode=bounds76,date_utc=%s,commit=%s,init_commit=%s,stopped_groups=%s,rule=the_%s_group_stopped_by_STOP_reason=host_sleep_(the_host_Mac_entered_Idle_Sleep_at_2026-10-14_05:37:59_+0300_and_
+3964:    printf 'LADDER_RUNG,ladder=render_iges,cell=%s,target_bytes=%s,bytes=%s,triangles=%s,render_max_wall_s=%s,ceil15=%s,timeout=%s,r_upper_s=%s,verdict=%s\n' \
+4018:  local spec name target keepdir rep q n peak oom out go cpk iooms total verdict reason
+4043:      verdict=fail
+4051:        verdict=pass
+4054:        verdict=fail
+4058:    printf 'LADDER_RUNG,ladder=memory_iges,cell=%s,target_bytes=%s,bytes=%s,mesh_fine_rows=%s,mesh_fine_peak_mib=%s,stage_oom_rows=%s,inworker_go_peak_mib=%s,inworker_container_peak_mib=%s,inworker_oom=%s,sum_mib=%s,pod_mib=%s,verdict=
+4059:      "$name" "$target" "$CELL_BYTES" "$n" "$peak" "$oom" "$go" "$cpk" "$iooms" "$total" "$D76_POD_MIB" "$verdict" "$reason" >> "$B76_OUT"
+4060:    if [ "$verdict" = pass ]; then
+4230:    contaminated = set()
+4232:        if l.startswith("NOTE,key=contaminated_row,"):
+4234:            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+4235:                contaminated.add(int(d["line"]))
+4238:        if l.startswith("BOUND76_ROW,") and i not in contaminated:
+4245:    return rows, cells, contaminated
+4256:    rows, cells, contaminated = load(src)
+4270:    return rows, cells, contaminated, results
+4303:    rows, cells, contaminated, results = load_all(src, ladder)
+4320:          "contaminated_lines_excluded=%s" % (w_guard, w_mesh, g_dl, m_dl, r_upper, ceiling if ceiling is not None else "none",
+4322:                                              "+".join(str(c) for c in sorted(contaminated)) or "none"))
+4447:        if l.startswith("NOTE,key=contaminated_row,"):
+4449:            if d.get("contaminated") == "1" and d.get("line", "").isdigit():
+4528:                print("NOTE,key=load_contaminated_row,file=%s,line=%d,cell=%s,stage=%s,quality=%s,view=%s,background=%s,rep=%s,load1=%s,preceding_load1=%s,following_load1=%s,why=%s,wall_s=%s,excluded_from_W=1" % (
+4607:                if r.get("load_clean") == "0":
+4633:    _, cells, contaminated, results = load_all(src, ladder)
+
+== scripts/cad-inworker-measure.sh (2 lines)
+21:above it is written with load_clean=0 and its rep is measured again (at most 5 tries).
+497:	ev "INWORKER_ROW,route=$route,cell=$cell,rep=$rep,job=$JOB_ID,status=done,attempts=1,attempt_wall_s=$wall,stage_sum_s=$sum,nonstage_s=$nonstage,go_vmhwm_mib=$(awk -v k="$hwm" 'BEGIN { printf "%.1f", k / 1024 }'),container_peak_mib=$(mi
+
+== scripts/final-live-gate.sh (9 lines)
+354:	ev "IMAGES_CHECK,stack=$stack,built_services=$found,expected=$expected,tag_mismatch=$mm,ids_present_before_run=$pre,result=fail"
+374:		ev "CI_LOCAL,rc=$rc,transcript=missing,result=fail"
+399:		res=contaminated
+404:	[ "$res" != contaminated ] || nr ci-local "convert_time_over_budget_at_load1_$l"
+449:	ev "TECTONIC,e2e_pass=${names:-none},landlock=$([ "$landlock" -ge 1 ] && echo 1 || echo 0),sandbox_disabled=$((dlog + denv)),image_id=${img:-none},result=fail"
+593:	ev "QUIET,step=cad,run=$n,rows=$(grep -c . "$rows" || true),contaminated=$(grep -c . "$bad" || true),bound=$ROW_QUIET_LOAD,contaminated_rows=$(tr '\n' ';' < "$bad" | sed 's/;$//'),result=$qres"
+640:			ev "QUIET_COVERAGE,step=cad,rows=$(grep -c . "$STATE/rows.1" || true),uncovered=$uncovered,result=fail"
+756:FC=$(grep -cE '^STEP,name=[a-z-]+,rc=[^,]+,result=FAIL,' "$OUT" || true)
+774:ev "VERDICT,fail_steps=$FC,not_run=$NRC,volumes_equal=$VEQ,tracked_dirt=$TRACKED_DIRT,tracked_dirt_end=$DIRT_END,stopped=$STOPPED,exit=$CODE"
+
+== consumers of contaminated rows found while following the sites
+scripts/keda-cad-downscale-survival.sh:403:ev "RULE,key=long_select,source=evidence/76-03-cells.txt CELLSPEC lines of the last derive76_select block with result=ok;evidence/76-03-inworker.txt INWORKER
+scripts/keda-cad-downscale-survival.sh:437:	FILENAME == ARGV[1] && /^INWORKER_ROW,/ && kv("status") == "done" {
+scripts/cad-dxf-bounds.sh:4048:      read -r go cpk iooms <<< "$(awk -F, '$1 == "INWORKER_ROW" { for (i = 2; i <= NF; i++) { split($i, a, "="); v[a[1]] = a[2] } if (v["go_vmhwm_mib"] + 0 > g) g = v["g
+scripts/cad-dxf-bounds.sh:4568:            if l.startswith("INWORKER_ROW,"):
+103:       under caffeinate, appending BOUND76_ROW, LADDER_RUNG and LADDER_RESULT lines to evidence/76-03-ladders.txt:
+2280:    print("BOUND76_ROW,cell=%s,format=%s,group=%s,stage=%s,quality=%s,view=%s,background=%s,size=%s,triangles=%s,rep=%s,rc=%s,wall_s=%s,"
+2436:    rows = [(i + 1, kv(l)) for i, l in enumerate(text) if i > hidx[0] and l.startswith("BOUND76_ROW,") and kv(l).get("group") == group]
+2462:    allrows = sum(1 for l in text if l.startswith("BOUND76_ROW,") and kv(l).get("group") == group)
+2480:        if n in skip or not line.startswith("BOUND76_ROW,"):
+2508:        if not l.startswith("BOUND76_ROW,"):
+2566:    first_row = min((i for i, l in enumerate(text) if l.startswith(("BOUND76_ROW,", "REFUSAL_ROW,", "CELL,"))), default=len(text))
+2607:    rows = [l for l in text if l.startswith("BOUND76_ROW,")]
+2647:      "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - ${B76_T0:-$(date +%s)} ))" >> "$B76_OUT"
+3631:    n=$(grep -cE "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" || true)
+3632:    ok=$(grep -E "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" | grep -c ',class=ok,' || true)
+3633:    tr=$(grep -E "^BOUND76_ROW,.*,group=$g,stage=pixel(_[a-z]+)?," "$B76_OUT" | grep -c ',background=transparent,' || true)
+3760:        "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - B76_T0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+3815:  printf 'SUMMARY,mode=bounds76_smoke,rows=2,result=ok,stage_rows=%s\n' "$(grep -c '^BOUND76_ROW,' "$B76_OUT")" >> "$B76_OUT"
+3816:  grep -E '^(BOUND76_ROW|SUMMARY),' "$B76_OUT" | cut -c1-200 >&2
+3908:    if not line.startswith("BOUND76_ROW,"):
+3982:    if not line.startswith("BOUND76_ROW,"):
+4153:    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" "$(grep -c '^BOUND76_ROW,.*,group=quiet,' "$B76_OUT")" >> "$B76_OUT"
+4238:        if l.startswith("BOUND76_ROW,") and i not in contaminated:
+4456:        elif l.startswith("BOUND76_ROW,"):
+
+# classification (site -> where its value goes -> status)
+keda-cad-loadproof.sh:136 QUIET contaminated -> quiet_line status (new [ "$c" = 0 ]) -> :574 and :687 || fail -> FAIL line, exit 1, teardown SUMMARY result=FAIL -> FIXED (76-09-keda-loadproof-test.sh hot calibration, hot timed)
+keda-cad-loadproof.sh:248 SUMMARY result=FAIL -> exit_code forced non-zero -> PROPAGATES
+keda-cad-loadproof.sh:300 RULE quiet_host -> amended to say a contaminated step fails the proof -> FIXED
+keda-cad-downscale-survival.sh:165 QUIET contaminated -> quiet_line already returns [ "$c" = 0 ] -> PROPAGATES
+keda-cad-downscale-survival.sh:979 LONG quiet_line || fail -> FAIL, exit 1, SUMMARY result=FAIL -> PROPAGATES (unchanged)
+keda-cad-downscale-survival.sh:731 calibration quiet_line || ev NOTE gates=0 -> non-gating by pre-registered RULE :407; no docs/ internal/ scripts/ reader of a calibration timing (downscale-consumers.txt) -> FIXED (recorded in evidence, was console only); code reading only, no harness
+keda-cad-downscale-survival.sh:312 SUMMARY result=FAIL -> exit_code forced non-zero -> PROPAGATES
+keda-cad-downscale-survival.sh:858,862,920 BUSY/ORDER result=FAIL -> each followed by fail -> exit 1 -> PROPAGATES
+keda-cad-downscale-survival.sh:437 long_select reads INWORKER_ROW status=done without load_clean -> a load_clean=0 row can raise a candidate's selection wall; the live LONG wall must lie in the band (:980 IN_BAND, fail) and LONG's quiet line gates (:979) -> NOT FIXED, fail-safe (a wrong pick can only fail the run); the one load_clean=0 row on file (76-03-inworker.txt, dxf_pdf L170030 rep 3) is not a render candidate, so the official pick M2 is unaffected; todo 2026-10-17-selection-steps-ignore-load-clean.md
+cad-liveproof.sh:76-88 ev load gate -> waits up to 3600 s and records end/after load per line in the -load.txt file, never fails -> PROPAGATES through the 76-11 wrapper: final-live-gate.sh quiet_rows :539 -> bad.N -> rerun :622 -> QUIET_COVERAGE :640 -> nr cad (NOT_RUN) -> SUMMARY INCOMPLETE exit 2; missing load file -> QUIET result=fail :593 -> cad FAIL (76-11 cases "quiet rerun", "quiet both", "no load file")
+cad-liveproof.sh:92 SUMMARY result=FAIL in fail() -> exit 1 -> PROPAGATES
+cad-liveproof.sh:275,673 determinism verdicts -> || fail -> exit 1 -> PROPAGATES
+cad-image-measure.sh:274,308 CONTAMINATED rows -> CLEAN stays 0, the wall is not appended -> repeat_clean :316 repeats, die after MAX_ATTEMPTS=6 -> exit 1; *_DIST and DECISION use clean walls only -> PROPAGATES
+cad-image-measure.sh:143 wait_quiet die -> set -e in pull_once/preflight_once -> exit 1 -> PROPAGATES
+cad-inworker-measure.sh:495-498 ROW_CLEAN -> load_clean=$ROW_CLEAN in INWORKER_ROW; only clean rows count in ROWS; :596-598 5 tries then fail; :606 ROWS total check before SUMMARY :607; smoke :567 -> PROPAGATES
+final-live-gate.sh:399-404 CONVERT_TIME contaminated -> nr ci-local -> NOT_RUN -> INCOMPLETE exit 2 (76-11 case "d19 loaded") -> PROPAGATES
+final-live-gate.sh:593 QUIET cad result -> ok=0 on missing load file -> run_cad 1 -> cad FAIL -> PROPAGATES
+final-live-gate.sh:640 QUIET_COVERAGE fail -> nr cad -> NOT_RUN -> INCOMPLETE -> PROPAGATES
+final-live-gate.sh:354,374,449 IMAGES_CHECK/CI_LOCAL/TECTONIC result=fail -> ok=0 / return 1 -> STEP FAIL -> PROPAGATES (swept with tests in 261017-7y5)
+final-live-gate.sh:756-774 FC/NRC -> RESULT FAIL/INCOMPLETE and CODE -> VERDICT and SUMMARY -> PROPAGATES
+cad-dxf-bounds.sh construct A, host-sleep NOTE key=contaminated_row (:2457) -> contaminated_lines :2344 -> maxwall skips :2478; derive load :4238 skips; d76 load_rows _sleep :4450, derive rows_all drops _sleep :4639; SUMMARY contaminated_rows :2625 -> PROPAGATES
+cad-dxf-bounds.sh construct B, NOTE key=host_sleep_attempt :2468 -> written by --amend-rerun with STOP,reason=host_sleep :2463 and GROUP_END result=STOP (the amend step closes the interrupted group and returns 0 by design); b76 finish :2598-2600 STOPs unless the group then ends ok exactly once after it -> PROPAGATES
+cad-dxf-bounds.sh construct C, load contamination (--quiet) load_rows _load_why :4488 -> NOTE key=load_contaminated_row excluded_from_W=1 :4528; quiet loop re-measures until no key is missing or b76_stop quiet_reps_not_reached :4125; derive needs QUIET_END result=ok :4648 and takes W from _clean setter rows :4699,4732 (W line prints clean and all-rows max) -> PROPAGATES
+cad-dxf-bounds.sh construct D, inworker load_clean :4607 -> inworker_clean flag -> derive STOP inworker_route_clean_rows_below_3 :4687 -> PROPAGATES
+cad-dxf-bounds.sh construct E, select() :4303 load_all excludes host-sleep lines only, not load-contaminated rows -> its BASIS W can include a loaded wall (larger W, smaller r_upper, stricter classification); derive takes W from clean rows (:4699,4732) and only derive output (76-03-derived.txt) is cited by docs/CAD.md; whether a select-step classification reaches a published claim without derive re-judging it was not traced to the end -> NOT FIXED (no harness); todo 2026-10-17-selection-steps-ignore-load-clean.md
+cad-dxf-bounds.sh construct F, ladder rmax :3955-3964 over all rows of the run, and memory rung n==3 :4048 -> a loaded wall can only refuse a rung earlier; a retried inworker row makes n != 3 -> iooms=99 -> verdict=fail -> fail-safe; the ladder rows are re-judged by construct C -> PROPAGATES (fail-safe)
+cad-dxf-bounds.sh construct G, result=fail lines TEETH :1099 -> X,stop -> check_state :950 finish 1; FLOOR_FILE :1194 -> floor_aggregate STOP sys.exit(1) -> rc=1 :1262 exit; SUMMARY stack_smoke result=fail :2035 -> exit 1 -> PROPAGATES
+cad-dxf-bounds.sh construct H, CADVERDICT engine verdicts (verdict_of, count_pass, guard_probe, verdict_json) -> engine outputs, not gate verdicts; non-ok where ok is expected -> class=fail / band=failed -> b76 finish failed_band_row STOP exit 1 :2616-2618, or b76_stop / X,stop -> exit 1 -> PROPAGATES
+ci-local.sh -> swept in quick 261017-7y5 (see 261017-7y5-SUMMARY.md), not re-swept here

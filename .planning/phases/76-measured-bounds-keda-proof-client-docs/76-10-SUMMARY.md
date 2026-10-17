@@ -243,3 +243,7 @@ None new. Each threat was handled as follows:
   - the new script has no comment line besides the shebang;
   - values-loadproof.yaml gains no `#` line;
   - no commit lists values.yaml, values-local.yaml or keda-cad-loadproof.sh.
+
+## Follow-up
+
+2026-10-17, quick 261017-doa: on Codex round 2 of PR #37, a contaminated calibration in scripts/keda-cad-downscale-survival.sh still gates nothing, but it is now recorded in the evidence file (NOTE key=quiet_calibration gates=0) and pre-registered in RULE key=quiet_host, and a contaminated LONG still fails the run; the official PASS stands, because every QUIET line records contaminated=0 (evidence/76-10-keda-downscale.txt lines 67 and 96, SUMMARY result=PASS line 98; evidence/76-10-keda-downscale-calibration.txt line 66, SUMMARY result=PASS line 69).

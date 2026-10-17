@@ -240,3 +240,7 @@ None new. Each threat was mitigated as follows:
 - The 14 commits from 323a857 to 8682a5f are in HEAD. All are signed G, and none has a Co-Authored-By trailer.
 - `git diff --exit-code main -- internal/convert/exec.go scripts/cad-image-size-measure.sh scripts/keda-pandoc-loadproof.sh scripts/keda-ocr-loadproof.sh` exits 0.
 - No comment line in either new script; no new `#` line in values.yaml; no `//` line added to cad_doc_test.go.
+
+## Follow-up
+
+2026-10-17, quick 261017-doa: on Codex round 2 of PR #37, scripts/keda-cad-loadproof.sh now fails the proof when its calibration or timed step is contaminated (before, it recorded contaminated=1 and could still end PASS); the official PASS stands, because both QUIET lines record contaminated=0 (evidence/76-09-keda-loadproof.txt lines 63 and 78) and SUMMARY result=PASS is line 81.
