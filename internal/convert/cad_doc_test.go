@@ -1,7 +1,12 @@
 package convert
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"reflect"
 	"regexp"
@@ -27,6 +32,8 @@ var (
 	cadDocEnv         = regexp.MustCompile(`envDuration\("(CAD_[A-Z_]+)", convert\.(\w+)\)`)
 	cadDocConcurrency = regexp.MustCompile(`(?m)^\s+CAD_WORKER_CONCURRENCY:\s*"?([^"\s]+)"?\s*$`)
 	cadDocSource      = regexp.MustCompile(`^evidence/(\S+) ([A-Z_]+)(?:\[(\w+)=([^\]]+)\])?\.(\w+)$`)
+	cadDocNearInk     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is ink`)
+	cadDocNearNot     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is not`)
 )
 
 var cadDocScalingEvidence = []string{
@@ -677,6 +684,96 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			if b := l["to_bytes"]; b != "" && b != r[3] {
 				t.Errorf("docs/CAD.md %s states %s, the evidence lowered the ceiling to %s", l["key"], r[3], b)
 			}
+		}
+	})
+
+	t.Run("near_white_rule", func(t *testing.T) {
+		var limit string
+		for _, r := range cadDocTable(t, doc, "## Known limits", "id", "limit", "constant", "value") {
+			if r[0] == "near_white" {
+				limit = r[1]
+			}
+		}
+		if limit == "" {
+			t.Fatalf("docs/CAD.md Known limits has no near_white row")
+		}
+		if strings.Contains(limit, "any channel at or above") {
+			t.Errorf("docs/CAD.md near_white says paint with any channel at or above the cutoff is no ink; cadMeasure skips a pixel only when every channel is at or above %d", cadBackgroundCutoff)
+		}
+		triples := func(re *regexp.Regexp) [][3]int {
+			var out [][3]int
+			for _, m := range re.FindAllStringSubmatch(limit, -1) {
+				var p [3]int
+				for i := range p {
+					v, err := strconv.Atoi(m[i+1])
+					if err != nil || v > 255 {
+						t.Fatalf("docs/CAD.md near_white example %q is not an 8-bit colour", m[0])
+					}
+					p[i] = v
+				}
+				out = append(out, p)
+			}
+			return out
+		}
+		ink, not := triples(cadDocNearInk), triples(cadDocNearNot)
+		if len(ink) == 0 || len(not) == 0 {
+			t.Fatalf("docs/CAD.md near_white states %d \"(r, g, b) is ink\" and %d \"(r, g, b) is not\" examples, want at least one of each", len(ink), len(not))
+		}
+		high, edge := false, false
+		for _, p := range ink {
+			high = high || max(p[0], p[1], p[2]) >= cadBackgroundCutoff
+		}
+		for _, p := range not {
+			edge = edge || min(p[0], p[1], p[2]) == cadBackgroundCutoff
+		}
+		if !high {
+			t.Errorf("docs/CAD.md near_white has no ink example with a channel at or above %d", cadBackgroundCutoff)
+		}
+		if !edge {
+			t.Errorf("docs/CAD.md near_white has no background example whose smallest channel is %d", cadBackgroundCutoff)
+		}
+		size := CADMinRenderSize
+		box, err := CADDrawingLetterbox(1, 1, size)
+		if err != nil {
+			t.Fatalf("CADDrawingLetterbox: %v", err)
+		}
+		probe := func(p [3]int, want int) {
+			img := image.NewNRGBA(image.Rect(0, 0, size, size))
+			for i := range img.Pix {
+				img.Pix[i] = 0xff
+			}
+			img.SetNRGBA(size/2, size/2, color.NRGBA{R: uint8(p[0]), G: uint8(p[1]), B: uint8(p[2]), A: 255})
+			var f CADPixelFacts
+			cadMeasure(img, &f)
+			if f.Count != want {
+				t.Errorf("cadMeasure counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
+			}
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, img); err != nil {
+				t.Fatalf("png.Encode: %v", err)
+			}
+			if f, _ := JudgeCADPNG(bytes.NewReader(buf.Bytes()), size, CADBackgroundOpq); f.Count != want {
+				t.Errorf("JudgeCADPNG counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
+			}
+			if f, _ := JudgeCADDrawingPNG(bytes.NewReader(buf.Bytes()), size, CADBackgroundOpq, box); f.Count != want {
+				t.Errorf("JudgeCADDrawingPNG counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
+			}
+			f, err := JudgeCADDrawingInk(bytes.NewReader(buf.Bytes()), size)
+			if f.Count != want {
+				t.Errorf("JudgeCADDrawingInk counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
+			}
+			if want == 1 && err != nil {
+				t.Errorf("JudgeCADDrawingInk refuses %v on white, docs/CAD.md near_white calls it ink: %v", p, err)
+			}
+			if want == 0 && !errors.Is(err, ErrCADEmptyResult) {
+				t.Errorf("JudgeCADDrawingInk returns %v for %v on white, docs/CAD.md near_white calls it no ink, want ErrCADEmptyResult", err, p)
+			}
+		}
+		for _, p := range ink {
+			probe(p, 1)
+		}
+		for _, p := range not {
+			probe(p, 0)
 		}
 	})
 
