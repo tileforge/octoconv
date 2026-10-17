@@ -11,6 +11,9 @@ Usage:
     scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-minsert --targets N [--block-entities N] [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from REPLICATE --kind dxf-combo --cells N [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-far-point --targets D,... [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --kind stl-stack --targets K,... (--part cube | --scaled-from FILE.stl) [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-nauo --targets N [--nauo-pitch MM] [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|iges-from-step|stl-tile|dxf-replicate --exact-bytes N [--copies K] [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -849,13 +852,14 @@ DEFAULT_SCALED = os.path.join(
     os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
     "scaled",
 )
-KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo", "dxf-far-point")
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo", "dxf-far-point", "stl-stack")
 STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
 STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
 STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
 DXF_NORMALIZED_NUMERIC = {"$TDCREATE", "$TDUCREATE", "$TDUPDATE", "$TDUUPDATE", "$TDINDWG", "$TDUSRTIMER"}
 DXF_NORMALIZED_GUID = {"$FINGERPRINTGUID", "$VERSIONGUID"}
 NIL_GUID = "{00000000-0000-0000-0000-000000000000}"
+STL_STACK_MAX_BYTES = 190840832
 
 
 def parse_targets(text):
@@ -1002,7 +1006,7 @@ def scale_step_copies(base_path, targets, out_dir):
     return failures
 
 
-def scale_step_nauo(base_path, targets, out_dir):
+def scale_step_nauo(base_path, targets, out_dir, pitch=200.0):
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPCAFControl import STEPCAFControl_Writer
     from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader
@@ -1033,12 +1037,12 @@ def scale_step_nauo(base_path, targets, out_dir):
         side = max(1, int(round(count ** (1.0 / 3.0))))
         for i in range(count):
             trsf = gp_Trsf()
-            trsf.SetTranslation(gp_Vec(200.0 * (i % side), 200.0 * ((i // side) % side), 200.0 * (i // (side * side))))
+            trsf.SetTranslation(gp_Vec(pitch * (i % side), pitch * ((i // side) % side), pitch * (i // (side * side))))
             tool.AddComponent(asm, part, TopLoc_Location(trsf))
         tool.UpdateAssemblies()
         writer = STEPCAFControl_Writer()
         writer.Transfer(doc, STEPControl_AsIs)
-        name = "step-nauo-%s-n%d.step" % (stem, count)
+        name = "step-nauo-%s-n%d%s.step" % (stem, count, "" if pitch == 200.0 else "-pitch%g" % pitch)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = os.path.join(tmp, "assembly.step")
             writer.Write(tmp_path)
@@ -1051,7 +1055,8 @@ def scale_step_nauo(base_path, targets, out_dir):
             continue
         write_blob(os.path.join(out_dir, name), blob)
         scaled_line("step-nauo", "n%d" % count, len(blob), sha_of(blob), "ok",
-                    ",base=%s,instances=%d,nauo=%d,file=%s" % (os.path.basename(base_path), count, found, name))
+                    ",base=%s,instances=%d,nauo=%d,%sfile=%s" % (os.path.basename(base_path), count, found,
+                                                               "" if pitch == 200.0 else "pitch=%g," % pitch, name))
     return failures
 
 
@@ -1147,6 +1152,79 @@ def scale_stl_tile(base_path, targets, out_dir):
         scaled_line("stl-tile", "%dMiB" % target, size, digest.hexdigest(), "ok",
                     ",base=%s,tiles=%d,triangles=%d,file=%s" % (os.path.basename(base_path), tiles, total, name))
     return failures
+
+
+def stl_cube_part():
+    header = b"\x00" * 80
+    return stl_binary_blob(header, box_triangles(1, 1, 1))
+
+
+def scale_stl_stack(part_blob, part_count, label, targets, out_dir):
+    records = part_blob[84:84 + 50 * part_count]
+    failures = 0
+    for copies in targets:
+        if copies < 1:
+            raise SystemExit("stl-stack: --targets must be copy counts of at least 1")
+        total = copies * part_count
+        size = 84 + 50 * total
+        if size > STL_STACK_MAX_BYTES:
+            print("SCALED_SKIP,kind=stl-stack,target=k%d,part=%s,copies=%d,triangles=%d,bytes=%d,reason=over_stl_ceiling" % (
+                copies, label, copies, total, size), flush=True)
+            continue
+        header = (b"octoconv cad-corpus-gen stl-stack " + label.encode("ascii", "replace"))[:80]
+        header = header + b"\x00" * (80 - len(header))
+        name = "stl-stack-%s-k%d.stl" % (stem_of(label), copies)
+        path = os.path.join(out_dir, name)
+        digest = hashlib.sha256()
+        with open(path, "wb") as fh:
+            head = header + struct.pack("<I", total)
+            fh.write(head)
+            digest.update(head)
+            per = max(1, (1 << 22) // max(1, len(records)))
+            left = copies
+            while left > 0:
+                n = min(per, left)
+                chunk = records * n
+                fh.write(chunk)
+                digest.update(chunk)
+                left -= n
+        problems = []
+        if os.path.getsize(path) != 84 + 50 * total:
+            problems.append("size %d != 84 + 50 x %d" % (os.path.getsize(path), total))
+        with open(path, "rb") as fh:
+            got = fh.read(84 + len(records))
+            fh.seek(-len(records), os.SEEK_END)
+            last = fh.read(len(records))
+        if struct.unpack("<I", got[80:84])[0] != total:
+            problems.append("count field differs from %d" % total)
+        if got[84:] != records or last != records:
+            problems.append("first or last copy differs from the part")
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        print("SCALED,kind=stl-stack,target=k%d,part=%s,copies=%d,triangles=%d,bytes=%d,sha256=%s,check=ok,file=%s" % (
+            copies, label, copies, total, size, digest.hexdigest(), name), flush=True)
+    return failures
+
+
+def run_stl_stack(args):
+    if not args.targets:
+        raise SystemExit("--kind stl-stack requires --targets")
+    if (args.part is None) == (args.scaled_from is None):
+        raise SystemExit("--kind stl-stack takes exactly one of --part cube or --scaled-from FILE.stl")
+    out_dir = args.scaled_dir or DEFAULT_SCALED
+    os.makedirs(out_dir, exist_ok=True)
+    if args.part == "cube":
+        blob = stl_cube_part()
+        count = 12
+        label = "cube"
+    else:
+        if not os.path.isfile(args.scaled_from):
+            raise SystemExit("--scaled-from: no such file")
+        blob, count = read_binary_stl(args.scaled_from)
+        label = os.path.basename(args.scaled_from)
+    return 1 if scale_stl_stack(blob, count, label, parse_targets(args.targets), out_dir) else 0
 
 
 def ascii_facet(vals):
@@ -1765,6 +1843,347 @@ def scale_iges_from_step(base_path, targets, out_dir):
     return 0
 
 
+EXACT_KINDS = ("step-copies", "iges-from-step", "stl-tile", "dxf-replicate")
+EXACT_STEP_LINE = 1000
+EXACT_DXF_PAIR = 1025
+
+
+def exact_line(kind, n, blob_size, digest, extra):
+    gap = n - blob_size
+    scaled_line(kind, "%dB" % n, blob_size, digest, "ok", ",target_bytes=%d,pad_gap_bytes=%d%s" % (n, gap, extra))
+
+
+def step_comment_pad(gap):
+    if gap == 0:
+        return b""
+    if gap < 5:
+        return None
+    filler = bytearray()
+    want = gap - 5
+    line = b"x" * (EXACT_STEP_LINE - 1) + b"\n"
+    while len(filler) + len(line) <= want:
+        filler += line
+    filler += b"x" * (want - len(filler))
+    return b"/*" + bytes(filler) + b"*/\n"
+
+
+def scale_step_copies_exact(base_path, n, copies_k, out_dir):
+    with open(base_path, "rb") as fh:
+        base = fh.read()
+    head, data, tail = step_sections(base)
+    max_id = step_max_id(data)
+    base_defs = sum(1 for _ in STEP_DEF.finditer(data))
+    stem = stem_of(base_path)
+    fixed = len(head) + len(tail)
+    copies = []
+    if copies_k is None:
+        total = fixed
+        while True:
+            part = step_renumber(data, len(copies) * max_id)
+            if total + len(part) > n:
+                break
+            copies.append(part)
+            total += len(part)
+        while len(copies) >= 2 and step_comment_pad(n - fixed - sum(len(c) for c in copies)) is None:
+            copies.pop()
+    else:
+        copies = [step_renumber(data, i * max_id) for i in range(copies_k)]
+    k = len(copies)
+    if k < 2:
+        print("SCALE CHECK FAILED step-copies: %d copies do not fit %s bytes" % (k, n), file=sys.stderr)
+        return 1
+    body = fixed + sum(len(c) for c in copies)
+    if n is None:
+        pad = b""
+    else:
+        pad = step_comment_pad(n - body) if body <= n else None
+    if pad is None:
+        print("SCALE CHECK FAILED step-copies: %d copies are %d bytes, no comment pad reaches %d" % (k, body, n), file=sys.stderr)
+        return 1
+    blob = head + b"".join(copies) + pad + tail
+    name = "step-copies-%s-k%d%s.step" % (stem, k, "" if n is None else "-%dB" % n)
+    write_blob(os.path.join(out_dir, name), blob)
+    defs = sum(1 for _ in STEP_DEF.finditer(blob, len(head)))
+    top = step_max_id(blob[len(head):len(blob) - len(tail)])
+    problems = []
+    if defs != k * base_defs:
+        problems.append("entities %d != %d x %d" % (defs, k, base_defs))
+    if top != k * max_id:
+        problems.append("max id %d != %d x %d" % (top, k, max_id))
+    if blob[:len(head)] != head or not blob.endswith(tail):
+        problems.append("header or trailer changed")
+    if pad.count(b";") or pad.count(b"#") or pad.count(b"'"):
+        problems.append("the pad holds a ; # or quote")
+    if n is not None and len(blob) != n:
+        problems.append("size %d != %d" % (len(blob), n))
+    if problems:
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    extra = ",base=%s,k=%d,entities=%d,pad_bytes=%d,method=struct,file=%s" % (os.path.basename(base_path), k, defs, len(pad), name)
+    if n is None:
+        scaled_line("step-copies", "k%d" % k, len(blob), sha_of(blob), "ok", extra)
+    else:
+        exact_line("step-copies", n, len(blob), sha_of(blob), extra)
+    return 0
+
+
+def iges_pad(blob, n):
+    eol = b"\r\n" if blob[80:82] == b"\r\n" else b"\n"
+    stride = 80 + len(eol)
+    if not blob.endswith(eol) or len(blob) % stride:
+        return None, "the records are not %d bytes each" % stride
+    recs = [blob[i:i + 80] for i in range(0, len(blob), stride)]
+    if any(blob[i + 80:i + stride] != eol for i in range(0, len(blob), stride)):
+        return None, "a record does not end at column 80"
+    kinds = [r[72:73] for r in recs]
+    last_s = max(i for i, k in enumerate(kinds) if k == b"S")
+    s_count = kinds.count(b"S")
+    term = recs[-1]
+    if term[72:73] != b"T" or term[0:1] != b"S" or int(term[1:8]) != s_count:
+        return None, "the terminate record does not count the start records"
+    extra = (n - len(blob)) // stride
+    pads = [b" " * 72 + b"S" + b"%07d" % (s_count + i + 1) for i in range(extra)]
+    term = term[:1] + b"%07d" % (s_count + extra) + term[8:]
+    out = recs[:last_s + 1] + pads + recs[last_s + 1:-1] + [term]
+    return b"".join(r + eol for r in out), stride
+
+
+def iges_counts_hold(blob, stride):
+    rec = blob[len(blob) - stride:len(blob) - stride + 80]
+    total = len(blob) // stride
+    s, g, d, p = int(rec[1:8]), int(rec[9:16]), int(rec[17:24]), int(rec[25:32])
+    kinds = [blob[i + 72:i + 73] for i in range(0, len(blob), stride)]
+    return total == s + g + d + p + 1 and kinds.count(b"S") == s and kinds.count(b"G") == g and kinds.count(b"D") == d and kinds.count(b"P") == p
+
+
+def scale_iges_from_step_exact(base_path, n, out_dir):
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.IGESControl import IGESControl_Writer
+    from OCP.STEPControl import STEPControl_Reader
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(base_path) != IFSelect_RetDone:
+        raise SystemExit("iges-from-step: OCP cannot read the STEP base")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    writer = IGESControl_Writer("MM", 0)
+    writer.AddShape(shape)
+    writer.ComputeModel()
+    name = "iges-%s-%dB.igs" % (stem_of(base_path), n)
+    path = os.path.join(out_dir, name)
+    if not writer.Write(path):
+        raise SystemExit("iges-from-step: OCP could not write %s" % name)
+    with open(path, "rb") as fh:
+        stamped = re.sub(rb"15H[0-9]{8}\.[0-9]{6}", b"15H20000101.000000", fh.read())
+    if len(stamped) > n:
+        os.remove(path)
+        print("SCALED_SKIP,kind=iges-from-step,target=%dB,reason=over_target_bytes,bytes=%d,base=%s" % (n, len(stamped), os.path.basename(base_path)), flush=True)
+        return 0
+    padded, stride = iges_pad(stamped, n)
+    problems = []
+    if padded is None:
+        problems.append(stride)
+    else:
+        lines = [ln for ln in padded.split(b"\n") if ln.strip()]
+        if not lines or b"T0000001" not in lines[-1]:
+            problems.append("no terminate section")
+        if not any(len(ln.rstrip(b"\r")) >= 73 and ln.rstrip(b"\r")[72:73] == b"D" for ln in lines):
+            problems.append("no directory entries")
+        if not iges_counts_hold(padded, stride):
+            problems.append("the terminate counts do not match the records")
+        if not 0 <= n - len(padded) < stride:
+            problems.append("gap %d is not below one %d-byte record" % (n - len(padded), stride))
+    if problems:
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    write_blob(path, padded)
+    exact_line("iges-from-step", n, len(padded), sha_of(padded),
+               ",base=%s,unpadded_bytes=%d,pad_records=%d,record_bytes=%d,file=%s" % (
+                   os.path.basename(base_path), len(stamped), (len(padded) - len(stamped)) // stride, stride, name))
+    return 0
+
+
+def scale_stl_tile_exact(base_path, n, out_dir):
+    blob, count = read_binary_stl(base_path)
+    pitch = stl_pitch(blob, count)
+    total = (n - 84) // 50
+    if total < 2 * count:
+        print("SCALE CHECK FAILED stl-tile: %d bytes hold fewer than two tiles of the base" % n, file=sys.stderr)
+        return 1
+    tiles = -(-total // count)
+    header = (b"octoconv cad-corpus-gen stl-tile " + os.path.basename(base_path).encode("ascii", "replace"))[:80]
+    header = header + b"\x00" * (80 - len(header))
+    name = "stl-tile-%s-%dB.stl" % (stem_of(base_path), n)
+    path = os.path.join(out_dir, name)
+    digest = hashlib.sha256()
+    with open(path, "wb") as fh:
+        part = header + struct.pack("<I", total)
+        fh.write(part)
+        digest.update(part)
+        pending = bytearray()
+        for vals in tile_triangles(blob, count, pitch, total):
+            pending += struct.pack("<12fH", *vals)
+            if len(pending) >= 1 << 22:
+                fh.write(pending)
+                digest.update(pending)
+                pending = bytearray()
+        fh.write(pending)
+        digest.update(pending)
+    size = os.path.getsize(path)
+    problems = []
+    if size != 84 + 50 * total:
+        problems.append("size %d != 84 + 50 x %d" % (size, total))
+    with open(path, "rb") as fh:
+        head = fh.read(84 + 50 * min(count, 64))
+    if struct.unpack("<I", head[80:84])[0] != total:
+        problems.append("count field differs from %d" % total)
+    if head[84:84 + 50 * min(count, 64)] != blob[84:84 + 50 * min(count, 64)]:
+        problems.append("first tile differs from the base")
+    if not 0 <= n - size < 50:
+        problems.append("gap %d is not below one 50-byte triangle" % (n - size))
+    if problems:
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    exact_line("stl-tile", n, size, digest.hexdigest(),
+               ",base=%s,tiles=%d,triangles=%d,file=%s" % (os.path.basename(base_path), tiles, total, name))
+    return 0
+
+
+def dxf_comment_pad(gap, nl):
+    least = 3 + 2 * len(nl) + 1
+    if gap == 0:
+        return b""
+    full, rem = divmod(gap, EXACT_DXF_PAIR)
+    sizes = [EXACT_DXF_PAIR] * full
+    if rem:
+        if rem >= least:
+            sizes.append(rem)
+        elif full:
+            sizes[-1] = EXACT_DXF_PAIR + rem
+        else:
+            return None
+    return b"".join(b"999" + nl + b"x" * (s - 3 - 2 * len(nl)) + nl for s in sizes)
+
+
+def scale_dxf_replicate_exact(base_path, n, out_dir):
+    with open(base_path, "rb") as fh:
+        base = fh.read()
+    nl = b"\r\n" if b"\r\n" in base else b"\n"
+    lines = [ln.rstrip(b"\r") for ln in dxf_split(base)]
+    pairs = dxf_normalize(dxf_pairs_of(lines))
+    start, end = dxf_entity_range(pairs)
+    records = dxf_records(pairs[start:end])
+    seed_index, seed = dxf_handle_seed(pairs)
+    if seed is None:
+        raise SystemExit("dxf-replicate: the base has no $HANDSEED")
+    handles_per_copy = sum(1 for rec in records for code_raw, _ in rec if code_raw.strip() == b"5")
+    head_pairs = pairs[:start]
+    tail_pairs = pairs[end:]
+    if tail_pairs[-1][1].strip() != b"EOF":
+        raise SystemExit("dxf-replicate: the base does not end with 0/EOF")
+
+    def render(pair_list):
+        return b"".join(code_raw.rstrip(b"\r") + nl + value.rstrip(b"\r") + nl for code_raw, value in pair_list)
+
+    def head_for(copies):
+        head = list(head_pairs)
+        head[seed_index] = (head[seed_index][0], b"%X" % (seed + copies * handles_per_copy + 1))
+        return render(head)
+
+    body_tail = render(tail_pairs[:-1])
+    eof = render(tail_pairs[-1:])
+    chunks = []
+    counter = seed + 1
+    used = 0
+    while True:
+        k = len(chunks)
+        shift = 1000.0 * k
+        chunk = []
+        for rec in records:
+            for code_raw, value in rec:
+                code = int(code_raw.strip()) if code_raw.strip().lstrip(b"-").isdigit() else None
+                if code == 5 and k:
+                    value = b"%X" % counter
+                    counter += 1
+                elif k and code is not None:
+                    value = dxf_shift(code, value, shift)
+                chunk.append((code_raw, value))
+        part = render(chunk)
+        if len(head_for(k + 1)) + used + len(part) + len(body_tail) + len(eof) > n:
+            break
+        chunks.append(part)
+        used += len(part)
+    copies = len(chunks)
+    while copies >= 2:
+        size = len(head_for(copies)) + sum(len(c) for c in chunks[:copies]) + len(body_tail) + len(eof)
+        pad = dxf_comment_pad(n - size, nl) if size <= n else None
+        if pad is not None:
+            break
+        copies -= 1
+    if copies < 2:
+        print("SCALE CHECK FAILED dxf-replicate: fewer than two copies fit %d bytes" % n, file=sys.stderr)
+        return 1
+    blob = head_for(copies) + b"".join(chunks[:copies]) + body_tail + pad + eof
+    name = "dxf-replicate-%s-%dB.dxf" % (stem_of(base_path), n)
+    write_blob(os.path.join(out_dir, name), blob)
+    out_lines = [ln.rstrip(b"\r") for ln in dxf_split(blob)]
+    out_pairs = dxf_pairs_of(out_lines)
+    o_start, o_end = dxf_entity_range(out_pairs)
+    out_records = dxf_records(out_pairs[o_start:o_end])
+    problems = []
+    if len(out_records) != copies * len(records):
+        problems.append("%d entities, expected %d x %d" % (len(out_records), copies, len(records)))
+    handles = [value.strip() for rec in out_records for code_raw, value in rec if code_raw.strip() == b"5"]
+    if len(set(handles)) != len(handles):
+        problems.append("duplicate handles")
+    kinds_in = {}
+    kinds_out = {}
+    for rec in records:
+        kinds_in[rec[0][1].strip()] = kinds_in.get(rec[0][1].strip(), 0) + 1
+    for rec in out_records:
+        kinds_out[rec[0][1].strip()] = kinds_out.get(rec[0][1].strip(), 0) + 1
+    for kind_name, cnt in kinds_in.items():
+        if kinds_out.get(kind_name, 0) != copies * cnt:
+            problems.append("%s count %d, expected %d" % (kind_name.decode("ascii", "replace"), kinds_out.get(kind_name, 0), copies * cnt))
+    if out_pairs[-1][1].strip() != b"EOF" or out_pairs[-2][1].strip() == b"EOF":
+        problems.append("the file does not end with a single 0/EOF")
+    if len(blob) != n:
+        problems.append("size %d != %d" % (len(blob), n))
+    if problems:
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    exact_line("dxf-replicate", n, len(blob), sha_of(blob),
+               ",base=%s,copies=%d,entities=%d,pad_bytes=%d,method=struct,file=%s" % (
+                   os.path.basename(base_path), copies, len(out_records), len(pad), name))
+    return 0
+
+
+def run_exact(args):
+    n = args.exact_bytes
+    if args.copies is not None and args.kind != "step-copies":
+        raise SystemExit("--copies applies to --kind step-copies only")
+    if args.kind not in EXACT_KINDS:
+        raise SystemExit("--exact-bytes applies to --kind %s only" % ", ".join(EXACT_KINDS))
+    if n is not None and n <= 0:
+        raise SystemExit("--exact-bytes must be positive")
+    if n is None and args.copies is None:
+        raise SystemExit("--exact-bytes is required")
+    if args.targets:
+        raise SystemExit("--exact-bytes replaces --targets")
+    out_dir = args.scaled_dir or DEFAULT_SCALED
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except FileExistsError:
+        pass
+    if args.kind == "step-copies":
+        return scale_step_copies_exact(args.scaled_from, n, args.copies, out_dir)
+    if args.kind == "iges-from-step":
+        return scale_iges_from_step_exact(args.scaled_from, n, out_dir)
+    if args.kind == "stl-tile":
+        return scale_stl_tile_exact(args.scaled_from, n, out_dir)
+    return scale_dxf_replicate_exact(args.scaled_from, n, out_dir)
+
+
 GUARD_STRESS_SHAPES = ("chain", "fanout", "blocks", "wide")
 GUARD_STRESS_HEAD = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n0\nENDSEC\n"
 GUARD_STRESS_LINE = b"0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n30\n0.0\n11\n1.0\n21\n0.0\n31\n0.0\n"
@@ -1841,6 +2260,8 @@ def run_scaled(args):
         os.makedirs(out_dir, exist_ok=True)
     except FileExistsError:
         pass
+    if args.exact_bytes is not None or args.copies is not None:
+        return run_exact(args)
     if args.kind == "dxf-combo":
         if args.targets:
             raise SystemExit("--kind dxf-combo takes --cells, not --targets")
@@ -1853,6 +2274,10 @@ def run_scaled(args):
         return 1 if scale_dxf_minsert(args.scaled_from, parse_targets(args.targets), out_dir,
                                       5 if args.block_entities is None else args.block_entities) else 0
     targets = parse_targets(args.targets)
+    if args.nauo_pitch is not None and args.kind != "step-nauo":
+        raise SystemExit("--nauo-pitch applies to --kind step-nauo only")
+    if args.kind == "step-nauo" and args.nauo_pitch is not None:
+        return 1 if scale_step_nauo(args.scaled_from, targets, out_dir, args.nauo_pitch) else 0
     runner = {
         "step-copies": scale_step_copies,
         "step-nauo": scale_step_nauo,
@@ -2803,12 +3228,16 @@ def main():
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
-    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-far-point|dxf-guard-stress")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-stack|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-far-point|dxf-guard-stress")
+    ap.add_argument("--part", choices=("cube",), help="stl-stack: the built-in 12-triangle unit cube as the stacked part")
+    ap.add_argument("--nauo-pitch", type=float, help="step-nauo: grid pitch in mm between instances (default 200, 0 stacks them)")
     ap.add_argument("--shape", help="dxf-guard-stress shape: chain|fanout|blocks|wide")
-    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
+    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or copy counts for stl-stack, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
     ap.add_argument("--block-entities", type=int, help="dxf-minsert: entities in the CELL block (default 5)")
     ap.add_argument("--cells", type=int, help="dxf-combo: cells of the MINSERT appended to the base")
+    ap.add_argument("--exact-bytes", type=int, help="step-copies|iges-from-step|stl-tile|dxf-replicate: the largest file at or below N bytes, padded to N (STEP comment, DXF 999 pairs, IGES start records; STL is not padded)")
+    ap.add_argument("--copies", type=int, help="step-copies: exactly this many copies (before the pad when --exact-bytes is given)")
     ap.add_argument("--dxf-fixtures", action="store_true",
                     help="generate or check the phase 75 DXF fixtures (generation needs ezdxf and PYTHONHASHSEED=0)")
     args = ap.parse_args()
@@ -2821,6 +3250,12 @@ def main():
 
     if args.kind == "dxf-guard-stress":
         return run_guard_stress(args)
+
+    if args.kind == "stl-stack":
+        return run_stl_stack(args)
+
+    if args.part is not None:
+        raise SystemExit("--part applies to --kind stl-stack only")
 
     if args.scaled_from:
         return run_scaled(args)

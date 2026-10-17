@@ -1,0 +1,5 @@
+quiet_window_found_utc=2026-10-16T18:15:29Z load1=6.90 waited_s=525
+start_utc=2026-10-16T18:15:29Z load1=6.90
+end_utc=2026-10-16T18:36:20Z load1=13.85 ci_local_rc=0
+status_diff_lines=0
+files_newer_than_start=0

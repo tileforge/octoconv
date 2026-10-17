@@ -1,0 +1,27 @@
+== D1: docs/CAD.md near_white limit text set back to the old any-channel wording (examples kept)
+--- FAIL: TestCADDocMatchesTheCode (0.01s)
+        cad_doc_test.go:701: docs/CAD.md near_white says paint with any channel at or above the cutoff is no ink; cadMeasure skips a pixel only when every channel is at or above 250
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.714s
+FAIL
+restored docs/CAD.md: cmp equal to GREEN
+
+== C1: cadpixel.go line 226 skip test && -> || (the old doc's any-channel rule in code)
+--- FAIL: TestCADDocMatchesTheCode (0.01s)
+        cad_doc_test.go:749: cadMeasure counts 0 ink pixels for [249 255 255] on white, docs/CAD.md near_white implies 1
+        cad_doc_test.go:756: JudgeCADPNG counts 0 ink pixels for [249 255 255] on white, docs/CAD.md near_white implies 1
+        cad_doc_test.go:759: JudgeCADDrawingPNG counts 0 ink pixels for [249 255 255] on white, docs/CAD.md near_white implies 1
+        cad_doc_test.go:763: JudgeCADDrawingInk counts 0 ink pixels for [249 255 255] on white, docs/CAD.md near_white implies 1
+        cad_doc_test.go:766: JudgeCADDrawingInk refuses [249 255 255] on white, docs/CAD.md near_white calls it ink: cad: the drawing has nothing drawable: cad: the conversion produced no geometry: J1 the 256 px frame ho
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.978s
+FAIL
+restored internal/convert/cadpixel.go: cmp equal to HEAD
+
+== D2: docs/CAD.md example (249, 255, 255) is ink replaced by (249, 249, 249) is ink (no high channel)
+--- FAIL: TestCADDocMatchesTheCode (0.01s)
+        cad_doc_test.go:730: docs/CAD.md near_white has no ink example with a channel at or above 250
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.538s
+FAIL
+restored docs/CAD.md: cmp equal to GREEN

@@ -3,15 +3,16 @@ package convert
 import (
 	"image"
 	"image/color"
+	"math"
 	"math/rand"
 	"testing"
 )
 
-func cadMeasurePerPixel(img image.Image, background string, f *CADPixelFacts) int {
+func cadMeasurePerPixel(img image.Image, f *CADPixelFacts) int {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	x0, y0, x1, y1 := w, h, -1, -1
-	transparentPx, opaquePx := 0, 0
+	transparentPx, opaquePx, ring := 0, 0, 0
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			c := color.NRGBAModel.Convert(img.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
@@ -19,14 +20,22 @@ func cadMeasurePerPixel(img image.Image, background string, f *CADPixelFacts) in
 				transparentPx++
 				continue
 			}
+			if x == 0 || y == 0 || x == w-1 || y == h-1 {
+				ring++
+			}
 			if c.A == 255 {
 				opaquePx++
 			}
-			if background == CADBackgroundOpq && c.R >= cadBackgroundCutoff && c.G >= cadBackgroundCutoff && c.B >= cadBackgroundCutoff {
+			a := float64(c.A) / 255
+			var on [3]float64
+			for i, v := range []uint8{c.R, c.G, c.B} {
+				on[i] = math.Floor(float64(v)*a + 255*(1-a) + 0.5)
+			}
+			if on[0] >= cadBackgroundCutoff && on[1] >= cadBackgroundCutoff && on[2] >= cadBackgroundCutoff {
 				continue
 			}
 			f.Count++
-			if c.R < cadDarkCutoff && c.G < cadDarkCutoff && c.B < cadDarkCutoff {
+			if on[0] < cadDarkCutoff && on[1] < cadDarkCutoff && on[2] < cadDarkCutoff {
 				f.DarkCount++
 			}
 			x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
@@ -36,6 +45,7 @@ func cadMeasurePerPixel(img image.Image, background string, f *CADPixelFacts) in
 	f.Frac = float64(f.Count) / area
 	f.Dark = float64(f.DarkCount) / area
 	f.FracTransparent = float64(transparentPx) / area
+	f.RingNonTransparent = ring
 	f.Margin = -1
 	if f.Count > 0 {
 		f.BoxW, f.BoxH = x1-x0+1, y1-y0+1
@@ -91,13 +101,11 @@ func TestCADMeasureSkipsOnlyRowsThatCannotHoldInk(t *testing.T) {
 					img = s.SubImage(image.Rect(0, 8, 30, 33))
 				}
 			}
-			for _, bg := range []string{CADBackgroundOpq, CADBackgroundTr} {
-				var got, want CADPixelFacts
-				gotOpaque := cadMeasure(img, bg, &got)
-				wantOpaque := cadMeasurePerPixel(img, bg, &want)
-				if got != want || gotOpaque != wantOpaque {
-					t.Fatalf("%s %s frame %d: cadMeasure %+v (opaque %d), per pixel %+v (opaque %d)", kind, bg, i, got, gotOpaque, want, wantOpaque)
-				}
+			var got, want CADPixelFacts
+			gotOpaque := cadMeasure(img, &got)
+			wantOpaque := cadMeasurePerPixel(img, &want)
+			if got != want || gotOpaque != wantOpaque {
+				t.Fatalf("%s frame %d: cadMeasure %+v (opaque %d), per pixel %+v (opaque %d)", kind, i, got, gotOpaque, want, wantOpaque)
 			}
 		}
 	}

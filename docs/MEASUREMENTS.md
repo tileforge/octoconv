@@ -62,6 +62,20 @@ An STL is read as binary when its size is exactly 84 bytes plus 50 times the tri
 
 An STL's volume is computed per shell, where a shell is the set of triangles joined through shared edges. When every shell encloses a positive volume, the volume is their sum and the area is the sum of all triangle areas. When every shell is inward, the reason is `negative_volume`. When the signs are mixed, volume and area are null with `stl_ambiguous_shells` instead of a difference of shells. This includes a hollow part whose cavity is modelled as an inward shell: it is reported as null, never as a wrong number. A shell of exactly zero volume makes the document `invalid_solid`.
 
+**PNG check.** Before a PNG is returned, the worker checks that it shows the model, on the white page the DXF
+route judges emptiness on (see Empty): a pixel is part of the picture when, laid over white, one of its
+channels is below 250. That holds whatever `background` was asked for, so an opaque and a transparent PNG of
+the same model get the same verdict, however little of the frame the model covers: a sparse assembly or a thin
+part seen edge on passes on both. A 3D preview needs at least one such pixel, a long side of at least half the
+frame, a margin of at least 3% of the frame on every side, and either a filled silhouette or a thin part with
+dark edges along its length. A DXF preview needs ink that spans at least half its letterbox and stays inside
+it. The only checks that look at the background are checks of the alpha channel: an opaque PNG may hold no
+fully transparent pixel, and a transparent PNG must carry an alpha channel and leave its outer edge fully
+transparent. The 3D renderer's anti-aliasing tints the background pixels next to the model's edges. An opaque
+PNG shows them; a transparent PNG keeps them at alpha 0, so it has slightly fewer part pixels with the same
+extent (in the corpus measured for this, up to 4% fewer for a filled model and 14% for a thin part at 256 px).
+A PNG that fails the check is `cad_empty_result`.
+
 ## DXF drawings
 
 A DXF document describes the same drawing as the picture. The `cad-dxf` helper draws model space only, with

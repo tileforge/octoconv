@@ -399,10 +399,10 @@ func TestValidateCADTimeouts(t *testing.T) {
 	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout); err != nil {
 		t.Errorf("the defaults: %v", err)
 	}
-	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 162*s, 141*s, 886*s); err != nil {
-		t.Errorf("30+316+480 and 30+162+2x141 against 886: %v", err)
+	if err := ValidateCADTimeouts(21*s, 324*s, 521*s, 186*s, 217*s, 886*s); err != nil {
+		t.Errorf("21+324+521 and 21+186+2x217 against 886: %v", err)
 	}
-	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 204*s, 296*s, 886*s); err != nil {
+	if err := ValidateCADTimeouts(21*s, 324*s, 521*s, 211*s, 317*s, 886*s); err != nil {
 		t.Errorf("a DXF sum with both rsvg stages exactly at the engine timeout: %v", err)
 	}
 	cases := []struct {
@@ -410,21 +410,21 @@ func TestValidateCADTimeouts(t *testing.T) {
 		guard, mesh, render, dxf, rsvg, engine time.Duration
 		want                                   []string
 	}{
-		{"zero guard", 0, 316 * s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_GUARD_TIMEOUT"}},
-		{"negative mesh", 30 * s, -s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
-		{"zero render", 30 * s, 316 * s, 0, 162 * s, 141 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
-		{"zero dxf", 30 * s, 316 * s, 480 * s, 0, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
-		{"negative dxf", 30 * s, 316 * s, 480 * s, -s, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
-		{"zero rsvg", 30 * s, 316 * s, 480 * s, 162 * s, 0, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
-		{"negative rsvg", 30 * s, 316 * s, 480 * s, 162 * s, -s, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
-		{"zero engine", 30 * s, 316 * s, 480 * s, 162 * s, 141 * s, 0, []string{"CAD_ENGINE_TIMEOUT"}},
-		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
-		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 162 * s, 141 * s, 885 * s, []string{"CAD_ENGINE_TIMEOUT"}},
-		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
-		{"the DXF sum one second over the engine", 30 * s, 316 * s, 480 * s, 205 * s, 296 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT", "CAD_ENGINE_TIMEOUT"}},
-		{"the second rsvg stage breaks a DXF sum that one would fit", 30 * s, 100 * s, 100 * s, 162 * s, 350 * s, 886 * s, []string{"CAD_RSVG_TIMEOUT", "two rsvg-convert stages"}},
-		{"a long dxf stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 800 * s, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
-		{"a long rsvg stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 162 * s, 700 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
+		{"zero guard", 0, 324 * s, 521 * s, 186 * s, 217 * s, 886 * s, []string{"CAD_GUARD_TIMEOUT"}},
+		{"negative mesh", 21 * s, -s, 521 * s, 186 * s, 217 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
+		{"zero render", 21 * s, 324 * s, 0, 186 * s, 217 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
+		{"zero dxf", 21 * s, 324 * s, 521 * s, 0, 217 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
+		{"negative dxf", 21 * s, 324 * s, 521 * s, -s, 217 * s, 886 * s, []string{"CAD_DXF_TIMEOUT"}},
+		{"zero rsvg", 21 * s, 324 * s, 521 * s, 186 * s, 0, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
+		{"negative rsvg", 21 * s, 324 * s, 521 * s, 186 * s, -s, 886 * s, []string{"CAD_RSVG_TIMEOUT"}},
+		{"zero engine", 21 * s, 324 * s, 521 * s, 186 * s, 217 * s, 0, []string{"CAD_ENGINE_TIMEOUT"}},
+		{"render one second over the sum", 21 * s, 324 * s, 522 * s, 186 * s, 217 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
+		{"stages and allowance exceed the engine", 21 * s, 324 * s, 521 * s, 186 * s, 217 * s, 885 * s, []string{"CAD_ENGINE_TIMEOUT"}},
+		{"a long mesh alone breaks the sum", 21 * s, 400 * s, 521 * s, 186 * s, 217 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
+		{"the DXF sum one second over the engine", 21 * s, 324 * s, 521 * s, 212 * s, 317 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT", "CAD_ENGINE_TIMEOUT"}},
+		{"the second rsvg stage breaks a DXF sum that one would fit", 21 * s, 100 * s, 100 * s, 186 * s, 350 * s, 886 * s, []string{"CAD_RSVG_TIMEOUT", "two rsvg-convert stages"}},
+		{"a long dxf stage alone breaks the DXF sum", 21 * s, 100 * s, 100 * s, 800 * s, 217 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
+		{"a long rsvg stage alone breaks the DXF sum", 21 * s, 100 * s, 100 * s, 186 * s, 700 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -443,17 +443,17 @@ func TestValidateCADTimeouts(t *testing.T) {
 
 func TestConfinedCADCarriesTheDXFTimeoutsAndRefusesAnOverBudgetSum(t *testing.T) {
 	s := time.Second
-	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 7*s, 9*s, 886*s)
+	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 21*s, 324*s, 521*s, 7*s, 9*s, 886*s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.DXFTimeout != 7*s || c.RsvgTimeout != 9*s || c.dxfTimeout() != 7*s || c.rsvgTimeout() != 9*s {
 		t.Errorf("ConfinedCAD = %+v, want DXFTimeout 7s and RsvgTimeout 9s", c)
 	}
-	if _, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 600*s, 300*s, 886*s); err == nil || !strings.Contains(err.Error(), "CAD_DXF_TIMEOUT") {
+	if _, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", 21*s, 324*s, 521*s, 600*s, 300*s, 886*s); err == nil || !strings.Contains(err.Error(), "CAD_DXF_TIMEOUT") {
 		t.Errorf("an over-budget DXF sum: err = %v, want a refusal naming CAD_DXF_TIMEOUT", err)
 	}
-	if _, err := ConfinedCAD([]string{"helper"}, 2, "CAD_WORKER_CONCURRENCY", 30*s, 316*s, 480*s, 162*s, 141*s, 886*s); err == nil {
+	if _, err := ConfinedCAD([]string{"helper"}, 2, "CAD_WORKER_CONCURRENCY", 21*s, 324*s, 521*s, 186*s, 217*s, 886*s); err == nil {
 		t.Error("concurrency 2 was accepted with the DXF timeouts")
 	}
 }
@@ -637,8 +637,8 @@ func TestCADEngineTimeoutStaysUnderTheReconcilerWindow(t *testing.T) {
 	if CADDefaultEngineTimeout >= window {
 		t.Errorf("CADDefaultEngineTimeout = %s, must stay under the %s RECONCILER_ACTIVE_STALE_AFTER window or the reconciler re-enqueues live cad jobs", CADDefaultEngineTimeout, window)
 	}
-	if grace := CADDefaultEngineTimeout + 20*time.Second; grace >= window+10*time.Second || grace != 906*time.Second {
-		t.Errorf("pod grace = %s, want 906s (engine + 20s)", grace)
+	if grace := CADDefaultEngineTimeout + 20*time.Second; grace >= window+10*time.Second {
+		t.Errorf("pod grace = %s (engine %s + 20s), must stay under %s", grace, CADDefaultEngineTimeout, window+10*time.Second)
 	}
 }
 

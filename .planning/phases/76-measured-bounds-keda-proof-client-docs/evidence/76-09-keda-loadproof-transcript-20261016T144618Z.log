@@ -1,0 +1,158 @@
+
+--- preflight ---
+PASS: no octoconv compose container runs
+PASS: ports 18099 and 15443 are free
+PASS: VM free disk 15.10 GiB
+PASS: KEDA 2.20.1 resolvable
+HDR,mode=keda_cad_loadproof,date_utc=2026-10-16T14:46:21Z,commit=33b7713c5532588a20e4a7cda68697b49d9d9b79,tracked_dirt=0,load1=19.60,vm_free_gib=15.10,context=orbstack,keda_version=2.20.1,values=values-local.yaml
+HDR,keda_cad_threshold=1,min_replica_count=0,max_replica_count=2,polling_interval=10,cooldown_period=90,scale_down_stabilization_seconds=900,cad_worker_concurrency=1,cad_engine_timeout_s=886,drain_bound_s=1290
+RULE,key=zero,rule=before each trigger cad-worker status.replicas is 0, the ScaledObject Fallback condition is not True and the external metric is present with value 0
+RULE,key=max,rule=three jobs reach replicas 2 and readyReplicas 2 within 300 s and no 2 s sample sees more than 2
+RULE,key=quiet_host,rule=each trigger waits for load1 <= 11; a step whose load1 is above 11 at its start or its end is recorded contaminated=1 and its timings do not count
+RULE,key=drain,rule=drain_s = first sample with status.replicas 0 minus the last finished_at; drain_s <= cooldownPeriod + scaleDownStabilizationSeconds + 300 = 1290
+IMAGE,name=octoconv-api:dev,local_id=sha256:8cf7cb368526043b1c1341267cba3a17f48c95ec545647bd429aea8d07e46343
+IMAGE,name=octoconv-cad-worker:dev,local_id=sha256:4c541fc15ece7b2d884335429619058940f261ae69f01b5a6c99f724c7e334ca
+IMAGE,name=octoconv-webhook-worker:dev,local_id=sha256:3efc9eb33acb5222437b03ecb646fcee97cdb99bf03df3213715d64ff20242c5
+IMAGE,name=octoconv-mcp-http:dev,local_id=sha256:4540a5302a0b63e03ecad9bf5319204f107e1ace1ac5b14b6d8d2d594e92cf37
+PASS: the four :dev images are present
+SNAPSHOT_BEFORE,kind=apiservice,item=v1beta1.external.metrics.k8s.io,present=0
+SNAPSHOT_BEFORE,kind=helm,item=envoy-gateway-system/eg
+SNAPSHOT_BEFORE,kind=helm,item=identity-stand/identity-stand
+SNAPSHOT_BEFORE,kind=helm,item=identity-stand/identity-stand-router
+SNAPSHOT_BEFORE,kind=ns,item=default
+SNAPSHOT_BEFORE,kind=ns,item=envoy-gateway-system
+SNAPSHOT_BEFORE,kind=ns,item=identity-stand
+SNAPSHOT_BEFORE,kind=ns,item=kube-node-lease
+SNAPSHOT_BEFORE,kind=ns,item=kube-public
+SNAPSHOT_BEFORE,kind=ns,item=kube-system
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-fz8rv,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-kbfh8,restarts=3
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-gateway-77df4c65c7-m6wsh,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=envoy-gateway-system/envoy-identity-stand-identity-gateway-29a32e85-849f7cd688-h59d4,restarts=4
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-graphql-router-85b65b55cf-klcs4,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-graphql-router-86c97d4976-cg7h8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-5dc9848cf4-pjxjj,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-866857d44c-wfpc9,restarts=3
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-hx4ht,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-jqjf9,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-rmffm,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-echo-54847b8f44-wt4fg,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-keycloak-55fd5668cd-c25zs,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-messenger-5b8cd94b59-65pz8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-67bw2,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-6nnmf,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-8jqxz,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-postgresql-7749f5d9c6-q9t4f,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-presence-5994776db-cvfh8,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-6xqkj,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-d7s42,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-f7mlk,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-rabbitmq-74c485b46f-z99zc,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-87vtp,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-96xk5,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-hqfdf,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-redis-555f4487d5-j8wbn,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-consumer-5968bbd7b9-mrknd,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-consumer-6b6d576b8-4vwwl,restarts=0
+SNAPSHOT_BEFORE,kind=pod,item=identity-stand/identity-stand-identity-service-stub-subgraph-749f6b79f6-7tg2k,restarts=1
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/coredns-64d64f99dd-m79h9,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/local-path-provisioner-5db9d5cbbb-rcmfb,restarts=2
+SNAPSHOT_BEFORE,kind=pod,item=kube-system/svclb-envoy-identity-stand-identity-gateway-29a32e85-c5633m2gdp,restarts=2
+PASS: no octoconv or keda release or namespace exists before the proof
+
+--- fixtures ---
+FIXTURE,name=step-nauo-LinearSlide-MGN15x-Block-n1000.step,bytes=1154063,sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f
+FIXTURE,name=units_inch.step,bytes=15567,sha256=7ddac77097685f6702bda25d2d1ed5169d5b7d033e1154e79cced5ddfdeb6120
+
+--- install KEDA 2.20.1 ---
+NAME: keda
+LAST DEPLOYED: Fri Oct 16 17:46:26 2026
+NAMESPACE: keda
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+:::^.     .::::^:     :::::::::::::::    .:::::::::.                   .^.                  
+7???~   .^7????~.     7??????????????.   :?????????77!^.              .7?7.                 
+7???~  ^7???7~.       ~!!!!!!!!!!!!!!.   :????!!!!7????7~.           .7???7.                
+7???~^7????~.                            :????:    :~7???7.         :7?????7.               
+7???7????!.           ::::::::::::.      :????:      .7???!        :7??77???7.              
+7????????7:           7???????????~      :????:       :????:      :???7?5????7.             
+7????!~????^          !77777777777^      :????:       :????:     ^???7?#P7????7.            
+7???~  ^????~                            :????:      :7???!     ^???7J#@J7?????7.           
+7???~   :7???!.                          :????:   .:~7???!.    ~???7Y&@#7777????7.          
+7???~    .7???7:      !!!!!!!!!!!!!!!    :????7!!77????7^     ~??775@@@GJJYJ?????7.         
+7???~     .!????^     7?????????????7.   :?????????7!~:      !????G@@@@@@@@5??????7:        
+::::.       :::::     :::::::::::::::    .::::::::..        .::::JGGGB@@@&7:::::::::        
+                                                                      ?@@#~                  
+                                                                      P@B^                   
+                                                                    :&G:                    
+                                                                    !5.                     
+                                                                    .Kubernetes Event-driven Autoscaling (KEDA) - Application autoscaling made simple.
+
+Get started by deploying Scaled Objects to your cluster:
+    - Information about Scaled Objects : https://keda.sh/docs/latest/concepts/
+    - Samples: https://github.com/kedacore/samples
+
+Get information about the deployed ScaledObjects:
+  kubectl get scaledobject [--namespace <namespace>]
+
+Get details about a deployed ScaledObject:
+  kubectl describe scaledobject <scaled-object-name> [--namespace <namespace>]
+
+Get information about the deployed TriggerAuthentications:
+  kubectl get triggerauthentication [--namespace <namespace>]
+
+Get details about a deployed TriggerAuthentication:
+  kubectl describe triggerauthentication <trigger-authentication-name> [--namespace <namespace>]
+
+Get an overview of the Horizontal Pod Autoscalers (HPA) that KEDA is using behind the scenes:
+  kubectl get hpa [--all-namespaces] [--namespace <namespace>]
+
+Learn more about KEDA:
+- Documentation: https://keda.sh/
+- Support: https://keda.sh/support/
+- File an issue: https://github.com/kedacore/keda/issues/new/choose
+PASS: KEDA 2.20.1 installed
+PASS: v1beta1.external.metrics.k8s.io Available
+
+--- install octoconv with values-local.yaml only ---
+NAME: octoconv
+LAST DEPLOYED: Fri Oct 16 17:46:56 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: helm install octoconv
+deployment.apps/redis condition met
+SEED,key=asynq:queues,members=audio;av;cad;document;html;image;ocr;pandoc;probe;tectonic;webhook;
+PASS: asynq:queues seeded with every ScaledObject queue and webhook
+deployment.apps/postgres condition met
+PASS: deployment/postgres Available
+deployment.apps/minio condition met
+PASS: deployment/minio Available
+error: timed out waiting for the condition on deployments/api
+FAIL: deployment/api not Available
+FAIL,step=install octoconv with values-local.yaml only,reason=deployment/api not Available
+
+=== TEARDOWN ===
+release "octoconv" uninstalled
+release "keda" uninstalled
+namespace "octoconv" deleted
+namespace "keda" deleted
+RESTORE,snapshot_lines=43,diff_lines=0,octoconv_pods=0,k8s_enabled=true,result=ok
+SUMMARY,mode=keda_cad_loadproof,checks=12,exit=1,gate_ok=0,restore=ok,end_utc=2026-10-16T14:52:48Z,result=FAIL

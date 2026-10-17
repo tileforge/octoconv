@@ -1,0 +1,37 @@
+PASS: default: rc 0
+PASS: default: lsof checks 8090
+PASS: default: lsof checks 9100
+PASS: default: up uses only the two files
+PASS: default: teardown is down -v
+PASS: default: no stop teardown
+PASS: default: healthz on 8090
+PASS: default: go test flags unchanged
+FAIL: default: settings line
+PASS: taken 8090: rc non-zero
+PASS: taken 8090: refusal names :8090
+PASS: taken 8090: no compose up
+PASS: taken 8090: no teardown
+FAIL: knobs: rc 0 with 8090 taken
+FAIL: knobs: lsof checks 18090
+FAIL: knobs: lsof skips 8090
+FAIL: knobs: lsof checks 9100
+FAIL: knobs: up carries the extra files
+FAIL: knobs: teardown is stop with the extra files
+PASS: knobs: no down -v anywhere
+FAIL: knobs: healthz on 18090
+FAIL: knobs: go test gets the extra flags
+FAIL: knobs: settings line
+PASS: knobs failing test: rc non-zero
+FAIL: knobs failing test: logs carry the extra file
+FAIL: knobs failing test: still stop teardown
+FAIL: knobs failing test: no down -v
+FAIL: bad teardown: rc non-zero
+FAIL: bad teardown: names the value
+FAIL: bad teardown: no compose up
+FAIL: bad teardown: no teardown ran
+FAIL: bad port: rc non-zero
+FAIL: bad port: no compose up
+FAIL: taken 18090: rc non-zero
+FAIL: taken 18090: refusal names :18090
+FAIL: taken 18090: no compose up
+RESULT: 14 passed, 22 failed

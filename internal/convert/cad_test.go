@@ -145,29 +145,18 @@ func TestCADConverterIsRegisteredAndComparable(t *testing.T) {
 
 func TestCADPinnedConstantsComeFromTheEvidence(t *testing.T) {
 	const decision = ".planning/phases/71-evaluation-gate/71-DECISION.md"
-	const spikes = ".planning/phases/73-cad-class-convert-slice-confined/evidence/73-01-spikes.txt"
 	checks := []struct {
 		name      string
 		got, want int64
 		source    string
 	}{
-		{"CADMaxSTEPBytes", CADMaxSTEPBytes, 66060288, decision + " and " + spikes + " cad_step_ceiling_bytes"},
-		{"CADMaxIGESBytes", CADMaxIGESBytes, 141557760, spikes + " cad_iges_ceiling_bytes (supersedes " + decision + ")"},
 		{"CADMaxSTEPEntities", CADMaxSTEPEntities, 754762, decision},
 		{"CADMaxNAUO", CADMaxNAUO, 1518, decision},
-		{"CADDefaultGuardTimeout", int64(CADDefaultGuardTimeout / time.Second), 30, spikes + " cad_guard_timeout_s"},
-		{"CADDefaultMeshTimeout", int64(CADDefaultMeshTimeout / time.Second), 316, spikes + " cad_mesh_timeout_s"},
-		{"CADDefaultRenderTimeout", int64(CADDefaultRenderTimeout / time.Second), 480, ".planning/phases/74-3d-render-measurements/74-RESEARCH.md Render stage timeout (chosen under the 900 s window, not measured)"},
-		{"CADIOAllowance", int64(CADIOAllowance / time.Second), 60, spikes + " cad_io_allowance_s"},
-		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 886, "30 + 316 + 480 + 60"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d: re-derive it from %s rather than editing the expectation", c.name, c.got, c.want, c.source)
 		}
-	}
-	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance {
-		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + render + io allowance (%s)", spikes)
 	}
 }
 
@@ -505,7 +494,7 @@ func TestCADSignalsAndSilenceAreClassifiedByWhatKilledTheHelper(t *testing.T) {
 
 func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 	t.Run("the mesh stage's own deadline is ErrCADMeshTimeout", func(t *testing.T) {
-		f := newCADFixture(t, "step", cadOKGuard(), "sleep 30\n")
+		f := newCADFixture(t, "step", cadOKGuard(), "exec sleep 30\n")
 		c := CADConverter{MeshTimeout: 300 * time.Millisecond}
 		start := time.Now()
 		err := c.Convert(context.Background(), f.in, f.out, nil)
@@ -520,7 +509,7 @@ func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 		}
 	})
 	t.Run("the attempt deadline stays a plain context error", func(t *testing.T) {
-		f := newCADFixture(t, "step", cadOKGuard(), "sleep 30\n")
+		f := newCADFixture(t, "step", cadOKGuard(), "exec sleep 30\n")
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		c := CADConverter{MeshTimeout: time.Minute}
@@ -534,7 +523,7 @@ func TestCADStageDeadlineIsNotTheAttemptDeadline(t *testing.T) {
 		requireNoCADSentinel(t, err)
 	})
 	t.Run("a guard deadline is no CAD sentinel and the mesh never runs", func(t *testing.T) {
-		f := newCADFixture(t, "step", "sleep 30\n", "touch \"$(dirname \"$0\")/mesh.ran\"\n"+cadSay("mesh", "ok", "", 0))
+		f := newCADFixture(t, "step", "exec sleep 30\n", "touch \"$(dirname \"$0\")/mesh.ran\"\n"+cadSay("mesh", "ok", "", 0))
 		c := CADConverter{GuardTimeout: 300 * time.Millisecond}
 		err := c.Convert(context.Background(), f.in, f.out, nil)
 		if err == nil {
@@ -734,6 +723,122 @@ func cadDerivedValue(t *testing.T, evidence, key string) int64 {
 	return n
 }
 
+const cad76Evidence = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+
+func TestCADConstantsComeFromThe76Evidence(t *testing.T) {
+	seconds := func(d time.Duration) int64 { return int64(d / time.Second) }
+	for _, c := range []struct {
+		name  string
+		got   int64
+		whole bool
+		key   string
+	}{
+		{"CADDefaultGuardTimeout", seconds(CADDefaultGuardTimeout), CADDefaultGuardTimeout%time.Second == 0, "cad_guard_timeout_s"},
+		{"CADDefaultMeshTimeout", seconds(CADDefaultMeshTimeout), CADDefaultMeshTimeout%time.Second == 0, "cad_mesh_timeout_s"},
+		{"CADDefaultRenderTimeout", seconds(CADDefaultRenderTimeout), CADDefaultRenderTimeout%time.Second == 0, "cad_render_timeout_s"},
+		{"CADDefaultDXFTimeout", seconds(CADDefaultDXFTimeout), CADDefaultDXFTimeout%time.Second == 0, "cad_dxf_timeout_s"},
+		{"CADDefaultRsvgTimeout", seconds(CADDefaultRsvgTimeout), CADDefaultRsvgTimeout%time.Second == 0, "cad_rsvg_timeout_s"},
+		{"CADIOAllowance", seconds(CADIOAllowance), CADIOAllowance%time.Second == 0, "cad_io_allowance_s"},
+		{"CADDefaultEngineTimeout", seconds(CADDefaultEngineTimeout), CADDefaultEngineTimeout%time.Second == 0, "cad_engine_timeout_s"},
+		{"CADMaxSTEPBytes", CADMaxSTEPBytes, true, "cad_step_ceiling_bytes"},
+		{"CADMaxIGESBytes", CADMaxIGESBytes, true, "cad_iges_ceiling_bytes"},
+		{"CADMaxSTLBytes", CADMaxSTLBytes, true, "cad_stl_ceiling_bytes"},
+		{"CADMaxDXFBytes", CADMaxDXFBytes, true, "cad_dxf_ceiling_bytes"},
+		{"CADMaxDXFSVGBytes", CADMaxDXFSVGBytes, true, "cad_dxf_svg_max_bytes"},
+		{"CADMaxDXFPDFBytes", CADMaxDXFPDFBytes, true, "cad_dxf_pdf_max_bytes"},
+	} {
+		if want := cadDerivedValue(t, cad76Evidence, c.key); !c.whole || c.got != want {
+			t.Errorf("%s = %d (whole=%v), %s DERIVED %s says %d: re-derive it with scripts/cad-dxf-bounds.sh derive76 rather than editing the expectation",
+				c.name, c.got, c.whole, cad76Evidence, c.key, want)
+		}
+	}
+}
+
+func cadLongerRoute(guard, mesh, render, dxf, rsvg, io time.Duration) time.Duration {
+	return max(guard+mesh+render+io, guard+dxf+2*rsvg+io)
+}
+
+func TestCADEngineTimeoutIsTheLongerRoute(t *testing.T) {
+	sum3D := CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADDefaultRenderTimeout + CADIOAllowance
+	sumDXF := CADDefaultGuardTimeout + CADDefaultDXFTimeout + 2*CADDefaultRsvgTimeout + CADIOAllowance
+	if CADDefaultEngineTimeout != max(sum3D, sumDXF) {
+		t.Errorf("CADDefaultEngineTimeout = %s, want the longer route: max(3D %s, DXF %s)", CADDefaultEngineTimeout, sum3D, sumDXF)
+	}
+	if sum3D > CADDefaultEngineTimeout || sumDXF > CADDefaultEngineTimeout {
+		t.Errorf("a route sum exceeds the engine timeout %s: 3D %s, DXF %s", CADDefaultEngineTimeout, sum3D, sumDXF)
+	}
+	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout); err != nil {
+		t.Errorf("the defaults fail ValidateCADTimeouts: %v", err)
+	}
+	s := time.Second
+	for _, c := range []struct {
+		name                               string
+		guard, mesh, render, dxf, rsvg, io time.Duration
+		want                               time.Duration
+	}{
+		{"the 3D route is longer", 21 * s, 324 * s, 521 * s, 186 * s, 217 * s, 20 * s, 886 * s},
+		{"the DXF route is longer", 21 * s, 100 * s, 100 * s, 400 * s, 300 * s, 20 * s, 1041 * s},
+	} {
+		got := cadLongerRoute(c.guard, c.mesh, c.render, c.dxf, c.rsvg, c.io)
+		if got != c.want || got < c.guard+c.dxf+2*c.rsvg+c.io || got < c.guard+c.mesh+c.render+c.io {
+			t.Errorf("%s: longer route = %s, want %s and at least both sums", c.name, got, c.want)
+		}
+	}
+}
+
+const cad76StackEvidence = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt"
+
+func TestCADPathBFiredForNoFormat(t *testing.T) {
+	raw, err := os.ReadFile(cad76Evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack, err := os.ReadFile(cad76StackEvidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := map[string]string{}
+	for _, m := range regexp.MustCompile(`(?m)^STACK_DECISION,format=([a-z]+),decision=([a-z_]+),`).FindAllSubmatch(stack, -1) {
+		decisions[string(m[1])] = string(m[2])
+	}
+	if len(decisions) == 0 {
+		t.Fatalf("no STACK_DECISION line in %s", cad76StackEvidence)
+	}
+	all := regexp.MustCompile(`(?m)^PATHB,`).FindAllIndex(raw, -1)
+	lines := regexp.MustCompile(`(?m)^PATHB,format=([a-z]+),fired=([01]),reason=([^\n]+)$`).FindAllSubmatch(raw, -1)
+	if len(lines) != len(all) {
+		t.Fatalf("%s has %d PATHB lines and %d of them parse", cad76Evidence, len(all), len(lines))
+	}
+	seen := map[string]int{}
+	for _, m := range lines {
+		format, fired, reason := string(m[1]), string(m[2]), string(m[3])
+		seen[format]++
+		if fired != "0" {
+			t.Errorf("PATHB fired=%s for %s in %s: D-04 then needs an operation-aware render ceiling for %s at create, in inspect and in the worker (76-05-PLAN, fired branch), and the code has none", fired, format, cad76Evidence, format)
+		}
+		switch {
+		case strings.HasPrefix(reason, "not_byte_bound_in_76-01_STACK_DECISION"):
+			if decisions[format] != "not_byte_bound" {
+				t.Errorf("PATHB %s says not_byte_bound in 76-01, but %s has decision %q", format, cad76StackEvidence, decisions[format])
+			}
+		case strings.HasPrefix(reason, "no_76-01_byte_bound_decision_for_"+format):
+			if d, ok := decisions[format]; ok {
+				t.Errorf("PATHB %s says 76-01 has no decision for it, but %s has decision %q", format, cad76StackEvidence, d)
+			}
+		default:
+			t.Errorf("PATHB %s reason %q is not one this test can check against %s", format, reason, cad76StackEvidence)
+		}
+	}
+	for _, format := range []string{"step", "iges", "stl", "dxf"} {
+		if seen[format] != 1 {
+			t.Errorf("%s has %d PATHB lines for %s, want 1", cad76Evidence, seen[format], format)
+		}
+	}
+	if len(seen) != 4 {
+		t.Errorf("%s has PATHB lines for %v, want exactly step, iges, stl and dxf", cad76Evidence, seen)
+	}
+}
+
 func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
 	const bounds = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
 	const guard = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt"
@@ -746,25 +851,14 @@ func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
 		key      string
 		script   string
 	}{
-		{"CADMaxDXFBytes", CADMaxDXFBytes, bounds, "cad_dxf_ceiling_bytes", boundsScript},
 		{"CADMaxDXFExpandedInserts", CADMaxDXFExpandedInserts, bounds, "cad_dxf_expanded_inserts_cap", boundsScript},
 		{"CADMaxDXFExpandedEntities", CADMaxDXFExpandedEntities, bounds, "cad_dxf_expanded_entities_cap", boundsScript},
-		{"CADDefaultDXFTimeout", int64(CADDefaultDXFTimeout / time.Second), bounds, "cad_dxf_timeout_s", boundsScript},
-		{"CADDefaultRsvgTimeout", int64(CADDefaultRsvgTimeout / time.Second), bounds, "cad_rsvg_timeout_s", boundsScript},
-		{"CADMaxDXFSVGBytes", CADMaxDXFSVGBytes, bounds, "cad_dxf_svg_max_bytes", boundsScript},
-		{"CADMaxDXFPDFBytes", CADMaxDXFPDFBytes, bounds, "cad_dxf_pdf_max_bytes", boundsScript},
 		{"CADMaxDXFNesting", CADMaxDXFNesting, guard, "cad_dxf_nesting_bound", guardScript},
 	} {
 		if want := cadDerivedValue(t, c.evidence, c.key); c.got != want {
 			t.Errorf("%s = %d, %s DERIVED %s says %d: re-derive it with %s rather than editing the expectation",
 				c.name, c.got, c.evidence, c.key, want, c.script)
 		}
-	}
-	if CADDefaultDXFTimeout%time.Second != 0 || CADDefaultRsvgTimeout%time.Second != 0 {
-		t.Errorf("the DXF stage timeouts %s and %s are not whole seconds; the evidence derives whole seconds", CADDefaultDXFTimeout, CADDefaultRsvgTimeout)
-	}
-	if sum := CADDefaultGuardTimeout + CADDefaultDXFTimeout + 2*CADDefaultRsvgTimeout + CADIOAllowance; sum > CADDefaultEngineTimeout {
-		t.Errorf("guard + dxf + two rsvg stages + I/O = %s exceeds the %s engine timeout", sum, CADDefaultEngineTimeout)
 	}
 }
 

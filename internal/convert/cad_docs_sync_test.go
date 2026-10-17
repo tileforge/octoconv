@@ -110,11 +110,23 @@ func TestErrorCodesDocStatesTheCADCeilingsOfTheCode(t *testing.T) {
 		fmt.Sprintf("or %d entities", convert.CADMaxDXFExpandedEntities),
 		fmt.Sprintf("deeper than %d levels", convert.CADMaxDXFNesting),
 		fmt.Sprintf("an SVG above %d MiB", int64(convert.CADMaxDXFSVGBytes)>>20),
+		fmt.Sprintf("a PDF above %d MiB", int64(convert.CADMaxDXFPDFBytes)>>20),
 		fmt.Sprintf("`CAD_DXF_TIMEOUT`, %d s by default", int(convert.CADDefaultDXFTimeout.Seconds())),
 		fmt.Sprintf("`CAD_RSVG_TIMEOUT`, %d s by default", int(convert.CADDefaultRsvgTimeout.Seconds())),
 	} {
 		if !strings.Contains(dxf, want) {
 			t.Errorf("docs/ERROR-CODES.md's DXF paragraph does not state %q", want)
+		}
+	}
+	tooComplex := docRow(t, doc, errorCodesPath, "| `cad_too_complex` |")
+	for _, want := range []string{
+		fmt.Sprintf("`CAD_RENDER_TIMEOUT`, %d s by default", int(convert.CADDefaultRenderTimeout.Seconds())),
+		"not bounded by the input bytes",
+		"any 3D format, STEP, IGES or STL",
+		"a DXF drawing's PDF above the PDF size limit or the inflate limit",
+	} {
+		if !strings.Contains(tooComplex, want) {
+			t.Errorf("docs/ERROR-CODES.md's cad_too_complex row does not state %q", want)
 		}
 	}
 }
@@ -207,6 +219,31 @@ func TestCADDocsStateOneDefinitionOfAnEmptyDrawing(t *testing.T) {
 		for where, text := range map[string]string{"MEASUREMENTS": readDoc(t, measurementsPath), "ERROR-CODES": errorCodes} {
 			if strings.Contains(strings.Join(strings.Fields(text), " "), stale) {
 				t.Errorf("%s still says %q", where, stale)
+			}
+		}
+	}
+}
+
+func TestCADDocsStateOneVerdictOnBothBackgrounds(t *testing.T) {
+	preview := cadDocParagraph(t, readDoc(t, measurementsPath), measurementsPath, "**PNG check.**")
+	row := strings.Join(strings.Fields(docRow(t, readDoc(t, errorCodesPath), errorCodesPath, "| `cad_empty_result` |")), " ")
+	for _, want := range []string{
+		"white page", fmt.Sprintf("below %d", convert.CADInkChannelCutoff), "`background`", "the same verdict",
+		"alpha channel", "outer edge", "fully transparent", "`cad_empty_result`", "anti-aliasing", "DXF",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Errorf("the MEASUREMENTS PNG check paragraph does not state %q", want)
+		}
+	}
+	for _, want := range []string{"whatever its `background`", "the same verdict", "outer edge"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the ERROR-CODES cad_empty_result row does not state %q", want)
+		}
+	}
+	for _, stale := range []string{"0.95", "95%", "transparent fraction"} {
+		for where, text := range map[string]string{"MEASUREMENTS PNG check": preview, "ERROR-CODES cad_empty_result": row} {
+			if strings.Contains(text, stale) {
+				t.Errorf("%s still states %q", where, stale)
 			}
 		}
 	}

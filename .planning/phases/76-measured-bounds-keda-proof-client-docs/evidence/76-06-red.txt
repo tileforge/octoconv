@@ -1,0 +1,38 @@
+HDR,mode=red76-06,commit=ad326af,source=git archive ad326af into scratch,go=go1.26.4
+--- FAIL: TestCADDXFConvertRejectsUntrustedHelperOutputs (36.17s)
+    --- FAIL: TestCADDXFConvertRejectsUntrustedHelperOutputs/svg/texts.json_is_above_the_SVG_ceiling (1.11s)
+    --- FAIL: TestCADDXFConvertRejectsUntrustedHelperOutputs/pdf/texts.json_is_above_the_SVG_ceiling (1.45s)
+    caddxfpdf_test.go:355: err = cad: the drawing's PDF failed the content check: the PDF is 5387 bytes, over the 5386 byte limit, want it to wrap ErrCADTooComplex
+--- FAIL: TestCADDXFPDFOverTheByteLimitIsTooComplex (0.00s)
+    caddxfpdf_test.go:367: err = cad: the drawing's PDF failed the content check: the inflated content exceeds 64 times the PDF byte limit, want it to wrap ErrCADTooComplex
+--- FAIL: TestCADDXFPDFOverTheInflateCapIsTooComplex (0.02s)
+    caddxfpdf_test.go:420: err = cad: the drawing's PDF failed the content check: more than 65536 objects, want it to wrap ErrCADTooComplex
+    caddxfpdf_test.go:420: err = cad: the drawing's PDF failed the content check: more than 4194304 values outside streams, want it to wrap ErrCADTooComplex
+    caddxfpdf_test.go:420: err = cad: the drawing's PDF failed the content check: a string longer than 1048576 bytes, want it to wrap ErrCADTooComplex
+    caddxfpdf_test.go:420: err = cad: the drawing's PDF failed the content check: more than 16777216 bytes of decoded text, want it to wrap ErrCADTooComplex
+    caddxfpdf_test.go:420: err = cad: the drawing's PDF failed the content check: texts.json exceeds 4 bytes, want it to wrap ErrCADTooComplex
+    caddxfpdf_test.go:420: err = cad: the drawing's SVG failed the safety check: the SVG exceeds 724 bytes, want it to wrap ErrCADTooComplex
+--- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex (0.98s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/pdf_objects (0.10s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/pdf_values (0.47s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/pdf_string (0.01s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/pdf_text (0.37s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/texts_json_bytes (0.00s)
+    --- FAIL: TestCADDXFArtifactVolumeCapsAreTooComplex/svg_bytes (0.00s)
+    caddxfpdf_test.go:527: caddxfpdf.go:181:10: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:257:24: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:330:24: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:460:16: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:656:12: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:1257:13: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:1485:22: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfpdf.go:1725:15: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+    caddxfpdf_test.go:527: caddxfsvg.go:481:18: a rejection over a volume cap of a file our pipeline drew is not wrapped as fmt.Errorf("%w: %w", ErrCADTooComplex, ...), so a client gets the wrong code
+--- FAIL: TestCADDXFArtifactVolumeRejectionsWrapTooComplex (0.04s)
+FAIL	github.com/apaderin/octoconv/internal/convert	38.817s
+    pinning_test.go:1626: MarkFailed code = "cad_empty_result", want "cad_too_complex"
+    pinning_test.go:1626: MarkFailed code = "cad_empty_result", want "cad_too_complex"
+--- FAIL: TestPinnedCADFailureVerdicts (0.02s)
+    --- FAIL: TestPinnedCADFailureVerdicts/dxf_pdf_over_the_byte_limit,_from_the_real_judge_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- FAIL: TestPinnedCADFailureVerdicts/dxf_pdf_over_the_inflate_cap,_from_the_real_judge_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+FAIL	github.com/apaderin/octoconv/internal/worker	2.745s

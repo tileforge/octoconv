@@ -1,0 +1,17 @@
+2026/10/16 23:31:21 🔒 tectonic sandbox: landlock via /usr/local/bin/tectonic-worker __sandbox-exec
+2026/10/16 23:31:21 ⏱  TECTONIC_ENGINE_CPU_SECONDS=271
+2026/10/16 23:31:22 📚 TECTONIC_BUNDLE_PATH=/opt/tectonic/octoconv-bundle.ttb
+2026/10/16 23:31:22 📄 TECTONIC_MAX_OUTPUT_BYTES=33554432
+2026/10/16 23:31:22 📈 PROGRESS_MIN_INTERVAL_SECONDS=2s PROGRESS_MIN_DELTA_PCT=1
+2026/10/16 23:31:22 🔔 progress webhooks enabled (PROGRESS_WEBHOOK_TIMEOUT=1.5s)
+2026/10/16 23:31:22 🐙 tectonic-worker starting (queue=tectonic)
+asynq: pid=1 2026/10/16 23:31:22.213054 INFO: Starting processing
+2026/10/16 23:31:22 📊 metrics listening on 127.0.0.1:9090
+2026/10/16 23:33:17 job active job_id=45e3ef46-6535-49f5-aaaf-2f0f43f6c4c6 correlation_id="" engine=tectonic target=pdf from_status=queued client_id=ab630cdf-68f6-4b1e-848f-b0d7700a5e79
+2026/10/16 23:33:20 job done job_id=45e3ef46-6535-49f5-aaaf-2f0f43f6c4c6 correlation_id="" engine=tectonic target=pdf from_status=active client_id=ab630cdf-68f6-4b1e-848f-b0d7700a5e79 duration_ms=2723
+2026/10/16 23:33:29 🛑 shutting down tectonic-worker...
+asynq: pid=1 2026/10/16 23:33:29.789623 INFO: Starting graceful shutdown
+asynq: pid=1 2026/10/16 23:33:30.240458 INFO: Waiting for all workers to finish...
+asynq: pid=1 2026/10/16 23:33:30.240495 INFO: All workers have finished
+asynq: pid=1 2026/10/16 23:33:30.241098 INFO: Exiting
+2026/10/16 23:33:30 bye 👋

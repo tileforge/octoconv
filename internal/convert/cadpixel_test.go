@@ -273,7 +273,7 @@ func TestJudgeCADPNGTransparentRejectsOpaqueBackground(t *testing.T) {
 	img := pixFrame(1280, color.NRGBA{R: 255, G: 255, B: 255, A: 254})
 	pixDisc(img, 640, 640, 420, pixDark)
 	_, err := pixJudge(t, pixEncode(t, img), 1280, "transparent")
-	requireRejected(t, err, "transparent fraction")
+	requireRejected(t, err, "edge")
 }
 
 func TestJudgeCADPNGOpaqueRejectsTransparentPixels(t *testing.T) {
@@ -398,7 +398,7 @@ func TestCADDrawingLetterboxReproducesTheProbeFrames(t *testing.T) {
 }
 
 func TestJudgeCADDrawingPNGAcceptsTheHelperFrames(t *testing.T) {
-	boxes := map[string][4]int{}
+	facts := map[string]CADPixelFacts{}
 	for _, r := range cadFrameRows(t) {
 		data, err := os.ReadFile(filepath.Join(cadSVGTestDir, r.name))
 		if err != nil {
@@ -411,18 +411,16 @@ func TestJudgeCADDrawingPNGAcceptsTheHelperFrames(t *testing.T) {
 		if f.Mode != "drawing" || f.Width != r.size || f.Height != r.size {
 			t.Errorf("%s: facts %+v", r.name, f)
 		}
-		boxes[r.name] = [4]int{f.BoxX, f.BoxY, f.BoxW, f.BoxH}
+		facts[r.name] = f
 	}
 	for _, name := range []string{"wide", "text_alpha_faint"} {
-		o, okO := boxes[name+"_1280_opaque.png"]
-		tr, okT := boxes[name+"_1280_transparent.png"]
+		o, okO := facts[name+"_1280_opaque.png"]
+		tr, okT := facts[name+"_1280_transparent.png"]
 		if !okO || !okT {
 			t.Fatalf("frames.tsv lacks the 1280 opaque and transparent frames of %s", name)
 		}
-		for i := range o {
-			if d := o[i] - tr[i]; d < -2 || d > 2 {
-				t.Errorf("%s: opaque ink box %v and transparent twin %v differ by more than 2 px", name, o, tr)
-			}
+		if cadJ(o) != cadJ(tr) {
+			t.Errorf("%s: the opaque frame judges as %+v, its transparent twin as %+v", name, cadJ(o), cadJ(tr))
 		}
 	}
 }
@@ -553,7 +551,7 @@ func TestJudgeCADDrawingPNGRejects(t *testing.T) {
 		{"dot", dot, 1280, "opaque", cadSquareBox, "J2"},
 		{"opaque_with_transparent_pixel", holed, 1280, "opaque", cadSquareBox, "transparent"},
 		{"transparent_without_alpha", square(), 1280, "transparent", cadSquareBox, "alpha"},
-		{"transparent_fraction_under_min", tight, 1280, "transparent", cadSquareBox, "transparent fraction"},
+		{"transparent_background_not_transparent", tight, 1280, "transparent", cadSquareBox, "edge"},
 		{"single_ink_pixel_wrong_span", single, 1280, "opaque", cadSquareBox, "J2"},
 	}
 	for _, c := range cases {

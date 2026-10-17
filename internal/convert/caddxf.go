@@ -273,7 +273,7 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	d.texts, err = parseCADDXFTexts(texts, CADMaxDXFSVGBytes)
 	if err != nil {
 		if errors.Is(err, ErrCADPDFRejected) {
-			return d, fmt.Errorf("cad dxf: %w: %v", ErrCADSVGRejected, err)
+			return d, fmt.Errorf("cad dxf: %w: %w", ErrCADSVGRejected, err)
 		}
 		return d, fmt.Errorf("cad dxf: %w", err)
 	}

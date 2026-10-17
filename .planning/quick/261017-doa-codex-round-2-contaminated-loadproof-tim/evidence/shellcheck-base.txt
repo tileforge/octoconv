@@ -1,0 +1,13 @@
+== scripts/keda-cad-loadproof.sh (shellcheck 0.11.0, full severity, -f gcc)
+-- -S warning:
+
+== scripts/keda-cad-downscale-survival.sh (shellcheck 0.11.0, full severity, -f gcc)
+3 SC1010
+1 SC2016
+1 SC2034
+-- -S warning:
+scripts/keda-cad-downscale-survival.sh:462:65: warning: L_FMT appears unused. Verify use (or export if used externally). [SC2034]
+scripts/keda-cad-downscale-survival.sh:882:11: warning: Use semicolon or linefeed before 'done' (or quote to make it literal). [SC1010]
+scripts/keda-cad-downscale-survival.sh:907:12: warning: Use semicolon or linefeed before 'done' (or quote to make it literal). [SC1010]
+scripts/keda-cad-downscale-survival.sh:907:38: warning: Use semicolon or linefeed before 'done' (or quote to make it literal). [SC1010]
+

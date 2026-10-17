@@ -1,0 +1,12 @@
+FIXPROOF,date_utc=2026-10-16T02:09:34Z,fix=fbf007c,image=cad-worker_sha256:f50534c1fcc8,harness=helpers_and_watcher_extracted_from_HEAD_scripts/cad-liveproof.sh,input=dxf-replicate-uncommon-50MiB.dxf
+ZOMBIE_REPRO,image=octoconv-cad-worker,setup=sh_-c_'sleep_0.2_&_exec_sleep_6'_(child_sleep_left_a_zombie_with_empty_cmdline),old_watcher_args=sleep_0_6,old_result=hit_pid_8_comm_sleep_cmdline_empty_(the_zombie),new_watcher_args=sleep_0_6,new_result=no_hit_(timeout_124),new_live_hit_without_token=pid_6_cmdline_sleep_6
+LIVE_RUN1,PROOF,watcher=new,signal=TERM,job=e93213e8-15ad-4cf4-8307-204a76ed194d,status=done,hit=5228:rsvg-convert,cmd_empty=0,events=->queued;queued>active;active>active;active>done
+LIVE_RUN1,PROOF,watcher=new,signal=TERM,job=03f77a71-fb84-4ee7-aa34-ab25b82cf5d5,status=done,hit=7028:rsvg-convert,cmd_empty=0,events=->queued;queued>active;active>active;active>done
+LIVE_RUN1,PROOF,watcher=new,signal=TERM,job=cfa47ddf-da83-4f92-adb4-78bd92da0851,status=done,hit=8804:rsvg-convert,cmd_empty=0,events=->queued;queued>active;active>active;active>done
+LIVE_RUN1,FIXPROOF_DONE
+LIVE_RUN2,PROOF,watcher=old,signal=0,job=aa1bb16f-7c5d-46f9-95f2-99b07ab1f94c,status=done,hit=12160:rsvg-convert,events=->queued;queued>active;active>done,cmd=/usr/bin/rsvg-convert_-f_pdf_-b_white_-o_out.pdf_clean.svg_
+LIVE_RUN2,PROOF,watcher=old,signal=0,job=032417dd-30b6-4205-aeb3-79eec644c9a0,status=done,hit=13783:rsvg-convert,events=->queued;queued>active;active>done,cmd=/usr/bin/rsvg-convert_-f_pdf_-b_white_-o_out.pdf_clean.svg_
+LIVE_RUN2,PROOF,watcher=new,signal=TERM,job=d339f395-08f6-497c-98db-ee8b2d7deedf,status=done,hit=15477:rsvg-convert,events=->queued;queued>active;active>active;active>done,cmd=/usr/bin/rsvg-convert_-f_pdf_-b_white_-o_out.pdf_clean.svg_
+LIVE_RUN2,PROOF,watcher=new,signal=TERM,job=c84168bf-f590-47b0-bb62-626851bc1a9a,status=done,hit=17304:rsvg-convert,events=->queued;queued>active;active>active;active>done,cmd=/usr/bin/rsvg-convert_-f_pdf_-b_white_-o_out.pdf_clean.svg_
+LIVE_RUN2,PROOF,watcher=new,signal=0,route=render_png_2048,job=801b59d3-14b4-4958-ab1a-281a4c425375,status=done,hit=19185:rsvg-convert,cmd=/usr/bin/rsvg-convert_-b_white_-w_1925_-h_132_--page-width_2048_--page-height_2048_--left_61_--top_958_-o_out.png_clean.svg_
+LIVE_RUN2,FIXPROOF_DONE

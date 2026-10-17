@@ -71,6 +71,8 @@ keda:
     # a timeout failure).
     scaleDownStabilizationSeconds: 0
     pollingInterval: 3
+  cad:
+    scaleDownStabilizationSeconds: 15
 
 # Phase 50 (PDCP-02): shortens Prometheus' own scrape cadence for the same
 # SC4 metric-propagation lag budget the keda.pandoc override above targets

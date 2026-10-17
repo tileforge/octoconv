@@ -343,7 +343,41 @@ Plans:
   5. Контракт превью (SEED-007) записан и закреплён на CAD: формат, размеры,
      фон, поведение на непревьюируемом входе; всё, что CAD не заставил решить,
      явно помечено «не зафиксировано»
-**Plans**: TBD
+**Plans**: 11 plans in 11 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [x] 76-01-PLAN.md — tracer and premise test: pre-registered stacking probe on the production engine image; per-format byte_bound decision and the render-deadline rule (AR-1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [x] 76-02-PLAN.md — bounds76: exact-ceiling cells, N=5 stage rows at the admissible maxima, the L170031 refusal row
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [x] 76-03-PLAN.md — in-worker rows (I/O, Go peak, attempt wall) and the derivation of every bound into 76-03-derived.txt
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [x] 76-04-PLAN.md — measured constants pinned to the evidence, IN-02 and grace chain, inspect estimate flipped to measured
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [x] 76-05-PLAN.md — Path-B operation-aware render ceiling where the evidence fired it, else nothing changes
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [x] 76-06-PLAN.md — D-07 PDF backstop code, docs/CAD.md and docs/PREVIEW.md held to the code both ways, SEED-007 pointer
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [x] 76-07-PLAN.md — openapi CADOpts and codes, MCP descriptions against the registry, frontend operation table with vitest
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [x] 76-08-PLAN.md — cad-liveproof: kill mid-render and mid-PNG-rsvg, determinism by tolerance, guard cap edge, stacked refusal, measured inspect; official run
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [x] 76-09-PLAN.md — production image size, cold pull and preflight; minReplicaCount 0 recorded; KEDA 0->2->0 loadproof; docs/CAD.md Scaling
+
+**Wave 10** *(blocked on Wave 9 completion)*
+- [x] 76-10-PLAN.md — KEDA downscale-survival of a long render; k8s restored to its pre-phase state
+
+**Wave 11** *(blocked on Wave 10 completion)*
+- [x] 76-11-PLAN.md — ci-local e2e knobs and the all-classes final gate from a fresh clone at the final commit, ALL PASS
 
 ## Progress
 
@@ -356,7 +390,7 @@ Plans:
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 10/10 | Complete    | 2026-10-12 |
-| 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |
+| 76. Measured Bounds, KEDA Proof & Client Docs | 11/11 | In Progress | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
 восемь классов движков работают под замеренным Landlock-ruleset; живой гейт

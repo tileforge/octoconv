@@ -1,0 +1,201 @@
+=== ci-local 20261015T094944Z ===
+commit:   fa12a13
+branch:   gsd/phase-76-measured-bounds-keda-proof-client-docs
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   
+tiers:    helm gate
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: helm (started 09:49:45 UTC)
+--------------------------------------------------------------
+### helm lint (default values)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### helm lint (capacity-floor overlay)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### render both variants
+### anti-vacuity gate: exactly 10 ScaledObjects must render in BOTH files, checked before any diff or isolation claim
+OK: 10 ScaledObjects in both renders
+### per-class isolation (SC2): the nine non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small
+OK: document unchanged
+OK: html unchanged
+OK: audio unchanged
+OK: av unchanged
+OK: ocr unchanged
+OK: pandoc unchanged
+OK: probe unchanged
+OK: tectonic unchanged
+OK: cad unchanged
+OK: image changed (expected)
+### rendered VALUE assertions (SC1/D-05): every check above is a SHAPE check -- a chart that silently clamped the operator's floor of 2 down to 1 (removing the D-05 fallback effect entirely) would still pass all of them. These assert the actual rendered numbers.
+OK: image renders 0/1 by default and 2/2 under the capacity-floor overlay
+### whole-chart isolation scope (SC2): every differing line in the full-chart diff must be a minReplicaCount:/replicas: line, and the diff must be non-empty
+OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines
+### every Deployment that gets the app secret must wait for BOTH startup deps
+OK: every Deployment carrying the app secret waits for postgres and the bucket (12 of them)
+### the MinIO pod hands root-owned data to uid 65532 before the server starts
+OK: MinIO pod runs one init container from the server image that chowns 65532:65532 over the data mount with only CHOWN
+### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults
+OK: a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership.migrate=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on the real chart renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.uid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.gid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.migrate renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.image renders byte-identically to the defaults
+OK: only uid: 1000 on a chart without the block gives owner 1000:65532 and changes exactly 4 lines
+OK: uid: 0 on a chart without the block is honoured, not replaced by the default
+OK: migrate: false on a chart without the block is honoured, not replaced by the default
+OK: --set minio.dataOwnership.uid=null on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership.uid: null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership: {} on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=1.5 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.gid=-1 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.migrate=no on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on the real chart rejected (rc=1)
+### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else
+OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves
+### minio.dataOwnership.migrate=false drops the init container and changes nothing else
+OK: migrate=false removes the MinIO initContainers key and nothing else
+### minio.dataOwnership.image reaches the init container and nothing else
+OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images
+### a non-boolean minio.dataOwnership.migrate must abort the render
+OK: minio.dataOwnership.migrate=no rejected (rc=1)
+OK: minio.dataOwnership.migrate=false rejected (rc=1)
+OK: a bad uid still aborts the render with migrate=false
+### no chart value may be spliced into an initContainer shell program
+OK: postgres.user reaches the wait initContainer as env, never as program text
+### every mc invocation must use the transport s3.useSSL asks for
+OK: s3.useSSL=false renders 14 mc aliases, all http://
+OK: s3.useSSL=true renders 14 mc aliases, all https://
+### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image
+OK: 14 containers run mc: the pinned minio.mcImage default survives a minio.image-only override, the override wins everywhere and reaches no other container, a missing or empty key falls back to minio.image; the MinIO pod stays on minio.image
+### no extraEnv may override S3_USE_SSL
+OK: no Deployment overrides S3_USE_SSL through extraEnv (11 templates accept one)
+### the octoconv chart must never be installed with --wait
+OK: no octoconv chart install uses --wait
+### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.minReplicaCount (99) must not exceed keda.image.maxReplicaCount (4)
+
+Use --debug flag to render out invalid YAML
+OK: negative case A failed as expected (rc=1)
+### negative case B -- negative floor (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-ocr.yaml:35:22): keda.ocr.minReplicaCount (-1) must not be negative
+
+Use --debug flag to render out invalid YAML
+OK: negative case B failed as expected (rc=1)
+### negative case C -- non-integer floors must NOT coerce silently (CR-01): sprig's int is cast.ToInt, which discards its parse error and returns 0. Cases A and B above use only BARE INTEGERS, so they never touch this path -- every input below used to render minReplicaCount: 0 and exit 0, bypassing BOTH guards and silently discarding the operator's floor.
+OK: [99.9] rejected (rc=1)
+OK: [-0.5] rejected (rc=1)
+OK: [2.9] rejected (rc=1)
+OK: [2.0] rejected (rc=1)
+OK: [abc] rejected (rc=1)
+OK: [true] rejected (rc=1)
+OK: [] rejected (rc=1)
+OK: [null] rejected (rc=1)
+### negative case D -- a null/absent ceiling is its own misconfiguration (CR-01): without the raw-kind check it coerced to 0 and got mis-reported as a minReplicaCount problem
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.maxReplicaCount must be a whole number, got <nil> (kind invalid) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor
+
+Use --debug flag to render out invalid YAML
+OK: negative case D failed as expected (rc=1)
+### invalid minio.dataOwnership.uid/gid must abort the render
+OK: uid=[-1] rejected (rc=1)
+OK: uid=[1.5] rejected (rc=1)
+OK: uid=[2.0] rejected (rc=1)
+OK: uid=[abc] rejected (rc=1)
+OK: uid=[true] rejected (rc=1)
+OK: uid=[] rejected (rc=1)
+OK: uid=[1000:0] rejected (rc=1)
+OK: gid=[-1] rejected (rc=1)
+OK: gid=[1.5] rejected (rc=1)
+OK: gid=[2.0] rejected (rc=1)
+OK: gid=[abc] rejected (rc=1)
+OK: gid=[true] rejected (rc=1)
+OK: gid=[] rejected (rc=1)
+OK: gid=[1000:0] rejected (rc=1)
+OK: values file [uid: 1.5] rejected (rc=1)
+OK: values file [uid: "1000"] rejected (rc=1)
+OK: values file [gid: -5] rejected (rc=1)
+### tier helm: PASS
+
+--------------------------------------------------------------
+### tier: gate (started 09:50:03 UTC)
+--------------------------------------------------------------
+gofmt -l .: clean
+go vet ./...: clean
+go build ./...: clean
+ok  	github.com/apaderin/octoconv/cmd/api	2.702s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	2.755s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	3.089s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	3.001s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	3.486s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	3.901s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	4.416s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	9.891s
+ok  	github.com/apaderin/octoconv/internal/auth	3.355s
+ok  	github.com/apaderin/octoconv/internal/cancel	3.710s
+ok  	github.com/apaderin/octoconv/internal/clients	4.129s
+ok  	github.com/apaderin/octoconv/internal/convert	402.288s
+ok  	github.com/apaderin/octoconv/internal/db	5.510s
+ok  	github.com/apaderin/octoconv/internal/e2e	6.128s
+ok  	github.com/apaderin/octoconv/internal/envcfg	12.394s
+ok  	github.com/apaderin/octoconv/internal/errcode	6.809s
+ok  	github.com/apaderin/octoconv/internal/inspect	8.899s
+ok  	github.com/apaderin/octoconv/internal/jobs	6.671s
+ok  	github.com/apaderin/octoconv/internal/logfmt	6.329s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	7.273s
+ok  	github.com/apaderin/octoconv/internal/measurements	6.499s
+ok  	github.com/apaderin/octoconv/internal/metrics	6.081s
+ok  	github.com/apaderin/octoconv/internal/presets	5.930s
+ok  	github.com/apaderin/octoconv/internal/queue	3.646s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	3.863s
+ok  	github.com/apaderin/octoconv/internal/reconciler	3.446s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	3.229s
+ok  	github.com/apaderin/octoconv/internal/sandbox	3.543s
+ok  	github.com/apaderin/octoconv/internal/storage	4.099s
+ok  	github.com/apaderin/octoconv/internal/webhook	4.701s
+ok  	github.com/apaderin/octoconv/internal/worker	12.261s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+ok  	github.com/apaderin/octoconv/scripts/cmd/cad-png-compare	4.190s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier gate: PASS
+
+==============================================================
+ci-local 20261015T094944Z summary   commit fa12a13
+  PASS  helm
+  PASS  gate
+  ALL REQUESTED TIERS PASSED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/gate76-08/clone//private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/gate76-08/ev/ci-local-20261015T094944Z.log
+==============================================================

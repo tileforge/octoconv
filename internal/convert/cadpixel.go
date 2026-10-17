@@ -22,8 +22,6 @@ const (
 	cadThinDarkPerLongSide = 0.25
 	cadExtentMin           = 0.50
 	cadMarginMin           = 0.03
-	cadTransparentMin      = 0.05
-	cadTransparentMax      = 0.95
 	cadDrawingSpanMin      = 0.5
 	cadLetterboxSlack      = 2
 
@@ -32,15 +30,16 @@ const (
 )
 
 type CADPixelFacts struct {
-	Width, Height    int
-	Count, DarkCount int
-	BoxW, BoxH       int
-	BoxX, BoxY       int
-	Margin           int
-	Frac, Dark       float64
-	FracTransparent  float64
-	HasAlpha         bool
-	Mode             string
+	Width, Height      int
+	Count, DarkCount   int
+	BoxW, BoxH         int
+	BoxX, BoxY         int
+	Margin             int
+	Frac, Dark         float64
+	FracTransparent    float64
+	RingNonTransparent int
+	HasAlpha           bool
+	Mode               string
 }
 
 func cadPNGHasAlpha(data []byte) bool {
@@ -72,8 +71,8 @@ func JudgeCADPNG(r io.Reader, size int, background string) (CADPixelFacts, error
 	if err != nil {
 		return facts, err
 	}
-	opaquePx := cadMeasure(img, background, &facts)
-	return facts, cadJudgeFacts(&facts, size, background, opaquePx)
+	cadMeasure(img, &facts)
+	return facts, cadJudgeFacts(&facts, size, background)
 }
 
 func cadReadFrame(r io.Reader, size int, background string, facts *CADPixelFacts) (image.Image, error) {
@@ -131,17 +130,7 @@ func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterb
 	if err != nil {
 		return facts, err
 	}
-	cadMeasure(img, background, &facts)
-	if background == CADBackgroundTr {
-		if !facts.HasAlpha {
-			return facts, fmt.Errorf("%w: background transparent but the PNG carries no alpha", ErrCADRenderRejected)
-		}
-		if facts.FracTransparent < cadTransparentMin {
-			return facts, fmt.Errorf("%w: transparent fraction %.4f is under %.2f", ErrCADRenderRejected, facts.FracTransparent, cadTransparentMin)
-		}
-	} else if facts.FracTransparent > 0 {
-		return facts, fmt.Errorf("%w: background opaque but %.4f of the frame is transparent", ErrCADRenderRejected, facts.FracTransparent)
-	}
+	cadMeasure(img, &facts)
 	if !cadDrawingInk(&facts) {
 		return facts, fmt.Errorf("%w: J1 the frame holds no ink", ErrCADRenderRejected)
 	}
@@ -158,7 +147,7 @@ func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterb
 		return facts, fmt.Errorf("%w: J3 the ink box %d,%d..%d,%d leaves the letterbox %d,%d..%d,%d by more than %d px", ErrCADRenderRejected,
 			facts.BoxX, facts.BoxY, x1, y1, box.Left, box.Top, box.Left+box.Width-1, box.Top+box.Height-1, cadLetterboxSlack)
 	}
-	return facts, nil
+	return facts, cadJudgeAlpha(&facts, background)
 }
 
 func cadDrawingInk(f *CADPixelFacts) bool { return f.Count > 0 }
@@ -170,7 +159,7 @@ func JudgeCADDrawingInk(r io.Reader, size int) (CADPixelFacts, error) {
 	if err != nil {
 		return facts, fmt.Errorf("%w: the ink check frame: %v", ErrCADDrawingFailed, err)
 	}
-	if opaquePx := cadMeasure(img, CADBackgroundOpq, &facts); opaquePx != size*size {
+	if opaquePx := cadMeasure(img, &facts); opaquePx != size*size {
 		return facts, fmt.Errorf("%w: the ink check frame has %d of %d pixels not opaque, want a white page", ErrCADDrawingFailed, size*size-opaquePx, size*size)
 	}
 	if !cadDrawingInk(&facts) {
@@ -179,11 +168,15 @@ func JudgeCADDrawingInk(r io.Reader, size int) (CADPixelFacts, error) {
 	return facts, nil
 }
 
-func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
+func cadOnWhite(c, a uint8) uint8 {
+	return uint8((int(c)*int(a) + 255*(255-int(a)) + 127) / 255)
+}
+
+func cadMeasure(img image.Image, f *CADPixelFacts) int {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	x0, y0, x1, y1 := w, h, -1, -1
-	transparentPx, opaquePx := 0, 0
+	transparentPx, opaquePx, ring := 0, 0, 0
 	nrgba, _ := img.(*image.NRGBA)
 	var rows, white []byte
 	var stride, base int
@@ -193,13 +186,19 @@ func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 	case *image.RGBA:
 		rows, stride, base = p.Pix, p.Stride, p.PixOffset(b.Min.X, b.Min.Y)
 	}
-	if rows != nil && background == CADBackgroundOpq {
+	if rows != nil {
 		white = bytes.Repeat([]byte{0xff}, 4*w)
 	}
 	for y := 0; y < h; y++ {
+		edgeRow := y == 0 || y == h-1
 		if white != nil {
 			if o := base + y*stride; bytes.Equal(rows[o:o+4*w], white) {
 				opaquePx += w
+				if edgeRow {
+					ring += w
+				} else {
+					ring += min(w, 2)
+				}
 				continue
 			}
 		}
@@ -214,18 +213,17 @@ func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 			}
 			if a == 0 {
 				transparentPx++
+				continue
+			}
+			if edgeRow || x == 0 || x == w-1 {
+				ring++
 			}
 			if a == 255 {
 				opaquePx++
+			} else {
+				r, g, bl = cadOnWhite(r, a), cadOnWhite(g, a), cadOnWhite(bl, a)
 			}
-			if a == 0 {
-				continue
-			}
-			inMask := true
-			if background == CADBackgroundOpq {
-				inMask = r < cadBackgroundCutoff || g < cadBackgroundCutoff || bl < cadBackgroundCutoff
-			}
-			if !inMask {
+			if r >= cadBackgroundCutoff && g >= cadBackgroundCutoff && bl >= cadBackgroundCutoff {
 				continue
 			}
 			f.Count++
@@ -250,6 +248,7 @@ func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 	f.Frac = float64(f.Count) / area
 	f.Dark = float64(f.DarkCount) / area
 	f.FracTransparent = float64(transparentPx) / area
+	f.RingNonTransparent = ring
 	f.Margin = -1
 	if f.Count > 0 {
 		f.BoxW, f.BoxH = x1-x0+1, y1-y0+1
@@ -259,20 +258,23 @@ func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 	return opaquePx
 }
 
-func cadJudgeFacts(f *CADPixelFacts, size int, background string, opaquePx int) error {
-	if background == CADBackgroundTr {
-		if !f.HasAlpha {
-			return fmt.Errorf("%w: background transparent but the PNG carries no alpha", ErrCADRenderRejected)
+func cadJudgeAlpha(f *CADPixelFacts, background string) error {
+	if background == CADBackgroundOpq {
+		if f.FracTransparent > 0 {
+			return fmt.Errorf("%w: background opaque but %.4f of the frame is transparent", ErrCADRenderRejected, f.FracTransparent)
 		}
-		if f.FracTransparent < cadTransparentMin || f.FracTransparent > cadTransparentMax {
-			return fmt.Errorf("%w: transparent fraction %.4f is outside %.2f..%.2f", ErrCADRenderRejected, f.FracTransparent, cadTransparentMin, cadTransparentMax)
-		}
-		if opaquePx == 0 {
-			return fmt.Errorf("%w: background transparent but no pixel is opaque", ErrCADRenderRejected)
-		}
-	} else if f.FracTransparent > 0 {
-		return fmt.Errorf("%w: background opaque but %.4f of the frame is transparent", ErrCADRenderRejected, f.FracTransparent)
+		return nil
 	}
+	if !f.HasAlpha {
+		return fmt.Errorf("%w: background transparent but the PNG carries no alpha", ErrCADRenderRejected)
+	}
+	if f.RingNonTransparent > 0 {
+		return fmt.Errorf("%w: background transparent but %d pixels on the frame's edge are not fully transparent", ErrCADRenderRejected, f.RingNonTransparent)
+	}
+	return nil
+}
+
+func cadJudgeFacts(f *CADPixelFacts, size int, background string) error {
 	if f.Count == 0 {
 		return fmt.Errorf("%w: J1 the frame holds no part pixels", ErrCADRenderRejected)
 	}
@@ -295,5 +297,5 @@ func cadJudgeFacts(f *CADPixelFacts, size int, background string, opaquePx int) 
 	default:
 		return fmt.Errorf("%w: J4 neither a blob (frac %.4f, dark %.4f) nor a thin part (aspect %.4f, %d dark pixels)", ErrCADRenderRejected, f.Frac, f.Dark, aspect, f.DarkCount)
 	}
-	return nil
+	return cadJudgeAlpha(f, background)
 }

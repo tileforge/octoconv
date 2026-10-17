@@ -1,0 +1,5 @@
+HDR,date_utc=2026-10-13T22:13:14Z,commit=d2f52ef727c1fed7ee6b9d4bc31c20ddbf97055e,tracked_dirt=0
+HDR,input=step-nauo-LinearSlide-MGN15x-Block-n4.step,bytes=540850,sha256=12fae7aaf151a5c9777f4ebc97b0d73e5d682dfcc151f63adb48cb42a60b7572
+HDR,cad_worker_image=sha256:e2d4105a85da1d8d6743f4820b974b889d4383b7c0011fac4fbf7b599cd96482,api_image=sha256:7009109e9f887effefb5394fcf4955c658914bbdc62b31083056474ba77dae92
+REPRO,background=transparent,job=841fdb64-b615-4ac0-9aef-672fcca083fa,status=failed,code=cad_empty_result,message=the rendered preview shows no recognisable part,outputs=0,active_transitions=1
+REPRO,background=opaque,job=92b4870e-fd92-4e34-ab3d-f2329ddd8a7d,status=done,code=none,message=none,outputs=2,active_transitions=1

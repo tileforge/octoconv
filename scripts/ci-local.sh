@@ -154,10 +154,34 @@ tier_docker_build() {
 # running, and the message lands where a reader is already looking for the
 # cause of the tier's failure.
 COMPOSE_E2E=(docker compose -f docker-compose.yml -f docker-compose.e2e.yml)
+E2E_EXTRA_COMPOSE_FILES=()
+read -r -a E2E_EXTRA_COMPOSE_FILES <<< "${CI_LOCAL_E2E_EXTRA_COMPOSE_FILES:-}"
+for e2e_extra_file in ${E2E_EXTRA_COMPOSE_FILES[@]+"${E2E_EXTRA_COMPOSE_FILES[@]}"}; do
+  COMPOSE_E2E+=(-f "$e2e_extra_file")
+done
+E2E_TEARDOWN="${CI_LOCAL_E2E_TEARDOWN:-down-v}"
 
 tier_e2e() {
   local compose=("${COMPOSE_E2E[@]}")
   local rc=0
+  local api_port="${CI_LOCAL_E2E_API_PORT:-8090}"
+  local test_flags=()
+  read -r -a test_flags <<< "${CI_LOCAL_E2E_GO_TEST_FLAGS:-}"
+
+  echo "e2e settings: api_port=$api_port extra_compose_files=${CI_LOCAL_E2E_EXTRA_COMPOSE_FILES:-none} teardown=$E2E_TEARDOWN go_test_flags=${CI_LOCAL_E2E_GO_TEST_FLAGS:-none}"
+  case "$E2E_TEARDOWN" in
+    down-v|stop) ;;
+    *)
+      echo "error: CI_LOCAL_E2E_TEARDOWN=$E2E_TEARDOWN is not one of down-v, stop" >&2
+      return 1
+      ;;
+  esac
+  case "$api_port" in
+    ''|*[!0-9]*)
+      echo "error: CI_LOCAL_E2E_API_PORT=$api_port is not a port number" >&2
+      return 1
+      ;;
+  esac
 
   # Nothing else may hold the ports this tier tests THROUGH. A developer API
   # left running from a debugging session answers /healthz exactly like the
@@ -165,7 +189,7 @@ tier_e2e() {
   # authenticates against a process with a different API_KEY_SALT -- which
   # arrives as "401 invalid api key" on every test, a message that says nothing
   # about the actual cause. Observed on 2026-09-05.
-  for port in 8090 9100; do
+  for port in "$api_port" 9100; do
     if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
       echo "error: something is already listening on :$port -- this tier would test that" >&2
       echo "       process instead of the compose stack. Stop it and re-run." >&2
@@ -180,12 +204,16 @@ tier_e2e() {
   # shellcheck disable=SC2317  # invoked via trap
   teardown() {
     echo "--- tearing down ---"
-    "${COMPOSE_E2E[@]}" down -v >/dev/null 2>&1 || true
+    if [ "$E2E_TEARDOWN" = stop ]; then
+      "${COMPOSE_E2E[@]}" stop >/dev/null 2>&1 || true
+    else
+      "${COMPOSE_E2E[@]}" down -v >/dev/null 2>&1 || true
+    fi
   }
   trap teardown RETURN
 
   echo "--- waiting for API readiness ---"
-  if ! curl -fsS --retry 30 --retry-all-errors --retry-delay 2 http://localhost:8090/healthz; then
+  if ! curl -fsS --retry 30 --retry-all-errors --retry-delay 2 "http://localhost:${api_port}/healthz"; then
     echo "API never became ready; dumping compose logs"
     "${compose[@]}" logs --no-color | tail -100
     return 1
@@ -203,12 +231,12 @@ tier_e2e() {
   # 2026-09-05, on a run whose whole purpose was to exercise a change to the
   # shared worker path.
   echo "--- running the E2E suite ---"
-  E2E_BASE_URL=http://localhost:8090 \
+  E2E_BASE_URL="http://localhost:${api_port}" \
   DATABASE_URL='postgres://octo:octo-pass@localhost:5434/octo_db' \
   API_KEY_SALT=dev-only-change-me-in-real-deploys \
   WEBHOOK_SIGNING_SECRET=dev-only-change-me-in-real-deploys \
   E2E_S3_DIAL_ADDR=127.0.0.1:9100 \
-    go test -count=1 ./internal/e2e/... -timeout 30m || rc=1
+    go test -count=1 ./internal/e2e/... -timeout 30m ${test_flags[@]+"${test_flags[@]}"} || rc=1
 
   if [ "$rc" -ne 0 ]; then
     echo "--- compose logs (tail) ---"

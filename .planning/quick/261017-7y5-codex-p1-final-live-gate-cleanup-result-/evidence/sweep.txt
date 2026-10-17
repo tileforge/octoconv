@@ -1,0 +1,74 @@
+Sweep of verdict sites, written before the Task 2 RED.
+Line numbers are scripts/final-live-gate.sh at cbea783 (after the Task 1 fix) and scripts/ci-local.sh at HEAD.
+Source listing: grep -nE 'result=|res=|ok=|return [12]|\|\| true' scripts/final-live-gate.sh
+and every hunk of git diff main...HEAD -- scripts/ci-local.sh.
+
+Classes:
+  A  a verdict that already reaches its step's return code (or an input that already fails closed)
+  B  a masked command failure feeding a verdict, fixed in Task 2
+  C  not fixed, reason cited
+
+== scripts/final-live-gate.sh ==
+
+A  239-294   step_preflight: pf() sets ok=0 on any non-ok result; ok=0 gives return 1 (line 294)
+A  252-258   kubectl rc captured (krc); non-zero gives pf k8s fail
+A  256       grep -ci over the kubectl output: the input is already rc-checked
+A  263-273   vm_free_kib: empty or non-numeric gives pf vm_disk fail; below floor gives STOPPED + return 2
+A  308-341   images_check: result=ok only when expected>0, found=expected, mm=0; else result=fail + return 1;
+             the callers fold it (391 "|| ok=0"). Its masked inputs all fail closed:
+             310 services listing fails -> expected=0 -> fail; 312 ps -aq fails -> no cids -> found=0 -> fail;
+             318 inspect fails -> empty file -> found<expected -> fail; 329 tag inspect fails -> tag != id -> mm++ -> fail
+A  357-361   CI_LOCAL transcript=missing -> result=fail + return 1
+A  363-364   rc != 0 or no ALL REQUESTED TIERS PASSED -> ok=0 -> return 1 (392)
+A  375-393   CONVERT_TIME: missing -> ok=0; STOP -> ok=0; contaminated -> notrun -> return 2
+A  372-374   load_at with no samples defaults l=99 -> over budget reads contaminated (NOT_RUN), never PASS
+A  404-406   grep -c over CI_LOG: an unreadable CI_LOG gives empty values that fail the -ge / = 0 tests
+A  407-409   docker logs failure: an empty log gives landlock=0 -> ok=0 (dlog=0 alone never passes the step)
+A  418,425   tectonic image inspect: empty -> ok=0
+A  421-433   TECTONIC result=fail -> STEP_RC=1, return 1
+A  439-462   sandbox: rc, last line and NOT RUN lines -> return 0/1/2; 448 grep -c over a file the step just wrote
+A  465-509   cad_cleanup result -> return status (Task 1, cbea783)
+A  519-556   run_cad: rc, all_pass, tracked_dirt, commit, cleanup -> ok -> CAD_RUN result + return (Task 1)
+A  543-545   grep/sed over the cad transcript: missing -> empty -> each test fails
+A  566-581   IMAGES_CHECK cad: 571/573 inspect failure -> empty -> mm++ -> return 1
+A  586-604   QUIET_COVERAGE fail -> return 2; rerun r != 0 -> return 1
+A  609-646   FRONTEND: rcs, vitest line, failed lines, lockfile -> ok -> return 1;
+             617 git diff --quiet failure -> lock=1 -> fail; 631 perl failure -> tl empty -> fail
+A  648-695   main loop: r -> PASS/NOT_RUN/FAIL, FAILED=1
+A  702-708   VOLUMES: volume_list || true, but an empty before-list or any difference gives VEQ=0
+A  716-737   P/FC/NRC over OUT -> RESULT/CODE; TRACKED_DIRT/DIRT_END != 0 -> FAIL
+A  124-146   watchdog: an unreadable free_kib counts a miss; 3 misses -> STOP docker_unresponsive
+
+B  214       TRACKED_DIRT=$(git status ... | grep -c . || true): a failed git status reads 0
+B  712       DIRT_END, same construction: a failed git status reads 0
+B  249-250   preflight docker ps -q | grep -c . || true: a silent docker ps failure reads count=0 -> compose_running ok
+B  410-417   tectonic env inspect || true: a failed inspect reads disabled_env_value=unset and disabled_env=0 -> pass
+B  445-446   sandbox leftover listing | grep -c . || true: a failed listing reads leftover_tags=0, and the line has no verdict at all
+B  550-554   quiet_rows on a missing/empty load file: rows=0, contaminated=0 -> no rerun, CAD_RUN ok, step PASS
+
+C  490-492   per-prefix mc du --json || true in cad_cleanup: a failed listing gives o="" -> no rm, cleanup still ok.
+             Not fixed: the exit status and JSON line of mc du on an ABSENT prefix are unmeasured; refused jobs have
+             no results/ prefix, so a fail-closed rule on rc or status could fail every live run. Stubs cannot settle
+             this. -> todo 2026-10-17-cad-cleanup-mc-du-absent-prefix.md
+C  260       lsof port probe || true: lsof exits 1 both for no listener and for an error, so its status carries no signal
+C  215,221-226  FREE0 and the HDR go/server_arch/load1/python3 values: informational, no verdict reads them
+C  231       images_before listing: only feeds ids_present_before_run, an informational count
+C  480,505   bucket_before / bucket_after: informational fields of the CLEANUP line
+C  506,578,588,171  compose stop || true: no verdict; a stack left running is caught by the next run's
+             preflight compose_running check
+C  352,356   ls ci-local-*.log || true: ls exits 1 for no match, which is the normal first-run case, so the status
+             carries no failure signal; a failed after-listing gives CI_LOG empty -> transcript=missing fail
+C  180,190   stop_reason / write_stop_once cat || true: an unreadable stop file reads terminated; still STOPPED -> INCOMPLETE
+C  113,116,132,140,151,202  process control (pgrep/kill/wait) and the load sampler: no verdict
+C  710       VOLUMES_DIFF listing: informational, written only when VEQ=0 already
+
+== scripts/ci-local.sh (git diff main...HEAD) ==
+
+A  hunk @@154 (lines 157-185): CI_LOCAL_E2E_TEARDOWN not down-v/stop -> return 1; CI_LOCAL_E2E_API_PORT not a
+             number -> return 1; extra compose files are appended to COMPOSE_E2E, a bad path fails the compose up
+A  hunk @@165 (line 192-197): busy-port check on "$api_port" 9100 -> return 1
+A  hunk @@180 (line 216-219): readiness curl on the api_port -> return 1
+A  hunk @@203 (line 234-245): go test with test_flags -> rc=1 -> return "$rc"
+C  hunk @@180 (lines 207-211): teardown stop / down -v >/dev/null 2>&1 || true: computes no verdict; main's
+             down -v line has the same fallback (main:183); the wrapper's preflight compose_running check and the
+             VOLUMES comparison catch what it leaves behind

@@ -1,0 +1,42 @@
+== M1: drop the trailing [ "$c" = 0 ] from quiet_line
+   137d136
+   < 	[ "$c" = 0 ]
+FAIL: hot calibration: FAIL names the contamination
+FAIL: hot calibration: no CALIBRATION line
+FAIL: hot calibration: no TIMED_SUBMIT line
+FAIL: hot calibration: SUMMARY FAIL
+FAIL: hot calibration: never PASS
+FAIL: hot calibration: exit 1
+FAIL: hot timed: FAIL names the contamination
+FAIL: hot timed: no DRAIN line
+FAIL: hot timed: SUMMARY FAIL
+FAIL: hot timed: never PASS
+FAIL: hot timed: exit 1
+RESULT: 23 passed, 11 failed
+
+== M2: calibration call: || fail ... -> || true
+   574c574
+   < quiet_line calibration "$CAL_L0" "$CAL_L1" na || fail "the calibration step is contaminated (load1 $CAL_L0 at its start, $CAL_L1 at its end, above $QUIET_LOAD); its timings do not count"
+   ---
+   > quiet_line calibration "$CAL_L0" "$CAL_L1" na || true
+FAIL: hot calibration: FAIL names the contamination
+FAIL: hot calibration: no CALIBRATION line
+FAIL: hot calibration: no TIMED_SUBMIT line
+FAIL: hot calibration: SUMMARY FAIL
+FAIL: hot calibration: never PASS
+FAIL: hot calibration: exit 1
+RESULT: 28 passed, 6 failed
+
+== M3: timed call: || fail ... -> || true
+   687c687
+   < quiet_line timed "$T_L0" "$T_L1" "$(awk '$2 != "err" { if ($5 > m) m = $5 } END { print m + 0 }' "$W/samples")" || fail "the timed step is contaminated (load1 $T_L0 at its start, $T_L1 at its end, above $QUIET_LOAD); its timings do not count"
+   ---
+   > quiet_line timed "$T_L0" "$T_L1" "$(awk '$2 != "err" { if ($5 > m) m = $5 } END { print m + 0 }' "$W/samples")" || true
+FAIL: hot timed: FAIL names the contamination
+FAIL: hot timed: no DRAIN line
+FAIL: hot timed: SUMMARY FAIL
+FAIL: hot timed: never PASS
+FAIL: hot timed: exit 1
+RESULT: 29 passed, 5 failed
+
+restored: cmp equal to GREEN

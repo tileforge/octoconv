@@ -88,3 +88,48 @@ export function targetFormatsOf(resp: FormatsResponse): string[] {
   }
   return Array.from(targets).sort();
 }
+
+export type OperationRow = { operation: string; engine: string; from: string; to: string };
+
+const operationRowKeys = ['operation', 'engine', 'from', 'to'] as const;
+
+function compareOperationRows(a: OperationRow, b: OperationRow): number {
+  for (const key of operationRowKeys) {
+    if (a[key] !== b[key]) {
+      return a[key] < b[key] ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+export function operationTable(resp: FormatsResponse): OperationRow[] {
+  const tree = resp.operations ?? { convert: resp.engines };
+  const rows: OperationRow[] = [];
+  for (const [operation, engines] of Object.entries(tree)) {
+    for (const [engine, formats] of Object.entries(engines)) {
+      for (const [from, to] of formats.pairs) {
+        rows.push({ operation, engine, from, to });
+      }
+    }
+  }
+  return rows.sort(compareOperationRows);
+}
+
+export function operationsOf(resp: FormatsResponse): string[] {
+  return Array.from(new Set(operationTable(resp).map((row) => row.operation))).sort();
+}
+
+export function targetFormatsForOperation(resp: FormatsResponse, operation: string, source: string): string[] {
+  const normalizedSource = normalizeFormat(source);
+  if (!normalizedSource) {
+    return [];
+  }
+
+  const targets = new Set<string>();
+  for (const row of operationTable(resp)) {
+    if (row.operation === operation && normalizeFormat(row.from) === normalizedSource) {
+      targets.add(normalizeFormat(row.to));
+    }
+  }
+  return Array.from(targets).sort();
+}

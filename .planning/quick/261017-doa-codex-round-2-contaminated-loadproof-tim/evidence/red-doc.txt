@@ -1,0 +1,33 @@
+go version go1.26.4 darwin/arm64
+Python 3.14.8
+=== RUN   TestCADDocMatchesTheCode
+=== RUN   TestCADDocMatchesTheCode/formats
+=== RUN   TestCADDocMatchesTheCode/operations
+=== RUN   TestCADDocMatchesTheCode/options
+=== RUN   TestCADDocMatchesTheCode/applicability
+=== RUN   TestCADDocMatchesTheCode/ceilings
+=== RUN   TestCADDocMatchesTheCode/time_limits
+=== RUN   TestCADDocMatchesTheCode/known_limits
+=== RUN   TestCADDocMatchesTheCode/near_white_rule
+    cad_doc_test.go:701: docs/CAD.md near_white says paint with any channel at or above the cutoff is no ink; cadMeasure skips a pixel only when every channel is at or above 250
+    cad_doc_test.go:720: docs/CAD.md near_white states 0 "(r, g, b) is ink" and 0 "(r, g, b) is not" examples, want at least one of each
+=== RUN   TestCADDocMatchesTheCode/scaling
+--- FAIL: TestCADDocMatchesTheCode (0.01s)
+    --- PASS: TestCADDocMatchesTheCode/formats (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/operations (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/options (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/applicability (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/ceilings (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/time_limits (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/known_limits (0.00s)
+    --- FAIL: TestCADDocMatchesTheCode/near_white_rule (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/scaling (0.00s)
+=== RUN   TestCADDocsStateThatANothingVisibleDrawingIsEmptyOnEveryRoute
+--- PASS: TestCADDocsStateThatANothingVisibleDrawingIsEmptyOnEveryRoute (0.00s)
+=== RUN   TestCADDocsStateOneDefinitionOfAnEmptyDrawing
+--- PASS: TestCADDocsStateOneDefinitionOfAnEmptyDrawing (0.00s)
+=== RUN   TestCADDocsStateOneVerdictOnBothBackgrounds
+--- PASS: TestCADDocsStateOneVerdictOnBothBackgrounds (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.180s
+FAIL

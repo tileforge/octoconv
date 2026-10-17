@@ -3,18 +3,18 @@ gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
 current_phase: 76
-current_phase_name: Measured Bounds, KEDA Proof & Client Docs
-status: planning
-stopped_at: Phase 75 complete, ready to plan Phase 76
-last_updated: "2026-10-13T09:56:15.434Z"
-last_activity: 2026-10-12
+current_phase_name: measured-bounds-keda-proof-client-docs
+status: verifying
+stopped_at: Completed 76-11-PLAN.md
+last_updated: "2026-10-17T00:44:27.165Z"
+last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 59b9842fee63d5de94ce57380027f6371eb30e4f
+state_head: 20977da1bcae2930c961276ce5f25e4cdf1813d9
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 38
-  completed_plans: 38
+  total_plans: 49
+  completed_plans: 49
   percent: 83
 ---
 
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 ## Current Position
 
-Phase: 76 — Measured Bounds, KEDA Proof & Client Docs
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-10-12 — Phase 75 complete, transitioned to Phase 76
+Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
+Plan: 11 of 11
+Status: Phase complete — ready for verification
+Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
 Progress: [████████░░] 83% (0/6 phases)
 
@@ -133,6 +133,17 @@ Progress: [████████░░] 83% (0/6 phases)
 | Phase 69 P03 | 55min | 2 tasks | 3 files |
 | Phase 69 P04 | 50min | 3 tasks | 5 files |
 | Phase 69 P05 | 40 min | 2 tasks | 7 files |
+| Phase 76 P01 | 94min | 2 tasks | 3 files |
+| Phase 76 P02 | about 20h wall | 3 tasks | 5 files |
+| Phase 76 P03 | 15h | 3 tasks | 14 files |
+| Phase 76 P04 | 34 min | 3 tasks | 13 files |
+| Phase 76 P05 | 35min | 3 tasks | 4 files |
+| Phase 76 P06 | 6h50m | 3 tasks | 17 files |
+| Phase 76 P07 | 23min | 3 tasks | 11 files |
+| Phase 76 P08 | about 21 h wall (2026-10-15T09:25Z to 2026-10-16T06:35Z) incl. disk-floor stops, a docker wedge and quiet-window waits | 3 tasks | 6 files |
+| Phase 76 P09 | 125min | 3 tasks | 8 files |
+| Phase 76 P10 | 50min | 2 tasks | 7 files |
+| Phase 76 P11 | 8h02m | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -195,6 +206,35 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-04: both G-69-2 guards proven load-bearing by live inversion -- pre-fix splice fails exactly 12 of 18 rows, frame-src/child-src removal fails exactly f1/f2
 - [Phase 69]: 69-05: the large-document check's transcript states the /dev/shm size actually in effect (~7.8 GiB, OrbStack default), never the diagnosis session's assumed ~64Mi -- validity rests on the negative control (denied on /dev/shm, not on an exhausted tmpfs), not on that size
 - [Phase 69]: 69-05: G-69-3 closed -- chromium-worker chart/compose/live-gate no longer mount or size /dev/shm; each now cross-references SANDBOX-PATHS.md instead of restating a pre-Landlock rationale
+- [Phase 76]: 76-01: bytes do not bound 3D render cost; step, iges and stl are not_byte_bound and STACK_GLOBAL render_deadline_rule=remainder (no Path-B render byte ceiling; render deadline R = 886 - guard - mesh - io)
+- [Phase 76]: 76-01: S6 coincident NAUO (--nauo-pitch 0) added before any row because the S3 grid does not stack; S6 n100 (598732 bytes) broke STEP at 900 s
+- [Phase 76]: 76-02 step group re-run once after the render-judge fix (rerun_after_product_fix, judge 056a8d2); dxf and stl judge rows were all ok under the old judge, PNGs not retained
+- [Phase 76]: 76-02 iges group re-run once under caffeinate after host sleep (rerun_after_host_sleep); the one row overlapping pmset sleep is contaminated=1 and excluded from W
+- [Phase 76]: 76-02 3D render walls at the ceilings exceed 886 s (M1 up to 1223.74 s, M3 at the 1800 s budget) and the M3 mesh peak 3083 MiB exceeds 0.70x4096; resolution is 76-03's derive76 under the pre-registered rules
+- [Phase 76]: 76-03: CAD engine timeout 886 s measured (guard 21, mesh 324, render 521 by remainder, io 20); DXF route 661 s
+- [Phase 76]: 76-03: IGES input ceiling lowered to 125829120 bytes (120 MiB) by the iges_memory_ceiling ladder; 128 MiB revoked by its own clean rep
+- [Phase 76]: 76-03: quiet_host - timed rows count only at host load1 <= 11 at start and end; pod rule checked per route
+- [Phase 76]: 76-04: CADDefaultEngineTimeout = max(3D sum, DXF sum) = max(886, 661) = 886 s; CAD_ENGINE_TIMEOUT, grace 906 and stabilization 900 unchanged
+- [Phase 76]: 76-04: cad inspect estimate flipped to measured at 886 s in the same commit as the .env.example number
+- [Phase 76]: 76-04: ERROR-CODES cad_too_complex states CAD_RENDER_TIMEOUT 521 s and that 3D render cost is not bounded by input bytes, held by the docs sync test
+- [Phase 76]: 76-05 took the not-fired branch: all four PATHB lines are fired=0, so no render ceiling or operation-aware size map exists; TestCADPathBFiredForNoFormat fails if a re-derivation fires Path-B, and create, inspect and the worker are tested to refuse convert and render at the same DERIVED format ceiling
+- [Phase 76]: 76-06: every volume cap of a file drawn from a DXF (PDF bytes, inflate, objects, values, string, decoded text; texts.json and SVG bytes) is cad_too_complex; shape caps stay cad_empty_result
+- [Phase 76]: 76-06: docs/CAD.md and docs/PREVIEW.md are held both ways by TestCADDocMatchesTheCode, TestCADCodesDocMatchesTheMapping and TestPreviewDocMatchesTheCode; CAD sync codes are computed, not fixed
+- [Phase 76]: 76-07: openapi CADOpts, cad pairs, produced and reserved roles and every async cad code are held by TestCADOpenAPIMatchesTheCode and TestCADCodesDocMatchesTheMapping; reserved roles are computed from the role CHECK
+- [Phase 76]: 76-07: MCP convert_file tags and convertToolDescription are held to the registry and to what the server publishes by TestMCPDescriptionsMatchTheRegistry; the frontend table is operationTable(resp), proven by vitest
+- [Phase 76]: 76-08: the D-12 PNG tolerance comparator judges re-runs with the worker's own judge; 3D and DXF re-runs are pixel-identical
+- [Phase 76]: 76-08: the liveproof signal watcher skips zombies and empty cmdlines (attempt 3 hit the zombie of the ink check)
+- [Phase 76]: 76-08: quiet_host per liveproof row; RULE_AMEND rerun_contaminated_rows clears a contaminated row only by a clean ALL PASS rerun (official attempt 5 plus attempt 6, 164 of 164 rows clean)
+- [Phase 76]: 76-08: CADW-04 complete; CADW-05 stays open for 76-09 to 76-11 (KEDA scale-from-zero, minReplicaCount, the final-commit all-class gate)
+- [Phase 76]: 76-09: keda.cad.minReplicaCount stays 0 (D-09); the measured cold start 41.28 s is under the 88.6 s premise limit (premise_holds=1)
+- [Phase 76]: 76-09: KEDA drains cad 2->0 directly one cooldown after the last job; the 900 s HPA window does not delay deactivation
+- [Phase 76]: 76-09: the cad loadproof scales the nine non-cad ScaledObject targets to 0 during helm install; the chart's install-time CPU starvation on an 11-CPU node is deferred (deferred-items.md)
+- [Phase 76]: 76-10: LONG for the cad downscale-survival is render_step M2 by the pre-registered band rule (194.90 s in-worker, band 180-590); the k8s wall was 197.01 s
+- [Phase 76]: 76-10: a cad render in flight survives the KEDA/HPA 2->1 scale-down: SIGTERM at least 161.7 s before finish, one attempt, Completed exit 0 after 162.0 s against the 906 s grace
+- [Phase 76]: 76-10: the deletion-cost annotation raced the HPA by 0.26-1.26 s; hardening deferred (deferred-items.md); CADW-05 stays open for 76-11
+- [Phase 76]: 76-11: the all-class final gate passed from a fresh clone at 07d1024 (attempt 4, SUMMARY ALL PASS, not_run 0, tracked_dirt 0); attempts 1 INCOMPLETE, 2 FAIL (apt mirror), 3 FAIL (wrapper tectonic false negative) kept on record
+- [Phase 76]: 76-11: a gate run starts only with VM free >= the measured full-eviction peak 19 GiB plus the 6 GiB floor; the 60 s watchdog stays
+- [Phase 76]: 76-11: a sandbox escape hatch is judged by the value true (ResolveHelper's rule), never by the variable's presence
 
 ### Quick Tasks Completed
 
@@ -231,10 +271,14 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261012-qds | Codex PR#36 round 2: DXF text font attributes from the measuring face's tables (style/weight/stretch, allowlisted); DXF conversions and limits documented with a docs-sync test; liveproof asserts the counters it records; race tier timeout 20m | 2026-10-12 | e1bf64e | [261012-qds-codex-pr36-round2-oblique-font-style-dxf](./quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/) |
 | 261012-u2s | Codex PR#36 round 3: a DXF with nothing visible is cad_empty_result on svg/pdf/render (helper nothing_visible, Go SVG Visible count, PDF judge InkOps from graphics-state alpha); font slant matches fontconfig (fsSelection bit 9, subfamily) | 2026-10-13 | e587004 | [261012-u2s-codex-pr36-round3-fully-transparent-dxf](./quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/) |
 | 261013-0og | Codex PR#36 round 4: a DXF is empty when its raster (confined rsvg, 2048 letterbox, white page) has no ink under the shared J1 judge, on svg/pdf/render alike; attribute checks kept only as early refusal; probe ink mode + crafted differential | 2026-10-13 | 59b9842 | [261013-0og-codex-pr36-round4-dxf-emptiness-judged-b](./quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/) |
+| 261014-0lo | One 3D/DXF render verdict on both backgrounds; alpha-only checks differ (ring), 95% transparent cap removed | 2026-10-14 | c9b6445 | [261014-0lo-render-judge-transparent-and-opaque-back](./quick/261014-0lo-render-judge-transparent-and-opaque-back/) |
+| 261017-7y5 | Codex PR#37 P1: a failed cad cleanup fails the cad step (CAD_RUN cleanup=ok/fail/not_run; STOPPED still returns 2); sweep: masked command failures fail the verdict they feed (sandbox leftover listing, tectonic env read, docker ps, tracked dirt, quiet rows); 76-11 verdict unaffected (cleanup result=ok) | 2026-10-17 | 23bd080 | [261017-7y5-codex-p1-final-live-gate-cleanup-result-](./quick/261017-7y5-codex-p1-final-live-gate-cleanup-result-/) |
+| 261017-doa | Codex PR#37 round 2: a contaminated keda-cad-loadproof calibration or timed step fails the proof (stub suite 34/0, M1-M3 caught); downscale calibration exemption recorded in the evidence (NOTE quiet_calibration gates=0); near_white states the all-channel rule, probed through all three judges; seven-script contamination sweep, two fail-safe selection sites to a todo; 76-09/76-10 PASS stand (QUIET contaminated=0) | 2026-10-17 | dacbb97 | [261017-doa-codex-round-2-contaminated-loadproof-tim](./quick/261017-doa-codex-round-2-contaminated-loadproof-tim/) |
+| 261017-f0i | Codex PR#37 round 3: the cad cleanup in the final gate wrapper finds job objects from one `mc ls --recursive --json` of the bucket before and one after deletion; a failed, timed-out, error-carrying or unparseable listing, a job without an uploads key (jobs_without_upload) or an object left under a run prefix (leftover_objects) fails the cad step; stub suite 309/0, knobs 36/0, M1-M7 caught; mc JSON shape unmeasured live, owed in the renamed todo; attempt-4 leftovers not re-proven | 2026-10-17 | 1520527 | [261017-f0i-codex-round-3-cad-cleanup-fails-when-obj](./quick/261017-f0i-codex-round-3-cad-cleanup-fails-when-obj/) |
 
 ### Pending Todos
 
-Ровно четыре, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно восемь, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -249,6 +293,23 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - **Тест, строящий `ConfinedDocument`/`ConfinedChromium` и доходящий до `Convert`, чистит настоящий
   `/tmp` хоста** (находка 70-07). См.
   `.planning/todos/pending/2026-09-30-sweep-tests-must-not-touch-host-tmp.md`.
+- **CAD-задания не показывают прогресс:** `progress_pct` остаётся `null` до конца; предложены
+  этапы (`stage`, `stage_index`/`stage_count`) вместо выдуманного процента. См.
+  `.planning/todos/pending/2026-10-15-cad-stage-progress.md`.
+- **На darwin один групповой SIGKILL может не задеть потомка, форкнутого в этот момент**
+  (`runCommandCore`/`runCommandStreaming`; 9 из 400 прогонов под нагрузкой ждали ~30 с); Linux
+  не затронут; `internal/convert/exec.go` без отдельного решения не трогаем. См.
+  `.planning/todos/pending/2026-10-17-darwin-killpg-fork-race.md`.
+- **Очистка cad в финальном гейте: остался только живой замер формы JSON у `mc ls`.** Листинг
+  `mc du --json` по каждому префиксу убран быстрой задачей 261017-f0i; очистка теперь читает один
+  `mc ls --recursive --json` по бакету до и после удаления и при неверной форме падает закрыто.
+  Должна только живая проверка этой формы. См.
+  `.planning/todos/pending/2026-10-17-cad-cleanup-mc-ls-json-live-confirmation.md`.
+- **Два шага отбора читают строки, загрязнённые нагрузкой:** long_select в
+  `scripts/keda-cad-downscale-survival.sh` и `select()` в `scripts/cad-dxf-bounds.sh` не смотрят на
+  флаг загрязнения; обе ошибки толкают только в строгую сторону, стабов у скриптов нет (быстрая
+  задача 261017-doa). См.
+  `.planning/todos/pending/2026-10-17-selection-steps-ignore-load-clean.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
@@ -303,6 +364,12 @@ Carried from v1.12:
 - Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
 - Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
+- RESOLVED 2026-10-14 (rerun_after_watchdog): 76-02 STOP: the 60 s VM-disk watchdog killed bounds76 --group step at 2026-10-13T18:32Z (VM free 5 GiB; host swap 16.4 of 17.4 GiB on a 98%-full host disk). refusal, dxf, stl groups ended ok in evidence/76-02-bounds.txt; step and iges not measured; resume policy needs a human decision
+- RESOLVED 2026-10-14 (quick 261014-0lo judge fix, then rerun_after_product_fix; step ended ok): 76-02 STOP: the step re-run stopped at 2026-10-13T21:24Z on M2 (step-nauo n=1518 grid, draft, 2705076 triangles) render iso transparent: cad-pixel-judge (JudgeCADPNG, the production render judge) refused the PNG, transparent fraction 0.9564 outside 0.05..0.95 = ErrCADRenderRejected. Pre-registered rule failures: a judge that is not ok is STOP. iges group and --finish not run; a rule decision is needed
+- RESOLVED 2026-10-15 (user freed disk; builder prune approved and run by the coordinator): 76-08 Task 3 (official cad-liveproof from a fresh clone) blocked: OrbStack VM free space 5.42 GiB is below the 6 GiB D-18 floor with the octoconv stack stopped; attempt 1 at fa12a13 was stopped by the disk watchdog during the iges STACKED_REFUSAL row (10:16:56Z). Freeing VM space needs a human decision (build cache 4.5 GB, 3.2 GB reclaimable; no prune was run). CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-15 (user freed disk, VM 28 GiB free): 76-08 Task 3 attempt 2 (fresh clone e07d657, images reused from fa12a13 with --no-build, start 9.68 GiB free, load1 8.09) was stopped by the 6 GiB disk watchdog at 11:25:21Z during GUARD_EDGE C (6.93 to 5.74 GiB in 30 s). It passed every row up to there, including 3 STACKED_REFUSAL, 6 DETERMINISM and the RENDER_CEILING NOT_APPLICABLE. VM free is 5.68 GiB with octoconv stopped. Other projects rebuilt 1.26 GB of build cache during the run. A re-run needs a human decision on VM disk; CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-16 (watcher fix fbf007c proven; attempts 5 and 6 ALL PASS at f44489e, 164 of 164 rows clean): 76-08 Task 3 attempt 3 (clone 24f30a8, images reused from fa12a13, start load1 7.59, 28 GiB free) FAILED at DXF_RETRY rsvg-convert: done with no retry. Cause: the signal watcher hit the zombie of the just-exited ink check (comm rsvg-convert, empty cmdline), reproduced in the cad-worker image; fixed in fbf007c. 80 of 177 lines had load1 above 11. Attempt 4 needs the go-ahead; CADW-04 and CADW-05 stay open.
+- RESOLVED 2026-10-16T13:46Z (Docker recovered by itself; the interrupted cleanup finished at 08:42:44Z, deleting 604 objects / 1829130978 bytes; bucket at the 3.1 GiB / 1314-object baseline; `docker compose -p octoconv stop` rc 0, nothing running; VM free 23.56 GiB): was OPEN 2026-10-16 (waits for Docker recovery; OrbStack restart not approved): 76-08 post-run hygiene is not done. The docker daemon stopped responding at about 05:27Z during the cleanup after attempt 6. Still to do: the MinIO cleanup of the uploads and results of attempts 5 and 6 (scratchpad/76-08-minio-cleanup.sh, 76-08 clients only, then append to evidence/76-08-minio-cleanup.txt) and `docker compose -p octoconv stop`. No octoconv k8s or compose run should start before this is done.
 
 ## Deferred Items
 
@@ -424,9 +491,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-07T00:30:33.237Z
-Stopped at: Phase 75 complete, ready to plan Phase 76
-Resume file: .planning/phases/75-dxf-2d-pipeline/75-CONTEXT.md
+Last session: 2026-10-17T00:44:25.909Z
+Stopped at: Completed 76-11-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

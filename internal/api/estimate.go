@@ -132,7 +132,7 @@ var engineEstimateSource = map[string]EstimateSource{
 	// after it (90s -> 65s) and probe after that (180s -> 600s); this entry
 	// flipped in the same commit as the number, never before.
 	convert.EngineTectonic: EstimateSourceMeasured,
-	convert.EngineCAD:      EstimateSourceUnmeasured,
+	convert.EngineCAD:      EstimateSourceMeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each
@@ -164,6 +164,7 @@ var engineMeasuredDefaultSeconds = map[string]int{
 	// on the timeout alone) and is stated here rather than left to be
 	// rediscovered.
 	convert.EngineTectonic: 271,
+	convert.EngineCAD:      886,
 }
 
 // estimateSourceFor is the provenance THIS SPECIFIC offer carries -- not

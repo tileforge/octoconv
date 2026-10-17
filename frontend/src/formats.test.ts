@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeFormat, sourceFormatOfFilename, targetFormatsFor, targetFormatsOf } from './formats';
+import {
+  normalizeFormat,
+  operationTable,
+  operationsOf,
+  sourceFormatOfFilename,
+  targetFormatsFor,
+  targetFormatsForOperation,
+  targetFormatsOf,
+} from './formats';
 import type { FormatsResponse } from './api';
 
 describe('normalizeFormat', () => {
@@ -88,5 +96,100 @@ describe('targetFormatsOf', () => {
       },
     };
     expect(targetFormatsOf(resp)).toEqual(['alto', 'docx', 'html', 'md', 'png', 'txt']);
+  });
+});
+
+describe('operationTable', () => {
+  const first: FormatsResponse = {
+    engines: {
+      image: { pairs: [['png', 'webp']] },
+      cad: { pairs: [['dxf', 'svg']] },
+    },
+    operations: {
+      render: {
+        zzz: { pairs: [['qqq', 'png']] },
+        cad: { pairs: [['step', 'png'], ['dxf', 'png']] },
+      },
+      convert: { image: { pairs: [['png', 'webp']] } },
+    },
+  };
+
+  const second: FormatsResponse = {
+    engines: { probe: { pairs: [['pdf', 'pdf']] } },
+    operations: {
+      sanitize: { probe: { pairs: [['pdf', 'pdf']] } },
+      frob: { yyy: { pairs: [['aaa', 'bbb'], ['aaa', 'ccc']] } },
+    },
+  };
+
+  it('operationTable equals the response rows', () => {
+    expect(operationTable(first)).toEqual([
+      { operation: 'convert', engine: 'image', from: 'png', to: 'webp' },
+      { operation: 'render', engine: 'cad', from: 'dxf', to: 'png' },
+      { operation: 'render', engine: 'cad', from: 'step', to: 'png' },
+      { operation: 'render', engine: 'zzz', from: 'qqq', to: 'png' },
+    ]);
+    expect(operationsOf(first)).toEqual(['convert', 'render']);
+  });
+
+  it('operationTable changes with the response', () => {
+    const table = operationTable(second);
+    expect(table).toEqual([
+      { operation: 'frob', engine: 'yyy', from: 'aaa', to: 'bbb' },
+      { operation: 'frob', engine: 'yyy', from: 'aaa', to: 'ccc' },
+      { operation: 'sanitize', engine: 'probe', from: 'pdf', to: 'pdf' },
+    ]);
+    expect(table).not.toEqual(operationTable(first));
+    expect(operationsOf(second)).toEqual(['frob', 'sanitize']);
+    expect(operationTable({ engines: {}, operations: {} })).toEqual([]);
+  });
+
+  it('operationTable without the operations key is the engines under convert', () => {
+    const older: FormatsResponse = {
+      engines: {
+        ocr: { pairs: [['png', 'txt']] },
+        image: { pairs: [['jpg', 'png']] },
+      },
+    };
+    expect(operationTable(older)).toEqual([
+      { operation: 'convert', engine: 'image', from: 'jpg', to: 'png' },
+      { operation: 'convert', engine: 'ocr', from: 'png', to: 'txt' },
+    ]);
+    expect(operationsOf(older)).toEqual(['convert']);
+  });
+
+  it('operationTable order is stable', () => {
+    const shuffled: FormatsResponse = {
+      engines: {},
+      operations: {
+        convert: { image: { pairs: [['png', 'webp']] } },
+        render: {
+          cad: { pairs: [['dxf', 'png'], ['step', 'png']] },
+          zzz: { pairs: [['qqq', 'png']] },
+        },
+      },
+    };
+    const keys = operationTable(shuffled).map((r) => `${r.operation} ${r.engine} ${r.from} ${r.to}`);
+    expect(keys).toEqual(['convert image png webp', 'render cad dxf png', 'render cad step png', 'render zzz qqq png']);
+    expect(operationTable(shuffled)).toEqual(operationTable(first));
+  });
+
+  it('targetFormatsForOperation folds aliases', () => {
+    const resp: FormatsResponse = {
+      engines: {},
+      operations: {
+        convert: {
+          cad: { pairs: [['dxf', 'svg'], ['dxf', 'pdf'], ['step', 'stl']] },
+          image: { pairs: [['jpg', 'png']] },
+        },
+        render: { cad: { pairs: [['step', 'png'], ['dxf', 'png']] } },
+      },
+    };
+    expect(targetFormatsForOperation(resp, 'render', 'stp')).toEqual(['png']);
+    expect(targetFormatsForOperation(resp, 'convert', 'dxf')).toEqual(['pdf', 'svg']);
+    expect(targetFormatsForOperation(resp, 'convert', 'STP')).toEqual(['stl']);
+    expect(targetFormatsForOperation(resp, 'convert', 'jpeg')).toEqual(['png']);
+    expect(targetFormatsForOperation(resp, 'sanitize', 'dxf')).toEqual([]);
+    expect(targetFormatsForOperation(resp, 'render', '')).toEqual([]);
   });
 });

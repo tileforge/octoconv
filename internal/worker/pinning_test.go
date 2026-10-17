@@ -54,6 +54,8 @@ package worker
 // No other row in this file was touched.
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1484,10 +1486,63 @@ func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
 	})
 }
 
+func cadPinPDF(t *testing.T, content []byte) string {
+	t.Helper()
+	var z bytes.Buffer
+	zw := zlib.NewWriter(&z)
+	zw.Write(content)
+	zw.Close()
+	objs := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>",
+		fmt.Sprintf("<< /Filter /FlateDecode /Length %d >>\nstream\n%s\nendstream", z.Len(), z.Bytes()),
+	}
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.5\n")
+	var offs []int
+	for i, o := range objs {
+		offs = append(offs, b.Len())
+		fmt.Fprintf(&b, "%d 0 obj\n%s\nendobj\n", i+1, o)
+	}
+	x := b.Len()
+	fmt.Fprintf(&b, "xref\n0 %d\n0000000000 65535 f \n", len(objs)+1)
+	for _, o := range offs {
+		fmt.Fprintf(&b, "%010d 00000 n \n", o)
+	}
+	fmt.Fprintf(&b, "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", len(objs)+1, x)
+	p := filepath.Join(t.TempDir(), "draw.pdf")
+	if err := os.WriteFile(p, b.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func cadPinJudgeError(t *testing.T, path string, maxBytes int64) error {
+	t.Helper()
+	_, err := convert.JudgeCADPDF(path, maxBytes, "")
+	if err == nil {
+		t.Fatalf("the real PDF judge accepted %s at %d bytes", path, maxBytes)
+	}
+	return fmt.Errorf("cad: %w", err)
+}
+
 func TestPinnedCADFailureVerdicts(t *testing.T) {
 	cadHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
 		return NewRunner(h, CADDescriptor).Handle(ctx, task)
 	}
+	overPDF := filepath.Join("..", "convert", "testdata", "cad", "dxf-out", "white_one_black.pdf")
+	overInfo, err := os.Stat(overPDF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overBytes := cadPinJudgeError(t, overPDF, overInfo.Size()-1)
+	inflated := cadPinPDF(t, append(make([]byte, 4<<20), " 0 0 m 10 10 l S"...))
+	inflatedInfo, err := os.Stat(inflated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overInflate := cadPinJudgeError(t, inflated, inflatedInfo.Size())
 
 	terminal := []struct {
 		name     string
@@ -1541,6 +1596,13 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 		{"dxf pdf rejected", convert.ErrCADPDFRejected,
 			fmt.Errorf("cad: %w: missing text: 0 of 145 expected characters found in order", convert.ErrCADPDFRejected),
 			CodeCADEmptyResult, "the PDF of this drawing shows no recognisable content"},
+		{"dxf pdf over the byte limit, from the real judge", convert.ErrCADPDFRejected, overBytes,
+			CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"},
+		{"dxf pdf over the inflate cap, from the real judge", convert.ErrCADPDFRejected, overInflate,
+			CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"},
+		{"dxf texts.json over its cap under the SVG rejection", convert.ErrCADSVGRejected,
+			fmt.Errorf("cad dxf: %w: %w", convert.ErrCADSVGRejected, fmt.Errorf("%w: %w", convert.ErrCADTooComplex, fmt.Errorf("%w: texts.json exceeds 140509184 bytes", convert.ErrCADPDFRejected))),
+			CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"},
 	}
 	for _, tc := range terminal {
 		t.Run(tc.name+" is terminal with its own code on the first attempt", func(t *testing.T) {

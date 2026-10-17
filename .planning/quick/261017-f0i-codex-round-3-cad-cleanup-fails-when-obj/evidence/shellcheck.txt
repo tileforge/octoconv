@@ -1,0 +1,11 @@
+shellcheck version: 0.11.0 at 1520527
+--- shellcheck -S warning scripts/final-live-gate.sh .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-final-gate-test.sh
+rc=0
+--- full-severity counts: scripts/final-live-gate.sh
+   1 SC2001
+   2 SC2012
+   1 SC2086
+   2 SC2329
+--- full-severity counts: .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-final-gate-test.sh
+  19 SC2016
+--- baseline at 82d3f46: wrapper SC2001x1 SC2012x2 SC2086x1 SC2329x2; test file SC2016x19
