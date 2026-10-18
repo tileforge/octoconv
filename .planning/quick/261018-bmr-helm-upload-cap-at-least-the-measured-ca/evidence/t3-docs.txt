@@ -1,0 +1,38 @@
+# HEAD f4b33930392748917071ce69cf410324d8a5b672 + Task 3 working tree
+ M .planning/STATE.md
+RM .planning/todos/pending/2026-10-18-helm-upload-cap-below-cad-ceilings.md -> .planning/todos/completed/2026-10-18-helm-upload-cap-below-cad-ceilings.md
+ M docs/ERROR-CODES.md
+ M docs/openapi.yaml
+ M scripts/fixtures/README.md
+ M scripts/fixtures/gen_inspect_burst_pdf.py
+ok  	github.com/apaderin/octoconv/internal/errcode	1.098s
+ok  	github.com/apaderin/octoconv/internal/inspect	1.559s
+ok  	github.com/apaderin/octoconv/internal/api	9.298s
+exit=0
+--- PASS: TestCADDocMatchesTheCode (0.01s)
+--- PASS: TestCADOpenAPIMatchesTheCode (0.01s)
+--- PASS: TestErrorCodesDocStatesTheCADCeilingsOfTheCode (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/convert	0.631s
+exit=0
+--- PASS: TestCADCodesDocMatchesTheMapping (0.03s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/worker	0.599s
+exit=0
+## stale-text greps (want 0 each)
+ERROR-CODES 'the effective ceiling there is the smaller of the two': 0
+openapi 'separate from and smaller than': 0
+fixtures README '104,857,600': 0
+gen_inspect_burst_pdf.py comment lines (baseline 21): 21
+gen_inspect_burst_pdf.py parses
+## pending todos: 10 files
+2026-09-29-amd64-first-deployment-preflight-check.md
+2026-09-30-proc-grant-other-process-entries.md
+2026-09-30-soffice-socket-grant-remove-file-alternative.md
+2026-09-30-sweep-tests-must-not-touch-host-tmp.md
+2026-10-15-cad-stage-progress.md
+2026-10-17-cad-cleanup-mc-ls-json-live-confirmation.md
+2026-10-17-darwin-killpg-fork-race.md
+2026-10-17-selection-steps-ignore-load-clean.md
+2026-10-18-api-multipart-spill-unbounded-disk.md
+2026-10-18-callback-url-no-length-bound.md

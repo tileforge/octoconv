@@ -33,10 +33,10 @@ third-party package, matching this phase's own D-02 "zero new dependencies"
 even at the fixture-generation layer, which is not part of the Go module at
 all but is still worth holding to the same discipline).
 
-### The gate's own ceiling overlay (why these fixtures are only 1-3 MiB, not 8-100 MiB)
+### The gate's own ceiling overlay (why these fixtures are only 1-3 MiB, not 8-183 MiB)
 
-`internal/api/api.go`'s DEFAULT `InspectMaxWorkBytes` is 8 MiB and
-`InspectMaxUploadBytes` is 100 MiB (`.env.example`,
+`internal/api/api.go`'s DEFAULT `InspectMaxWorkBytes` is 8 MiB and the
+shipped `INSPECT_MAX_UPLOAD_BYTES` is 183 MiB (`.env.example`,
 `deploy/chart/octoconv/templates/configmap.yaml`). A fixture that must sit
 strictly ABOVE the work ceiling and strictly BELOW the upload ceiling at
 those defaults would need to be several tens of megabytes each --
@@ -47,15 +47,15 @@ whole point is request VOLUME, not per-request payload size.
 `deploy/chart/octoconv/values-inspect-gate.yaml` (Task 2 of this plan)
 therefore LOWERS the gate run's own `INSPECT_MAX_WORK_BYTES` to 1 MiB
 (1048576 bytes) via `api.extraEnv`, leaving `INSPECT_MAX_UPLOAD_BYTES`
-at its 100 MiB default. Every fixture below is sized to sit strictly between
+at its 183 MiB default. Every fixture below is sized to sit strictly between
 those two gate-run boundaries:
 
 | Ceiling | Value | Source |
 |---|---|---|
 | `INSPECT_MAX_WORK_BYTES` (gate override) | 1,048,576 (1 MiB) | `values-inspect-gate.yaml` |
-| `INSPECT_MAX_UPLOAD_BYTES` (unchanged default) | 104,857,600 (100 MiB) | ConfigMap default, restated explicitly in the overlay |
+| `INSPECT_MAX_UPLOAD_BYTES` (unchanged default) | 191,889,408 (183 MiB) | ConfigMap default, restated explicitly in the overlay |
 
-| Fixture | Actual bytes | > work ceiling (1,048,576)? | < upload ceiling (104,857,600)? |
+| Fixture | Actual bytes | > work ceiling (1,048,576)? | < upload ceiling (191,889,408)? |
 |---|---|---|---|
 | `inspect-burst-pathological.pdf` | 2,097,152 | yes (2.0x) | yes |
 | `inspect-burst-pathological.docx` | 1,351,986 | yes (1.29x) | yes |
