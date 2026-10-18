@@ -1,0 +1,33 @@
+# HEAD 7a9dc2d47cdd29b4af8bdb7039492cacd52e488d + configmap/CAD.md GREEN edits
+=== RUN   TestChartTransportCapsAdmitTheLargestCeilingFile
+    transport_cap_test.go:147: chart MAX_UPLOAD_BYTES=191889408 INSPECT_MAX_UPLOAD_BYTES=191889408, file "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.stl" (255 bytes) of 190840784 bytes
+2026/10/18 08:54:08 job accepted request_id="АндрейП�/TIg8DOzAtE-000001" job_id=5e7c4710-1b5c-44ef-b406-53a29af6d8d4 client_id=2d10101a-eb3c-4200-abae-2cb4a6b4c4ba engine=cad source=stl target=png filename=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.stl bytes=190840784 correlation_id=""
+2026/10/18 08:54:08 [АндрейП�/TIg8DOzAtE-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 202 68B in 571.666917ms
+2026/10/18 08:54:09 [АндрейП�/TIg8DOzAtE-000002] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1508B in 568.096ms
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFile (1.17s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/api	1.788s
+exit=0
+=== RUN   TestCADDocMatchesTheCode
+=== RUN   TestCADDocMatchesTheCode/formats
+=== RUN   TestCADDocMatchesTheCode/operations
+=== RUN   TestCADDocMatchesTheCode/options
+=== RUN   TestCADDocMatchesTheCode/applicability
+=== RUN   TestCADDocMatchesTheCode/ceilings
+=== RUN   TestCADDocMatchesTheCode/time_limits
+=== RUN   TestCADDocMatchesTheCode/known_limits
+=== RUN   TestCADDocMatchesTheCode/near_white_rule
+=== RUN   TestCADDocMatchesTheCode/scaling
+--- PASS: TestCADDocMatchesTheCode (0.02s)
+    --- PASS: TestCADDocMatchesTheCode/formats (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/operations (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/options (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/applicability (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/ceilings (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/time_limits (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/known_limits (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/near_white_rule (0.01s)
+    --- PASS: TestCADDocMatchesTheCode/scaling (0.01s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/convert	0.693s
+exit=0
