@@ -29,5 +29,6 @@ func (r *inspectIntakeReader) Close() error {
 }
 
 func (r *inspectIntakeReader) deadline() time.Time {
-	return r.start.Add(r.window)
+	credited := min(r.received, max(r.limit, 0))
+	return r.start.Add(r.window + time.Duration(credited/r.minRate)*time.Second + time.Duration(credited%r.minRate)*time.Second/time.Duration(r.minRate))
 }

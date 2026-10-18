@@ -256,9 +256,7 @@ const (
 	//     INSPECT_MAX_CONCURRENT.
 	inspectIntakeMaxConcurrent = 8
 
-	// inspectIntakeReadDeadline bounds how long ONE request's
-	// ParseMultipartForm call may block waiting on that request's own body
-	// bytes to arrive. cmd/api/main.go sets httpSrv.ReadHeaderTimeout
+	// cmd/api/main.go sets httpSrv.ReadHeaderTimeout
 	// (10s) but configures no equivalent deadline for the REQUEST BODY --
 	// PR9R8-F1's own finding text names this gap explicitly ("cmd/api/
 	// main.go still configures no request-body timeout"). Without it, a
@@ -432,9 +430,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 
 	// See inspectIntakeReadDeadline's own doc comment: bounds how long THIS
 	// request's own ParseMultipartForm call may block on the network before
-	// the slot just acquired above is released. Ignored when unsupported
-	// (e.g. this package's own tests, which exercise handleInspect through
-	// httptest.NewRecorder rather than a real net.Conn) -- the
+	// the slot just acquired above is released. Ignored when unsupported -- the
 	// inspectIntakeMaxConcurrent bound above still holds either way, since
 	// it does not depend on this deadline to be effective.
 	rc := http.NewResponseController(w)

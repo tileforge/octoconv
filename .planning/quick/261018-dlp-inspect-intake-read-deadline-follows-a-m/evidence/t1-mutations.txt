@@ -1,0 +1,132 @@
+mutations against 1498dcb4 + the GREEN working tree, 2026-10-18T07:19:43Z
+######## M1 fixed deadline restored: deadline() returns start + window (internal/api/inspectintake.go)
+  mutation diff: 32,33c32
+  mutation diff: < 	credited := min(r.received, max(r.limit, 0))
+  mutation diff: < 	return r.start.Add(r.window + time.Duration(credited/r.minRate)*time.Second + time.Duration(credited%r.minRate)*time.Second/time.Duration(r.minRate))
+  mutation diff: ---
+  mutation diff: > 	return r.start.Add(r.window)
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 400 after 402.033167ms
+    inspect_intake_test.go:113: status 400 payload map[code:invalid_request error:invalid multipart form] after 402.033167ms, want 200 for a body sent at twice the minimum rate
+    inspect_intake_test.go:116: the transfer took 402.033167ms, want at least 1.2s so that it outlasts the window
+--- FAIL: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (0.44s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 401.582667ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.44s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.766583ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:190: max deadline 2023-11-15 01:13:21 +0300 MSK, last 2023-11-15 01:13:21 +0300 MSK, want both 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:211: max deadline 2023-11-15 01:13:50 +0300 MSK, want 2023-11-15 01:16:53 +0300 MSK
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 30s
+--- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+    inspect_intake_test.go:236: deadline 1 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.001 +0300 MSK
+    inspect_intake_test.go:236: deadline 2 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.002 +0300 MSK
+    inspect_intake_test.go:236: deadline 3 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.003 +0300 MSK
+    inspect_intake_test.go:236: deadline 4 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.004 +0300 MSK
+    inspect_intake_test.go:236: deadline 5 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.005 +0300 MSK
+--- FAIL: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+go test exit=1
+reverted: cmp-identical to the saved copy
+######## M2 credit len(p) instead of n (internal/api/inspectintake.go)
+  mutation diff: 21c21
+  mutation diff: < 		r.received += int64(n)
+  mutation diff: ---
+  mutation diff: > 		r.received += int64(len(p))
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.502105917s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 200 after 12.002753791s
+    inspect_intake_test.go:127: status 200 payload map[] after 12.002753791s, want 400 invalid_request "invalid multipart form"
+    inspect_intake_test.go:129: cut after 12.002753791s, want at least the 400ms window and below 3s
+--- FAIL: TestInspectIntakeCutsABodyBelowTheMinimumRate (12.03s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.547375ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+    inspect_intake_test.go:236: deadline 1 = 2023-11-15 01:13:25.096 +0300 MSK, want 2023-11-15 01:13:21.001 +0300 MSK
+    inspect_intake_test.go:236: deadline 2 = 2023-11-15 01:13:29.192 +0300 MSK, want 2023-11-15 01:13:21.002 +0300 MSK
+    inspect_intake_test.go:236: deadline 3 = 2023-11-15 01:13:33.288 +0300 MSK, want 2023-11-15 01:13:21.003 +0300 MSK
+    inspect_intake_test.go:236: deadline 4 = 2023-11-15 01:13:37.384 +0300 MSK, want 2023-11-15 01:13:21.004 +0300 MSK
+    inspect_intake_test.go:236: deadline 5 = 2023-11-15 01:13:41.48 +0300 MSK, want 2023-11-15 01:13:21.005 +0300 MSK
+--- FAIL: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+go test exit=1
+reverted: cmp-identical to the saved copy
+######## M3 no clamp: credited = received (internal/api/inspectintake.go)
+  mutation diff: 32c32
+  mutation diff: < 	credited := min(r.received, max(r.limit, 0))
+  mutation diff: ---
+  mutation diff: > 	credited := r.received
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.502783834s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.50s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 542.370125ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.56s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 403.180083ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:190: max deadline 2023-11-15 01:13:21.025 +0300 MSK, last 2023-11-15 01:13:21.025 +0300 MSK, want both 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 3 = 2023-11-15 01:13:21.012 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 4 = 2023-11-15 01:13:21.015 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 5 = 2023-11-15 01:13:21.018 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 6 = 2023-11-15 01:13:21.021 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 7 = 2023-11-15 01:13:21.024 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 8 = 2023-11-15 01:13:21.025 +0300 MSK is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:211: max deadline 2023-11-15 01:16:54 +0300 MSK, want 2023-11-15 01:16:53 +0300 MSK
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m34s
+--- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+go test exit=1
+reverted: cmp-identical to the saved copy
+######## M4 the initial SetReadDeadline before ParseMultipartForm removed (internal/api/inspect_handlers.go)
+  mutation diff: 438d437
+  mutation diff: < 	_ = rc.SetReadDeadline(start.Add(s.inspectIntakeWindow))
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.502942459s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.50s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 541.405709ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.56s)
+    inspect_intake_test.go:136: no response after 15.001078s: read tcp 127.0.0.1:64185->127.0.0.1:64184: i/o timeout
+--- FAIL: TestInspectIntakeCutsAStalledClientAtTheWindow (15.00s)
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+go test exit=1
+reverted: cmp-identical to the saved copy
+######## M5 sliding idle deadline: deadline() measured from time.Now() (internal/api/inspectintake.go)
+  mutation diff: 33c33
+  mutation diff: < 	return r.start.Add(r.window + time.Duration(credited/r.minRate)*time.Second + time.Duration(credited%r.minRate)*time.Second/time.Duration(r.minRate))
+  mutation diff: ---
+  mutation diff: > 	return time.Now().Add(r.window + time.Duration(credited/r.minRate)*time.Second + time.Duration(credited%r.minRate)*time.Second/time.Duration(r.minRate))
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.504144666s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 200 after 12.002214333s
+    inspect_intake_test.go:127: status 200 payload map[] after 12.002214333s, want 400 invalid_request "invalid multipart form"
+    inspect_intake_test.go:129: cut after 12.002214333s, want at least the 400ms window and below 3s
+--- FAIL: TestInspectIntakeCutsABodyBelowTheMinimumRate (12.03s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.938833ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:190: max deadline 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242543, last 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242543, want both 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 0 = 2026-10-18 10:20:51.714174 +0300 MSK m=+15.018237709 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 1 = 2026-10-18 10:20:51.717175 +0300 MSK m=+15.021239126 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 2 = 2026-10-18 10:20:51.720175 +0300 MSK m=+15.024239543 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 3 = 2026-10-18 10:20:51.721177 +0300 MSK m=+15.025240793 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 4 = 2026-10-18 10:20:51.721177 +0300 MSK m=+15.025240876 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 5 = 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242126 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 6 = 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242376 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 7 = 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242459 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:194: deadline 8 = 2026-10-18 10:20:51.721178 +0300 MSK m=+15.025242543 is past 2023-11-15 01:13:21.01 +0300 MSK
+    inspect_intake_test.go:211: max deadline 2026-10-18 10:24:23.715938 +0300 MSK m=+227.020002209, want 2023-11-15 01:16:53 +0300 MSK
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 25641h11m3.715938s
+--- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+    inspect_intake_test.go:236: deadline 1 = 2026-10-18 10:20:51.71702 +0300 MSK m=+15.021084084, want 2023-11-15 01:13:21.001 +0300 MSK
+    inspect_intake_test.go:236: deadline 2 = 2026-10-18 10:20:51.71802 +0300 MSK m=+15.022084376, want 2023-11-15 01:13:21.002 +0300 MSK
+    inspect_intake_test.go:236: deadline 3 = 2026-10-18 10:20:51.719021 +0300 MSK m=+15.023084793, want 2023-11-15 01:13:21.003 +0300 MSK
+    inspect_intake_test.go:236: deadline 4 = 2026-10-18 10:20:51.720021 +0300 MSK m=+15.024085126, want 2023-11-15 01:13:21.004 +0300 MSK
+    inspect_intake_test.go:236: deadline 5 = 2026-10-18 10:20:51.721021 +0300 MSK m=+15.025085168, want 2023-11-15 01:13:21.005 +0300 MSK
+--- FAIL: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+go test exit=1
+reverted: cmp-identical to the saved copy

@@ -1,0 +1,80 @@
+== GREEN on 1498dcb4 + working tree (deadline() = start + window + min(received, limit)/minRate)
+== go test -race -count=1 -v -run 'TestInspectIntake|TestInspectSlowBodyDoesNotHoldConcurrencySlot|TestInspectPreAdmitGetsFreshContextAfterSlowBody|TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns|TestChartTransportCapsAdmitTheLargestCeilingFile$'
+=== RUN   TestInspectSlowBodyDoesNotHoldConcurrencySlot
+--- PASS: TestInspectSlowBodyDoesNotHoldConcurrencySlot (0.15s)
+=== RUN   TestInspectIntakeConcurrencyIsBounded
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+=== RUN   TestInspectPreAdmitGetsFreshContextAfterSlowBody
+--- PASS: TestInspectPreAdmitGetsFreshContextAfterSlowBody (0.20s)
+=== RUN   TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.5031175s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+=== RUN   TestInspectIntakeCutsABodyBelowTheMinimumRate
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 542.368833ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.56s)
+=== RUN   TestInspectIntakeCutsAStalledClientAtTheWindow
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.751834ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.02s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.02s)
+=== RUN   TestInspectIntakeCreditsBytesReturnedNotRequested
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/create_through_the_real_server
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/create_through_ServeHTTP
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/inspect_through_the_real_server
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/inspect_through_ServeHTTP
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/a_malformed_query_with_the_form_set
+=== RUN   TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/over_the_upload_limit
+--- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns (4.66s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/create_through_the_real_server (0.96s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/create_through_ServeHTTP (0.85s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/inspect_through_the_real_server (0.82s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/inspect_through_ServeHTTP (0.74s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/a_malformed_query_with_the_form_set (0.63s)
+    --- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/over_the_upload_limit (0.66s)
+=== RUN   TestChartTransportCapsAdmitTheLargestCeilingFile
+    transport_cap_test.go:151: chart MAX_UPLOAD_BYTES=191889408 INSPECT_MAX_UPLOAD_BYTES=191889408, file "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.stl" (255 bytes) of 190840784 bytes
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFile (5.84s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/api	16.699s
+exit=0
+== timing stability: go test -race -count=3 -run 'TestInspectIntake'
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.5039035s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 542.582459ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.57s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.998416ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.02s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.503132666s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 541.623625ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.57s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.594167ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.02s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.502943791s
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.50s)
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 542.366875ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.56s)
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.914458ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.02s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+exit=0
+== whole package: go test ./internal/api/ -count=1
+ok  	github.com/apaderin/octoconv/internal/api	10.368s
