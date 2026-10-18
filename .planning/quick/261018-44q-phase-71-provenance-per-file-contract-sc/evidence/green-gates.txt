@@ -1,0 +1,46 @@
+== bash .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-corpus-ok.sh (HEAD 325b303 + working tree)
+-- stdout
+ok: freecad-mit-e-vent-t-slot.step
+ok: freecad-emergency-button-disk.step
+ok: freecad-faulhaber-2342l.step
+ok: freecad-sprocket-ansi-z114.step
+ok: freecad-mk8-hotend.iges
+ok: freecad-festo-valve-5-2.igs
+ok: nist-d2mi-827-9999-904-rev-c.stp
+ok: nist-ftc-09-ap242-e1.stp
+ok: nist-stc-09-ap242-e3.stp
+ok: nist-stc-10-ap242-e2.stp
+ok: nasa-sls-block1.stl
+ok: nasa-curiosity-2-components.stl
+ok: nasa-curiosity-4-wheels.stl
+ok: nasa-dart.stl
+ok: nasa-roman-space-telescope.stl
+ok: nasa-vesta-b.stl
+ok: nasa-pillars-of-creation-full.stl
+corpus fetch ok: 17 files in /Users/apaderin/.cache/octoconv/cad-corpus/fetched
+ok: freecad-mit-e-vent-t-slot.step
+ok: freecad-emergency-button-disk.step
+ok: freecad-faulhaber-2342l.step
+ok: freecad-sprocket-ansi-z114.step
+ok: freecad-mk8-hotend.iges
+ok: freecad-festo-valve-5-2.igs
+ok: nist-d2mi-827-9999-904-rev-c.stp
+ok: nist-ftc-09-ap242-e1.stp
+ok: nist-stc-09-ap242-e3.stp
+ok: nist-stc-10-ap242-e2.stp
+ok: nasa-sls-block1.stl
+ok: nasa-curiosity-2-components.stl
+ok: nasa-curiosity-4-wheels.stl
+ok: nasa-dart.stl
+ok: nasa-roman-space-telescope.stl
+ok: nasa-vesta-b.stl
+ok: nasa-pillars-of-creation-full.stl
+corpus fetch ok: 17 files in /Users/apaderin/.cache/octoconv/cad-corpus/fetched
+CORPUS-OK
+-- stderr
+rc=0
+== bash .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-provenance-complete.sh (HEAD 325b303 + working tree)
+-- stdout
+PROVENANCE-COMPLETE
+-- stderr
+rc=0

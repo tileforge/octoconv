@@ -1,0 +1,8 @@
+W25 local cache /Users/apaderin/.cache/octoconv/cad-corpus, from ls only (outside the repository; recorded, not fixed)
+fetched_entries=17
+scaled_entries=82
+phase71_scaled_names=33 (71-03-corpus-inventory.txt INV,group=scaled)
+phase71_scaled_present=dxf-replicate-uncommon-10MiB.dxf dxf-replicate-uncommon-20MiB.dxf dxf-replicate-uncommon-2MiB.dxf dxf-replicate-uncommon-50MiB.dxf dxf-replicate-uncommon-5MiB.dxf 
+phase71_scaled_gone=28
+later_entries=77
+later_series=b76:1 dxf-combo:1 dxf-farpoint:61 dxf-minsert:12 dxf-replicate:2 
