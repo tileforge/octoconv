@@ -4,8 +4,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/ratelimit"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/ratelimit"
 )
 
 // Routes builds the chi router for the API. /healthz stays outside the /v1

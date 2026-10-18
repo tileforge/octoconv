@@ -63,7 +63,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // updateGolden58 regenerates testdata/pre58_*.golden.json from the CURRENT

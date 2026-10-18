@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/clients"
 )
 
 // ParseAPIKey parses an Authorization header value against the project's

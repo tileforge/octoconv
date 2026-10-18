@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/worker"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/worker"
 )
 
 // TEX-03 deliberately puts ONE rule in TWO places: a cheap gate in cmd/api that

@@ -10,10 +10,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/db"
 )
 
 var testSalt = []byte("fixed-test-salt")

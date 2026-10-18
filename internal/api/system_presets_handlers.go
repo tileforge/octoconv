@@ -9,9 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/presets"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 // ParseOperatorClientIDs parses the OPERATOR_CLIENT_IDS env value (D-01): a

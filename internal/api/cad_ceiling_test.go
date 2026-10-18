@@ -15,8 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/errcode"
 )
 
 func newFormatCeilingServer(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, formats map[string]map[string]int64) *Server {

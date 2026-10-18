@@ -1,4 +1,4 @@
-module github.com/apaderin/octoconv
+module github.com/tileforge/octoconv
 
 go 1.26.4
 

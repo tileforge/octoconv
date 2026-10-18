@@ -10,7 +10,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 func main() {

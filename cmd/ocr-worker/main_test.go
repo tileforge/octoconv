@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // TestBuildOCRConverter pins D-03/OCRE-04's re-registration contract: the

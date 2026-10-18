@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/sandbox"
+	"github.com/tileforge/octoconv/internal/sandbox"
 )
 
 // testDisabledEnv is a name no deployment uses, so these tests cannot be

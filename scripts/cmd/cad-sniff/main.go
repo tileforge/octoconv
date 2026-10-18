@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 func dash(s string) string {

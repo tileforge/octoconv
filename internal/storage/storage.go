@@ -13,7 +13,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/lifecycle"
 
-	"github.com/apaderin/octoconv/internal/envcfg"
+	"github.com/tileforge/octoconv/internal/envcfg"
 )
 
 // Client is a thin wrapper over the MinIO SDK bound to a single bucket.

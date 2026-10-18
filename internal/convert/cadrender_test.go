@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 type cadRenderFixture struct {

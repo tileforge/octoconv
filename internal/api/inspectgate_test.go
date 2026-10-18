@@ -12,10 +12,10 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/ratelimit"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/ratelimit"
 )
 
 // authedClientRequest injects an authenticated client directly into the

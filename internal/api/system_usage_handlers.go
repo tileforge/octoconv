@@ -34,9 +34,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // periodToday is the default ?period value (D-04) and the one value for

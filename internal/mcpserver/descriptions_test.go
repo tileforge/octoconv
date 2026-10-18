@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const mcpDescMigrations = "../db/migrations"

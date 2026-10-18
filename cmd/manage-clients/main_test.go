@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // TestValidateEngine requires no database and no API_KEY_SALT -- it only

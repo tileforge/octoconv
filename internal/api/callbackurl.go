@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"net/url"
 
-	"github.com/apaderin/octoconv/internal/envcfg"
+	"github.com/tileforge/octoconv/internal/envcfg"
 )
 
 // validateCallbackURL rejects client-supplied callback_url values that could be

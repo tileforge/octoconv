@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // A LaTeX project is a .tex plus its .bib and its figures, and until now

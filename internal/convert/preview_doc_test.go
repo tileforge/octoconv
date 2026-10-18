@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const (

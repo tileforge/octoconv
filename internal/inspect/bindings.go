@@ -14,7 +14,7 @@
 // also get to rewrite it.
 package inspect
 
-import "github.com/apaderin/octoconv/internal/errcode"
+import "github.com/tileforge/octoconv/internal/errcode"
 
 // RejectBinding names, for one reason-token logged by handleCreateJob's
 // "content validation rejected:" lines, whether that rejection is a

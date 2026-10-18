@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/errcode"
 )
 
 // authScheme is the required Authorization header scheme token.

@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // fakeLock is an in-memory AdvisoryLock implementation for unit tests, with

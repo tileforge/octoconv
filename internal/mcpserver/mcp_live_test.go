@@ -50,9 +50,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/db"
 )
 
 // wantTools is the exact five-tool surface this gate demands (D-01/D-13).
@@ -102,7 +102,7 @@ func provisionMCPClient(t *testing.T) string {
 func buildMCPServerBinary(t *testing.T) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), "octoconv-mcp")
-	cmd := exec.Command("go", "build", "-o", binPath, "github.com/apaderin/octoconv/cmd/mcp-server")
+	cmd := exec.Command("go", "build", "-o", binPath, "github.com/tileforge/octoconv/cmd/mcp-server")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

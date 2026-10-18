@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 const cadDXFCRDir = "testdata/cad/dxf-cr"

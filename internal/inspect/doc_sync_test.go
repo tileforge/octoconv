@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/inspect"
+	"github.com/tileforge/octoconv/internal/inspect"
 )
 
 // docPath is repo-relative from this package's directory

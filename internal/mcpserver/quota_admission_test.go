@@ -21,13 +21,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/apaderin/octoconv/internal/api"
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/db"
-	"github.com/apaderin/octoconv/internal/jobs"
-	"github.com/apaderin/octoconv/internal/metrics"
-	"github.com/apaderin/octoconv/internal/presets"
+	"github.com/tileforge/octoconv/internal/api"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/metrics"
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 // TestQuotaAdmission is the ROADMAP SC2 cross-entry-point admission proof

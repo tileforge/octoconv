@@ -5,10 +5,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/db"
-	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 func newTestPool(t *testing.T) *pgxpool.Pool {

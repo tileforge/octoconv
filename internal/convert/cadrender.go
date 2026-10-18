@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 const (

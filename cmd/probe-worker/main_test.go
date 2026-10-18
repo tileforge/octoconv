@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // TestBuildSanitizeConverter pins the PROBE-01/PROBE-02 plumbing contract: the

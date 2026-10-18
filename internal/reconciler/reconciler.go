@@ -19,9 +19,9 @@ import (
 	// lifetime), which no interface abstraction over jobStore can express.
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
-	"github.com/apaderin/octoconv/internal/metrics"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/metrics"
 )
 
 // advisoryLockKey is the Postgres session-level advisory-lock key used to

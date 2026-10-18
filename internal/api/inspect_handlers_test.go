@@ -21,8 +21,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/inspect"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/inspect"
 )
 
 // manyEntriesDocxFixture is a REAL, valid docx-shaped zip (word/document.xml

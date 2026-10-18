@@ -6,7 +6,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 func main() {

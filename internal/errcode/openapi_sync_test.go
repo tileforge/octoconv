@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/errcode"
 )
 
 // openapiPath is repo-relative from this package's directory

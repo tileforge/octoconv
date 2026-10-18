@@ -203,10 +203,12 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ## Next Milestone
 
-Не определён — запустить `/gsd-new-milestone`. Кандидаты: хвост v1.16 в
-`.planning/todos/pending/` (лимит загрузки в Helm-чарте ниже замеренных
-потолков CAD — TD-1 аудита, прогресс CAD-заданий по этапам, гонка killpg на
-darwin), хвост v1.15 (первый amd64-деплой, `/proc` у html, узкий сокетный грант
+Не определён — запустить `/gsd-new-milestone`. Решено оператором 2026-10-18:
+в следующий milestone входят этапы CAD-заданий вместо `progress_pct: null`
+(`stage` + `stage_index`/`stage_count` в статусе, SSE и progress-webhook;
+todo `2026-10-15-cad-stage-progress.md`). Остальные кандидаты: хвост v1.16 в
+`.planning/todos/pending/` (гонка killpg на darwin, spill multipart без
+лимита диска, тело create без дедлайна), хвост v1.15 (первый amd64-деплой, `/proc` у html, узкий сокетный грант
 soffice), контракт превью на остальных классах (PREVV2-01), SEED-014 (сжатие и
 оптимизация размера, запрошено 2026-10-18), SEED-018
 (pipelines), backlog 999.1 (выбор воркеров на установку).

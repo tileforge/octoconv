@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 func intp(v int) *int           { return &v }

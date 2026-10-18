@@ -8,7 +8,7 @@ the worker needs no network at run time: with a bundle baked in, a client's
 
 | | |
 |---|---|
-| release | [`tectonic-bundle-2023.1`](https://github.com/paderinandrey/octoconv/releases/tag/tectonic-bundle-2023.1) |
+| release | [`tectonic-bundle-2023.1`](https://github.com/tileforge/octoconv/releases/tag/tectonic-bundle-2023.1) |
 | asset | `octoconv-tectonic-bundle-2023.1.ttb` |
 | size | 122 MiB (2.69 GiB unreduced — a 95% reduction) |
 | sha256 | `f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff` |
