@@ -1,0 +1,45 @@
+== bash .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-corpus-ok.sh (HEAD c38cd9c)
+-- stdout
+ok: freecad-mit-e-vent-t-slot.step
+ok: freecad-emergency-button-disk.step
+ok: freecad-faulhaber-2342l.step
+ok: freecad-sprocket-ansi-z114.step
+ok: freecad-mk8-hotend.iges
+ok: freecad-festo-valve-5-2.igs
+ok: nist-d2mi-827-9999-904-rev-c.stp
+ok: nist-ftc-09-ap242-e1.stp
+ok: nist-stc-09-ap242-e3.stp
+ok: nist-stc-10-ap242-e2.stp
+ok: nasa-sls-block1.stl
+ok: nasa-curiosity-2-components.stl
+ok: nasa-curiosity-4-wheels.stl
+ok: nasa-dart.stl
+ok: nasa-roman-space-telescope.stl
+ok: nasa-vesta-b.stl
+ok: nasa-pillars-of-creation-full.stl
+corpus fetch ok: 17 files in /Users/apaderin/.cache/octoconv/cad-corpus/fetched
+ok: freecad-mit-e-vent-t-slot.step
+ok: freecad-emergency-button-disk.step
+ok: freecad-faulhaber-2342l.step
+ok: freecad-sprocket-ansi-z114.step
+ok: freecad-mk8-hotend.iges
+ok: freecad-festo-valve-5-2.igs
+ok: nist-d2mi-827-9999-904-rev-c.stp
+ok: nist-ftc-09-ap242-e1.stp
+ok: nist-stc-09-ap242-e3.stp
+ok: nist-stc-10-ap242-e2.stp
+ok: nasa-sls-block1.stl
+ok: nasa-curiosity-2-components.stl
+ok: nasa-curiosity-4-wheels.stl
+ok: nasa-dart.stl
+ok: nasa-roman-space-telescope.stl
+ok: nasa-vesta-b.stl
+ok: nasa-pillars-of-creation-full.stl
+corpus fetch ok: 17 files in /Users/apaderin/.cache/octoconv/cad-corpus/fetched
+-- stderr
+rc=1
+== bash .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-provenance-complete.sh (HEAD c38cd9c)
+-- stdout
+MISSING: internal/convert/testdata/cad/dxf-out/alpha_one_visible.render.svg internal/convert/testdata/cad/dxf-out/text_cases.render.svg internal/convert/testdata/cad/dxf-out/text_alpha_faint.svg internal/convert/testdata/cad/dxf-out/text_alpha_faint_1280_transparent.png internal/convert/testdata/cad/dxf-out/text_fonts.render.svg internal/convert/testdata/cad/dxf-out/tall.texts.json internal/convert/testdata/cad/dxf-out/hatches_2.pdf internal/convert/testdata/cad/dxf-out/text_alpha.pdf internal/convert/testdata/cad/dxf-out/text_alpha_faint.render.svg internal/convert/testdata/cad/dxf-out/wide_1280_transparent.png internal/convert/testdata/cad/dxf-out/legacy_cp1251.texts.json internal/convert/testdata/cad/dxf-out/units_3.measure.json internal/convert/testdata/cad/dxf-out/text_fonts.texts.json internal/convert/testdata/cad/dxf-out/wide.svg internal/convert/testdata/cad/dxf-out/alpha_one_visible.texts.json internal/convert/testdata/cad/dxf-out/text_cases.texts.json internal/convert/testdata/cad/dxf-out/text_alpha_faint.texts.json internal/convert/testdata/cad/dxf-out/tall_256_opaque.png internal/convert/testdata/cad/dxf-out/tall.render.svg internal/convert/testdata/cad/dxf-out/tall.svg internal/convert/testdata/cad/dxf-out/legacy_cp1251.render.svg internal/convert/testdata/cad/dxf-out/text_alpha_faint.pdf internal/convert/testdata/cad/dxf-out/hatches_2.svg internal/convert/testdata/cad/dxf-out/text_alpha.svg internal/convert/testdata/cad/dxf-out/frames.tsv internal/convert/testdata/cad/dxf-out/wide.texts.json internal/convert/testdata/cad/dxf-out/text_alpha.texts.json internal/convert/testdata/cad/dxf-out/outline.pdf internal/convert/testdata/cad/dxf-out/text_fonts.svg internal/convert/testdata/cad/dxf-out/legacy_cp1251.svg internal/convert/testdata/cad/dxf-out/text_alpha_faint_1280_opaque.png internal/convert/testdata/cad/dxf-out/text_cases.pdf internal/convert/testdata/cad/dxf-out/hatches_2.texts.json internal/convert/testdata/cad/dxf-out/wide_1280_opaque.png internal/convert/testdata/cad/dxf-out/uncommon.texts.json internal/convert/testdata/cad/dxf-out/nofont.pdf internal/convert/testdata/cad/dxf-out/white_one_black.svg internal/convert/testdata/cad/dxf-out/uncommon.pdf internal/convert/testdata/cad/dxf-out/alpha_one_visible.pdf internal/convert/testdata/cad/dxf-out/white_one_black.texts.json internal/convert/testdata/cad/dxf-out/wide.measure.json internal/convert/testdata/cad/dxf-out/text_fonts.pdf internal/convert/testdata/cad/dxf-out/legacy_cp1251.pdf internal/convert/testdata/cad/dxf-out/text_cases.svg internal/convert/testdata/cad/dxf-out/white_one_black.pdf internal/convert/testdata/cad/dxf-out/text_alpha.render.svg internal/convert/testdata/cad/dxf-out/uncommon.svg internal/convert/testdata/cad/dxf-out/alpha_one_visible.svg internal/convert/testdata/cad/dxf-out/wide.render.svg internal/convert/testdata/cad/dxf-out/wrong_extents.measure.json internal/convert/testdata/cad/dxf-out/white_one_black.render.svg internal/convert/testdata/cad/dxf-out/uncommon.render.svg internal/convert/testdata/cad/dxf-out/hatches_2.render.svg internal/convert/testdata/cad/dxf-cr/cr_carriers.svg internal/convert/testdata/cad/dxf-cr/cr_injected.verdict internal/convert/testdata/cad/dxf-cr/cr_carriers.verdict internal/convert/testdata/cad/dxf-cr/cr_carriers.dxf internal/convert/testdata/cad/dxf-cr/cr_injected.svg internal/convert/testdata/cad/dxf-cr/cr_carriers.texts.json internal/convert/testdata/cad/dxf-cr/cr_injected.texts.json internal/convert/testdata/cad/dxf-cr/cr_carriers.render.svg internal/convert/testdata/cad/dxf-cr/cr_injected.render.svg internal/convert/testdata/cad/dxf/units_5.dxf internal/convert/testdata/cad/dxf/nonfinite_header.dxf internal/convert/testdata/cad/dxf/units_4.dxf internal/convert/testdata/cad/dxf/units_6.dxf internal/convert/testdata/cad/dxf/zwsp_text.dxf internal/convert/testdata/cad/dxf/alpha_clear_all.dxf internal/convert/testdata/cad/dxf/white_one_black.dxf internal/convert/testdata/cad/dxf/units_3.dxf internal/convert/testdata/cad/dxf/dimension_minsert.dxf internal/convert/testdata/cad/dxf/cyclic_case.dxf internal/convert/testdata/cad/dxf/cyclic_self.dxf internal/convert/testdata/cad/dxf/white_geometry.dxf internal/convert/testdata/cad/dxf/header_far_extents.dxf internal/convert/testdata/cad/dxf/units_2.dxf internal/convert/testdata/cad/dxf/nonfinite_tables.dxf internal/convert/testdata/cad/dxf/units_0.dxf internal/convert/testdata/cad/dxf/text_fonts.dxf internal/convert/testdata/cad/dxf/coord_1e300.dxf internal/convert/testdata/cad/dxf/units_1.dxf internal/convert/testdata/cad/dxf/nonnumeric_comma.dxf internal/convert/testdata/cad/dxf/nonnumeric_underscore.dxf internal/convert/testdata/cad/dxf/alpha_one_visible.dxf internal/convert/testdata/cad/dxf/coord_1e400.dxf internal/convert/testdata/cad/dxf/text_cases.dxf internal/convert/testdata/cad/dxf/text_illegal_chars.dxf internal/convert/testdata/cad/dxf/cyclic_unreferenced.dxf internal/convert/testdata/cad/dxf/wrong_extents.dxf internal/convert/testdata/cad/dxf/single_point.dxf internal/convert/testdata/cad/dxf/alpha_clear_geometry.dxf internal/convert/testdata/cad/dxf/nonnumeric_abc.dxf internal/convert/testdata/cad/dxf/far_point.dxf internal/convert/testdata/cad/dxf/degenerate_fill.dxf internal/convert/testdata/cad/dxf/nonfinite_objects.dxf internal/convert/testdata/cad/dxf/units_13.dxf internal/convert/testdata/cad/dxf/white_text.dxf internal/convert/testdata/cad/dxf/text_alpha_faint.dxf internal/convert/testdata/cad/dxf/units_21.dxf internal/convert/testdata/cad/dxf/cyclic_ab.dxf internal/convert/testdata/cad/dxf/xline_ray.dxf internal/convert/testdata/cad/dxf/faint_only.dxf internal/convert/testdata/cad/dxf/alpha_one_fill.dxf internal/convert/testdata/cad/dxf/never_resolved.dxf internal/convert/testdata/cad/dxf/units_missing.dxf internal/convert/testdata/cad/dxf/nonnumeric_inf.dxf internal/convert/testdata/cad/dxf/layers_off_frozen.dxf internal/convert/testdata/cad/dxf/entities_over.dxf internal/convert/testdata/cad/dxf/nest_d16.dxf internal/convert/testdata/cad/dxf/nest_d17.dxf internal/convert/testdata/cad/dxf/minsert_over_inserts.dxf internal/convert/testdata/cad/dxf/wide.dxf internal/convert/testdata/cad/dxf/text_alpha.dxf internal/convert/testdata/cad/dxf/nonnumeric_nan.dxf internal/convert/testdata/cad/dxf/tall.dxf internal/convert/testdata/cad/dxf/all_hidden.dxf internal/convert/testdata/cad/render-bg/degenerate_rod_iso_256_transparent.png internal/convert/testdata/cad/render-bg/linearslide_iso_256_opaque.png internal/convert/testdata/cad/render-bg/degenerate_rod_iso_256_opaque.png internal/convert/testdata/cad/render-bg/degenerate_plate_front_1280_transparent.png internal/convert/testdata/cad/render-bg/nauo4_iso_1280_opaque.png internal/convert/testdata/cad/render-bg/w15_iso_256_transparent.png internal/convert/testdata/cad/render-bg/w15_iso_256_opaque.png internal/convert/testdata/cad/render-bg/linearslide_iso_256_transparent.png internal/convert/testdata/cad/render-bg/nauo4_iso_1280_transparent.png internal/convert/testdata/cad/render-bg/degenerate_plate_front_1280_opaque.png files=178
+-- stderr
+rc=1

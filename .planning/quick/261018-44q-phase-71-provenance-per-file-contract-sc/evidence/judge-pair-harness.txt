@@ -1,0 +1,10 @@
+GOJUDGE,frame=nauo4.iso.1280.transparent,ok=1,mode=blob,rule=none,w=1280,h=1280,count=69345,dark_count=6776,frac=0.0423,dark=0.0041,box=1117x673,margin_px=76,alpha=1,frac_transparent=0.9577,ring_nontransparent=0
+GOJUDGE,frame=nauo4.iso.1280.opaque,ok=1,mode=blob,rule=none,w=1280,h=1280,count=70337,dark_count=6776,frac=0.0429,dark=0.0041,box=1117x673,margin_px=76,alpha=0,frac_transparent=0.0000,ring_nontransparent=5116
+GOJUDGE,frame=linearslide.iso.256.transparent,ok=1,mode=blob,rule=none,w=256,h=256,count=18233,dark_count=267,frac=0.2782,dark=0.0041,box=214x153,margin_px=15,alpha=1,frac_transparent=0.7218,ring_nontransparent=0
+GOJUDGE,frame=w15.iso.256.opaque,ok=1,mode=thin,rule=none,w=256,h=256,count=186,dark_count=65,frac=0.0028,dark=0.0010,box=20x206,margin_px=25,alpha=0,frac_transparent=0.0000,ring_nontransparent=1020
+GOJUDGE,frame=rod.iso.256.opaque,ok=0,mode=none,rule=J4,w=256,h=256,count=452,dark_count=1,frac=0.0069,dark=0.0000,box=2x226,margin_px=15,alpha=0,frac_transparent=0.0000,ring_nontransparent=1020
+GOJUDGE,frame=missing.iso.256.opaque,ok=error,mode=none,rule=none,judge_rc=64
+BLANK,background=opaque,size=1280,ok=0,mode=none,rule=J1,w=1280,h=1280,count=0,dark_count=0,frac=0.0000,dark=0.0000,box=0x0,margin_px=-1,alpha=0,frac_transparent=0.0000,ring_nontransparent=5116
+BLANK,background=transparent,size=1280,ok=0,mode=none,rule=J1,w=1280,h=1280,count=0,dark_count=0,frac=0.0000,dark=0.0000,box=0x0,margin_px=-1,alpha=1,frac_transparent=1.0000,ring_nontransparent=0
+COUNTERS,frames=6,judge_errors=1,real_frames=5,real_go_ok=3,w15_frames=1,w15_go_ok=1,w15_failed=[]
+JUDGE-PAIR-HARNESS-OK

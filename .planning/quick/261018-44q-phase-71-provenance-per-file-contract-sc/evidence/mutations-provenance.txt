@@ -1,0 +1,35 @@
+== M1-dxf-out-sha256-digit
+gotest_rc=1
+cad_provenance_test.go:138: 1 provenance problems:
+dxf-out/frames.tsv (PROVENANCE.md:1121): sha256 13f91fb932669204bd973ee9fca00fbf8384dbd9db2eaa3a7c1bc9a88cd6d6bf, the file has 03f91fb932669204bd973ee9fca00fbf8384dbd9db2eaa3a7c1bc9a88cd6d6bf
+gate=gate-provenance-complete.sh rc=1
+MISSING:
+internal/convert/testdata/cad/dxf-out/frames.tsv
+files=178
+restored=1
+== M2-licence-period
+gotest_rc=1
+cad_provenance_test.go:138: 2 provenance problems:
+PROVENANCE.md:689: licence line outside the D-04 allow-list: "- Licence: generated."
+dxf/all_hidden.dxf (PROVENANCE.md:687): licence "generated." is outside the D-04 allow-list
+gate=gate-corpus-ok.sh rc=1
+restored=1
+== M3-render-bg-section-removed
+gotest_rc=1
+cad_provenance_test.go:138: 1 provenance problems:
+render-bg/nauo4_iso_1280_transparent.png: no per-file section
+gate=gate-provenance-complete.sh rc=1
+MISSING:
+internal/convert/testdata/cad/render-bg/nauo4_iso_1280_transparent.png
+files=178
+restored=1
+== M4-extra-file
+gotest_rc=1
+cad_provenance_test.go:138: 1 provenance problems:
+dxf/zz_mutation.dxf: no per-file section
+gate=gate-provenance-complete.sh rc=1
+MISSING:
+internal/convert/testdata/cad/dxf/zz_mutation.dxf
+files=179
+restored=1
+porcelain=[]

@@ -1,8 +1,8 @@
 ---
 phase: 71-evaluation-gate
-verified: 2026-10-05T06:34:39Z
+verified: 2026-10-18T01:05:40Z
 status: passed
-score: 7/7 must-haves verified
+score: 8/8 must-haves verified
 covered_files:
   - .planning/phases/71-evaluation-gate/71-01-PLAN.md
   - .planning/phases/71-evaluation-gate/71-01-SUMMARY.md
@@ -20,14 +20,20 @@ covered_files:
   - .planning/phases/71-evaluation-gate/71-07-SUMMARY.md
   - .planning/phases/71-evaluation-gate/71-08-PLAN.md
   - .planning/phases/71-evaluation-gate/71-08-SUMMARY.md
-  - .planning/phases/71-evaluation-gate/71-CONTEXT.md
   - .planning/phases/71-evaluation-gate/71-DECISION.md
+  - .planning/phases/71-evaluation-gate/71-PATTERNS.md
+  - .planning/phases/71-evaluation-gate/71-RESEARCH.md
   - .planning/phases/71-evaluation-gate/evidence/71-01-decisions.txt
   - .planning/phases/71-evaluation-gate/evidence/71-01-lock.txt
   - .planning/phases/71-evaluation-gate/evidence/71-02-tracer.txt
   - .planning/phases/71-evaluation-gate/evidence/71-03-corpus-inventory.txt
+  - .planning/phases/71-evaluation-gate/evidence/71-04-contact-dxf.png
+  - .planning/phases/71-evaluation-gate/evidence/71-04-contact-quality.png
+  - .planning/phases/71-evaluation-gate/evidence/71-04-contact-robustness.png
+  - .planning/phases/71-evaluation-gate/evidence/71-04-contact-views.png
   - .planning/phases/71-evaluation-gate/evidence/71-04-helpers.txt
   - .planning/phases/71-evaluation-gate/evidence/71-04-render.txt
+  - .planning/phases/71-evaluation-gate/evidence/71-05-contact-f3d.png
   - .planning/phases/71-evaluation-gate/evidence/71-05-f3d.txt
   - .planning/phases/71-evaluation-gate/evidence/71-06-go-worker-rss.txt
   - .planning/phases/71-evaluation-gate/evidence/71-06-ladder-1g.txt
@@ -48,7 +54,192 @@ covered_files:
   - .planning/phases/71-evaluation-gate/evidence/71-08-image-size.txt
   - .planning/phases/71-evaluation-gate/evidence/71-08-no-wiring.txt
   - Dockerfile.cad-measure
+  - Dockerfile.cad-worker
+  - cmd/cad-worker/requirements-vtk.txt
+  - cmd/cad-worker/vtk-keeplist.txt
+  - cmd/cad-worker/vtk_keeplist.py
+  - internal/convert/cad.go
+  - internal/convert/cad_provenance_test.go
+  - internal/convert/cadpixel.go
   - internal/convert/testdata/cad/PROVENANCE.md
+  - internal/convert/testdata/cad/dxf-cr/cr_carriers.dxf
+  - internal/convert/testdata/cad/dxf-cr/cr_carriers.render.svg
+  - internal/convert/testdata/cad/dxf-cr/cr_carriers.svg
+  - internal/convert/testdata/cad/dxf-cr/cr_carriers.texts.json
+  - internal/convert/testdata/cad/dxf-cr/cr_carriers.verdict
+  - internal/convert/testdata/cad/dxf-cr/cr_injected.render.svg
+  - internal/convert/testdata/cad/dxf-cr/cr_injected.svg
+  - internal/convert/testdata/cad/dxf-cr/cr_injected.texts.json
+  - internal/convert/testdata/cad/dxf-cr/cr_injected.verdict
+  - internal/convert/testdata/cad/dxf-out/alpha_one_visible.pdf
+  - internal/convert/testdata/cad/dxf-out/alpha_one_visible.render.svg
+  - internal/convert/testdata/cad/dxf-out/alpha_one_visible.svg
+  - internal/convert/testdata/cad/dxf-out/alpha_one_visible.texts.json
+  - internal/convert/testdata/cad/dxf-out/frames.tsv
+  - internal/convert/testdata/cad/dxf-out/hatches_2.pdf
+  - internal/convert/testdata/cad/dxf-out/hatches_2.render.svg
+  - internal/convert/testdata/cad/dxf-out/hatches_2.svg
+  - internal/convert/testdata/cad/dxf-out/hatches_2.texts.json
+  - internal/convert/testdata/cad/dxf-out/legacy_cp1251.pdf
+  - internal/convert/testdata/cad/dxf-out/legacy_cp1251.render.svg
+  - internal/convert/testdata/cad/dxf-out/legacy_cp1251.svg
+  - internal/convert/testdata/cad/dxf-out/legacy_cp1251.texts.json
+  - internal/convert/testdata/cad/dxf-out/nofont.pdf
+  - internal/convert/testdata/cad/dxf-out/outline.pdf
+  - internal/convert/testdata/cad/dxf-out/tall.render.svg
+  - internal/convert/testdata/cad/dxf-out/tall.svg
+  - internal/convert/testdata/cad/dxf-out/tall.texts.json
+  - internal/convert/testdata/cad/dxf-out/tall_256_opaque.png
+  - internal/convert/testdata/cad/dxf-out/text_alpha.pdf
+  - internal/convert/testdata/cad/dxf-out/text_alpha.render.svg
+  - internal/convert/testdata/cad/dxf-out/text_alpha.svg
+  - internal/convert/testdata/cad/dxf-out/text_alpha.texts.json
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint.pdf
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint.render.svg
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint.svg
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint.texts.json
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint_1280_opaque.png
+  - internal/convert/testdata/cad/dxf-out/text_alpha_faint_1280_transparent.png
+  - internal/convert/testdata/cad/dxf-out/text_cases.pdf
+  - internal/convert/testdata/cad/dxf-out/text_cases.render.svg
+  - internal/convert/testdata/cad/dxf-out/text_cases.svg
+  - internal/convert/testdata/cad/dxf-out/text_cases.texts.json
+  - internal/convert/testdata/cad/dxf-out/text_fonts.pdf
+  - internal/convert/testdata/cad/dxf-out/text_fonts.render.svg
+  - internal/convert/testdata/cad/dxf-out/text_fonts.svg
+  - internal/convert/testdata/cad/dxf-out/text_fonts.texts.json
+  - internal/convert/testdata/cad/dxf-out/uncommon.pdf
+  - internal/convert/testdata/cad/dxf-out/uncommon.render.svg
+  - internal/convert/testdata/cad/dxf-out/uncommon.svg
+  - internal/convert/testdata/cad/dxf-out/uncommon.texts.json
+  - internal/convert/testdata/cad/dxf-out/units_3.measure.json
+  - internal/convert/testdata/cad/dxf-out/white_one_black.pdf
+  - internal/convert/testdata/cad/dxf-out/white_one_black.render.svg
+  - internal/convert/testdata/cad/dxf-out/white_one_black.svg
+  - internal/convert/testdata/cad/dxf-out/white_one_black.texts.json
+  - internal/convert/testdata/cad/dxf-out/wide.measure.json
+  - internal/convert/testdata/cad/dxf-out/wide.render.svg
+  - internal/convert/testdata/cad/dxf-out/wide.svg
+  - internal/convert/testdata/cad/dxf-out/wide.texts.json
+  - internal/convert/testdata/cad/dxf-out/wide_1280_opaque.png
+  - internal/convert/testdata/cad/dxf-out/wide_1280_transparent.png
+  - internal/convert/testdata/cad/dxf-out/wrong_extents.measure.json
+  - internal/convert/testdata/cad/dxf/all_hidden.dxf
+  - internal/convert/testdata/cad/dxf/alpha_clear_all.dxf
+  - internal/convert/testdata/cad/dxf/alpha_clear_geometry.dxf
+  - internal/convert/testdata/cad/dxf/alpha_one_fill.dxf
+  - internal/convert/testdata/cad/dxf/alpha_one_visible.dxf
+  - internal/convert/testdata/cad/dxf/coord_1e300.dxf
+  - internal/convert/testdata/cad/dxf/coord_1e400.dxf
+  - internal/convert/testdata/cad/dxf/cyclic_ab.dxf
+  - internal/convert/testdata/cad/dxf/cyclic_case.dxf
+  - internal/convert/testdata/cad/dxf/cyclic_self.dxf
+  - internal/convert/testdata/cad/dxf/cyclic_unreferenced.dxf
+  - internal/convert/testdata/cad/dxf/degenerate_fill.dxf
+  - internal/convert/testdata/cad/dxf/dimension_minsert.dxf
+  - internal/convert/testdata/cad/dxf/entities_over.dxf
+  - internal/convert/testdata/cad/dxf/faint_only.dxf
+  - internal/convert/testdata/cad/dxf/far_point.dxf
+  - internal/convert/testdata/cad/dxf/header_far_extents.dxf
+  - internal/convert/testdata/cad/dxf/layers_off_frozen.dxf
+  - internal/convert/testdata/cad/dxf/minsert_over_inserts.dxf
+  - internal/convert/testdata/cad/dxf/nest_d16.dxf
+  - internal/convert/testdata/cad/dxf/nest_d17.dxf
+  - internal/convert/testdata/cad/dxf/never_resolved.dxf
+  - internal/convert/testdata/cad/dxf/nonfinite_header.dxf
+  - internal/convert/testdata/cad/dxf/nonfinite_objects.dxf
+  - internal/convert/testdata/cad/dxf/nonfinite_tables.dxf
+  - internal/convert/testdata/cad/dxf/nonnumeric_abc.dxf
+  - internal/convert/testdata/cad/dxf/nonnumeric_comma.dxf
+  - internal/convert/testdata/cad/dxf/nonnumeric_inf.dxf
+  - internal/convert/testdata/cad/dxf/nonnumeric_nan.dxf
+  - internal/convert/testdata/cad/dxf/nonnumeric_underscore.dxf
+  - internal/convert/testdata/cad/dxf/single_point.dxf
+  - internal/convert/testdata/cad/dxf/tall.dxf
+  - internal/convert/testdata/cad/dxf/text_alpha.dxf
+  - internal/convert/testdata/cad/dxf/text_alpha_faint.dxf
+  - internal/convert/testdata/cad/dxf/text_cases.dxf
+  - internal/convert/testdata/cad/dxf/text_fonts.dxf
+  - internal/convert/testdata/cad/dxf/text_illegal_chars.dxf
+  - internal/convert/testdata/cad/dxf/units_0.dxf
+  - internal/convert/testdata/cad/dxf/units_1.dxf
+  - internal/convert/testdata/cad/dxf/units_13.dxf
+  - internal/convert/testdata/cad/dxf/units_2.dxf
+  - internal/convert/testdata/cad/dxf/units_21.dxf
+  - internal/convert/testdata/cad/dxf/units_3.dxf
+  - internal/convert/testdata/cad/dxf/units_4.dxf
+  - internal/convert/testdata/cad/dxf/units_5.dxf
+  - internal/convert/testdata/cad/dxf/units_6.dxf
+  - internal/convert/testdata/cad/dxf/units_missing.dxf
+  - internal/convert/testdata/cad/dxf/white_geometry.dxf
+  - internal/convert/testdata/cad/dxf/white_one_black.dxf
+  - internal/convert/testdata/cad/dxf/white_text.dxf
+  - internal/convert/testdata/cad/dxf/wide.dxf
+  - internal/convert/testdata/cad/dxf/wrong_extents.dxf
+  - internal/convert/testdata/cad/dxf/xline_ray.dxf
+  - internal/convert/testdata/cad/dxf/zwsp_text.dxf
+  - internal/convert/testdata/cad/public/2020_corner_bracket-Corner.step
+  - internal/convert/testdata/cad/public/3dsolids.dxf
+  - internal/convert/testdata/cad/public/LM8UU.step
+  - internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step
+  - internal/convert/testdata/cad/public/SC8UU.step
+  - internal/convert/testdata/cad/public/V-Slot-20x20-100mm.step
+  - internal/convert/testdata/cad/public/acad_table_with_blk_ref.dxf
+  - internal/convert/testdata/cad/public/columns_R2007.dxf
+  - internal/convert/testdata/cad/public/dimension_in_nested_blocks.dxf
+  - internal/convert/testdata/cad/public/hatches_1.dxf
+  - internal/convert/testdata/cad/public/hatches_2.dxf
+  - internal/convert/testdata/cad/public/houses_of_parliament_georeferenced.dxf
+  - internal/convert/testdata/cad/public/nasa-hubble-all-pieces.stl
+  - internal/convert/testdata/cad/public/nasa-jwst-all-pieces-without-supports.stl
+  - internal/convert/testdata/cad/public/nist-d2mi-827-9999-906.stp
+  - internal/convert/testdata/cad/public/nist_ctc_01_asme1_ap242-e1.stp
+  - internal/convert/testdata/cad/public/nist_ctc_05_asme1_ap242-e1.stp
+  - internal/convert/testdata/cad/public/nist_stc_06_asme1_ap242-e3.stp
+  - internal/convert/testdata/cad/public/uncommon.dxf
+  - internal/convert/testdata/cad/reject/dwg_ac1027.dwg
+  - internal/convert/testdata/cad/reject/dxf_binary.dxf
+  - internal/convert/testdata/cad/reject/dxf_bom.dxf
+  - internal/convert/testdata/cad/reject/dxf_truncated.dxf
+  - internal/convert/testdata/cad/reject/iges_truncated.iges
+  - internal/convert/testdata/cad/reject/step_bom.step
+  - internal/convert/testdata/cad/reject/step_missing_header.step
+  - internal/convert/testdata/cad/reject/step_trailing_nul.step
+  - internal/convert/testdata/cad/reject/step_truncated.step
+  - internal/convert/testdata/cad/reject/stl_ambiguous.stl
+  - internal/convert/testdata/cad/reject/stl_ascii_truncated.stl
+  - internal/convert/testdata/cad/reject/stl_binary_ac10_header.stl
+  - internal/convert/testdata/cad/reject/stl_binary_empty.stl
+  - internal/convert/testdata/cad/reject/stl_binary_trailing_byte.stl
+  - internal/convert/testdata/cad/reject/stl_binary_truncated.stl
+  - internal/convert/testdata/cad/render-bg/degenerate_plate_front_1280_opaque.png
+  - internal/convert/testdata/cad/render-bg/degenerate_plate_front_1280_transparent.png
+  - internal/convert/testdata/cad/render-bg/degenerate_rod_iso_256_opaque.png
+  - internal/convert/testdata/cad/render-bg/degenerate_rod_iso_256_transparent.png
+  - internal/convert/testdata/cad/render-bg/linearslide_iso_256_opaque.png
+  - internal/convert/testdata/cad/render-bg/linearslide_iso_256_transparent.png
+  - internal/convert/testdata/cad/render-bg/nauo4_iso_1280_opaque.png
+  - internal/convert/testdata/cad/render-bg/nauo4_iso_1280_transparent.png
+  - internal/convert/testdata/cad/render-bg/w15_iso_256_opaque.png
+  - internal/convert/testdata/cad/render-bg/w15_iso_256_transparent.png
+  - internal/convert/testdata/cad/synthetic/assembly_nauo4.step
+  - internal/convert/testdata/cad/synthetic/asymmetric_l_bracket.step
+  - internal/convert/testdata/cad/synthetic/blocks_minsert.dxf
+  - internal/convert/testdata/cad/synthetic/comments_999.dxf
+  - internal/convert/testdata/cad/synthetic/degenerate_plate.step
+  - internal/convert/testdata/cad/synthetic/degenerate_rod.step
+  - internal/convert/testdata/cad/synthetic/iges_no_newlines.iges
+  - internal/convert/testdata/cad/synthetic/legacy_cp1251.dxf
+  - internal/convert/testdata/cad/synthetic/legacy_cp1251.step
+  - internal/convert/testdata/cad/synthetic/legacy_latin1.dxf
+  - internal/convert/testdata/cad/synthetic/legacy_latin1.step
+  - internal/convert/testdata/cad/synthetic/open_shell.step
+  - internal/convert/testdata/cad/synthetic/reversed_solid.step
+  - internal/convert/testdata/cad/synthetic/single_face.step
+  - internal/convert/testdata/cad/synthetic/stl_ascii_box.stl
+  - internal/convert/testdata/cad/synthetic/stl_binary_solid_header.stl
+  - internal/convert/testdata/cad/synthetic/surfaces_only.iges
+  - internal/convert/testdata/cad/synthetic/units_inch.step
   - scripts/cad-corpus-fetch.sh
   - scripts/cad-corpus-gen.py
   - scripts/cad-corpus-inventory.sh
@@ -77,39 +268,48 @@ covered_files:
   - scripts/cad-prune-amd64-check.sh
   - scripts/cad-prune-identity.sh
   - scripts/cad-render-measure.sh
+  - scripts/cad-render-probe.sh
   - scripts/cad-render-stacking-probe.py
   - scripts/cad-rss-time-measure.sh
   - scripts/cad-sandbox-measure.sh
   - scripts/cad-vtk-keeplist-test.py
-covered_digest: "v3:sha256:242af638292d78a21e217126084f57f813b1d112c8bbeb42fe9dfcc48fb64c9a"
+  - scripts/cmd/cad-pixel-judge/main.go
+covered_digest: "v3:sha256:2a4cdd97b7f87e4dca2af8b6953e42fc51efa364b0e7437c883a4d51bbc3d8b2"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
-  previous_status: passed
-  previous_score: 7/7
-  gaps_closed: []
+  previous_status: gaps_found
+  previous_score: 7/8
+  previous_head: "c38cd9c (main, PR #37 merged; the 2026-10-17 pass)"
+  this_head: "ee30f2e (branch gsd/v1.16-phase71-reverify-provenance: c38cd9c plus 325b303, c40f7c9, 6d1ce13 and ee30f2e of quick 261018-44q)"
+  trigger: "quick 261018-44q, gap closure by option (a): per-file PROVENANCE sections for the 126 later files, the phase-71 sweeps scoped to the phase-71 corpus (W24), the render probe on the Go judge (the 2026-10-17 advisory)"
+  gaps_closed:
+    - "Every committed file of the corpus in internal/convert/testdata/cad has a PROVENANCE.md section with source, author, licence from the D-04 list and a sha256 equal to its content (71-03 must-have; enforced by the 71-03 gates CORPUS-OK and PROVENANCE-COMPLETE)"
   gaps_remaining: []
   regressions: []
-  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457); round 5: the deriver refuses to run without an explicit pin decision (655f863), plan 71-06 verify command and SUMMARY invocation corrected (56bc497); round 6: resume header classification, PRUNE_OTHER completeness, configuration-completeness and vacuous-success sweeps (8987eba..957df95, new scripts/cad-measure/verdicts.sh)"
 gaps: []
-residual_non_blocking:
-  - item: "Legal OK for libfreeimage / libraw / libjasper (GPL/LGPL/CDDL class) is NOT obtained"
-    recorded_as: "evidence/71-07-licences.txt#LAWYER_OK (needed, blocking=no); DECISION section Licences; assumption A2"
-    effect: "Criterion 4 satisfied as an engineering record (D-18, user-locked); not satisfied as legal clearance"
-  - item: "Private PreviewGenerator flow not measured (files=0)"
-  - item: "amd64 not measured; f3d not measurable natively on arm64"
-  - item: "Ceilings for STL binary / STL ASCII / DXF are extrapolated above the top measured rung; STEP ceiling 63 MiB (after the re-measure) is 0.79 of the render-time cliff (80 MiB) and is driven by a 1.04 MiB derived file at the floor, not by the thread settings"
-  - item: "RSS ladders (including the new par=off,lp=2 re-measure) were run on the full image variant; final variant is pruned (RSS on pruned not re-measured)"
-  - item: "2g/1g ladders, the 8.0.1.0.0 pin comparison and the threads/quality pipeline peaks (896/669 MiB) are at par=on,lp=default; no summary number derives from them"
+human_verification: []
 ---
 
 # Phase 71: Evaluation Gate Verification Report
 
 **Phase Goal:** Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа, лимиты входа, лицензии), известны до того, как написана строка продакшен-кода.
-**Verified:** 2026-10-04
-**Status:** passed (with the non-blocking residuals listed above; see "Criterion 4 judgement")
-**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457; sixth pass after round-5 fixes 655f863, 56bc497; seventh pass after the round-6 sweep 8987eba..957df95)
-**Branch / head:** gsd/phase-71-evaluation-gate @ 957df95 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
+**Verified:** 2026-10-18T01:05:40Z
+**Status:** passed (8/8; every docker-only gate stays NOT RUN and is not counted)
+**Re-verification:** Yes, after quick 261018-44q. The 2026-10-17 pass found truth 8 failed on main at c38cd9c (gaps_found, 7/8). This pass re-checks the fixed branch at ee30f2e, which is c38cd9c plus four quick-task commits: 325b303 (RED Go test), c40f7c9 (PROVENANCE), 6d1ce13 (W24 sweeps), ee30f2e (render probe on the Go judge). The pass before that was `passed` 7/7 at b6269c6 on 2026-10-05 and is in git history.
+
+## What changed since the 2026-10-17 pass
+
+- `git diff --stat c38cd9c ee30f2e` names seven files: `internal/convert/cad_provenance_test.go` (new), `internal/convert/testdata/cad/PROVENANCE.md`, `scripts/cad-measure/common.sh`, `scripts/cad-corpus-inventory.sh`, `scripts/cad-rss-time-measure.sh`, `scripts/cad-image-trace.sh` and `scripts/cad-render-probe.sh`. Nothing under `.planning/phases/71-evaluation-gate/` except this report, and no file under `testdata/cad` other than PROVENANCE.md, changed.
+- PROVENANCE.md: one per-file section for each of the 126 later files, each sha256 the re-hash of the committed file; for the 116 phase-75 files it equals an evidence line with the same name and bytes, and the 10 render-bg sections say their sha256 was computed from the committed blob because 056a8d2 recorded none. The three `- Licence: generated.` lines are split into `- Licence: generated` and `- Origin: ...` with the wording kept. `git diff c38cd9c -- PROVENANCE.md` has 4 removed lines: the three licence lines and the one dxf-out sentence that named 75-02-helper.txt as the source of every sha256.
+- `internal/convert/cad_provenance_test.go` makes the 71-03 contract part of `go test ./internal/convert/`.
+- `pixelcheck.py`, `Dockerfile.cad-measure`, every `scripts/cad-measure/*.py` and `internal/convert/exec.go` are unchanged, so the measurement image tag of the phase-71 evidence still hashes the same inputs.
+
+## Scope and method
+
+- Tree identity: `git rev-parse 40a4016^{tree} c38cd9c^{tree}` gives `14238c6...` for both, and `git diff --name-only 40a4016 c38cd9c` is empty. That holds for every file, `.planning` included.
+- Since the phase-71 merge 9117f60, nothing under `.planning/phases/71-evaluation-gate/` has changed: `71-DECISION.md`, all evidence files, the PLANs and the SUMMARYs are byte-identical. Five phase-71 artifacts were changed by later phases: `internal/convert/testdata/cad/PROVENANCE.md` (append only, no `-` lines), `scripts/cad-corpus-gen.py`, `scripts/cad-corpus-inventory.sh`, `scripts/cad-image-trace.sh` and `scripts/cad-rss-time-measure.sh`. In the last four the change is a `! -path '*/reject/*'` exclusion, plus new generator kinds in the corpus generator. The other phase-71 scripts, `pixelcheck.py` and `Dockerfile.cad-measure` are unchanged.
+- No docker, kubectl, helm or live stack was used. Commands that need docker are marked NOT RUN below and are not counted as passes.
 
 ## Goal Achievement
 
@@ -117,78 +317,86 @@ residual_non_blocking:
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Core (OCP wheel), renderer (VTK + OSMesa vs f3d vs own rasteriser) and DXF 2D path are decided from measurement on the real bookworm-slim image, native arch, under Landlock, with pixel-content judgement on real parts | VERIFIED | `71-DECISION.md` sections Core / Renderer / DXF path. Native arm64, kernel 7.0.14-orbstack, base `debian:bookworm-slim@sha256:3783cc...` (`71-01-lock.txt#BASE_IMAGE`, `Dockerfile.cad-measure:3`). `71-04-render.txt#RENDER_SUMMARY parts=5,pngs=108,fail=0,views_differ=4,determinism=identical`; `CALOBS real_pngs=35`; `VIEWS` min_pair_iou 0.11-0.50 on 4 asymmetric parts (iso/front/top differ). Landlock: `71-07-landlock.txt#LANDLOCK_SUMMARY helpers=4,inputs=34,sufficient=34,different=0,leaked=0` (34 `set=candidate` SUFFICIENT rows, all `content=identical`; 20 identical cad_render rows with pixelcheck). DXF: `71-04-helpers.txt#SUMMARY rows=59,failed=1` (the one failure is explained: 3dsolids.dxf has nothing drawable). User approval of renderer recorded (`71-05-SUMMARY.md` User acceptance). Own rasteriser not built; D-16 table shows each failure condition did not occur. Caveat W3 below. |
-| 2 | Repo has a corpus (or checksummed fetch script) with licence per file: STEP assemblies, surfaces-only IGES, large ASCII and binary STL, DXF with hatches/blocks/dimensions, legacy 8-bit | VERIFIED | 37 committed files in `internal/convert/testdata/cad/` (12 dxf, 2 iges, 19 step/stp, 4 stl); every one has its sha256 in `PROVENANCE.md` (I re-hashed all 37: 0 missing) and a `Licence:` line; 17 fetched files pinned in `scripts/cad-corpus-manifest.tsv` (9 columns: sha256, licence, author, source), `bash scripts/cad-corpus-fetch.sh --check` -> `corpus fetch ok: 17 files`; `python3 scripts/cad-corpus-gen.py --check-only` -> self-check passed. Coverage table in `PROVENANCE.md` maps every category; non-real categories are labelled (large ASCII STL = derived/synthetic, cp1251/Latin-1 = synthetic, MINSERT = synthetic) and the gaps are listed under "Not found in open form". Committed size 7038250 B total incl. PROVENANCE.md (matches DECISION), max file 1404884 B. |
-| 3 | At `--cpus=2`: peak RSS and time, image size, cold pull recorded; input limits derived from measurement with the derivation shown, not copied from PreviewGenerator | VERIFIED (re-checked after Codex P1/P2 fixes) | P1: all limits now derive only from `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt`: 448 ROW lines, every one `cpus=2,mem=4g,par=off,lp=2,ocp=7.9.3.1.1,variant=full`; its HDR carries `parallel=off,lp_threads=2` (run resumed 4 times, 2026-10-04 13:25 to 2026-10-05 02:24, later series `repeats=1`). `71-06-limits.txt#CONFIG rows_used=448,rows_excluded_other_config=662` and `CONFIG_ROWS` mark the old 4g/2g/1g/8.0 ladders `used=no`; the selected config comes from `THREADS_DECISION` in `71-06-threads.txt` (`lp_num_threads=2,occt_parallel=off`). P2: `usable()`/`fit_rung()`/`top_rung_from_stops()` count a point as ok only when the whole pipeline was measured; `python3 scripts/cad-derive-limits.py --self-check` prints `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,other_configuration_rows_excluded=1`. `cad-derive-limits.py evidence --pin 7.9.3.1.1` regenerates the committed `71-06-limits.txt` byte-for-byte (diff empty). New values (formula shown in `CEILING`/`LIMIT`): STEP 63 `(0.70*4096-478.0-24.9)/37.362=63.3`, IGES 155, STL binary 277 (277.97 floored), STL ASCII 877 (`(0.70*4096-272.0-24.9)/2.930=877.2`; was 1353 before round 3), DXF 118; L stays 4096 (`L_SENSITIVITY`: 2 GiB would need STEP k_worst <= 23.267 vs measured 37.362; 1 GiB <= 5.347). 40/5/60/500 remain yardsticks only. Image/cold pull unchanged (`71-08-image-size.txt`). Extrapolated STL ceilings flagged; DXF 118 and STEP 63 are inside the measured range (DXF 197.6 MiB passes at cg_peak 2497 MiB). |
-| 4 | Licences of libraries carried by the OCP wheel (libfreeimage, libraw, libjasper) checked for internal use and decision recorded | VERIFIED as an engineering record; NOT legal clearance (see judgement below) | `71-07-libtrace.txt#D18_TRACE` (freeimage/libraw loaded at `import OCP` on both pins; libjasper only on 8.0.1.0.0; 7.9.3.1.1 `libjasper_ops=0`); `71-07-licences.txt`: 23 `LICENCE` rows, 23 VERIFIED, 0 ASSUMED; `D18_OUTCOME choice=record`; `RECORD use=только внутреннее использование...`; `LAWYER_OK=needed,blocking=no`. User decision relayed in `71-01-decisions.txt` and `71-01-SUMMARY.md` ("D-18 outcome: record"). Matches CONTEXT D-18, which itself says the lawyer flag "фазу не блокирует". |
-| 5 | No production wiring: `AllEngines()`, `/v1/formats`, `/v1/inspect`, queue and chart unchanged; phase leaves only decision records, measurement scripts, measurement Dockerfile and corpus | VERIFIED | `git diff --name-status 4e595c0 HEAD`: every added file outside `.planning/` is under `scripts/` (28 files), `Dockerfile.cad-measure`, or `internal/convert/testdata/cad/` (38 files); the only `M` entries are `.planning/ROADMAP.md` and `.planning/STATE.md`. Zero changes in `cmd/`, `deploy/`, `frontend/`, `docs/`, `README.md`, `go.mod`, `go.sum`, `docker-compose*.yml`, `.github`, production Dockerfiles, and no `.go` file added under `internal/` (extensions added: dxf/iges/md/step/stl/stp only). Existing scripts untouched (no `M`/`D`/`R`). I re-ran with `GOTOOLCHAIN=go1.26.4`: `go build ./...` + `go vet ./...` OK; guard tests (AllEngines, README classes, ListFormats, Pre57/Pre58 golden, InspectOperationSpec, InspectSentinel, ConvertPayloadRoundTrip) pass; full `go test ./internal/convert/...` passes (68.8 s). |
-| 6 | Every number in `71-DECISION.md` traces to an evidence line | VERIFIED (re-checked) | The DECISION summary lines (27 lines, adding `limits_config`, `L_SENSITIVITY` and `par-off-lp2` refs) were compared with `71-06-limits.txt`: ceilings 63/155/277/877/118, caps 4014975/754762/1518/170031, floors/k_worst/size_max table (478.0/37.362/5.7-24.9-63.3 etc.), THREADS, QUALITY x3, MEMORY_LIMIT_DECISION, PRIVATE_CORPUS, CONFIG (448/662), L_SENSITIVITY (23.267, 5.347, ratios 1.61 and 6.99) all match. Prose numbers checked against the new ladder: DIST STL 52 MB render median 3.61 s / p95 3.73 s, STEP 9 MB render 2.20 s with rss 757 MiB and mesh 418 MiB, DXF 100 MiB peak 1350 MiB cg, DXF 200 MiB cg_peak 2497 MiB; `71-06-threads.txt` STL 100 MiB render rss 873 -> 1113 MiB; CAP mesh walls 56.4/123.4/249.4 s and 10000 NAUO timeout. Unchanged sections (pin formula, Landlock 34/34, prune 196/196, image 1083.0/299.3, cold pull 6.38 s, FLEET 733.0) were re-spot-checked and still match. The old numbers appear only as labelled history. |
-| 7 | User decisions are recorded consistently (lock approval, D-18, libssl3 for f3d only, renderer approval, OCP pin 7.9.3.1.1 over formula 8.0.1.0.0) | VERIFIED | Lock approval: `71-01-decisions.txt` Task 2 "approved" + `71-01-SUMMARY.md:62`. D-18 `record`: `71-01-decisions.txt`, `71-01-SUMMARY.md:63-65`, `71-07-licences.txt#D18_OUTCOME`, DECISION summary `d18_outcome=record`. libssl3: `scripts/cad-f3d-yardstick.sh:80,136` and `71-05-f3d.txt#APPROVAL` (`not_in=Dockerfile.cad-measure and production images`); grep confirms `libssl` appears nowhere in `Dockerfile.cad-measure` or `scripts/cad-measure/`. Renderer approval: `71-05-SUMMARY.md` "User acceptance (D-11 step 2)" + DECISION summary. OCP pin: `71-06-limits.txt#PIN_DECISION choice=7.9.3.1.1 ... user decision overrides the formula result 8.0.1.0.0` kept next to `PIN_FORMULA choice=8.0.1.0.0`; `71-06-SUMMARY.md:58,69`; `Dockerfile.cad-measure:4 ARG OCP_VERSION=7.9.3.1.1`; lock `requirements-ocp-7.9.3.1.1.txt`; all Landlock/prune/image-size HDR lines carry `ocp=7.9.3.1.1`. No file contradicts another. All user answers reached the executor via the coordinator relay, which DECISION and the SUMMARYs disclose. |
+| 1 | SC1. The core, renderer and DXF path were decided by measurement on the real bookworm-slim image, on the native arch, under Landlock, with pixel judgement on real parts | VERIFIED | `71-DECISION.md` and the evidence it cites have not changed since 9117f60 (the previous pass checked the numbers). Goal-backward on main: the production image `Dockerfile.cad-worker:1,21` uses the same base digest `debian:bookworm-slim@sha256:3783cc...`, VTK + `libosmesa6`, OCP with `cadquery-ocp-novtk==7.9.3.1.1` (the recorded user pin), and ezdxf + `rsvg-convert` for DXF. `cmd/cad-worker/{requirements-vtk.txt,vtk_keeplist.py,vtk-keeplist.txt}` are byte-identical to the phase-71 sources in `scripts/cad-measure/`. The decisions held. The later replacement of the pixel judge does not falsify SC1, see "Pixel judge follow-up" below. W3 (no non-OCP core was measured) is carried. |
+| 2 | SC2. The repo has a corpus of real CAD files, or a fetch script with checksums, with a licence recorded for each file and every EVAL-02 category covered | VERIFIED | The 37 phase-71 corpus files are byte-unchanged since 9117f60. I re-hashed all 37: each sha256 and basename is in `PROVENANCE.md` (0 missing). `scripts/cad-corpus-fetch.sh --check` gives `corpus fetch ok: 17 files`. `python3 scripts/cad-corpus-gen.py --check-only` gives `self-check passed`. TAMPER-DETECTED and SELF-CHECK-FIRES print their markers. The manifest has 0 licences outside D-04. Each later fixture group has a licence statement (`generated`, with sources named). Per-file checksums are the separate plan must-have in truth 8. |
+| 3 | SC3. At `--cpus=2`, RSS, time, image size and cold pull are recorded, and the input limits are derived from measurement with the derivation shown | VERIFIED | `cad-derive-limits.py --self-check` gives `SELF-CHECK-OK,...` with all 11 flags. `cad-derive-limits.py <scratch copy> --pin 7.9.3.1.1 --out` regenerates `71-06-limits.txt` byte for byte (`cmp` is silent). The plan's LIMITS-OK command, run on a scratch copy, prints `LIMITS-OK`. Without a pin the deriver exits 2 (`refusing to derive without an explicit pin decision`). LADDER-OK and MEASURES-OK print their markers. Goal-backward on main: production `internal/convert/cad.go:24-41` carries the phase-71 numbers STEP 63 MiB, DXF 118 MiB and caps 754762 / 1518 / 170031. IGES 120 MiB, STL 190840832 B and the timeouts were set later from later measurements. That fits a phase whose job was to know the numbers first. |
+| 4 | SC4. The licences of libfreeimage, libraw and libjasper were checked for internal use and the decision recorded | VERIFIED as an engineering record, NOT legal clearance | Evidence unchanged. D18-OK prints `D18-OK`. The judgement of the previous pass stands: `LAWYER_OK=needed,blocking=no`. |
+| 5 | SC5. No production wiring by phase 71 | VERIFIED (historical) | Checked on the phase-71 branch head b6269c6 against base 4e595c0. The only `M` entries are `.planning/{REQUIREMENTS,ROADMAP,STATE}.md`. 0 added files lie outside `.planning/`, `scripts/`, `Dockerfile.cad-measure` and `internal/convert/testdata/cad/`. 0 `.go` files were added under `internal/`. The trees of 9117f60 and b6269c6 are identical. Production wiring on main (AllEngines, `/v1/formats`, chart) belongs to phases 72-76 and does not regress this criterion. NO-WIRING itself is NOT RUN (it needs docker and is defined against HEAD). |
+| 6 | Every number in `71-DECISION.md` traces to an evidence line | VERIFIED (regression check) | DECISION and evidence are byte-unchanged and the limits regenerate identically. DECISION-OK prints `DECISION-OK`. |
+| 7 | User decisions are recorded consistently (lock approval, D-18, libssl3 for f3d only, renderer approval, pin 7.9.3.1.1) | VERIFIED (regression check) | Records unchanged. On main the pin is still 7.9.3.1.1 in both `Dockerfile.cad-measure` and the production requirements. |
+| 8 | 71-03 must-have. Every committed corpus file has a PROVENANCE.md section with source, author, a D-04 licence and a matching sha256 | VERIFIED (re-verified after quick 261018-44q; FAILED on c38cd9c) | Both 71-03 gates, extracted verbatim from `71-03-PLAN.md:162,164` and run as written with bash on ee30f2e: CORPUS-OK `rc=0`, last line `CORPUS-OK`; PROVENANCE-COMPLETE `rc=0`, last line `PROVENANCE-COMPLETE` (both were `rc=1` on c38cd9c, quick evidence `red-gates.txt`). `TestCADProvenanceCoversEveryCommittedFile` passes: it walks all 178 files and requires for each exactly one section `` ## `<rel>` — <bytes> bytes `` with the true size, exactly one sha256 line equal to the content and exactly one licence line in the D-04 allow-list, plus the CORPUS-OK licence and size stages; on c38cd9c it failed with 129 problems (126 files without a section, 3 licence lines). Mutations caught by the test and the matching gate: a changed sha256 digit, a period after a licence token, a removed render-bg section, an extra file. The reject marked region still equals `cad-corpus-gen.py --reject --provenance`, and the `dxf-replicate` Derived table that `cad-dxf-probe.sh prov_sha` reads gives the same 7 values. |
 
-**Score:** 7/7 truths verified (0 present-but-behavior-unverified; none of these truths is a state-transition or cancellation invariant, they are measurement records checked against their evidence lines).
+**Score:** 8/8 verified, 0 present but behavior-unverified. None of these truths is a state-transition or cleanup invariant: they are records checked against evidence and code.
 
-### Criterion 4 judgement (asked explicitly)
+### Pixel judge follow-up (asked explicitly)
 
-The wording is "проверены для внутреннего использования и решение записано". Two readings:
+The question: phase 71's `scripts/cad-measure/pixelcheck.py` was not updated when later phases replaced the pixel judge (`internal/convert/cadpixel.go`, `cadMeasure`, the all-channel `cadBackgroundCutoff` rule, and 056a8d2 removing the 5%..95% transparent band).
 
-- Engineering reading (the one the user locked in CONTEXT D-18): libraries are identified, licences read from upstream text, the use is bounded to "internal only, image not distributed", the decision (`record`, keep the libraries, no patchelf) is written, and "нужен OK юриста" is a flag that explicitly does not block the phase. Under this reading the criterion is met: 23/23 licence rows VERIFIED against upstream, D-18 trace measured, outcome recorded in four consistent places.
-- Legal-clearance reading: not met. FreeImage (GPL-2.0/3.0/FIPL), LibRaw (LGPL-2.1/CDDL), jbigkit (GPL-2.0) and libgomp (GPL-3.0 + exception) are copyleft-class; assumption A2 (internal use without distribution triggers no obligations) is a working assumption, not a legal finding, and the lawyer OK is `needed`. The patchelf experiment was not run, so "loaded" is not shown to mean "unused" (A1).
+Correction of premise: `scripts/cad-render-probe.sh` is not phase-71 tooling. Its first commit is 44cdf78 `feat(74-01)` and its judge mode is a9563a0 `feat(74-06)`. It is not in any phase-71 PLAN, SUMMARY or the DECISION artifact index.
 
-Verdict: the criterion is satisfied as written and as scoped by D-18, and the goal ("лицензии ... известны до того, как написана строка продакшен-кода") is met in the sense that the licence picture is known and the risk is explicit. It does not make the libraries legally cleared, and the recorded "нужен OK юриста" must be treated as an open follow-up before any production image is built or distributed. It is not placed in `human_verification` because it is a deliberately non-blocking external action, not a check the verifier could not perform; if the maintainer reads criterion 4 as legal clearance, the correct status would be `human_needed` on that single item.
+What differs, from reading both judges:
+- Ink rule: same in both. pixelcheck counts a pixel as ink when `(img < 250).any(axis=2)`; Go skips a pixel only when all three channels are >= `cadBackgroundCutoff` (250). Dark is `< 80` on all channels in both.
+- Alpha: pixelcheck does `convert("RGB")` without compositing, while Go composites straight alpha on white and skips alpha-0 pixels. This makes no difference on cad-render output: the transparent and opaque twin of each committed render-bg pair give pixelcheck the same frac (for example nauo4 0.0429 on both).
+- Part rule: pixelcheck uses frac only (0.02..0.90), plus a sliver mode that needs a `proj_aspect` sidecar. Go adds J2 (long side at least 0.5 of the frame) and the thin rule. This is the W15 difference already recorded in phase 71.
+- Transparent: pixelcheck `transparent` still requires `frac_transparent` in 0.05..0.95. Go now requires only alpha present and a fully transparent edge ring.
+
+Non-live run (pinned numpy 2.4.6 / pillow 12.3.0 in a scratch venv; Go judge built with go1.26.4) on the 10 committed `render-bg/` PNGs:
+
+| Frame | Go | pixelcheck single | pixelcheck transparent |
+|---|---|---|---|
+| nauo4_iso_1280 opaque / transparent | ok=1 blob / ok=1 blob | 1 / 1 | - / 0 (ft 0.9577) |
+| linearslide_iso_256 opaque / transparent | 1 blob / 1 blob | 1 / 1 | - / 1 (ft 0.7218) |
+| w15_iso_256 opaque / transparent | 1 thin / 1 thin | 0 / 0 | - / 0 (ft 0.9976) |
+| degenerate_plate_front_1280 | 1 thin / 1 thin | 0 / 0 | - / 0 |
+| degenerate_rod_iso_256 | 0 / 0 | 0 / 0 | - / 0 |
+
+Judgement: **fine for phase 71, with one warning outside phase 71.**
+- No phase-71 claim becomes stale or false. `pixelcheck.py` is phase 71's measurement instrument. DECISION records its thresholds as the calibrated D-11 step-1 criteria and never hands them to production. It also says outright that `pixelcheck.py` rejects a thin but real part (DECISION, Codex P1 paragraph; W15). Every phase-71 verdict it produced (RENDER_SUMMARY 108 PNGs; `TRANSPARENT,item=slide,frac_transparent=0.7240,ok=1`; 20 Landlock render rows; the ladder `pix=` cells) is still true of that instrument, and the instrument is unchanged. Its one effect on a limit makes the limit more conservative, not less: rejecting the W15 point moved the STL ASCII ceiling 1353 -> 877. Production does not use that ceiling (`CADMaxSTLBytes` comes from phase 74's frame-cost bound).
+- `pixelcheck.py` still runs as documented. It parses, its CLI is unchanged, and it ran on the host with the locked numpy/pillow versions. Inside the measurement image it runs from `/opt/cad-measure` (not re-run, needs docker).
+- `cad-render-probe.sh judge` was out of date relative to 056a8d2 (the 2026-10-17 advisory). Resolved by quick 261018-44q (ee30f2e): every frame verdict of the probe (tracer, cost, judge, blank frames) now comes from the Go judge built from `scripts/cmd/cad-pixel-judge`, and `pixelcheck.py` remains in the probe only for the identity `same` comparison. A judge that does not run is `ok=error` and fails the run, never a refusal. The new `judge-png` mode needs no docker: on the 10 committed render-bg PNGs it returns the verdicts of `cadRealPairs` (`internal/convert/cadpixelbg_test.go:310-316`), including `nauo4_iso_1280_transparent` accepted as blob, refuses that frame with `rule=background` when judged as opaque, reports a missing path as `ok=error` with exit 1, refuses both blank frames by J1, and logs no docker call with a stub docker first on PATH. The tracer, cost and judge modes themselves need docker and were not run (W26).
+- The pixelcheck/Go table above was re-run on ee30f2e with the same pinned venv and the Go judge built with go1.26.4, and is equal (quick evidence `pixel-table.txt`). `pixelcheck.py` is byte-unchanged.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `71-DECISION.md` | Decision record with evidence refs | VERIFIED | 571 lines; machine-readable summary + sections; coverage table for criterion/D-xx/EVAL ids |
-| `evidence/71-0{1..8}-*.txt` (27 files incl. PNG contact sheets) | Primary evidence | VERIFIED | All referenced `#LABEL` lines found |
-| `Dockerfile.cad-measure` | Measurement image, digest-pinned base, `USER nobody`, stages venv/venv-pruned/venv-selected | VERIFIED | Not referenced by compose/CI/chart |
-| `scripts/cad-*.sh/.py`, `scripts/cad-measure/*` | Measurement scripts | VERIFIED | `bash -n` and `py_compile` clean on all; `cad-derive-limits.py` reproduces limits evidence |
-| `internal/convert/testdata/cad/` + `PROVENANCE.md` | Corpus with licences | VERIFIED | see truth 2 |
-| `scripts/cad-corpus-manifest.tsv` + `cad-corpus-fetch.sh` | Checksummed fetch | VERIFIED | `--check` OK for 17 files |
-| `scripts/cad-measure/requirements-*.txt` | Hash-pinned locks | VERIFIED | `--require-hashes`; user approval recorded |
+| `71-DECISION.md` | Decision record with evidence refs | VERIFIED | unchanged since 9117f60; DECISION-OK |
+| `evidence/71-0{1..8}-*` (30 files) | Primary evidence | VERIFIED | unchanged since 9117f60 |
+| `Dockerfile.cad-measure` | Measurement image | VERIFIED | unchanged; still not referenced by compose, chart or CI |
+| `scripts/cad-*`, `scripts/cad-measure/*` (27 scripts incl. cad-render-probe.sh) | Measurement scripts | VERIFIED (W24 resolved) | `bash -n` / `ast.parse` clean on all 27; self-tests green (table below); `shellcheck -S warning` exits 0 on the five scripts quick 261018-44q touched |
+| `internal/convert/testdata/cad/` + `PROVENANCE.md` | Corpus with licences | VERIFIED | phase-71 corpus intact; the directory-wide per-file contract holds for all 178 files and is enforced by `TestCADProvenanceCoversEveryCommittedFile` (truth 8) |
+| `scripts/cad-corpus-manifest.tsv` + `cad-corpus-fetch.sh` | Checksummed fetch | VERIFIED | `--check` 17 files; tamper detected |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
-| DECISION summary lines | `71-06-limits.txt` / `71-08-image-size.txt` / `71-07-licences.txt` | `evidence=file#LABEL` | WIRED | values equal |
-| `71-06-limits.txt` | raw ladders | `cad-derive-limits.py` | WIRED | regeneration is identical |
-| `Dockerfile.cad-measure` | lock files | `OCP_VERSION` build arg | WIRED | 7.9.3.1.1 default |
-| keep-list | pruned image | `vtk_keeplist.py prune` | WIRED | `PRUNE_IDENTITY 196/196`, stale-list test fails as designed |
-
-### Data-Flow Trace (Level 4)
-
-Not applicable: no rendered dynamic data; the artifacts are evidence files and scripts. The only data-flow property that matters (limits derived from measured rows, not literals) is covered by the regeneration check.
+| DECISION summary lines | `71-06-limits.txt` etc. | `evidence=file#LABEL` | WIRED | unchanged |
+| `71-06-limits.txt` | raw ladders | `cad-derive-limits.py --pin 7.9.3.1.1` | WIRED | byte-identical regeneration on main |
+| phase-71 choices | production CAD image | `Dockerfile.cad-worker`, `cmd/cad-worker/*` lock copies | WIRED | same base digest, OCP pin, VTK lock and keep-list (cmp equal) |
+| phase-71 limits | production bounds | `internal/convert/cad.go` | WIRED | STEP 63, DXF 118 and three caps taken over; the rest superseded by later measurements |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Production still builds/vets | `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./...` | clean | PASS |
-| Wiring guard tests | `go test ./internal/{convert,api,queue} -run 'AllEngines|READMEEngineClasses|ListFormats|Pre57Golden|Pre58Golden|InspectOperationSpec|InspectSentinel|ConvertPayloadRoundTrip'` | ok x3 | PASS |
-| Whole convert package | `go test ./internal/convert/... -count=1` | ok 68.8 s | PASS |
-| Synthetic generator self-check | `python3 scripts/cad-corpus-gen.py --check-only` | self-check passed | PASS |
-| Fetched corpus checksums | `bash scripts/cad-corpus-fetch.sh --check` | 17 files ok | PASS |
-| Limits derivation | `python3 scripts/cad-derive-limits.py evidence --pin 7.9.3.1.1` vs committed `71-06-limits.txt` | identical (re-run after fixes) | PASS |
-| Plan 71-06 LIMITS-OK command (corrected in 56bc497: `--pin 7.9.3.1.1 --out`, exactly one `PIN_DECISION,choice=7.9.3.1.1`, a `PIN_FORMULA` line) | run as written against a scratch copy of the evidence directory | `LIMITS-OK`; the regenerated file equals the committed `71-06-limits.txt` byte for byte | PASS (W16 resolved) |
-| Deriver pin guard | `cad-derive-limits.py evidence` (no flag); `--formula-pin`; each also with `--out` on an existing file | no flag: exit 2, empty stdout, message naming `--pin`/`--formula-pin`; `--formula-pin`: exit 2, refuses because a user PIN_DECISION 7.9.3.1.1 is recorded; `--out` target left byte-identical after both refusals, no temp file left; `--pin 7.9.3.1.1` regeneration identical | PASS |
-| Old vs new deriver on the real evidence | all 98 4g points at par=off,lp=2 compared, 65970c7 vs c877f33 | one point flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (ok 514 MiB -> fail); nothing else | PASS |
-| Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` | `SELF_TEST,cases=32,failed=0` | PASS |
-| Resume config check on the real 4g ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt --ocp 7.9.3.1.1 --variant full --memory 4g --parallel off --lp-threads 2` | without `--expect-image`: `RESUME_CONFIG_MISMATCH,key=image,file=...full-0d09b7ba39ad,current=...full-dc621b94ee5d` and `rejected,rc=65` (the file was written on the 0d09b7ba39ad build, the current build is dc621b94ee5d); with `--expect-image octoconv-cad-measure:ocp7.9.3.1.1-full-0d09b7ba39ad`: `accepted`. All 4 sessions of this ladder carry the one image tag | PASS |
-| Resume check on the par=on history ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1.txt ... --expect-image ...0d09b7ba39ad` | `rejected,rc=65`: the file spans two image builds (`full-32f07542eda8` x3 and `full-48d9162df359` x3 HDR blocks); it can no longer be resumed. Acceptable for a history file: no summary number derives from it, and `cad-derive-limits.py` still reads it as history (regeneration byte-identical) | PASS (recorded) |
-| Keep-list matcher | `python3 scripts/cad-vtk-keeplist-test.py` | `KEEPLIST_TEST,cases=10,failed=0`; `vtk-keeplist.txt` has 77 entries, 0 `aarch64`/`x86_64` tags, sha256 equals `keeplist_sha256` in `71-07-prune.txt` and `71-07-prune-amd64.txt` | PASS |
-| PRUNE-OK gate (plan 71-07) | verify command line 1, run as written | `PRUNE-OK` | PASS |
-| STALE-REFUSED gate (plan 71-07) | verify command line 2 on the existing `...-full-dc621b94ee5d` image with a keep-list for vtk 9.7.0 | `STALE-REFUSED` | PASS |
-| DECISION-OK gate (plan 71-08) | verify command from `71-08-PLAN.md` | `DECISION-OK` | PASS |
-| Verdict self-test | `scripts/cad-measure/verdicts.sh --self-test` | `SELF_TEST,cases=44,failed=0` | PASS |
-| Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` (was 32 cases) | `SELF_TEST,cases=78,failed=0` | PASS |
-| libs / prune-check verdict self-test | `scripts/cad-image-trace.sh self-test` (no docker) | `SELF_TEST,cases=41,failed=0` | PASS |
-| Modified plan verify commands, run as written | 71-02 SELF-CHECK-FIRES; 71-03 PROVENANCE-COMPLETE and TAMPER-DETECTED; 71-07 PRUNE-OK and STALE-REFUSED; 71-08 DECISION-OK and NO-WIRING (TMPDIR in scratch); 71-06 LIMITS-OK on a scratch copy | all print their marker (`SELF-CHECK-FIRES`, `PROVENANCE-COMPLETE`, `TAMPER-DETECTED`, `PRUNE-OK`, `STALE-REFUSED`, `DECISION-OK`, `NO-WIRING`, `LIMITS-OK`); LIMITS regeneration byte-identical | PASS |
-| 71-05 F3D-OK command | its three grep conditions on the committed `71-05-f3d.txt` and contact sheet (the yardstick itself not re-run: it rebuilds the evidence under emulation) | `F3D_ASSETS`, `F3D_SUMMARY,parts=5,fail=0,retries=0`, non-empty PNG all present | PASS (greps only) |
-| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 957df95) | `SELF-CHECK-OK,...,out_untouched_on_refusal=1,foreign_ladder_row_refused=1,go_worker_validated=1,missing_format_class_refused=1,pin_without_common_files_unevaluated=1` (all earlier flags still present) | PASS |
-| Committed corpus hashes | sha256 of 37 files vs `PROVENANCE.md` | 0 mismatch | PASS |
-| Multi-hour measurements | not re-run (per instruction) | - | SKIP |
+| Formatting | `gofmt -l .` | empty | PASS |
+| Vet | `GOTOOLCHAIN=go1.26.4 go vet ./...` | rc=0, no output | PASS |
+| Phase-71-relevant Go tests | `GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/convert/... ./internal/api/... ./internal/queue/... ./scripts/cmd/cad-png-compare/... ./scripts/cmd/cad-pixel-judge/...` (python 3.14 first on PATH) at ee30f2e | `ok` x4 (convert 357.4 s, api 8.5 s, queue 0.7 s, cad-png-compare 1.7 s), cad-pixel-judge has no test files, rc=0 | PASS |
+| Provenance contract test | `go test -count=1 -run '^TestCADProvenanceCoversEveryCommittedFile$' ./internal/convert/` | `ok` (also part of the convert run above) | PASS |
+| Full suite | `go test ./... -count=1` | not re-run on ee30f2e; the last full run is the one cited by the 2026-10-17 pass for 40a4016, a tree that no longer equals this one | NOT RUN |
+| Script syntax | `bash -n` / `ast.parse` on the 27 scripts of the covered list (cad-render-probe.sh included) | `files=27,failures=0` | PASS |
+| Deriver self-check / regeneration / pin guard | see truth 3, on a scratch copy of the evidence directory | SELF-CHECK-OK; `cmp` silent; exit 2 without pin | PASS |
+| Verdict / resume / trace / keep-list self-tests | `verdicts.sh --self-test`; `cad-rss-time-measure.sh --self-test`; `cad-image-trace.sh self-test`; `cad-vtk-keeplist-test.py` | `cases=44,failed=0`; `cases=89,failed=0` (78 before, plus 11 input-selection cases); `cases=51,failed=0` (41 before, plus 10); `cases=10,failed=0`; all rc=0 | PASS |
+| Corpus generator / fetch / tamper | `--check-only`; `--check`; TAMPER-DETECTED | `self-check passed`; `17 files`; `TAMPER-DETECTED` | PASS |
+| Plan gates, grep-only (run as written, TMPDIR in scratch) | LOCKS-OK, SELF-CHECK-FIRES, TAMPER-DETECTED, LADDER-OK, MEASURES-OK, LIMITS-OK (scratch copy), PRUNE-OK, D18-OK, LANDLOCK-OK, DECISION-OK | each prints its marker, rc=0 | PASS |
+| Plan gate CORPUS-OK (71-03) | as written | rc=0, `CORPUS-OK` (rc=1 on c38cd9c) | PASS |
+| Plan gate PROVENANCE-COMPLETE (71-03) | as written | rc=0, `PROVENANCE-COMPLETE`, files=178 (rc=1 and 126 missing on c38cd9c) | PASS |
+| W24 sweep selection | quick evidence `w24-proof.sh`, against 71-03-corpus-inventory.txt, 71-04-helpers.txt and 71-07-prune.txt | 37 inventory pairs equal, 37 ladder names equal, 25 prune 3D inputs equal, 49 PRUNE_OTHER pairs, no corpus walk outside common.sh; `W24-OK` | PASS |
+| Render probe judge-png | quick evidence `judge-png-proof.sh` | 10 of 10 equal to `cadRealPairs`; background, missing path, blank frames and docker-stub controls; `JUDGE-PNG-OK` | PASS |
+| Pixel judges differential | pixelcheck.py vs cad-pixel-judge on 10 committed render-bg PNGs | equal to the table above; `PIXEL-TABLE-EQUAL` | INFO |
+| Phase-71 evidence untouched | `git status --porcelain .planning/phases/71-evaluation-gate/evidence` after every run | empty | PASS |
+| Plan gates that need docker | HASHES-OK, TRACER-OK, GEN-DETERMINISTIC, INVENTORY-OK, PRIVACY-OK, HELPERS-OK, RENDER-OK, F3D-OK (re-render), STALE-REFUSED, RECHECK-OK, SIZE-OK, NO-WIRING | - | NOT RUN |
 
 ### Probe Execution
 
@@ -198,58 +406,51 @@ No `probe-*.sh` declared by the phase. SKIPPED.
 
 | Requirement | Source Plans | Description | Status | Evidence |
 |-------------|--------------|-------------|--------|----------|
-| EVAL-01 | 71-01, 02, 04, 05, 06, 07, 08 | core / renderer / DXF path chosen by measurement, native, Landlock, pixel content | SATISFIED | truth 1; amd64 not measured (declared out of scope by phase 70 D-03/D-05) |
-| EVAL-02 | 71-02, 03, 08 | corpus with licences | SATISFIED | truth 2 |
+| EVAL-01 | 71-01, 02, 04, 05, 06, 07, 08 | core / renderer / DXF path by measurement, native, Landlock, pixel content | SATISFIED | truth 1; choices carried into production |
+| EVAL-02 | 71-02, 03, 08 | corpus with licences | SATISFIED; the plan contract regressed on c38cd9c and is restored on ee30f2e | truths 2 and 8 |
 | EVAL-03 | 71-03, 06, 08 | RSS/time at cpus=2, image size, cold pull, derived limits | SATISFIED | truth 3 |
-| EVAL-04 | 71-01, 07, 08 | licences checked for internal use, decision recorded | SATISFIED as engineering record; legal OK open | truth 4 + judgement |
+| EVAL-04 | 71-01, 07, 08 | licences checked for internal use, decision recorded | SATISFIED as an engineering record; legal OK open | truth 4 |
 
-All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability table maps EVAL-01..04 to Phase 71 only). No orphaned requirements. REQUIREMENTS.md still shows them `Pending` / unchecked; updating that is the orchestrator's step, not a gap in the phase.
+REQUIREMENTS.md marks EVAL-01..04 `[x]` / Complete and maps them to Phase 71 only. No orphaned IDs.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| scripts/cad-*, Dockerfile.cad-measure, PROVENANCE.md, DECISION | - | `TBD`/`FIXME`/`XXX` (word match, excluding `mktemp XXXXXX`) | none found | no debt markers |
+| PROVENANCE.md, cad_provenance_test.go, common.sh and the 4 modified phase-71 scripts, pixelcheck.py, cad-render-probe.sh, cadpixel.go | - | `TBD`/`FIXME`/`XXX`/`TODO` (word match, `mktemp XXXXXX` excluded), re-run on ee30f2e | none found | - |
 
-### Warnings (non-blocking, all disclosed in DECISION unless noted)
+### Warnings (non-blocking)
 
-- W1. Ladder RSS/time was measured on the `full` image variant (`HDR,image=...-full-0d09b7ba39ad`, image_id sha256:cce9074fe380) in every ladder, including the new par=off,lp=2 re-measure; the shipped candidate is `pruned`. Pruning removes only never-mapped VTK modules and PNG output is byte-identical (196/196, 48/48 other rows), so the RSS impact should be nil, but it was not re-measured and DECISION states the image only as `full` in the header. Phase 76 should confirm on the pruned image. STILL APPLIES. Round 4: the final pruned image is now `...-pruned-dc621b94ee5d`; the ladders and Landlock evidence were taken on the `0d09b7ba39ad` tags, bridged by `71-07-prune-arch.txt#TREE_SHA` (see W18).
-- W2. STL ceilings 277 / 877 MiB (ASCII was 1353 before round 3) lie above the highest measured rung (196 / 199 MiB): extrapolation, flagged in DECISION. After the re-measure DXF (118) and STEP (63) are inside the measured range (DXF top rung 197.6 MiB passes at 2497 MiB, 150 s). STEP 63 MiB is 0.79 of the stacked-copies render cliff (80 MiB), the 20% margin holds only because the ceiling fell from 73; the 64 MiB fallback is above 63, so a render time guard (phase 76) is still required. STILL APPLIES (changed numbers).
-- W10 (new). STEP ceiling 63 and DXF ceiling 118 are set by worst-file points near the floor (STEP: derived 1.04 MiB file, peak 517 vs floor 478, k 37.362; DXF: derived 2 MiB file, peak 160 vs floor 115, k 23.017), not by large-file growth. The real 9 MB STEP gives k 32.3 and about 73 MiB; DXF at 100 MiB gives k near 12.5 and about 218 MiB. DECISION says this plainly and keeps the more conservative D-07 result, so the shift 73->63 / 217->118 is not a thread-setting effect. Conservative, not a defect, but phases 73/75 should not read 63/118 as measured cliffs.
-- W11 (new). `usable()` still admits `partial` points in the k_worst fit (STEP `partial_pipelines=4`). A partial peak is a lower bound, so it can only understate k and none of the four governs; it is excluded from FIT, cliffs and top_rung, which was the P2 defect. Residual, not blocking.
-- W12 (new). `71-06-SUMMARY.md` still carries the pre-fix numbers (73/137/278/1363/217, 4g table) in its frontmatter and body, and its first addendum's before/after table still shows STL ASCII 1353 / floor 514 / k 1.720; the later addendum (round 3) corrects it to 877 / 272 / 2.930. `71-DECISION.md` and `71-06-limits.txt` are authoritative; readers of the SUMMARY alone could take an old value. Cosmetic.
-- W13 (new). The 2g/1g ladders, the 8.0.1.0.0 pin comparison, and the threads/quality pipeline peaks (896/669 MiB, `71-06-quality.txt`) remain at `par=on,lp=default`; DECISION labels them history and none of the DECISION summary numbers derives from them. The new ladder was resumed over about 13 hours on a noisy host (12 foreign containers), later series single-repeat.
-- W3. Success criterion 1 says "OCP wheel versus fallback options". The record compares only the two OCP pins; no alternative geometry core was measured, and DECISION does not state in one sentence that none was needed because OCP met every gate. The conclusion is defensible (nothing failed), the sentence is missing.
-- W4. Private PreviewGenerator flow: `files=0`; limits/caps/time are not validated against real company files ("не замерено", not "чисто").
-- W5. amd64 and native f3d not measured (f3d has no linux-arm64 build); image size/cold pull/RSS/Landlock are arm64 only. CHANGED in round 4: an amd64 build of the pruned image under emulation now succeeds (`71-07-prune-amd64.txt`: old keep-list refused with `keep-list stale: missing ...aarch64...so`, new list `kept=77,removed=299,import_check=ok,size_bytes=1130621743`). That is build proof, not a measurement; emulation gives no Landlock and no valid RSS/time, so the amd64 gap stays open for measurement and only the build blocker is removed. The 1130621743-byte amd64 size should not be quoted as a measured image size.
-- W6. Legal OK open; assumptions A1, A2, A5, A8 remain assumptions (patchelf experiment not run).
-- W7. Render of stacked identical copies takes 61.57 s vs 1.18 s for the same triangle count; no cap stops it; handed to phase 76 explicitly.
-- W8. Pod memory 4096 MiB deviates from fleet 1Gi/2Gi; recorded with derivation (D-06).
-- W9. Renderer approval and lock approval reached executors through the coordinator relay rather than directly; disclosed in `71-05-SUMMARY.md` and DECISION.
-
-
-- W14 (new, round 2). `628c7f2` makes `complete` require a measured status (ok/oom/timeout) for every required operation, so a point whose operation is represented only by a SKIP `prestep-failed-rc3` cell is partial, not complete. Verified: `--self-check` now prints `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1` (new case covers a skipped-rc3 point and a skipped-oom point, FIT and cliff top rung); regeneration of `71-06-limits.txt` is byte-identical (diff empty); comparing the old and new deriver on the real evidence, exactly one point flips, `3dsolids.dxf` (complete True -> False, status stays `fail`; the file with nothing drawable), so no DECISION number moves. No residual.
-
-- W15 (new, round 3). `3f20984` counts a cell as ok only when its output verdicts hold (pix=ok for render/rsvg-png/rsvg-pdf, triangles > 0, dxf bbox2d/svg_counts, cstate ok); failures print `INVALID_OUTPUT`. On the real evidence exactly one of 98 points flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (`rc=0, pix=fail`, frac 0.0022, cg_peak 514 MiB, rss 271), a truncated thin non-watertight prefix; the first ladder shows the same `pix=fail`. It had been feeding the STL ASCII floor (514 instead of 272, `floor_points` 2 -> 1), so the ceiling moves 1353 -> 877 (k 1.720 -> 2.930, STL k divergence 65.5%, separate ceilings kept); no other format and no cap changes, L stays 4096. Regeneration of `71-06-limits.txt` is byte-identical and all DECISION numbers (877, 143.3/388.0/877.2, 272.0, 2.930, 65.5%) match the evidence line. Finding for phase 74: the frac-only pixel check rejects a real but thin part, so the production render check must not copy this threshold; the render itself neither failed nor was empty. Caveat: the ASCII floor now rests on one point (`stl_ascii_box.stl`, 272 MiB) and lower floor and higher k move together, so the ceiling stays conservative; 877 is still extrapolated above the 199 MiB measured rung.
-- W16 (round 3, RESOLVED in round 5). The literal `LIMITS-OK` command in `71-06-plan` used to regenerate without `--pin` and, run in place, would have overwritten `71-06-limits.txt` with `PIN_DECISION,choice=8.0.1.0.0`, reversing the user's recorded choice of 7.9.3.1.1. `655f863` makes the deriver refuse to run without `--pin` or `--formula-pin` (exit 2) and refuse `--formula-pin` while a user PIN_DECISION is recorded; `--out` writes atomically and leaves the target untouched on refusal. `56bc497` changes the plan command to `--pin 7.9.3.1.1 --out` and to assert the single exact `PIN_DECISION,choice=7.9.3.1.1` plus a `PIN_FORMULA` line; the SUMMARY invocation was swept the same way. Verified as listed in the spot-check table; the plan command is now safe to run in place. No residual.
-
-- W17 (new, round 4). The Landlock candidate sets in DECISION name `/usr/lib/aarch64-linux-gnu` (cad_mesh, cad_render, cad_dxf, rsvg-convert). On amd64 the multiarch library directory is `x86_64-linux-gnu`, so these sets are arm64-specific; phase 73 must derive or parametrise them per architecture and re-measure on amd64. DECISION labels them candidates, not grants, but does not say they are arch-bound. Warning, not a gap.
-- W18 (new, round 4). Carry-over on the new image tag: `71-08-image-size.txt` (compressed 299.3 MiB, cold pull median 6.38 s), the Landlock matrix and the 4g ladders were measured on `...-0d09b7ba39ad`; the final tag is `...-dc621b94ee5d` (image_id sha256:08117b26d4d0...). Evidence for equivalence: `71-07-prune-arch.txt` `TREE_SHA` equal for `/opt/venv` and `/opt/cad-measure` (excluding the keep-list source and helper pyc), `IMAGE_BYTES` 1135587708 vs 1135589363 (+1655 B, both 1083.0 MiB, 6 layers), `IDENTITY identical=5,different=0,failed=0`, and `71-07-prune.txt` regenerated on the new tag (564.1 -> 288.7 MiB, 196/196 PNG, 48/48 rows, STALE_TEST detected). DECISION states plainly that compressed size and cold pull are carried over, "рассчитано по равному содержимому, не замерено заново". Judgement: honest and acceptable. The only changed bytes are one Python source file in one layer, so a re-pull would differ by well under the measurement noise (cold pull n=3 spread 6.04-7.11 s); the number is still a measurement of the previous tag, and the evidence HDR still names it. Re-measure if the image changes again for any other reason.
-- W19 (new, round 4). The `nofreeimage` build variant (pointing to a non-existent Dockerfile stage) is gone from `common.sh` and `cad-image-size-measure.sh` (no occurrence left in scripts); D-18 stays `record` and the `patchelf` experiment still was not run (A1 open). Resume now refuses a file written under another configuration (exit 65) and keys cells by the full configuration, which closes the way a mixed-config ladder could be produced; `--self-test` passes 32 cases. No residual.
-
-- W20 (new, round 6). Class sweep (configuration completeness and vacuous success, 8987eba..957df95, 16 files, new `scripts/cad-measure/verdicts.sh`). I read the diff of every gate change and the verdict functions: each now additionally requires a positive count that equals the expected count (identity, render PNGs, Landlock helpers, F3D renders, kept modules, readings, inventory groups, PRUNE_OTHER rows plus accounted skips on both sides, resume header fields, ladder rows of the selected configuration, an image pair of one pin), and returns non-zero on missing, empty or hidden-rc input. No condition was removed without a stricter replacement. `--self-test`/`self-test` suites total 44 + 78 + 41 cases, all pass. The committed evidence is non-vacuous: PRUNE_IDENTITY 196/196, PRUNE_OTHER rows=48 same=48 diff=0 (no PRUNE_SKIP line), STALE_TEST x2 detected, EXPECTATION match=1, KEEPLIST_REGEN same=1 entries=77 maps_files=17, LDD counts 2 and 3 (nonzero), D18_TRACE ops 38 and 9, IDENTITY 5/5, AMD64_KEPT 77/77, LANDLOCK_SUMMARY helpers=4 inputs=34 sufficient=34, RENDER_SUMMARY parts=5 pngs=108 (equals the new expected-count formula, (7+4)*5+7*6+3+8), F3D_SUMMARY parts=5 (15 pairs), GO_WORKER readings 24.2/24.9, INV 37/17/33. No evidence file changed in this round and no number in DECISION moved.
-- W21 (new, round 6). The committed `PRUNE_OTHER` line (and the other summary lines above) come from the pre-sweep script versions, so they lack the new fields (`expected=`, `prestep_skipped=`, `runs_ok=1`, `expected_renders=`). The executor reports that a real re-run of the new prune-check gives rows=48 plus 1 known pre-step skip (49), consistent with the committed rows=48; that re-run is not committed as evidence and I did not repeat it (a 49-pair comparison of two images). The committed lines still satisfy the (stricter) plan verify commands. Residual, low: if the evidence is regenerated, the `PRUNE_OTHER` line will carry the extra fields and `prestep_skipped=1`.
-- W22 (new, round 6). Resume now refuses a changed confinement, image build or any unclassified header field. Consequence recorded: `71-06-ladder-4g-ocp7.9.3.1.1.txt` (par=on history) spans two image builds and cannot be resumed; the par=off,lp=2 ladder, the one that feeds every number, is a single image tag across its 4 sessions and can be resumed only with `--expect-image ...0d09b7ba39ad` (the image tag moved to dc621b94ee5d in round 4 without changing the installed tree, see W18). No residual.
+- W23 (updated). `pixelcheck.py` is not aligned with the production judge. This is fine for phase 71 (reasons above), and the instrument is unchanged. The stale `cad-render-probe.sh` judge rule of the 2026-10-17 advisory is gone: since ee30f2e the probe takes every frame verdict from the Go judge and calls `pixelcheck.py` only for the identity `same` comparison, which the Go judge does not provide.
+- W24 (resolved by 6d1ce13). The three phase-71 sweeps now select their inputs through `scripts/cad-measure/common.sh` (`cad_corpus_files` for the inventory filter, `cad_corpus_cad_files` for the ladder filter). Given the corpus root they walk only `public/` and `synthetic/`; any other directory is walked as before; a missing directory, or a root without `public/` or `synthetic/`, is a non-zero status, never an empty success. The inventory container reads the host list on stdin and runs no find of its own. `corpus_other_expected` and both prune input loops of `cad-image-trace.sh` call the same function as `list_cad_files` of `cad-rss-time-measure.sh`, so prune-check expects what the ladder selects. Proven without docker against the phase-71 evidence (quick evidence `w24-red.txt`, `w24-green.txt`, `mutations-w24.txt`):
+  - inventory committed group: 163 files on c38cd9c, now 37 (public 19, synthetic 18), whose basename and sha256 pairs equal the 37 committed CNT lines of `71-03-corpus-inventory.txt`; a stub docker run of the inventory (`inventory-stub.txt`) shows 37 `/corpus/<rel>` lines on the container's stdin, in public/ then synthetic/ order, `INV,group=committed,files=37`, and no private name in the output;
+  - ladder `list_cad_files`: 92 on c38cd9c, now 37, whose names equal the 37 names of `71-04-helpers.txt`;
+  - prune-check: 176 expected pairs on c38cd9c, now 49 (25 3D + 2 x 12 DXF); the 3D inputs in prune naming equal the 25 corpus PRUNE_PNG inputs of `71-07-prune.txt`. The phase-71 PRUNE_OTHER line itself reads `rows=48,same=48,diff=0`, written before the `expected=` field existed; this pass does not re-run prune-check (docker);
+  - mutations: dropping `synthetic` from the groups fails proof checks (a)-(d) and both self-tests; a root comparison that never matches shows 163 and 92 again; removing the reject exclusion fails the self-test reject cases.
+- W25 (new, recorded, not fixed). The local cache `$HOME/.cache/octoconv/cad-corpus` is outside the repository. It holds the 17 fetched files, but of the 33 scaled files the phase-71 inventory counted only 5 are present (the five `dxf-replicate-uncommon-*` targets), beside 77 later entries (`dxf-farpoint` 61, `dxf-minsert` 12, `dxf-replicate` 2, `dxf-combo` 1, `b76/` 1). A re-run of the scaled inventory group or of the ladder on the cache would not reproduce the phase-71 scaled input set until the generator rebuilds it. Read with `ls` only (quick evidence `w25-cache.txt`).
+- W26 (new). The 74-06 Task 1 verify greps `^JUDGE_SUMMARY,.*unexplained_divergence=0` (`74-06-PLAN.md:122`). That field described the pixelcheck/Go differential, which ee30f2e retired; a re-run of the judge mode prints `JUDGE_SUMMARY` with `judge_errors=` and `blank_refused=` instead and will not match that grep. Recorded in the Follow-up line of `74-06-SUMMARY.md`; `evidence/74-06-judge.txt` stays the record of the differential, not re-run and not edited. The tracer, cost and judge modes of the probe need docker and were not re-run after the change.
+- Sweep note. `scripts/cad-dxf-probe.sh` (phase 75) keeps its own pixelcheck/Go drawing differential; it is out of the scope of quick 261018-44q and unchanged. No other script walks the corpus root: the sweep in quick evidence `w24-sweep.txt` finds only explicit file or subdirectory names outside `common.sh`.
+- W1-W22 of the 2026-10-05 pass are carried as recorded there (git b6269c6). They were not re-judged, except that later phases now own W1 (RSS on pruned), W7 (render time guard: `CADDefaultRenderTimeout` exists in `cad.go`) and W17 (per-arch Landlock sets).
+- Criterion 4: legal OK for libfreeimage / libraw / jbigkit / libgomp is still open (`LAWYER_OK=needed,blocking=no`).
 
 ### Human Verification Required
 
-None required for phase closure. Recommended follow-ups outside verification: legal review of libfreeimage/libraw/jbigkit/libgomp before any image leaves the company or ships; re-measure RSS on the pruned image in phase 76.
+None. The fix option was decided before this pass: option (a) of the 2026-10-17 report, taken by quick 261018-44q.
 
 ### Gaps Summary
 
-No gaps. Every roadmap success criterion is backed by evidence that exists in the repository and was cross-checked against the scripts or the primary evidence rows; production wiring against base 4e595c0 is empty; user decisions are recorded consistently across evidence, SUMMARYs and DECISION.
+No gap remains. The 2026-10-17 pass found one gap with one root cause: phases after 71 put their fixtures and helper outputs into the phase-71 corpus directory `internal/convert/testdata/cad` (phase 75 `dxf/`, `dxf-out/` and `dxf-cr/`; quick 261014-0lo `render-bg/`) without the phase-71 per-file PROVENANCE contract, so CORPUS-OK and PROVENANCE-COMPLETE were red on main, 10 committed PNGs had no checksum anywhere, and the phase-71 sweeps no longer reproduced the phase-71 input sets (W24).
+
+Option (a) was taken (quick 261018-44q):
+- each of the 126 files has its own section with a verified sha256 and `- Licence: generated`, and the three group licence lines are split so the allow-list accepts them (c40f7c9);
+- the 10 render-bg PNGs now carry the sha256 of their committed blob, unchanged since 056a8d2, with that origin stated;
+- `TestCADProvenanceCoversEveryCommittedFile` makes the contract part of `go test`, so the next fixture directory without per-file sections fails the package tests, not only a phase-71 gate (325b303);
+- the three sweeps select the phase-71 corpus from one shared function (6d1ce13, W24 resolved);
+- the render probe judges with the Go judge the product uses (ee30f2e, the advisory resolved).
+
+Both gates now exit 0 as written, and every non-docker check of this report passes. The docker-only gates stay NOT RUN and are not counted: HASHES-OK, TRACER-OK, GEN-DETERMINISTIC, INVENTORY-OK, PRIVACY-OK, HELPERS-OK, RENDER-OK, F3D-OK, STALE-REFUSED, RECHECK-OK, SIZE-OK, NO-WIRING. The open warnings are W25 (local scaled cache) and W26 (the superseded 74-06 grep), neither of which touches a phase-71 claim.
 
 ---
 
-_Verified: 2026-10-04_
+_Verified: 2026-10-18T01:05:40Z (re-verification after quick 261018-44q, branch head ee30f2e; previous pass 2026-10-17T20:22:23Z on c38cd9c, gaps_found 7/8)_
 _Verifier: Claude (gsd-verifier)_

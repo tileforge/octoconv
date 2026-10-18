@@ -112,3 +112,7 @@ None beyond the register. T-74-12 is mitigated by the removal table, the denied 
 ## Self-Check: PASSED
 
 The evidence files, the SANDBOX-PATHS blocks and commits 552d85d, a9563a0, 1a4bdb7, fd329bd, 5142db6, 3c2c1ee, c40b54f and 2426844 exist and are ancestors of HEAD; the amd64 check is recorded as NOT RUN, not claimed.
+
+## Follow-up
+
+- 2026-10-18, quick 261018-44q: the judge mode of `scripts/cad-render-probe.sh` now takes its verdict from the Go judge alone, so the pixelcheck/Go differential of this plan is retired; the grep for `unexplained_divergence=0` in the Task 1 verify (74-06-PLAN.md:122) describes that differential and will not match a re-run; `evidence/74-06-judge.txt` stays the record of it, not re-run and not edited.

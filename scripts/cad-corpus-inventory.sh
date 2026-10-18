@@ -40,28 +40,30 @@ BODY="$WORK/body.txt"
 : > "$BODY"
 
 count_container() {
-  local mount=$1 names=$2
+  local mount=$1 names=$2 list=$3
   local flag=""
   if [ "$names" = "names" ]; then flag="--names"; fi
-  docker run --rm --network none --cpus "$CPUS" --memory "$MEMORY" --memory-swap "$MEMORY" \
+  sed 's|^|/corpus/|' "$list" | docker run --rm -i --network none --cpus "$CPUS" --memory "$MEMORY" --memory-swap "$MEMORY" \
     -v "$mount:/corpus:ro" --entrypoint sh "$TAG" -c \
-    "find /corpus -type f ! -name '*.md' ! -path '*/reject/*' | LC_ALL=C sort | tr '\\n' '\\0' | xargs -0 -r /opt/venv/bin/python -I -B /opt/cad-measure/counters.py $flag"
+    "tr '\\n' '\\0' | xargs -0 -r /opt/venv/bin/python -I -B /opt/cad-measure/counters.py $flag"
 }
 
 public_group() {
-  local group=$1 dir=$2 total
+  local group=$1 dir=$2 total list
   if [ ! -d "$dir" ]; then
     echo "error: group $group: $dir is missing; fetch or generate the corpus first, an inventory of nothing is not an inventory" >&2
     exit 1
   fi
-  total=$(find "$dir" -type f ! -name '*.md' ! -path '*/reject/*' | wc -l | tr -d ' ')
+  list="$WORK/list-$group.txt"
+  cad_corpus_files "$dir" > "$list"
+  total=$(wc -l < "$list" | tr -d ' ')
   if [ "$total" -lt 1 ]; then
     echo "error: group $group has no files in $dir; an inventory of nothing is not an inventory" >&2
     exit 1
   fi
   printf 'INV,group=%s,files=%s\n' "$group" "$total" >> "$BODY"
   if [ "$total" -gt 0 ]; then
-    count_container "$dir" names > "$WORK/group.txt"
+    count_container "$dir" names "$list" > "$WORK/group.txt"
     got=$(grep -c '^CNT,' "$WORK/group.txt" || true)
     bad=$(grep -c '^CNT,error=' "$WORK/group.txt" || true)
     if [ "$got" != "$total" ] || [ "$bad" != "0" ]; then
@@ -86,7 +88,9 @@ if [ "$private_files" -eq 0 ]; then
 else
   printf 'PRIVATE_CORPUS,files=%s,status=measured\n' "$private_files" >> "$BODY"
   PRIVATE_CNT="$WORK/private.txt"
-  count_container "$CAD_PRIVATE_DIR" anonymous > "$PRIVATE_CNT"
+  PRIVATE_LIST="$WORK/list-private.txt"
+  cad_corpus_files "$CAD_PRIVATE_DIR" > "$PRIVATE_LIST"
+  count_container "$CAD_PRIVATE_DIR" anonymous "$PRIVATE_LIST" > "$PRIVATE_CNT"
   cat "$PRIVATE_CNT" >> "$BODY"
   counted=$(grep -c '^CNT,' "$PRIVATE_CNT" || true)
   unreadable=$(grep -c '^CNT,error=' "$PRIVATE_CNT" || true)

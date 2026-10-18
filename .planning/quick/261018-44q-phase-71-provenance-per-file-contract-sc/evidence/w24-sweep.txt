@@ -1,0 +1,42 @@
+HEAD c40f7c9 + task-2 working tree; grep of scripts/cad-*.sh and scripts/cad-measure/* for walks of a directory (find) and for references to the corpus root
+-- find invocations
+scripts/cad-corpus-inventory.sh:83:  private_files=$(find "$CAD_PRIVATE_DIR" -type f | wc -l | tr -d ' ')
+scripts/cad-dxf-probe.sh:241:    printf "font_files=%s\n" "$(find /usr/share/fonts -type f | wc -l)"
+scripts/cad-dxf-probe.sh:602:    if [ "$rc" = 0 ] && [ "$(find "$gen" -maxdepth 1 -name '*.dxf' | wc -l | tr -d ' ')" = "$FIXTURE_COUNT" ]; then
+scripts/cad-dxf-probe.sh:648:      find "$FIXTURE_DIR" -maxdepth 1 -name '*.dxf' -exec rm -f {} +
+scripts/cad-dxf-probe.sh:651:    committed=$(find "$FIXTURE_DIR" -maxdepth 1 -name '*.dxf' 2>/dev/null | wc -l | tr -d ' ')
+scripts/cad-dxf-bounds.sh:3127:  f_main=$(find "$WORK/gen/main" -type f | head -n 1)
+scripts/cad-dxf-bounds.sh:3128:  f_new=$(find "$WORK/gen/new" -type f | head -n 1)
+scripts/cad-dxf-bounds.sh:3629:  retained=$( { find "${TMPDIR:-/tmp}" -maxdepth 4 -path '*cad-b76.*' -name '*.png' 2>/dev/null; find "$CAD_CACHE" -name '*.png' 2>/dev/null; } | wc -l | tr -d ' ')
+scripts/cad-prune-identity.sh:97:    cd /opt && find venv cad-measure -type f -not -name "vtk_keeplist*" -not -path "cad-measure/__pycache__/*" -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d" " -f1'
+scripts/cad-image-trace.sh:722:    FETCHED_FOUND=$(find "$CAD_CACHE_DIR/fetched" -type f | wc -l | tr -d ' ')
+scripts/cad-image-trace.sh:741:    done < <(find "$CAD_CACHE_DIR/fetched" -type f | LC_ALL=C sort)
+scripts/cad-sniff-differential.sh:103:  while IFS= read -r f; do files+=("$f"); done < <(find "$dir" -type f ! -name '*.md' | LC_ALL=C sort)
+scripts/cad-measure/common.sh:30:  out=$(find "${starts[@]}" -type f ! -path '*/reject/*' "$@") || { cad_log "error: cannot walk $phys"; return 1; }
+scripts/cad-measure/common.sh:56:      if [ -d scripts/cad-measure/negative ]; then find scripts/cad-measure/negative -type f; fi
+scripts/cad-stl-case.sh:19:ac81afe as the differential), UNION (the shell union-find on a randomly labelled cycle at the
+-- corpus root references
+scripts/cad-corpus-inventory.sh:77:public_group committed "$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-dxf-guard-diff.sh:13:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-dxf-probe.sh:13:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-liveproof.sh:45:CORPUS=internal/convert/testdata/cad
+scripts/cad-dxf-bounds.sh:2041:  python3 "$WORK/tools/stack.py" floors scripts/cad-liveproof.sh "$REPO_ROOT/internal/convert/testdata/cad" "$CAD_CACHE/fetched" >> "$LINES" \
+scripts/cad-f3d-yardstick.sh:181:  CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-render-measure.sh:56:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-sandbox-measure.sh:36:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-render-probe.sh:13:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-sniff-differential.sh:16:COMMITTED="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-image-trace.sh:33:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-image-trace.sh:257:    out=$(CAD_CORPUS_ROOT=$root "$@" 2>/dev/null) || rc=$?
+scripts/cad-image-trace.sh:261:  expect ok corpus-other-expected-other-tree-walked-as-before test "$(sel "$CAD_CORPUS_ROOT" corpus_other_expected "$r")" = "11|rc=0"
+scripts/cad-image-trace.sh:707:  MESH_INPUTS=$(corpus_inputs "$CORPUS" mesh)
+scripts/cad-image-trace.sh:708:  STL_INPUTS=$(corpus_inputs "$CORPUS" stl)
+scripts/cad-image-trace.sh:823:      --ops mesh,stlstats,dxf,rsvg-png --parallel "$PAR" --lp-threads "$LP" --out "$file" "$CORPUS" >/dev/null || rc=$?
+scripts/cad-worker-sandbox-measure.sh:23:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-spike.sh:12:CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-measure/common.sh:12:CAD_CORPUS_ROOT="$CAD_REPO_ROOT/internal/convert/testdata/cad"
+scripts/cad-measure/common.sh:21:  root=$(cd "$CAD_CORPUS_ROOT" 2>/dev/null && pwd -P) || root=""
+scripts/cad-rss-time-measure.sh:754:    out=$(CAD_CORPUS_ROOT=$root "$@" 2>/dev/null) || rc=$?
+scripts/cad-rss-time-measure.sh:763:  expect ok select-other-tree-walked-as-before test "$(sel "$CAD_CORPUS_ROOT" cad_corpus_cad_files "$r")" = "dxf-cr/k.dxf dxf/h.dxf public/B.STL public/a.step public/c.dxf synthetic/d.iges synthetic/e.igs synthetic/f.stp|rc=0"
+-- verdict
+SWEEP,root_walks_outside_common=0: cad-sniff-differential.sh walks public/, synthetic/ and reject/ by name (phase 72, its own groups); cad-dxf-guard-diff.sh, cad-dxf-probe.sh, cad-render-probe.sh, cad-liveproof.sh, cad-spike.sh, cad-f3d-yardstick.sh, cad-render-measure.sh, cad-sandbox-measure.sh and cad-worker-sandbox-measure.sh name files or subdirectories of the corpus root explicitly; the only find over the corpus root is cad_corpus_walk in scripts/cad-measure/common.sh

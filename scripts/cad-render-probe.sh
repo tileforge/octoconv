@@ -15,7 +15,6 @@ CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
 OLD_IMAGE="octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d"
 DOCKERFILE="$REPO_ROOT/Dockerfile.cad-worker"
 WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
-GEN_PY="$REPO_ROOT/scripts/cad-corpus-gen.py"
 UNIT_PY="$REPO_ROOT/scripts/cad-unit-probe.py"
 GO_TOOLCHAIN=go1.26.4
 BASE_HELPER_REV=e3cab948c8a5a29d06791d1caa87c921aa01ecce
@@ -40,12 +39,13 @@ Usage:
   scripts/cad-render-probe.sh units    [--out FILE]
   scripts/cad-render-probe.sh mesh     [--out FILE]
   scripts/cad-render-probe.sh judge    [--out FILE]
+  scripts/cad-render-probe.sh judge-png --size N --background opaque|transparent PNG...
 
 tracer    build the engine image of Dockerfile.cad-worker, mesh two real STEP files with
           cad-mesh, render each STL with cad-render under a real Landlock ruleset (iso 1280
-          opaque, iso 1280 transparent, top 2048 opaque), judge every PNG with pixelcheck.py
-          from the 71 measurement image, and prove that an STL outside every grant yields
-          no PNG.
+          opaque, iso 1280 transparent, top 2048 opaque), judge every PNG with the Go judge
+          the product uses (scripts/cmd/cad-pixel-judge), and prove that an STL outside
+          every grant yields no PNG.
 identity  render five real parts with the 71 cad_render.py in the 71 pruned image and with
           cad-render in the engine image (iso 1280, LP_NUM_THREADS=2) and compare the PNGs
           byte for byte.
@@ -63,12 +63,19 @@ mesh      run cad-mesh --measure on the corpus and the stats path on STL files o
 judge     render the five identity parts in all seven views at 1280, the 71 ladder ASCII slice
           (W15) at 256, 1280 and 2048, two parts at 256, 512 and 2048, and each part transparent,
           under the production limits and a real Landlock ruleset; judge every PNG with the Go
-          judge (scripts/cmd/cad-pixel-judge) and with pixelcheck.py from the 71 image; list
-          every disagreement. Writes evidence/74-06-judge.txt.
+          judge the product uses (scripts/cmd/cad-pixel-judge), the only verdict; both blank
+          frames must be refused by J1, and a judge that did not run fails the run. Writes
+          evidence/74-06-judge.txt.
+
+judge-png judge committed or saved PNGs with the Go judge, one GOJUDGE line each, with no
+          docker: ok=1 accepted, ok=0 refused (rule J0-J4, background, decode or bytes),
+          ok=error the judge did not run. Exit 0 when every PNG got a verdict, 1 when any
+          got ok=error.
 
 Every mode rewrites its own lines in the evidence file (default
 .planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt, mesh mode
-74-02-mesh.txt) and removes the image tags it built. Needs a native arm64 docker server, go and python3.
+74-02-mesh.txt) and removes the image tags it built. Needs a native arm64 docker server, go and python3;
+judge-png needs go only and writes no evidence file.
 Exit codes: 64 usage, 69 a tool is missing, 1 a check failed.
 USAGE
   exit 64
@@ -231,19 +238,49 @@ setup() {
   ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
   RENDER_RO=$(render_ro_for "$ARCH")
   build_probe "$ARCH" "$WORK/probe"
+  build_judge "$WORK/judge"
   LINES="$WORK/lines.txt"
   : > "$LINES"
 }
 
-pix_of() {
-  local png=$1 kind=${2:-single}
-  docker run --rm --network none --user nobody -v "$png:/in/o.png:ro" --entrypoint "${PYV[0]}" "$OLD_IMAGE" \
-    "${PYV[@]:1}" /opt/cad-measure/pixelcheck.py "$kind" /in/o.png 2>/dev/null </dev/null || true
+JUDGE_BIN=""
+
+build_judge() {
+  mkdir -p "$1"
+  CGO_ENABLED=0 GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$1/cad-pixel-judge" ./scripts/cmd/cad-pixel-judge
+  JUDGE_BIN="$1/cad-pixel-judge"
 }
 
-pix_ok() { printf '%s' "$1" | grep -q 'ok=1$'; }
+go_verdict() {
+  local png=$1 size=$2 bg=$3 err out rc=0 line ok mode rule rest
+  err="$(dirname "$JUDGE_BIN")/judge.err"
+  out=$("$JUDGE_BIN" --size "$size" --background "$bg" "$png" 2> "$err") || rc=$?
+  line=$(printf '%s\n' "$out" | grep '^GOJUDGE,' | head -n 1 || true)
+  rest=$(sed -n 's/.*failed the content check: //p' "$err" | head -n 1)
+  ok=error; mode=none; rule=none
+  case "$rc:$line" in
+    0:GOJUDGE,png=*,ok=1,mode=*) ok=1 ;;
+    1:GOJUDGE,png=*,ok=0,mode=*)
+      if [ -n "$rest" ]; then
+        ok=0
+        case "$rest" in
+          J[0-4]\ *) rule=${rest%% *} ;;
+          background\ *) rule=background ;;
+          "not a decodable PNG"*) rule=decode ;;
+          "the image exceeds "*) rule=bytes ;;
+          *) rule=unknown ;;
+        esac
+      fi ;;
+  esac
+  if [ "$ok" = error ]; then
+    printf 'ok=error,mode=none,rule=none,judge_rc=%s\n' "$rc"
+    return 0
+  fi
+  mode=$(printf '%s' "$line" | sed -n 's/^GOJUDGE,png=.*,ok=[01],mode=\([^,]*\),.*/\1/p')
+  printf 'ok=%s,mode=%s,rule=%s,%s\n' "$ok" "${mode:-none}" "$rule" "$(printf '%s' "$line" | sed 's/^GOJUDGE,png=.*,ok=[01],mode=[^,]*,//')"
+}
 
-pix_detail() { printf '%s' "$1" | head -n 1 | sed -e 's/^[A-Z]*,//' -e 's/,/;/g'; }
+go_ok() { printf '%s' "$1" | sed -n 's/^ok=\([^,]*\),.*/\1/p'; }
 
 png_dims() {
   python3 - "$1" <<'PY'
@@ -314,7 +351,7 @@ run_render_confined() {
 
 tracer() {
   setup
-  local ok=1 name src fmt stl job so se rc view size bg kind pix tpix vf dims w h result stage_ok
+  local ok=1 name src fmt stl job so se rc view size bg kind pix vf w h result stage_ok
   {
     printf '%s\n' "$LOCK_LINE"
     header_lines tracer "$TAG"
@@ -342,7 +379,7 @@ tracer() {
       rc=0
       run_render_confined "$stl" "$view" "$size" "$bg" "$job" "$so" "$se" || rc=$?
       result=fail
-      pix=""; tpix=""; w=0; h=0
+      pix=""; w=0; h=0
       if probe_refused "$se" || probe_refused "$so"; then
         vf="verdict=none,verdict_match=0,triangles=na"
         pix="probe_refused"
@@ -353,22 +390,18 @@ tracer() {
       else
         vf=$(verdict_fields "$so" "$view" "$size" "$bg")
         read -r w h <<< "$(png_dims "$job/out.png")"
-        pix=$(pix_of "$job/out.png" single)
+        pix=$(go_verdict "$job/out.png" "$size" "$bg")
         stage_ok=1
-        pix_ok "$pix" || stage_ok=0
-        if [ "$bg" = transparent ]; then
-          tpix=$(pix_of "$job/out.png" transparent)
-          pix_ok "$tpix" || stage_ok=0
-        fi
+        [ "$(go_ok "$pix")" = 1 ] || stage_ok=0
         case "$vf" in *verdict_match=1*) ;; *) stage_ok=0 ;; esac
         [ "$rc" = 0 ] || stage_ok=0
         [ "$w" = "$size" ] && [ "$h" = "$size" ] || stage_ok=0
         [ "$stage_ok" = 1 ] && result=ok
       fi
       [ "$result" = ok ] || ok=0
-      printf 'TRACER,input=%s,view=%s,size=%s,background=%s,rc=%s,confined=1,%s,png_w=%s,png_h=%s,png_bytes=%s,pix_ok=%s,pix=%s,tpix=%s,result=%s\n' \
+      printf 'TRACER,input=%s,view=%s,size=%s,background=%s,rc=%s,confined=1,%s,png_w=%s,png_h=%s,png_bytes=%s,pix_ok=%s,pix=%s,result=%s\n' \
         "$name" "$view" "$size" "$bg" "$rc" "$vf" "$w" "$h" "$( [ -f "$job/out.png" ] && wc -c < "$job/out.png" | tr -d ' ' || echo 0 )" \
-        "$(pix_ok "$pix" && echo 1 || echo 0)" "$(pix_detail "$pix")" "$(pix_detail "$tpix")" "$result" >> "$LINES"
+        "$([ "$(go_ok "$pix")" = 1 ] && echo 1 || echo 0)" "$(printf '%s' "$pix" | tr ',' ';')" "$result" >> "$LINES"
       rm -rf "$job"
     done
   done
@@ -379,7 +412,7 @@ tracer() {
     -v "$ctl_job:/job" -v "$WORK/LinearSlide.stl:/outside/in.stl:ro" "$TAG" \
     /usr/local/bin/cad-render --view iso --size 1280 --background opaque /outside/in.stl /job/out.png \
     > "$WORK/ctl.out" 2> "$WORK/ctl.err" </dev/null || ctl_rc=$?
-  if [ "$ctl_rc" = 0 ] && [ -s "$ctl_job/out.png" ] && pix_ok "$(pix_of "$ctl_job/out.png" single)"; then
+  if [ "$ctl_rc" = 0 ] && [ -s "$ctl_job/out.png" ] && [ "$(go_ok "$(go_verdict "$ctl_job/out.png" 1280 opaque)")" = 1 ]; then
     control=unconfined_ok
   else
     control=unconfined_failed
@@ -479,8 +512,7 @@ identity() {
         same=$((same + 1)); printf 'IDENTITY_PNG,part=%s,same=1,stl_bytes=%s,sha_old=%s,sha_new=%s\n' "$part" "$(wc -c < "$stl" | tr -d ' ')" "$sha_o" "$sha_n" >> "$LINES"
       else
         diff=$((diff + 1)); printf 'IDENTITY_PNG,part=%s,same=0,stl_bytes=%s,sha_old=%s,sha_new=%s\n' "$part" "$(wc -c < "$stl" | tr -d ' ')" "$sha_o" "$sha_n" >> "$LINES"
-        printf 'IDENTITY_DIFF,part=%s,libosmesa6_71=%s,libosmesa6_new=%s,pixelcheck_same=%s\n' "$part" "$(dpkg_osmesa "$OLD_IMAGE")" "$(dpkg_osmesa "$TAG")" \
-          "$(docker run --rm --network none --user nobody -v "$pold:/a:ro" -v "$pnew:/b:ro" --entrypoint "${PYV[0]}" "$OLD_IMAGE" "${PYV[@]:1}" /opt/cad-measure/pixelcheck.py same /a/render.png /b/render.png 2>&1 | tr ',\n' ';;')" >> "$LINES"
+        printf 'IDENTITY_DIFF,part=%s,libosmesa6_71=%s,libosmesa6_new=%s,pixelcheck_same=%s\n' "$part" "$(dpkg_osmesa "$OLD_IMAGE")" "$(dpkg_osmesa "$TAG")" "$(docker run --rm --network none --user nobody -v "$pold:/a:ro" -v "$pnew:/b:ro" --entrypoint "${PYV[0]}" "$OLD_IMAGE" "${PYV[@]:1}" /opt/cad-measure/pixelcheck.py same /a/render.png /b/render.png 2>&1 | tr ',\n' ';;')" >> "$LINES"
         break
       fi
     else
@@ -518,7 +550,12 @@ cost_row() {
     /usr/local/bin/cad-render --view iso --size "$size" --background opaque /job/in.stl /job/out.png \
     > "$wrapout" 2> "$WORK/wrap.err" </dev/null || rc_w=$?
   pix=fail
-  if [ -s "$job/out.png" ] && pix_ok "$(pix_of "$job/out.png" single)"; then pix=ok; fi
+  if [ -s "$job/out.png" ]; then
+    case "$(go_ok "$(go_verdict "$job/out.png" "$size" opaque)")" in
+      1) pix=ok ;;
+      error) pix=error ;;
+    esac
+  fi
   v=$(verdict_fields "$job/child.log" iso "$size" opaque)
   printf 'COST_ROW,file=%s,sha256=%s,stl_records=%s,size=%s,rep=%s,rc=%s,wall_s=%s,child_rss_mib=%s,cg_peak_mib=%s,oom_kill=%s,pix=%s,wrap_rc=%s,%s\n' \
     "$label" "$(sha_of "$stl")" "$triangles" "$size" "$rep" "$(wrap_field rc "$wrapout")" "$(wrap_field wall_s "$wrapout")" \
@@ -1072,39 +1109,13 @@ with open(path, "wb") as fh:
 PY
 }
 
-go_judge() {
-  local png=$1 size=$2 bg=$3
-  "$WORK/cad-pixel-judge" --size "$size" --background "$bg" "$png" 2>/dev/null || true
-}
-
-go_field() { printf '%s' "$1" | tr ',' '\n' | sed -n "s/^$2=//p" | head -n 1; }
-
 judge_pair() {
-  local id=$1 png=$2 size=$3 bg=$4 kind=$5 gj gok gmode pix pok tpix tok gfacts
-  gj=$(go_judge "$png" "$size" "$bg")
-  gok=$(go_field "$gj" ok)
-  gmode=$(go_field "$gj" mode)
-  gfacts=$(printf '%s' "$gj" | sed 's/^GOJUDGE,png=[^,]*,//')
-  pix=$(pix_of "$png" single)
-  if pix_ok "$pix"; then pok=1; else pok=0; fi
-  tpix=""
-  if [ "$bg" = transparent ]; then
-    tpix=$(pix_of "$png" transparent)
-    if pix_ok "$tpix"; then tok=1; else tok=0; fi
-    [ "$tok" = 1 ] || pok=0
-  fi
-  printf 'GOJUDGE,frame=%s,%s\n' "$id" "$gfacts" >> "$LINES"
-  printf 'PIX,frame=%s,ok=%s,single=%s,transparent=%s\n' "$id" "$pok" "$(pix_detail "$pix")" "$(pix_detail "$tpix")" >> "$LINES"
+  local id=$1 png=$2 size=$3 bg=$4 kind=$5 v gok
+  v=$(go_verdict "$png" "$size" "$bg")
+  gok=$(go_ok "$v")
+  printf 'GOJUDGE,frame=%s,%s\n' "$id" "$v" >> "$LINES"
   JUDGE_FRAMES=$((JUDGE_FRAMES + 1))
-  if [ "$gok" = "$pok" ]; then
-    JUDGE_AGREE=$((JUDGE_AGREE + 1))
-  elif [ "$pok" = 0 ] && [ "$gok" = 1 ] && [ "$gmode" = thin ]; then
-    JUDGE_THIN=$((JUDGE_THIN + 1))
-    printf 'DIVERGENCE,frame=%s,class=thin_rule,pixelcheck_ok=0,go_ok=1,go_mode=thin,go=%s,pix=%s\n' "$id" "$(printf '%s' "$gfacts" | tr ',' ';')" "$(pix_detail "$pix")" >> "$LINES"
-  else
-    JUDGE_UNEXPLAINED=$((JUDGE_UNEXPLAINED + 1))
-    printf 'DIVERGENCE,frame=%s,class=UNEXPLAINED,pixelcheck_ok=%s,go_ok=%s,go_mode=%s,go=%s,pix=%s\n' "$id" "$pok" "${gok:-none}" "${gmode:-none}" "$(printf '%s' "$gfacts" | tr ',' ';')" "$(pix_detail "$pix")" >> "$LINES"
-  fi
+  [ "$gok" != error ] || JUDGE_ERRORS=$((JUDGE_ERRORS + 1))
   case "$kind" in
     real)
       JUDGE_REAL=$((JUDGE_REAL + 1))
@@ -1141,15 +1152,14 @@ judge_frame() {
 
 judge_cmd() {
   setup
-  JUDGE_FRAMES=0; JUDGE_AGREE=0; JUDGE_THIN=0; JUDGE_UNEXPLAINED=0
+  JUDGE_FRAMES=0; JUDGE_ERRORS=0
   JUDGE_REAL=0; JUDGE_REAL_OK=0; JUDGE_W15=0; JUDGE_W15_OK=0; JUDGE_RENDER_FAILED=0
   W15_FAILED=""
-  local part stl view size ok=1 bad_blank=0
-  CGO_ENABLED=0 GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/cad-pixel-judge" ./scripts/cmd/cad-pixel-judge
+  local part stl view size ok=1 blank_refused=0
   [ "$(sha_of "$W15_PNG_SRC")" = "$W15_PNG_SHA" ] || fail "$W15_PNG_SRC is not the 71 ladder slice $W15_PNG_SHA"
   header_lines judge "$TAG" >> "$LINES"
   printf 'HDR,stage=judge,render_ro=%s,go=%s\n' "$RENDER_RO" "$(GOTOOLCHAIN=$GO_TOOLCHAIN go version | tr ' ' '_')" >> "$LINES"
-  printf 'HDR,stage=judge,rule=a_frame_may_differ_only_when_pixelcheck_says_ok0_and_the_Go_judge_says_ok_via_mode_thin\n' >> "$LINES"
+  printf 'HDR,stage=judge,rule=the_Go_judge_of_scripts/cmd/cad-pixel-judge_is_the_only_verdict;a_judge_that_did_not_run_fails_the_run\n' >> "$LINES"
 
   for part in "${IDENTITY_PARTS[@]}"; do
     stl="$WORK/$part.stl"
@@ -1170,22 +1180,24 @@ judge_cmd() {
     judge_frame "w15.iso.$size.opaque" "$W15_PNG_SRC" iso "$size" opaque w15
   done
 
-  local blank_o blank_t go_o go_t pix_o pix_t
+  local blank_o blank_t vo vt v
   blank_o="$WORK/blank_opaque.png"; blank_t="$WORK/blank_transparent.png"
   blank_png "$blank_o" 1280 opaque
   blank_png "$blank_t" 1280 transparent
-  go_o=$(go_field "$(go_judge "$blank_o" 1280 opaque)" ok)
-  go_t=$(go_field "$(go_judge "$blank_t" 1280 transparent)" ok)
-  if pix_ok "$(pix_of "$blank_o" single)"; then pix_o=1; else pix_o=0; fi
-  if pix_ok "$(pix_of "$blank_t" transparent)"; then pix_t=1; else pix_t=0; fi
-  printf 'BLANK,background=opaque,size=1280,go_ok=%s,pixelcheck_ok=%s\n' "${go_o:-none}" "$pix_o" >> "$LINES"
-  printf 'BLANK,background=transparent,size=1280,go_ok=%s,pixelcheck_ok=%s\n' "${go_t:-none}" "$pix_t" >> "$LINES"
-  if [ "${go_o:-none}" = 0 ] && [ "$pix_o" = 0 ] && [ "${go_t:-none}" = 0 ] && [ "$pix_t" = 0 ]; then bad_blank=0; else bad_blank=1; fi
+  vo=$(go_verdict "$blank_o" 1280 opaque)
+  vt=$(go_verdict "$blank_t" 1280 transparent)
+  printf 'BLANK,background=opaque,size=1280,%s\n' "$vo" >> "$LINES"
+  printf 'BLANK,background=transparent,size=1280,%s\n' "$vt" >> "$LINES"
+  [ "$(go_ok "$vo")" != error ] || JUDGE_ERRORS=$((JUDGE_ERRORS + 1))
+  [ "$(go_ok "$vt")" != error ] || JUDGE_ERRORS=$((JUDGE_ERRORS + 1))
+  for v in "$vo" "$vt"; do
+    case "$v" in ok=0,mode=*,rule=J1,*) blank_refused=$((blank_refused + 1)) ;; esac
+  done
 
-  if [ "$JUDGE_UNEXPLAINED" != 0 ] || [ "$JUDGE_RENDER_FAILED" != 0 ] || [ "$JUDGE_REAL_OK" != "$JUDGE_REAL" ] \
-    || [ "$JUDGE_W15" != 3 ] || [ "$JUDGE_W15_OK" != 3 ] || [ "$bad_blank" != 0 ]; then ok=0; fi
-  printf 'JUDGE_SUMMARY,frames=%s,agreements=%s,thin_only_divergences=%s,unexplained_divergence=%s,render_failed=%s,real_frames=%s,real_go_ok=%s,w15_frames=%s,w15_go_ok=%s,blank_rejected_by_both=%s,result=%s\n' \
-    "$JUDGE_FRAMES" "$JUDGE_AGREE" "$JUDGE_THIN" "$JUDGE_UNEXPLAINED" "$JUDGE_RENDER_FAILED" "$JUDGE_REAL" "$JUDGE_REAL_OK" "$JUDGE_W15" "$JUDGE_W15_OK" "$([ "$bad_blank" = 0 ] && echo 1 || echo 0)" "$([ "$ok" = 1 ] && echo ok || echo fail)" >> "$LINES"
+  if [ "$JUDGE_ERRORS" != 0 ] || [ "$JUDGE_RENDER_FAILED" != 0 ] || [ "$JUDGE_REAL_OK" != "$JUDGE_REAL" ] \
+    || [ "$JUDGE_W15" != 3 ] || [ "$JUDGE_W15_OK" != 3 ] || [ "$blank_refused" != 2 ]; then ok=0; fi
+  printf 'JUDGE_SUMMARY,frames=%s,real_frames=%s,real_go_ok=%s,w15_frames=%s,w15_go_ok=%s,render_failed=%s,judge_errors=%s,blank_refused=%s,result=%s\n' \
+    "$JUDGE_FRAMES" "$JUDGE_REAL" "$JUDGE_REAL_OK" "$JUDGE_W15" "$JUDGE_W15_OK" "$JUDGE_RENDER_FAILED" "$JUDGE_ERRORS" "$blank_refused" "$([ "$ok" = 1 ] && echo ok || echo fail)" >> "$LINES"
   case " $W15_FAILED " in
     *" 256 "*) printf 'STOP,reason=the_W15_thin_frame_at_256_px_failed_the_Go_judge,thresholds_are_D-06_to_settle=1\n' >> "$LINES" ;;
   esac
@@ -1194,13 +1206,37 @@ judge_cmd() {
   [ "$ok" = 1 ]
 }
 
+judge_png() {
+  local size=$1 bg=$2 png v rc=0
+  shift 2
+  case "$size" in ''|*[!0-9]*) usage ;; esac
+  case "$bg" in opaque|transparent) ;; *) usage ;; esac
+  [ $# -gt 0 ] || usage
+  command -v go >/dev/null 2>&1 || { echo "error: go is required to build the judge" >&2; exit 69; }
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-judge-png.XXXXXX")
+  trap cleanup EXIT
+  build_judge "$WORK/judge"
+  for png in "$@"; do
+    v=$(go_verdict "$png" "$size" "$bg")
+    printf 'GOJUDGE,frame=%s,%s\n' "$(basename "$png")" "$v"
+    [ "$(go_ok "$v")" != error ] || rc=1
+  done
+  return "$rc"
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
+JP_SIZE=""
+JP_BG=""
+JP_PNGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) OUT_OVERRIDE=${2:?}; shift 2 ;;
-    *) usage ;;
+    --out) [ "$MODE" != judge-png ] && [ $# -ge 2 ] || usage; OUT_OVERRIDE=$2; shift 2 ;;
+    --size) [ "$MODE" = judge-png ] && [ $# -ge 2 ] || usage; JP_SIZE=$2; shift 2 ;;
+    --background) [ "$MODE" = judge-png ] && [ $# -ge 2 ] || usage; JP_BG=$2; shift 2 ;;
+    -*) usage ;;
+    *) [ "$MODE" = judge-png ] || usage; JP_PNGS+=("$1"); shift ;;
   esac
 done
 [ "$MODE" != mesh ] || EVID="$PHASE_DIR/evidence/74-02-mesh.txt"
@@ -1214,5 +1250,6 @@ case "$MODE" in
   units) units ;;
   mesh) mesh ;;
   judge) judge_cmd ;;
+  judge-png) judge_png "$JP_SIZE" "$JP_BG" ${JP_PNGS[@]+"${JP_PNGS[@]}"} ;;
   *) usage ;;
 esac
