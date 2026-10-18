@@ -464,6 +464,7 @@ inside the phase built to prevent it.
 | v1.7 | ~1 | 5 | Fourth engine class fully autonomous session (plan→execute→review→verify→secure per phase); RTF measurement gate reused; frozen-scripts discipline; one-off live proofs institutionalized as repeatable E2E |
 | v1.10 | ~1 | 4 | Sixth engine class; seconds-per-page measurement gate (new metric shape vs. RTF ratio); three live-only bugs (enqueue-switch gap, opts-dispatch case, config bake) surfaced only by containerized E2E |
 | v1.12 | ~1 | 5 | First non-engine milestone; two phases went gaps_found → closure → re-verification with independent live reproduction; a live gate failed twice for real and was fixed structurally (discriminating precondition) rather than by loosening an assertion; a property proven by deliberately breaking it |
+| v1.16 | — | 6 | Tenth engine class; premise probe before every derived bound; pre-registered derivation and rerun rules; docs held to code by tests; all-class final gate from a fresh clone |
 
 ### Cumulative Quality
 
@@ -479,6 +480,7 @@ inside the phase built to prevent it.
 | v1.7 | 12/12 satisfied | 0 | 4 advisory (WR-05 frozen-script jsonpath forward-fix, registry cold-pull measurement, arm64 RTF caveat, review Info nits), documented in v1.7-MILESTONE-AUDIT.md |
 | v1.10 | 12/12 satisfied | 0 | advisory tail (WR-05 frozen-script jsonpath residual carried, corpus-representativeness lesson recorded), documented in v1.10-MILESTONE-AUDIT.md |
 | v1.12 | 15/15 satisfied | 0 | 16 non-blocking items — heaviest is 52 WR-01 (unbounded in-flight daily charge, no operator remedy), a debt created by this milestone's own gap closure; documented in v1.12-MILESTONE-AUDIT.md and STATE.md |
+| v1.16 | 29/29 satisfied | 0 | tech_debt: Helm upload cap below the CAD ceilings (TD-1), two phase-76 deferred items, inherited AddOutputs/MarkDone split, measurement-tooling items; documented in v1.16-MILESTONE-AUDIT.md and STATE.md |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -658,3 +660,97 @@ same tip of phase 69 reproduced it, which kept the fix scoped correctly.
 - Model mix: planner opus; researcher, checker, executors, verifiers sonnet.
 - Notable: live gates (image builds) dominated wall-clock; the 4-plan gap
   closure cost about as much as the original 5 plans.
+
+## Milestone: v1.16 — CAD Engine
+
+**Shipped:** 2026-10-18
+**Phases:** 6 (71–76) | **Plans:** 49 | **Commits:** 507 over 17 days, PRs #32–#38
+**Code:** +6.8k Go non-test, +17.2k Go test, +2.5k lines of engine helpers
+
+### What Was Built
+
+A tenth engine class, `cad`: step/stp/iges/igs/stl → STL or a PNG render with a
+second `measurements` output (`octoconv.measurements/v1`), and dxf → svg/pdf/png,
+from OCP, VTK + OSMesa, ezdxf and rsvg-convert with no X server. Every engine
+stage runs under its own measured Landlock ruleset; every bound (886 s engine
+timeout, per-format ceilings, the 120 MiB IGES ceiling) comes from measured rows
+and is pinned by a test that reads the evidence. The all-class final gate ends
+`ALL PASS` from a fresh clone at `07d1024`; KEDA 0→1→2→0 and a downscale-survival
+of a long render are proven on OrbStack k8s.
+
+### What Worked
+
+**Measuring the premise before building on it.** Phase 71 chose the kernel,
+renderer and DXF path on the production base image under Landlock, judged by
+pixels. Phase 76 opened with a pre-registered stacking probe that asked whether
+bytes bound 3D render cost at all; they do not (a 614 KB STL and a 599 KB STEP
+each hit the 900 s budget), so the planned byte-ceiling path for render never
+fired, and three tests now hold that outcome instead of a ceiling that would
+have bounded nothing.
+
+**Pre-registered rules for the measurement runs.** The derivation rules, the
+quiet-host rule (load1 ≤ 11 at start and end) and the rerun rules
+(`rerun_after_product_fix`, `rerun_after_host_sleep`, `rerun_contaminated_rows`)
+were written before the rows existed. When a run stopped, the decision was which
+rule applied, not what the number should be.
+
+**Contract and class in separate phases.** The sniffers and the measurements
+schema landed in phase 72 with no engine registered, reviewed as Go/SQL only;
+the class then entered the API whole in one commit in phase 73, with every other
+class and every metric label pin byte-identical.
+
+**Docs held to the code both ways.** `docs/CAD.md`, `docs/PREVIEW.md`, OpenAPI,
+MCP descriptions and the frontend table are each computed from the code or the
+evidence by a test, so the client docs cannot drift silently from what ships.
+
+### What Was Inefficient
+
+- The host was the bottleneck, not the code. The VM-disk watchdog stopped 76-02
+  and two 76-08 attempts; a stale signal watcher hit a zombie in attempt 3; a
+  Docker daemon stopped answering during cleanup after attempt 6. The 76-11
+  final gate took four attempts (INCOMPLETE, apt mirror, a wrapper false
+  negative) before `ALL PASS`.
+- Review rounds found the same class more than once. PR #36 took four codex
+  rounds on what "a DXF with nothing visible" means before emptiness was judged
+  by rendered ink on every output; PR #37 took three rounds on fail-open reads in
+  the gate wrapper and the loadproof calibration.
+- Phase 71's provenance was only checked by a later re-verification: 126 later
+  testdata files had no per-file provenance, closed by quick 261018-44q and
+  PR #38 after phase 76 had merged.
+- At close, `init.manager` read phases 72–76 as `stale`: the verifier's
+  covered-file fingerprints include source files that later phases legitimately
+  change, so a passed report goes stale by construction across a multi-phase
+  milestone.
+
+### Patterns Established
+
+- Ask whether the bound's premise holds before deriving the bound: a ceiling on
+  an input that does not drive cost is a number, not a limit.
+- Pre-register the derivation and the rerun rules; record every contaminated or
+  failed attempt rather than overwrite it.
+- One judge per question across outputs: the same ink judge decides emptiness
+  for DXF svg, pdf and png, the same render judge on both backgrounds.
+- A gate wrapper's own reads (cleanup listings, dirt checks, env reads) fail the
+  verdict they feed; a masked command is a false green.
+
+### Key Lessons
+
+1. Test the premise of a bound before measuring the bound — v1.16's 3D render
+   cost was not a function of bytes, and the probe that showed it was cheaper
+   than the ceiling machinery it made unnecessary.
+2. Host capacity is part of the test environment: reserve VM disk headroom
+   (measured full-eviction peak 19 GiB plus the 6 GiB floor) before a gate run,
+   and keep the watchdog.
+3. When a reviewer finds a second instance of a class, replace the predicate,
+   not the instance (DXF emptiness, gate-wrapper reads).
+4. Verify provenance claims per file at the phase that makes them, not at the
+   milestone audit.
+
+### Cost Observations
+
+- Model profile: `balanced` (config); the per-agent mix was not recorded.
+- 13 quick tasks during the milestone: nine codex review rounds on PRs #35–#37,
+  the phase-75 deferred-items closure, the shared render judge, and the
+  phase-71 provenance follow-up.
+- Notable: measurement and live-gate wall-clock (multi-hour bounds runs, image
+  builds, k8s proofs) dominated; code review rounds were the second cost.
