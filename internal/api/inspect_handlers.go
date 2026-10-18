@@ -274,6 +274,8 @@ const (
 	// net.Conn.Read the way SetReadDeadline does.
 	inspectIntakeReadDeadline = 30 * time.Second
 
+	inspectIntakeMinBytesPerSecond int64 = 1 << 20
+
 	// inspectIntakeBusyMessage mirrors inspectBusyMessage's own
 	// non-leaking discipline (inspectgate.go) -- names the SERVICE's
 	// state, never a number -- but is worded for the intake stage
@@ -435,9 +437,18 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// httptest.NewRecorder rather than a real net.Conn) -- the
 	// inspectIntakeMaxConcurrent bound above still holds either way, since
 	// it does not depend on this deadline to be effective.
-	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(inspectIntakeReadDeadline))
+	rc := http.NewResponseController(w)
+	start := time.Now()
+	_ = rc.SetReadDeadline(start.Add(s.inspectIntakeWindow))
 
-	r.Body = http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes)
+	r.Body = &inspectIntakeReader{
+		body:        http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes),
+		setDeadline: rc.SetReadDeadline,
+		start:       start,
+		window:      s.inspectIntakeWindow,
+		minRate:     s.inspectIntakeMinRate,
+		limit:       s.inspectMaxUploadBytes,
+	}
 	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()
