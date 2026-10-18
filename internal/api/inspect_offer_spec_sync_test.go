@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/errcode"
 )
 
 // inspectOfferSpecPath is relative to this package's own directory

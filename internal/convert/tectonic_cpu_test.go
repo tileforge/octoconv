@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/sandbox"
+	"github.com/tileforge/octoconv/internal/sandbox"
 	"testing"
 )
 

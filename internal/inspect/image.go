@@ -9,7 +9,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // maxMetadataMarkerScanIterations bounds every marker/chunk-walking loop

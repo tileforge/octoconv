@@ -11,9 +11,9 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
-	"github.com/apaderin/octoconv/internal/worker"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/worker"
 )
 
 // fakeStore is an in-memory jobStore implementation for unit tests, with

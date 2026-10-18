@@ -30,7 +30,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/sandbox"
+	"github.com/tileforge/octoconv/internal/sandbox"
 )
 
 // htmlLiveEngineTimeout bounds each chromium-headless-shell invocation this

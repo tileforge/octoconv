@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 func letterbox(svg string, size int, maxBytes int64) (convert.CADLetterbox, error) {

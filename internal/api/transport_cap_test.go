@@ -22,8 +22,8 @@ import (
 	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const transportCapChart = "../../deploy/chart/octoconv/templates/configmap.yaml"

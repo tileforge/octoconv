@@ -29,7 +29,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/apaderin/octoconv/internal/sandbox"
+	"github.com/tileforge/octoconv/internal/sandbox"
 )
 
 // defaultCanary is read after the ruleset is established and must be denied.

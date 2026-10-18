@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/inspect"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/inspect"
 )
 
 func newCADTestServer(t *testing.T) *Server {

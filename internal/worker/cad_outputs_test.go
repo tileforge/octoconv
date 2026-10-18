@@ -16,10 +16,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
-	"github.com/apaderin/octoconv/internal/measurements"
-	"github.com/apaderin/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 type fakeS3 struct {

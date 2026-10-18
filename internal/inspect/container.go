@@ -27,7 +27,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // maxZipEntriesScanned is the hard ceiling on how many central-directory

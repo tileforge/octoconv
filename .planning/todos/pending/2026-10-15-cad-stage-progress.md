@@ -10,6 +10,10 @@ audit_acknowledged:
 
 # CAD-задания не показывают прогресс: `progress_pct` остаётся `null` до конца
 
+## Decision (2026-10-18)
+
+The operator decided this goes into the next milestone, ahead of other candidates.
+
 ## What
 
 Прогресс есть только у двух движков:

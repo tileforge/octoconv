@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/clients"
 )
 
 // ctxKey is the unexported context key type for the resolved client. This is

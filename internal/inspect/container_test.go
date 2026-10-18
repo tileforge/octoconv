@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // --- fixture helpers, mirroring internal/api/handlers_test.go's shape

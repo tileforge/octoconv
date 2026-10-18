@@ -65,7 +65,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/errcode"
 	"testing"
 )
 

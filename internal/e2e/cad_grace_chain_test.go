@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 func cadReadFile(t *testing.T, path string) []string {

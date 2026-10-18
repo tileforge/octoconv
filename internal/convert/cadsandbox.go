@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 //go:embed testdata/cad/synthetic/units_inch.step

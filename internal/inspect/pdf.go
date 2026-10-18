@@ -37,7 +37,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 // maxPagesDictsScanned bounds how many /Type /Pages dictionaries the walk will

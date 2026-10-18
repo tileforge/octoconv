@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // The webhook body is the ONE thing a caller cannot reconstruct for itself.

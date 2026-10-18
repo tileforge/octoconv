@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // TestPurgeDeletesAgedRows proves the sweeper's purge() actually removes

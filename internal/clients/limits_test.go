@@ -6,9 +6,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/db"
 )
 
 // newLimitsTestClient inserts a bare client fixture with no real API key —

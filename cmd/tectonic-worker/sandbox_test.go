@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/sandbox"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/sandbox"
 )
 
 // The helper's exit status and the classifier that reads it are one contract

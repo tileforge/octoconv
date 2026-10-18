@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 func field(s string) string {

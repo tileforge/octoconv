@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/apaderin/octoconv/internal/db"
-	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // newSoakTestPool mirrors internal/jobs/repo_test.go's newTestRepo helper

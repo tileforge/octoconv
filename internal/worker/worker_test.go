@@ -18,10 +18,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/jobs"
-	"github.com/apaderin/octoconv/internal/storage"
-	"github.com/apaderin/octoconv/internal/webhook"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/webhook"
 )
 
 func TestIsTerminalStorageNoSuchKey(t *testing.T) {

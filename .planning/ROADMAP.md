@@ -120,6 +120,9 @@ Each milestone's full phase detail and requirements live in
 - **CAD v2** (CADV2-01..05) — `dwg` после решения по лицензии ODA, здоровье
   STL-меша, DXF `layout`/`page`, размеры по телам, CAD-находки в `/v1/inspect`;
   **PREVV2-01** — контракт превью на остальных классах.
+- **Этапы CAD-заданий** — решено оператором 2026-10-18 взять в следующий
+  milestone: `stage` + `stage_index`/`stage_count` вместо `progress_pct: null`
+  в статусе, SSE и progress-webhook (todo `2026-10-15-cad-stage-progress.md`).
 - **SEED-014 сжатие / оптимизация размера** — запрошено оператором
   2026-10-18. Сейчас отдельной операции нет: размер меняется только косвенно
   (av `resolution_height` и `codec: hevc`, смена формата картинки без

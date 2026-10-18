@@ -8,7 +8,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/apaderin/octoconv/internal/measurements"
+	"github.com/tileforge/octoconv/internal/measurements"
 )
 
 const (

@@ -82,7 +82,7 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 
 echo "downloading the bundle from release $TAG ..."
-gh release download "$TAG" --repo paderinandrey/octoconv --pattern '*.ttb' --output "$DEST" --clobber
+gh release download "$TAG" --repo tileforge/octoconv --pattern '*.ttb' --output "$DEST" --clobber
 
 GOT="$(digest_of "$DEST")"
 if [ "$GOT" != "$EXPECTED" ]; then

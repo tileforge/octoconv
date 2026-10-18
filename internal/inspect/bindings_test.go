@@ -9,8 +9,8 @@ import (
 
 	"sort"
 
-	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/inspect"
+	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/inspect"
 )
 
 // handlersPath is repo-relative from this package's directory

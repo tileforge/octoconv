@@ -18,12 +18,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/auth"
-	"github.com/apaderin/octoconv/internal/clients"
-	"github.com/apaderin/octoconv/internal/convert"
-	"github.com/apaderin/octoconv/internal/db"
-	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 func main() {

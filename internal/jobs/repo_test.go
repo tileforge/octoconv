@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/db"
 )
 
 func newTestRepo(t *testing.T) *Repo {

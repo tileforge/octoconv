@@ -92,7 +92,7 @@ OctoConv — внутренний асинхронный сервис конве
 - No Makefile or CI workflow (`.github/workflows`) wiring lint/test/build — rely on `go build`, `go vet`, `go test` run manually
 - Code passes `go vet ./...` cleanly; treat this as the enforced minimum bar for new code
 ## Import Organization
-- None. Full module path `github.com/apaderin/octoconv/internal/<pkg>` is always used; no import aliasing observed.
+- None. Full module path `github.com/tileforge/octoconv/internal/<pkg>` is always used; no import aliasing observed.
 ## Error Handling
 - Wrap errors with `fmt.Errorf("<action>: %w", err)` to preserve context and chain — used consistently in `internal/jobs/repo.go`, `internal/storage/storage.go`, `internal/db/db.go`, `internal/worker/worker.go`
 - Sentinel errors declared at package level and checked with `errors.Is`: `jobs.ErrNotFound` checked via `errors.Is(err, jobs.ErrNotFound)` (`internal/api/handlers.go:129`) and `errors.Is(err, pgx.ErrNoRows)` (`internal/jobs/repo.go:130`)

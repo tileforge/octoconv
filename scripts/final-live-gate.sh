@@ -379,7 +379,7 @@ step_ci_local() {
 	grep -q 'ALL REQUESTED TIERS PASSED' "$CI_LOG" || ok=0
 	ev "CI_LOCAL,rc=$rc,all_requested_tiers_passed=$(grep -c 'ALL REQUESTED TIERS PASSED' "$CI_LOG" || true),transcript=$STEP_TRANSCRIPT"
 
-	sec=$(awk '/^### tier: gate /{ g = 1; next } g && /^### tier gate: /{ g = 0 } g && $1 == "ok" && $2 == "github.com/apaderin/octoconv/internal/convert" { v = $3; sub(/s$/, "", v); print v }' "$CI_LOG" | tail -1)
+	sec=$(awk '/^### tier: gate /{ g = 1; next } g && /^### tier gate: /{ g = 0 } g && $1 == "ok" && $2 == "github.com/tileforge/octoconv/internal/convert" { v = $3; sub(/s$/, "", v); print v }' "$CI_LOG" | tail -1)
 	shms=$(sed -n 's/^### tier: gate (started \([0-9:]*\) UTC)$/\1/p' "$CI_LOG" | head -1)
 	ehms=$(awk '/^### tier: gate /{ g = 1; next } g && /^### tier: /{ if (match($0, /[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) print substr($0, RSTART, RLENGTH); exit }' "$CI_LOG")
 	if [ -n "$shms" ]; then sepoch=$(hms_epoch "$shms" "$start_epoch"); else sepoch=$start_epoch; fi

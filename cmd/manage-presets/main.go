@@ -16,9 +16,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/apaderin/octoconv/internal/db"
-	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 func main() {
