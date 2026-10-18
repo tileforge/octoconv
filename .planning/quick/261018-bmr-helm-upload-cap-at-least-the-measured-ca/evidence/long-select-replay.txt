@@ -1,0 +1,24 @@
+# long_select replayed offline from the script's own text, HEAD 679f3ab8a0720377df941c6abed187167292c2dd + working tree
+# script TRANSPORT_CAP line: 30:TRANSPORT_CAP=191889408
+# selector = scripts/keda-cad-downscale-survival.sh lines 427-430 (the plan said 427-431; 431 is the closing quote line) (sha256 ddcb864fe1607d846bc6f9a91c1863be3f97a63800763064dac2df84cf8e26b4); candidate program = lines 435-453 (sha256 8a4899f6af92631233b2ea8031940febe760a195e65796cc3a2ea8048d5a3f25)
+# ceilings from .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt: step=66060288 iges=125829120 stl=190840832 dxf=123731968; band lo=180 hi=590
+# cellspec lines: 8
+## candidates at cap=104857600
+render_step|M2|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/M2.step|4e1361e24eb042ccf9bb6d4b5151edd38b8987683f9cdb69871d814b695abe91|png|size:2048;quality:draft;view:iso;background:opaque|step|1474086|66060288|3|1|194.90|eligible
+render_iges|IR16MiB|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/IR16MiB.igs|5848feaed271d5cf3a2bd52de9e1bc5b2b7b6a84b02b788740a66a8ca9fd6024|png|size:2048;quality:standard;view:iso;background:opaque|iges|16777206|125829120|3|1|64.27|below_band
+render_stl|S1_k256|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/S1_k256.stl|bed2f5bd7ac418280babbaffe7803e6d8efa26d0110a658e93cd712a6acf114f|png|size:2048;view:iso;background:opaque|stl|153684|190840832|3|1|39.50|below_band
+dxf_png|L170030|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/L170030.dxf|2a90499a98ed84f4936d97ace10fbdc6b339d54fc8f99acfa0b60a41d6683317|png|size:2048;background:transparent|dxf|16271|123731968|3|1|355.95|eligible
+## pick at cap=104857600
+render_step|M2|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/M2.step|4e1361e24eb042ccf9bb6d4b5151edd38b8987683f9cdb69871d814b695abe91|png|size:2048;quality:draft;view:iso;background:opaque|step|1474086|66060288|3|1|194.90|eligible
+## candidates at cap=191889408
+render_step|M2|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/M2.step|4e1361e24eb042ccf9bb6d4b5151edd38b8987683f9cdb69871d814b695abe91|png|size:2048;quality:draft;view:iso;background:opaque|step|1474086|66060288|3|1|194.90|eligible
+render_iges|IR16MiB|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/IR16MiB.igs|5848feaed271d5cf3a2bd52de9e1bc5b2b7b6a84b02b788740a66a8ca9fd6024|png|size:2048;quality:standard;view:iso;background:opaque|iges|16777206|125829120|3|1|64.27|below_band
+render_stl|S1_k256|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/S1_k256.stl|bed2f5bd7ac418280babbaffe7803e6d8efa26d0110a658e93cd712a6acf114f|png|size:2048;view:iso;background:opaque|stl|153684|190840832|3|1|39.50|below_band
+dxf_png|L170030|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/L170030.dxf|2a90499a98ed84f4936d97ace10fbdc6b339d54fc8f99acfa0b60a41d6683317|png|size:2048;background:transparent|dxf|16271|123731968|3|1|355.95|eligible
+## pick at cap=191889408
+render_step|M2|/Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76/M2.step|4e1361e24eb042ccf9bb6d4b5151edd38b8987683f9cdb69871d814b695abe91|png|size:2048;quality:draft;view:iso;background:opaque|step|1474086|66060288|3|1|194.90|eligible
+## diff candidates.104857600 candidates.191889408
+diff exit=0
+## diff picks
+diff exit=0
+## candidate count: 4, eligible: 2

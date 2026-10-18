@@ -43,11 +43,11 @@ api:
     # this value was chosen against, and for every fixture's own measured
     # size relative to it.
     INSPECT_MAX_WORK_BYTES: "1048576"
-    # UNCHANGED from the ConfigMap's own 100 MiB default — restated
+    # UNCHANGED from the ConfigMap's own 183 MiB default — restated
     # explicitly, not because this gate needs a different value, but so
     # this overlay is a complete, self-describing record of every boundary
     # the burst depends on, per this file's own header comment.
-    INSPECT_MAX_UPLOAD_BYTES: "104857600"
+    INSPECT_MAX_UPLOAD_BYTES: "191889408"
     # UNCHANGED — a courtesy outer bound, not the mechanism this gate
     # exercises (internal/inspect/budget.go's own doc comment: a context
     # deadline alone cannot interrupt a CPU-bound parsing loop that never

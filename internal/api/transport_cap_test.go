@@ -398,18 +398,22 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 	nextMiB := transportCapNextMiB(largestNeed)
 	t.Logf("largest requirement %d bytes (%s %s %s->%s ceiling %d plus envelope %d); next whole MiB %d (%d MiB)", largestNeed, largest.operation, largest.engine, largest.pair.From, largest.pair.To, largest.limit, largest.envelope, nextMiB, nextMiB>>20)
 
-	if largest.limit != int64(convert.CADMaxSTLBytes) {
-		t.Errorf("the largest non-exempt ceiling is %d (%s %s %s->%s), not convert.CADMaxSTLBytes %d: TestChartTransportCapsAdmitTheLargestCeilingFile no longer posts the worst case", largest.limit, largest.operation, largest.engine, largest.pair.From, largest.pair.To, int64(convert.CADMaxSTLBytes))
-	}
+	atLargest := map[string]bool{}
 	for _, cfg := range configs {
 		for _, e := range entries[cfg.name] {
-			if _, ok := exempt[e.engine]; ok {
-				continue
-			}
-			if e.limit == largest.limit && (e.engine != convert.EngineCAD || e.operation != convert.OperationRender || e.pair.From != "stl" || e.pair.To != "png") {
-				t.Errorf("%s: %s %s %s->%s shares the largest ceiling %d with cad render stl->png: TestChartTransportCapsAdmitTheLargestCeilingFile no longer posts the only worst case", cfg.name, e.operation, e.engine, e.pair.From, e.pair.To, e.limit)
+			if _, ok := exempt[e.engine]; !ok && e.limit == largest.limit {
+				atLargest[e.operation+" "+e.engine+" "+e.pair.From+"->"+e.pair.To] = true
 			}
 		}
+	}
+	tracer := convert.OperationRender + " " + convert.EngineCAD + " stl->png"
+	if largest.limit != int64(convert.CADMaxSTLBytes) || len(atLargest) != 1 || !atLargest[tracer] {
+		at := make([]string, 0, len(atLargest))
+		for k := range atLargest {
+			at = append(at, k)
+		}
+		sort.Strings(at)
+		t.Errorf("the largest non-exempt ceiling is %d on %s, want convert.CADMaxSTLBytes %d on %s alone: TestChartTransportCapsAdmitTheLargestCeilingFile no longer posts the worst case", largest.limit, strings.Join(at, ", "), int64(convert.CADMaxSTLBytes), tracer)
 	}
 
 	needed := map[string]map[string]bool{}

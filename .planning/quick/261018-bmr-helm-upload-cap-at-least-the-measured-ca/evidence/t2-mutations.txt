@@ -1,0 +1,157 @@
+# mutations on HEAD 679f3ab8a0720377df941c6abed187167292c2dd + Task 2 GREEN working tree
+################ M1: configmap MAX_UPLOAD_BYTES back to the base value 104857600
+# mutated diff:
+30c30
+<   MAX_UPLOAD_BYTES: "191889408"
+---
+>   MAX_UPLOAD_BYTES: "104857600"
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+   1 chart -f values-capacity-floor.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-capacity-floor.yaml: MAX_UPLOAD_BYTES
+   1 chart -f values-e2e.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-e2e.yaml: MAX_UPLOAD_BYTES
+   1 chart -f values-inspect-gate.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-inspect-gate.yaml: MAX_UPLOAD_BYTES
+   1 chart -f values-loadproof.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-loadproof.yaml: MAX_UPLOAD_BYTES
+   1 chart -f values-local.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-local.yaml: MAX_UPLOAD_BYTES
+   1 chart -f values-multireplica.yaml: INSPECT_MAX_UPLOAD_BYTES
+  14 chart -f values-multireplica.yaml: MAX_UPLOAD_BYTES
+   1 chart: INSPECT_MAX_UPLOAD_BYTES
+  14 chart: MAX_UPLOAD_BYTES
+# other failure lines:
+    transport_cap_test.go:457: chart: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-capacity-floor.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-e2e.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-inspect-gate.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-loadproof.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-local.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:457: chart -f values-multireplica.yaml: INSPECT_MAX_UPLOAD_BYTES 191889408 is above MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:472: across the chart's values files the largest INSPECT_MAX_UPLOAD_BYTES 191889408 is above the smallest MAX_UPLOAD_BYTES 104857600
+    transport_cap_test.go:494: exempt av (av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr): not covered by .env.example INSPECT_MAX_UPLOAD_BYTES, .env.example MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml INSPECT_MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml MAX_
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.03s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	0.614s
+FAIL
+# TestChartTransportCapsAdmitTheLargestCeilingFile exit=1
+    transport_cap_test.go:162: create at the chart's caps: status = 413, want 202; body={"code":"payload_too_large","error":"file exceeds size limit"}
+--- FAIL: TestChartTransportCapsAdmitTheLargestCeilingFile (0.78s)
+# reverted: deploy/chart/octoconv/templates/configmap.yaml byte-identical to its pre-mutation copy
+
+################ M2: docker-compose api INSPECT_MAX_UPLOAD_BYTES back to the base value
+# mutated diff:
+127c127
+<       INSPECT_MAX_UPLOAD_BYTES: "191889408"
+---
+>       INSPECT_MAX_UPLOAD_BYTES: "104857600"
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+  14 docker-compose.yml api: INSPECT_MAX_UPLOAD_BYTES
+# other failure lines:
+    transport_cap_test.go:494: exempt av (av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr): not covered by .env.example INSPECT_MAX_UPLOAD_BYTES, .env.example MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml INSPECT_MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml MAX_
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.03s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	0.609s
+FAIL
+# reverted: docker-compose.yml byte-identical to its pre-mutation copy
+
+################ M3: the av exemption removed
+# mutated diff:
+355d354
+< 		convert.EngineAV: "av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr",
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+   3 .env.example: INSPECT_MAX_UPLOAD_BYTES
+   3 .env.example: MAX_UPLOAD_BYTES
+   3 chart -f values-capacity-floor.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-capacity-floor.yaml: MAX_UPLOAD_BYTES
+   3 chart -f values-e2e.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-e2e.yaml: MAX_UPLOAD_BYTES
+   3 chart -f values-inspect-gate.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-inspect-gate.yaml: MAX_UPLOAD_BYTES
+   3 chart -f values-loadproof.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-loadproof.yaml: MAX_UPLOAD_BYTES
+   3 chart -f values-local.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-local.yaml: MAX_UPLOAD_BYTES
+   3 chart -f values-multireplica.yaml: INSPECT_MAX_UPLOAD_BYTES
+   3 chart -f values-multireplica.yaml: MAX_UPLOAD_BYTES
+   3 chart: INSPECT_MAX_UPLOAD_BYTES
+   3 chart: MAX_UPLOAD_BYTES
+   3 docker-compose.yml api: INSPECT_MAX_UPLOAD_BYTES
+   3 docker-compose.yml api: MAX_UPLOAD_BYTES
+   1 the largest non-exempt ceiling is 2147483648 on convert av avi->jpg, convert av avi->m4a, convert av avi->mp3, convert av avi->mp4, convert av avi->png, convert av avi->wav, convert av avi->webp, convert av mkv->jpg, convert av mkv->m4a, convert av mkv->mp3, convert av mkv->mp4, convert av mkv->png, convert av mkv->wav, convert av mkv->webp, convert av mov->jpg, convert av mov->m4a, convert av mov->mp3, convert av mov->mp4, convert av mov->png, convert av mov->wav, convert av mov->webp, convert av mp4->avtestout, convert av mp4->jpg, convert av mp4->m4a, convert av mp4->mp3, convert av mp4->png, convert av mp4->wav, convert av mp4->webm, convert av mp4->webp, convert av webm->jpg, convert av webm->m4a, convert av webm->mp3, convert av webm->mp4, convert av webm->png, convert av webm->wav, convert av webm->webp, want convert.CADMaxSTLBytes 190840832 on render cad stl->png alone: T
+# other failure lines:
+    transport_cap_test.go:415: the largest non-exempt ceiling is 2147483648 on convert av avi->jpg, convert av avi->m4a, convert av avi->mp3, convert av avi->mp4, convert av avi->png, convert av avi->wav, convert av avi->webp, convert av mkv->jpg, convert av mkv->m4a, convert av mkv->mp3, convert av mkv->mp4, convert av mkv->png, convert av mkv->wav, convert av mkv->webp, convert av mov->jpg, conv
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.03s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	0.997s
+FAIL
+# reverted: internal/api/transport_cap_test.go byte-identical to its pre-mutation copy
+
+################ M4: a second exemption for tectonic added
+# mutated diff:
+355a356
+> 		convert.EngineTectonic: "M4",
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+# other failure lines:
+    transport_cap_test.go:495: exempt av (av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr): not covered by .env.example INSPECT_MAX_UPLOAD_BYTES, .env.example MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml INSPECT_MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml MAX_
+    transport_cap_test.go:487: the tectonic exemption is not needed: every configuration covers every tectonic ceiling plus the envelope
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.03s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.273s
+FAIL
+# reverted: internal/api/transport_cap_test.go byte-identical to its pre-mutation copy
+
+################ M5: values-inspect-gate.yaml INSPECT_MAX_UPLOAD_BYTES back to the base value
+# mutated diff:
+50c50
+<     INSPECT_MAX_UPLOAD_BYTES: "191889408"
+---
+>     INSPECT_MAX_UPLOAD_BYTES: "104857600"
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+  14 chart -f values-inspect-gate.yaml: INSPECT_MAX_UPLOAD_BYTES
+# other failure lines:
+    transport_cap_test.go:494: exempt av (av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr): not covered by .env.example INSPECT_MAX_UPLOAD_BYTES, .env.example MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml INSPECT_MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml MAX_
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.04s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	0.627s
+FAIL
+# reverted: deploy/chart/octoconv/values-inspect-gate.yaml byte-identical to its pre-mutation copy
+
+################ M6: chart INSPECT_MAX_UPLOAD_BYTES set above its MAX_UPLOAD_BYTES (192937984 > 191889408)
+# mutated diff:
+41c41
+<   INSPECT_MAX_UPLOAD_BYTES: "191889408"
+---
+>   INSPECT_MAX_UPLOAD_BYTES: "192937984"
+# TestDeployedTransportCapsCoverEveryAdvertisedCeiling exit=1
+# failing configurations (record: key) and counts:
+   1 chart -f values-capacity-floor.yaml: INSPECT_MAX_UPLOAD_BYTES
+   1 chart -f values-e2e.yaml: INSPECT_MAX_UPLOAD_BYTES
+   1 chart -f values-loadproof.yaml: INSPECT_MAX_UPLOAD_BYTES
+   1 chart -f values-local.yaml: INSPECT_MAX_UPLOAD_BYTES
+   1 chart -f values-multireplica.yaml: INSPECT_MAX_UPLOAD_BYTES
+   1 chart: INSPECT_MAX_UPLOAD_BYTES
+# other failure lines:
+    transport_cap_test.go:457: chart: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:457: chart -f values-capacity-floor.yaml: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:457: chart -f values-e2e.yaml: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:457: chart -f values-loadproof.yaml: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:457: chart -f values-local.yaml: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:457: chart -f values-multireplica.yaml: INSPECT_MAX_UPLOAD_BYTES 192937984 is above MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:472: across the chart's values files the largest INSPECT_MAX_UPLOAD_BYTES 192937984 is above the smallest MAX_UPLOAD_BYTES 191889408
+    transport_cap_test.go:494: exempt av (av's 2 GiB ceiling is kept out of the API pod's pre-detection spill in the chart and out of POST /v1/inspect everywhere (Phase 58 D-06); decision D1 of quick 261018-bmr): not covered by .env.example INSPECT_MAX_UPLOAD_BYTES, .env.example MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml INSPECT_MAX_UPLOAD_BYTES, chart -f values-capacity-floor.yaml MAX_
+--- FAIL: TestDeployedTransportCapsCoverEveryAdvertisedCeiling (0.03s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	0.644s
+FAIL
+# reverted: deploy/chart/octoconv/templates/configmap.yaml byte-identical to its pre-mutation copy
+
+# final git status of mutated files:
+ M deploy/chart/octoconv/values-inspect-gate.yaml
+ M docker-compose.yml
+ M internal/api/transport_cap_test.go
