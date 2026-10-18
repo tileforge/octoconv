@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
@@ -492,5 +493,67 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 		}
 		sort.Strings(where)
 		t.Logf("exempt %s (%s): not covered by %s", engine, exempt[engine], strings.Join(where, ", "))
+	}
+}
+
+func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams a request of the largest admissible STL over a paced connection")
+	}
+	window := inspectIntakeReadDeadline / 10
+	minRate := inspectIntakeMinBytesPerSecond * 10
+	_, ts := newIntakeServer(t, Config{
+		MaxUploadBytes:        chartLiteral(t, "MAX_UPLOAD_BYTES"),
+		InspectMaxUploadBytes: chartLiteral(t, "INSPECT_MAX_UPLOAD_BYTES"),
+	}, window, minRate)
+	fileName := transportCapFileName(maxInputFilenameLength(t), "stl")
+
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	file, size := largestAdmissibleSTL()
+	go func() {
+		pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file))
+	}()
+	const rate = 25000000
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/inspect", &pacedReader{r: pr, rate: rate, chunk: 256 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	start := time.Now()
+	resp, err := ts.Client().Do(authed(req))
+	elapsed := time.Since(start)
+	_ = pr.Close()
+	t.Logf("%d-byte STL at %d B/s (20 Mbit/s with time scaled down by 10) against a %v window and %d B/s: %v", size, rate, window, minRate, elapsed)
+	if err != nil {
+		t.Fatalf("inspect over a paced connection failed after %v: %v", elapsed, err)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("inspect over a paced connection: status = %d after %v, want 200; body=%.300s", resp.StatusCode, elapsed, raw)
+	}
+	var rep inspectResponse
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		t.Fatalf("decode inspect body: %v; body=%.300s", err, raw)
+	}
+	found := false
+	for _, o := range rep.Operations {
+		if o.Engine != convert.EngineCAD || o.Operation != convert.OperationRender || o.Target != "png" {
+			continue
+		}
+		found = true
+		if !o.Available || o.MaxBytes != int64(convert.CADMaxSTLBytes) {
+			t.Errorf("offer %+v: want Available true and MaxBytes %d", o, int64(convert.CADMaxSTLBytes))
+		}
+	}
+	if !found {
+		t.Errorf("no cad render png offer; operations=%+v", rep.Operations)
+	}
+	if elapsed <= window {
+		t.Errorf("the upload took %v, want more than the %v window", elapsed, window)
 	}
 }

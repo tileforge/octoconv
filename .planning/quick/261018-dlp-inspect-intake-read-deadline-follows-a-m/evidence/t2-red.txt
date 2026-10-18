@@ -1,0 +1,10 @@
+== Task 2 RED on df3c3b30 + the two new tests, before the openapi edit; -race
+    inspect_intake_test.go:279: ../../docs/openapi.yaml: $.paths./v1/inspect.post.responses.400.description does not state "The body has 30 s, plus one second for every 1 MiB received so far, to arrive"; it reads "Invalid multipart form / missing file."
+    inspect_intake_test.go:279: ../../docs/openapi.yaml: $.paths./v1/inspect.post.responses.400.description does not state "a body that falls below 1 MiB/s once its first 30 s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)"; it reads "Invalid multipart form / missing file."
+--- FAIL: TestInspectIntakeRuleIsStatedInTheOpenAPI (0.06s)
+    transport_cap_test.go:527: 190840784-byte STL at 25000000 B/s (20 Mbit/s with time scaled down by 10) against a 3s window and 10485760 B/s: 7.648501334s
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (7.72s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	9.695s
+FAIL
+exit=1

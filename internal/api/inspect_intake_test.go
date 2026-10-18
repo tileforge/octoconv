@@ -9,10 +9,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func newIntakeServer(t *testing.T, cfg Config, window time.Duration, minRate int64) (*Server, *httptest.Server) {
@@ -234,6 +237,46 @@ func TestInspectIntakeCreditsBytesReturnedNotRequested(t *testing.T) {
 	for k, v := range rec.values {
 		if want := start.Add(time.Second + time.Duration(k+1)*time.Millisecond); !v.Equal(want) {
 			t.Errorf("deadline %d = %v, want %v", k+1, v, want)
+		}
+	}
+}
+
+func TestInspectIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var node any
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
+	}
+	walked := "$"
+	for _, key := range []string{"paths", "/v1/inspect", "post", "responses", "400", "description"} {
+		m, ok := node.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: %s is %T, not a mapping", specPath, walked, node)
+		}
+		node, ok = m[key]
+		walked += "." + key
+		if !ok {
+			t.Fatalf("%s: %s is missing", specPath, walked)
+		}
+	}
+	description, ok := node.(string)
+	if !ok {
+		t.Fatalf("%s: %s is %T, not a string", specPath, walked, node)
+	}
+	if inspectIntakeReadDeadline%time.Second != 0 || inspectIntakeMinBytesPerSecond%(1<<20) != 0 {
+		t.Fatalf("inspectIntakeReadDeadline %v is not whole seconds or inspectIntakeMinBytesPerSecond %d is not whole MiB", inspectIntakeReadDeadline, inspectIntakeMinBytesPerSecond)
+	}
+	w := int64(inspectIntakeReadDeadline / time.Second)
+	r := inspectIntakeMinBytesPerSecond >> 20
+	for _, want := range []string{
+		fmt.Sprintf("The body has %d s, plus one second for every %d MiB received so far, to arrive", w, r),
+		fmt.Sprintf("a body that falls below %d MiB/s once its first %d s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)", r, w),
+	} {
+		if !strings.Contains(description, want) {
+			t.Errorf("%s: %s does not state %q; it reads %q", specPath, walked, want, description)
 		}
 	}
 }
