@@ -1,0 +1,57 @@
+command: perl -e 'alarm 1800; exec @ARGV' go test ./... -count=1 -timeout 15m
+cwd: /Users/apaderin/dev/octoconv (main checkout, HEAD 8985b9dd, go version go1.26.4 darwin/arm64)
+start_utc: 2026-10-18T18:19:55Z
+end_utc: 2026-10-18T18:26:05Z
+duration_s: 370
+----- output -----
+ok  	github.com/tileforge/octoconv/cmd/api	0.926s
+ok  	github.com/tileforge/octoconv/cmd/audio-worker	1.629s
+?   	github.com/tileforge/octoconv/cmd/av-worker	[no test files]
+?   	github.com/tileforge/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/tileforge/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/tileforge/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/tileforge/octoconv/cmd/manage-clients	1.840s
+?   	github.com/tileforge/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/tileforge/octoconv/cmd/mcp-http	2.079s
+?   	github.com/tileforge/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/tileforge/octoconv/cmd/migrate	[no test files]
+ok  	github.com/tileforge/octoconv/cmd/ocr-worker	2.526s
+?   	github.com/tileforge/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/tileforge/octoconv/cmd/probe-worker	2.998s
+ok  	github.com/tileforge/octoconv/cmd/tectonic-worker	3.502s
+?   	github.com/tileforge/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/tileforge/octoconv/cmd/worker	[no test files]
+ok  	github.com/tileforge/octoconv/internal/api	21.112s
+ok  	github.com/tileforge/octoconv/internal/auth	4.156s
+ok  	github.com/tileforge/octoconv/internal/cancel	4.539s
+ok  	github.com/tileforge/octoconv/internal/clients	4.970s
+ok  	github.com/tileforge/octoconv/internal/convert	363.706s
+ok  	github.com/tileforge/octoconv/internal/db	5.129s
+ok  	github.com/tileforge/octoconv/internal/e2e	5.404s
+ok  	github.com/tileforge/octoconv/internal/envcfg	9.820s
+ok  	github.com/tileforge/octoconv/internal/errcode	5.318s
+ok  	github.com/tileforge/octoconv/internal/inspect	6.102s
+ok  	github.com/tileforge/octoconv/internal/jobs	5.073s
+ok  	github.com/tileforge/octoconv/internal/logfmt	4.373s
+ok  	github.com/tileforge/octoconv/internal/mcpserver	5.131s
+ok  	github.com/tileforge/octoconv/internal/measurements	4.490s
+ok  	github.com/tileforge/octoconv/internal/metrics	4.327s
+ok  	github.com/tileforge/octoconv/internal/presets	4.164s
+ok  	github.com/tileforge/octoconv/internal/queue	3.857s
+ok  	github.com/tileforge/octoconv/internal/ratelimit	3.339s
+ok  	github.com/tileforge/octoconv/internal/reconciler	2.845s
+ok  	github.com/tileforge/octoconv/internal/repohygiene	2.782s
+ok  	github.com/tileforge/octoconv/internal/sandbox	3.145s
+ok  	github.com/tileforge/octoconv/internal/storage	3.362s
+ok  	github.com/tileforge/octoconv/internal/webhook	3.748s
+ok  	github.com/tileforge/octoconv/internal/worker	11.875s
+?   	github.com/tileforge/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/tileforge/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/tileforge/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+ok  	github.com/tileforge/octoconv/scripts/cmd/cad-png-compare	3.540s
+?   	github.com/tileforge/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/tileforge/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/tileforge/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/tileforge/octoconv/scripts/cmd/texpackages	[no test files]
+----- end output -----
+rc=0

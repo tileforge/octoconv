@@ -37,7 +37,7 @@ CSP_LIVE_ROWS=18
 # for every class today -- html's own former shared-memory sizing flag (a
 # belt-and-suspenders docker /dev/shm size matching docker-compose.yml's
 # since-dropped compensating value) was measured unused (G-69-3,
-# .planning/research/SANDBOX-PATHS.md html section: a large document converts
+# docs/SANDBOX-PATHS.md html section: a large document converts
 # clean through the confined production path with NO /dev/shm mount at all)
 # and removed here too, so nothing in this script props up a rationale the
 # measurement no longer supports. The field exists for a class whose runs

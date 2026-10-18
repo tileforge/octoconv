@@ -53,7 +53,7 @@ func main() {
 	// confine ffmpeg/ffprobe must not consume a queue. It would fail every
 	// job -- or, far worse, run every engine unconfined while the deployment
 	// believes otherwise. The paths it grants were MEASURED, not reasoned:
-	// see .planning/research/SANDBOX-PATHS.md and avReadOnly.
+	// see docs/SANDBOX-PATHS.md and avReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(avSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("av sandbox: %v", err)

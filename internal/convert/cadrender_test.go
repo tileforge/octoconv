@@ -593,7 +593,7 @@ func TestCADRenderPairsOperationAndNoRegistration(t *testing.T) {
 }
 
 func TestCADPinnedRenderCapsComeFromTheEvidence(t *testing.T) {
-	const evidence = "../../.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-01-wave0.txt"
+	const evidence = "testdata/evidence/74-3d-render-measurements/74-01-wave0.txt"
 	raw, err := os.ReadFile(evidence)
 	if err != nil {
 		t.Fatal(err)

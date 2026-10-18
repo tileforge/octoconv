@@ -12,7 +12,7 @@ import (
 )
 
 // The measured set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "audio" section, conf05:audio:readonly,
+// docs/SANDBOX-PATHS.md's "audio" section, conf05:audio:readonly,
 // re-measured by plan 02 through the real job-path argv (the duration
 // guard's ffprobe form on wav/m4a/video-container input, ffmpeg normalize,
 // whisper-cli txt and json).

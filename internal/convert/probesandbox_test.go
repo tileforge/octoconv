@@ -28,7 +28,7 @@ func TestProbeReadWriteSetIsTheMeasuredOne(t *testing.T) {
 }
 
 // The measured set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "probe" section, re-measured from the
+// docs/SANDBOX-PATHS.md's "probe" section, re-measured from the
 // code's six exec sites (D-10) -- not the stale 2026-09-20 record, which
 // omitted file(1) entirely.
 func TestProbeReadOnlySetIsTheMeasuredOne(t *testing.T) {

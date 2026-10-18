@@ -54,7 +54,7 @@ func main() {
 	// queue. It would fail every job -- or, far worse, run every engine
 	// unconfined while the deployment believes otherwise. The paths it
 	// grants were MEASURED, not reasoned: see
-	// .planning/research/SANDBOX-PATHS.md and ocrReadOnly.
+	// docs/SANDBOX-PATHS.md and ocrReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(ocrSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("ocr sandbox: %v", err)

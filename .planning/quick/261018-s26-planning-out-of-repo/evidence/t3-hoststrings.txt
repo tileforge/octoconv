@@ -1,0 +1,23 @@
+grep: /usr/bin/grep (grep (BSD grep, GNU compatible) 2.6.0-FreeBSD)
+== pattern: /Users/
+-- internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-01-stack.txt: 3 line(s)
+19:63117c16c4965ee7a6fe5c1521,source=render_one,path=/Users/apaderin/.cache/octoconv/clone
+20:91dd030698f2cec9b50e1d8225,source=render_one,path=/Users/apaderin/.cache/octoconv/cad-c
+21:ba205ae4896bad4f98da594f522,source=LARGE_STL,path=/Users/apaderin/.cache/octoconv/cad-c
+   total lines: 3
+== pattern: apaderin
+-- internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-01-stack.txt: 3 line(s)
+19:6c4965ee7a6fe5c1521,source=render_one,path=/Users/apaderin/.cache/octoconv/clones/757095
+20:698f2cec9b50e1d8225,source=render_one,path=/Users/apaderin/.cache/octoconv/cad-corpus/fe
+21:4896bad4f98da594f522,source=LARGE_STL,path=/Users/apaderin/.cache/octoconv/cad-corpus/fe
+   total lines: 3
+== pattern: [A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
+   total lines: 0
+== pattern: ghp_
+   total lines: 0
+== pattern: sk-
+   total lines: 0
+== pattern: PRIVATE KEY
+   total lines: 0
+== pattern: [A-Za-z0-9-]+\.local([^A-Za-z0-9]|$)
+   total lines: 0

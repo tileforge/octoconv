@@ -14,7 +14,7 @@ import (
 )
 
 // The measured set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "ocr" section, conf05:ocr:readonly,
+// docs/SANDBOX-PATHS.md's "ocr" section, conf05:ocr:readonly,
 // re-measured by plan 02 through the real job-path argv (pdfinfo/pdftotext
 // included, not just tesseract/pdftoppm).
 func TestOCRReadOnlySetIsTheMeasuredOne(t *testing.T) {

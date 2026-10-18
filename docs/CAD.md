@@ -130,14 +130,14 @@ Every default was measured, not assumed. Each stage's deadline is 1.5 times the 
 the input ceilings in the production worker, and the 3D render takes the remainder of the engine budget. The
 engine timeout is the longer of the two routes plus a measured 20 s of I/O: 21 + 324 + 521 + 20 = 886 for 3D
 and 21 + 186 + 2 x 217 + 20 = 661 for DXF. The worst route is render_iges, on the cell IR16MiB
-(`.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt`). For `cad`,
+(`internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt`). For `cad`,
 `POST /v1/inspect` reports `estimate_source: measured` and an estimated maximum of 886 s at the default.
 
 ## Scaling
 
 The `cad` worker scales with KEDA on the depth of its queue (pending, active and retrying tasks). Each source is
 a value of the chart or a field of a measurement line in
-`.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/`.
+`internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/`.
 
 | item | value | source |
 |---|---|---|

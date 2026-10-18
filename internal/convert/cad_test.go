@@ -723,7 +723,7 @@ func cadDerivedValue(t *testing.T, evidence, key string) int64 {
 	return n
 }
 
-const cad76Evidence = "../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+const cad76Evidence = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt"
 
 func TestCADConstantsComeFromThe76Evidence(t *testing.T) {
 	seconds := func(d time.Duration) int64 { return int64(d / time.Second) }
@@ -786,7 +786,7 @@ func TestCADEngineTimeoutIsTheLongerRoute(t *testing.T) {
 	}
 }
 
-const cad76StackEvidence = "../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt"
+const cad76StackEvidence = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-01-stack.txt"
 
 func TestCADPathBFiredForNoFormat(t *testing.T) {
 	raw, err := os.ReadFile(cad76Evidence)
@@ -840,8 +840,8 @@ func TestCADPathBFiredForNoFormat(t *testing.T) {
 }
 
 func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
-	const bounds = "../../.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
-	const guard = "../../.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt"
+	const bounds = "testdata/evidence/75-dxf-2d-pipeline/75-05-bounds.txt"
+	const guard = "testdata/evidence/75-dxf-2d-pipeline/75-03-guard.txt"
 	const boundsScript = "scripts/cad-dxf-bounds.sh run"
 	const guardScript = "scripts/cad-dxf-guard-diff.sh"
 	for _, c := range []struct {

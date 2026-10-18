@@ -62,7 +62,7 @@ func main() {
 	// confine soffice and veraPDF must not consume a queue. It would fail every
 	// job -- or, far worse, run the engines unconfined while the deployment
 	// believes otherwise. The paths it grants were MEASURED, not reasoned: see
-	// .planning/research/SANDBOX-PATHS.md and documentsandbox.go. The refusal is
+	// docs/SANDBOX-PATHS.md and documentsandbox.go. The refusal is
 	// sandbox.ResolveHelper's alone: no architecture or emulation detection of
 	// any kind lives here (D-07).
 	sandboxHelper, err := sandbox.ResolveHelper(documentSandboxDisabledEnv)

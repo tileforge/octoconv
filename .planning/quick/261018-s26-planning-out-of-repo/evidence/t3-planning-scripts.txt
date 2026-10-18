@@ -1,0 +1,78 @@
+== git ls-files .planning | grep -E '\.(sh|py|go)$' (count: 25)
+-- .planning/milestones/v1.14-phases/62-operational-debt-tail/evidence/coldstart-run.sh: NAMES tracked paths: deploy/chart/octoconv/values-local.yaml 
+-- .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-09-keda-loadproof-test.sh: NAMES tracked paths: ./cmd/manage-clients deploy/postgres scripts/keda-cad-loadproof.sh 
+   runs/sources:
+     171:  "exec deploy/postgres -- psql "*)
+-- .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-ci-local-knobs-test.sh: NAMES tracked paths: ./internal/e2e/... scripts/ci-local.sh 
+   runs/sources:
+     78:      PATH="$STUB:$PATH" STUB_LOG="$dir/log" CI_LOCAL_EVIDENCE_DIR="$dir/ev" "$@" bash scripts/ci-local.sh e2e > "$dir/out" 2>&1 )
+-- .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-final-gate-test.sh: NAMES tracked paths: deploy/tectonic-bundle deploy/tectonic-bundle/octoconv-bundle.ttb internal/convert scripts/cad-liveproof.sh scripts/ci-local.sh scripts/final-live-gate.sh scripts/sandbox-liveproof.sh 
+   runs/sources:
+     288:  ( cd "$R" && env PATH="$STUB:$PATH" STUB_STATE="$S" "$@" bash scripts/final-live-gate.sh --evidence-dir "$E" ${STEPS_ARG:+--steps "$STEPS_ARG"} > "$T/case$N/console" 2>&1 < /dev/null )
+     304:  ( cd "$R" && exec env PATH="$STUB:$PATH" STUB_STATE="$S" TMPDIR="$T/case$N/tmp" STUB_TMPDIR="$T/case$N/tmp" "$@" bash scripts/final-live-gate.sh --evidence-dir "$E" > "$T/case$N/console" 2>&1 < 
+     484:( cd "$R" && env PATH="$STUB:$PATH" STUB_STATE="$S" bash scripts/final-live-gate.sh --evidence-dir "$E" > "$T/case$N/console" 2>&1 < /dev/null )
+     492:( cd "$R" && env PATH="$STUB:$PATH" STUB_STATE="$S" bash scripts/final-live-gate.sh --evidence-dir "$E" --steps preflight,bogus > /dev/null 2>&1 < /dev/null )
+     494:( cd "$R" && env PATH="$STUB:$PATH" STUB_STATE="$S" bash scripts/final-live-gate.sh > /dev/null 2>&1 < /dev/null )
+-- .planning/quick/261001-ncn-chart-migrate-root-owned-minio-volume-an/evidence/ownership-probe.sh: NAMES tracked paths: deploy/chart/octoconv 
+-- .planning/quick/261001-q68-chart-configurable-minio-data-ownership-/evidence/ownership-probe.sh: NAMES tracked paths: deploy/chart/octoconv 
+-- .planning/quick/261001-r2s-chart-template-side-defaults-for-minio-d/evidence/fake-kube-discovery.py: names no tracked path
+-- .planning/quick/261001-r2s-chart-template-side-defaults-for-minio-d/evidence/reuse-values-probe.sh: NAMES tracked paths: deploy/chart/octoconv 
+-- .planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/harness/corpus.sh: NAMES tracked paths: internal/convert/testdata/cad 
+-- .planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/harness/eval.sh: names no tracked path
+-- .planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/harness/exp.sh: NAMES tracked paths: internal/convert/testdata/cad/public scripts/cad-corpus-gen.py 
+-- .planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/harness/repro.sh: NAMES tracked paths: ./cmd/manage-clients deploy/tectonic-bundle/octoconv-bundle.ttb 
+   runs/sources:
+     36:KEY=$(DATABASE_URL=postgres://octo:octo-pass@127.0.0.1:5434/octo_db API_KEY_SALT=dev-only-change-me-in-real-deploys go run ./cmd/manage-clients create "repro-0lo-$(date +%s)" | awk -F': ' '/^api ke
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-corpus-ok.sh: NAMES tracked paths: internal/convert/testdata/cad internal/convert/testdata/cad/PROVENANCE.md scripts/cad-corpus-fetch.sh scripts/cad-corpus-manifest.tsv 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/gate-provenance-complete.sh: NAMES tracked paths: internal/convert/testdata/cad internal/convert/testdata/cad/PROVENANCE.md 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/inventory-stub.sh: NAMES tracked paths: internal/convert/testdata/cad scripts/cad-corpus-inventory.sh 
+   runs/sources:
+     36:PATH="$W/bin:$PATH" OCTOCONV_CAD_PRIVATE_CORPUS="$W/private" bash scripts/cad-corpus-inventory.sh --out "$W/inv.txt" 2> "$W/inv.err"
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/judge-pair-harness.sh: NAMES tracked paths: internal/convert/testdata/cad/render-bg scripts/cad-render-probe.sh 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/judge-png-proof.sh: NAMES tracked paths: internal/convert/cadpixelbg_test.go internal/convert/testdata/cad/render-bg scripts/cad-render-probe.sh 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/mutations-provenance.sh: NAMES tracked paths: ./internal/convert/ internal/convert/testdata/cad internal/convert/testdata/cad/dxf/all_hidden.dxf internal/convert/testdata/cad/dxf/zz_mutation.dxf internal/convert/testdata/cad/PROVENANCE.md 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/mutations-w24.sh: NAMES tracked paths: scripts/cad-image-trace.sh scripts/cad-measure/common.sh scripts/cad-rss-time-measure.sh 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/pixel-table.sh: NAMES tracked paths: ./scripts/cmd/cad-pixel-judge internal/convert/testdata/cad/render-bg scripts/cad-measure/pixelcheck.py 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/provenance-map.py: NAMES tracked paths: internal/convert/testdata/cad 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/provenance-sections.py: NAMES tracked paths: internal/convert/testdata/cad/PROVENANCE.md 
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/reverify.sh: NAMES tracked paths: ./internal/convert/ scripts/cad-corpus-fetch.sh scripts/cad-corpus-gen.py scripts/cad-derive-limits.py scripts/cad-image-trace.sh scripts/cad-measure/verdicts.sh scripts/cad-rss-time-measure.sh scripts/cad-vtk-keeplist-test.py 
+   runs/sources:
+     46:run vtk-keeplist-test rc0 'python3 scripts/cad-vtk-keeplist-test.py'
+     47:run deriver-self-check rc0 'python3 scripts/cad-derive-limits.py --self-check'
+     51:run deriver-regenerates-limits-byte-for-byte "LIMITS-REGEN-IDENTICAL" "python3 scripts/cad-derive-limits.py '$W/ev' --pin 7.9.3.1.1 --out '$W/ev/71-06-limits.regen.txt' >/dev/null && cmp '$EV/71-06
+     52:run deriver-refuses-without-pin "exit=2" "python3 scripts/cad-derive-limits.py '$W/ev' --out '$W/ev/nopin.txt' >/dev/null 2>&1; echo exit=\$?"
+     55:run corpus-gen-check-only rc0 'python3 scripts/cad-corpus-gen.py --check-only'
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/w24-proof.sh: NAMES tracked paths: scripts/cad-corpus-inventory.sh scripts/cad-image-trace.sh scripts/cad-measure/common.sh scripts/cad-rss-time-measure.sh 
+   runs/sources:
+     2:. scripts/cad-measure/common.sh
+     53:' scripts/cad-corpus-inventory.sh scripts/cad-rss-time-measure.sh scripts/cad-image-trace.sh | tr '
+     ' ' ')
+     54:uses=$(grep -c 'cad_corpus_files\|cad_corpus_cad_files' scripts/cad-corpus-inventory.sh scripts/cad-rss-time-measure.sh scripts/cad-image-trace.sh | tr '
+     ' ' ')
+-- .planning/quick/261018-44q-phase-71-provenance-per-file-contract-sc/evidence/w24-red.sh: NAMES tracked paths: internal/convert/testdata/cad 
+
+== Judgement (from the grep above plus reading the matching lines; report only, D-07: nothing moved)
+Runs, sources, builds or tests a tracked file (stub suites / harnesses that exercise tracked code):
+  .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-09-keda-loadproof-test.sh   runs scripts/keda-cad-loadproof.sh under stubs
+  .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-ci-local-knobs-test.sh   runs scripts/ci-local.sh under stubs
+  .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-11-final-gate-test.sh       runs scripts/final-live-gate.sh under stubs
+  .planning/milestones/v1.14-phases/62-operational-debt-tail/evidence/coldstart-run.sh                                renders deploy/chart/octoconv with values-local.yaml
+  .planning/quick/261001-ncn-.../evidence/ownership-probe.sh                                                          renders deploy/chart/octoconv
+  .planning/quick/261001-q68-.../evidence/ownership-probe.sh                                                          renders deploy/chart/octoconv
+  .planning/quick/261001-r2s-.../evidence/reuse-values-probe.sh                                                       renders deploy/chart/octoconv (and a git-archived older copy)
+  .planning/quick/261014-0lo-.../evidence/harness/exp.sh                                                              runs scripts/cad-corpus-gen.py inside docker
+  .planning/quick/261014-0lo-.../evidence/harness/repro.sh                                                            go run ./cmd/manage-clients against a live DB
+  .planning/quick/261018-44q-.../evidence/gate-corpus-ok.sh                                                           runs scripts/cad-corpus-fetch.sh
+  .planning/quick/261018-44q-.../evidence/inventory-stub.sh                                                           runs scripts/cad-corpus-inventory.sh under stubs
+  .planning/quick/261018-44q-.../evidence/judge-pair-harness.sh                                                       extracts and runs functions from scripts/cad-render-probe.sh
+  .planning/quick/261018-44q-.../evidence/judge-png-proof.sh                                                          extracts and runs functions from scripts/cad-render-probe.sh
+  .planning/quick/261018-44q-.../evidence/mutations-provenance.sh                                                     mutates a copy of PROVENANCE.md and runs go test ./internal/convert/
+  .planning/quick/261018-44q-.../evidence/mutations-w24.sh                                                            runs scripts/cad-rss-time-measure.sh and scripts/cad-image-trace.sh self-tests
+  .planning/quick/261018-44q-.../evidence/pixel-table.sh                                                              builds ./scripts/cmd/cad-pixel-judge, runs scripts/cad-measure/pixelcheck.py
+  .planning/quick/261018-44q-.../evidence/reverify.sh                                                                 runs scripts/cad-*.py checks and go test ./internal/convert/
+  .planning/quick/261018-44q-.../evidence/w24-proof.sh                                                                sources scripts/cad-measure/common.sh
+Reads tracked data only (no execution of tracked code):
+  .planning/quick/261014-0lo-.../evidence/harness/corpus.sh, .planning/quick/261018-44q-.../evidence/{gate-provenance-complete.sh,w24-red.sh,provenance-map.py,provenance-sections.py}
+Names no tracked path:
+  .planning/quick/261014-0lo-.../evidence/harness/eval.sh, .planning/quick/261001-r2s-.../evidence/fake-kube-discovery.py
+Counts: 25 files; 18 exercise tracked code, 5 read tracked data only, 2 name nothing tracked.

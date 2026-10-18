@@ -799,7 +799,7 @@ services:
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # No /dev/shm sizing needed (G-69-3, measured) -- see
-    # .planning/research/SANDBOX-PATHS.md, html section.
+    # docs/SANDBOX-PATHS.md, html section.
     deploy:
       resources:
         limits:

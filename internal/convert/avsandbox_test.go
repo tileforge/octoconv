@@ -8,7 +8,7 @@ import (
 )
 
 // The measured set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "av" section, conf05:av:readonly,
+// docs/SANDBOX-PATHS.md's "av" section, conf05:av:readonly,
 // re-measured by plan 02 through the real job-path argv (three ffprobe
 // forms, progress-wrapped and plain transcode, webm, hevc, audio-extract
 // x3, thumbnail x3, and the AVPreflight lavfi source generator).

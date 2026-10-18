@@ -15,7 +15,7 @@ production-scale document (18 page sections, large incompressible images, a
 production path with no /dev/shm mount and no Landlock denial, and a
 negative control confirmed the method would have caught a real /dev/shm
 dependency had one existed. Measured, not merely re-asserted here --
-.planning/research/SANDBOX-PATHS.md, html section.
+docs/SANDBOX-PATHS.md, html section.
 
 startupProbe: heavy Chromium image cold start gets the same generous
 startup budget as document-worker (see that file's header).

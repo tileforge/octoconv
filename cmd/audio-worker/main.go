@@ -51,7 +51,7 @@ func main() {
 	// confine ffmpeg/whisper-cli -- AND the duration guard's ffprobe, the
 	// first engine to read the client's file, before Convert ever runs --
 	// must not consume a queue. The paths it grants were MEASURED, not
-	// reasoned: see .planning/research/SANDBOX-PATHS.md and audioReadOnly.
+	// reasoned: see docs/SANDBOX-PATHS.md and audioReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(audioSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("audio sandbox: %v", err)

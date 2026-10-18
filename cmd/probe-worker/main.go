@@ -62,7 +62,7 @@ func main() {
 	// confine gs/pdfinfo/unzip/file must not consume a queue. It would fail
 	// every job -- or, far worse, run the engines unconfined while the
 	// deployment believes otherwise. The paths it grants were MEASURED, not
-	// reasoned: see .planning/research/SANDBOX-PATHS.md and probeReadOnly.
+	// reasoned: see docs/SANDBOX-PATHS.md and probeReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(probeSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("probe sandbox: %v", err)

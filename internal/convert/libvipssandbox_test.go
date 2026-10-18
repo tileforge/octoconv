@@ -52,7 +52,7 @@ func TestLibvipsSpecGrantsASeparateInputDirectoryReadOnly(t *testing.T) {
 
 // The measured set, pinned. Every path here was observed during a real
 // conversion and then proven necessary by running five format pairs under a
-// ruleset built from this list (.planning/research/SANDBOX-PATHS.md). Removing
+// ruleset built from this list (docs/SANDBOX-PATHS.md). Removing
 // one without re-measuring is how a worker starts failing every job.
 func TestLibvipsReadOnlySetIsTheMeasuredOne(t *testing.T) {
 	want := []string{

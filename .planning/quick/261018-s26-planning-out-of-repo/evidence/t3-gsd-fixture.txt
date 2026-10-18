@@ -1,0 +1,119 @@
+== octoconv main checkout: git check-ignore -q --no-index -- .planning
+rc=0
+== .gitignore:7: /.planning/
+
+gsd-tools: /Users/apaderin/.claude/gsd-core/bin/gsd-tools.cjs
+node: v26.11.1
+git: git version 2.56.0
+
+== variant i ==
+setup: parent .gitignore has /.planning/; nested repo at .planning; config.json {"commit_docs": true}; cwd = parent
+cmd: node /Users/apaderin/.claude/gsd-core/bin/gsd-tools.cjs query commit "probe" --files .planning/a.md
+{
+  "committed": false,
+  "skipped": true,
+  "hash": null,
+  "reason": "skipped_gitignored"
+}exit=0
+-- parent git log --oneline
+0f15981 parent init
+-- nested (.planning) git log --oneline
+bd4f0f5 planning init
+-- parent git status --porcelain --untracked-files=all
+-- nested git status --porcelain --untracked-files=all
+?? a.md
+-- parent git check-ignore -q --no-index -- .planning: rc=0
+-- parent index entries for .planning: []
+
+== variant ii ==
+setup: as i, but the parent .gitignore has no /.planning/ line
+cmd: node /Users/apaderin/.claude/gsd-core/bin/gsd-tools.cjs query commit "probe" --files .planning/a.md
+{
+  "committed": false,
+  "hash": null,
+  "reason": "nothing_to_commit"
+}exit=0
+-- parent git log --oneline
+8e5973d parent init
+-- nested (.planning) git log --oneline
+6b92859 planning init
+-- parent git status --porcelain --untracked-files=all
+?? .planning/
+-- nested git status --porcelain --untracked-files=all
+?? a.md
+-- parent git check-ignore -q --no-index -- .planning: rc=1
+-- parent index entries for .planning: []
+
+== variant iii ==
+setup: as i (parent ignores /.planning/), config.json {"commit_docs": true, "planning": {"sub_repos": [".planning"]}}
+cmd: node /Users/apaderin/.claude/gsd-core/bin/gsd-tools.cjs query commit-to-subrepo "probe" --files .planning/a.md
+{
+  "committed": true,
+  "repos": {
+    ".planning": {
+      "committed": true,
+      "hash": "d931113",
+      "files": [
+        ".planning/a.md"
+      ]
+    }
+  }
+}exit=0
+-- parent git log --oneline
+e556968 parent init
+-- nested (.planning) git log --oneline
+d931113 probe
+8c6dbcc planning init
+-- parent git status --porcelain --untracked-files=all
+-- nested git status --porcelain --untracked-files=all
+-- parent git check-ignore -q --no-index -- .planning: rc=0
+-- parent index entries for .planning: []
+-- nested HEAD commit files: a.md 
+-- control in iii: plain query commit with the same config
+{
+  "committed": false,
+  "skipped": true,
+  "hash": null,
+  "reason": "skipped_gitignored"
+}exit=0
+-- parent git log --oneline
+e556968 parent init
+-- nested (.planning) git log --oneline
+d931113 probe
+8c6dbcc planning init
+-- parent git status --porcelain --untracked-files=all
+-- nested git status --porcelain --untracked-files=all
+?? b.md
+-- parent git check-ignore -q --no-index -- .planning: rc=0
+-- parent index entries for .planning: []
+
+== follow-up probe in fixture ii (why nothing_to_commit): raw 'git add .planning/a.md' in the parent
+git add rc=0
+parent staged: []
+parent status: ?? .planning/
+
+== extra probe iv (not a planned variant): fixture iii, commit-to-subrepo with one parent code file and one planning file ==
+Warning: 1 file(s) did not match any sub-repo prefix: code.txt
+{
+  "committed": true,
+  "repos": {
+    ".planning": {
+      "committed": true,
+      "hash": "cd094f4",
+      "files": [
+        ".planning/c.md"
+      ]
+    }
+  },
+  "unmatched": [
+    "code.txt"
+  ]
+}exit=0
+-- parent git log --oneline
+e556968 parent init
+-- nested git log --oneline
+cd094f4 probe3
+d931113 probe
+8c6dbcc planning init
+-- parent status
+?? code.txt

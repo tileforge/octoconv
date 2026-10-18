@@ -1,0 +1,94 @@
+== scripts/ referenced by the CI entry points
+-- scripts/ci-local.sh
+24:# The helm tier calls scripts/ci-helm-checks.sh, which the workflow also calls:
+28:#   scripts/ci-local.sh                # every tier
+29:#   scripts/ci-local.sh gate race      # only the named tiers
+119:  ./scripts/ci-helm-checks.sh
+-- scripts/ci-helm-checks.sh
+8:# .github/workflows/ci.yml calls it, and so does scripts/ci-local.sh -- the
+688:# Every install in scripts/ is already deliberately async and says so in its own
+694:BADWAIT=$(grep -rn 'helm \(install\|upgrade\)[^|]*octoconv' scripts/ --include='*.sh' \
+-- .github/workflows/ci.yml
+43:        run: ./scripts/ci-helm-checks.sh
+45:        # local stand-in for this pipeline (scripts/ci-local.sh, used while
+111:        run: scripts/tectonic-bundle-fetch.sh
+173:        run: scripts/tectonic-bundle-fetch.sh
+== exec.Command in *_test.go
+internal/convert/audioopts_test.go:171:// ParseAudioOpts entirely is only ever consumed by building an exec.Command
+internal/convert/audioopts_test.go:175:// invokes exec.Command(name, args...) directly, never a shell, so there is
+internal/convert/audioopts_test.go:201:		// only ever appended as one exec.Command argv slice element, and
+internal/convert/audioopts_test.go:202:		// exec.Command never invokes /bin/sh. This test documents/pins that
+internal/convert/av_test.go:35:	out, err := exec.Command("ffmpeg", "-hide_banner", "-encoders").CombinedOutput()
+internal/convert/av_test.go:557:	out, err := exec.Command("ffmpeg", args...).CombinedOutput()
+internal/convert/av_test.go:762:	out, err := exec.Command("ffmpeg", "-y",
+internal/convert/av_test.go:1079:	out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/avduration_test.go:141:	out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/avduration_test.go:200:	out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/avduration_test.go:208:	if out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/avduration_test.go:214:	if out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/avduration_test.go:222:	probe, err := exec.Command("ffprobe", "-v", "error", "-select_streams", "v:0",
+internal/convert/cad_test.go:943:	err := exec.Command("/bin/sh", "-c", script).Run()
+internal/convert/cadguard_test.go:53:	out, err := exec.Command(p, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])").Output()
+internal/convert/cadguard_test.go:106:	cmd := exec.CommandContext(ctx, py, append([]string{"-IB", cadGuardHelperPath}, args...)...)
+internal/convert/cadguard_test.go:455:			out, err := exec.Command(py, "-c",
+internal/convert/cadguard_test.go:484:	out, err := exec.Command(py, append([]string{"-c", script, cadGuardHelperPath}, caps...)...).CombinedOutput()
+internal/convert/cadmesh_test.go:62:	cmd := exec.CommandContext(ctx, py, "-B", cadMeshFakeOCP, cadMeshHelperPath, "--format", "step", in, out)
+internal/convert/chromium_live_test.go:271:	cmd := exec.Command(cmdName, cmdArgs...)
+internal/convert/chromium_live_test.go:475:	version, verErr := exec.Command("chromium-headless-shell", "--version").Output()
+internal/convert/libreoffice_test.go:575:		out, err := exec.Command("ps", "-eo", "pid,comm").CombinedOutput()
+internal/convert/libreoffice_test.go:593:	out, err := exec.Command("ps", "-eo", "pid,comm").CombinedOutput()
+internal/convert/ocrsandbox_test.go:354:	out, err := exec.Command(pdftotext, path, "-").CombinedOutput()
+internal/convert/sandboxcoverage_test.go:45:// a low-level runner or exec.Command/exec.CommandContext freely.
+internal/convert/sandboxcoverage_test.go:251:// exec.Command/exec.CommandContext call, and engineExec.run/.stream call
+internal/convert/sandboxcoverage_test.go:625:	exec.Command("somebinary")
+internal/convert/sandboxcoverage_test.go:707:			t.Error("want a violation for an unclassified file calling exec.Command, got none")
+internal/convert/sandboxexec_test.go:104:// exec.LookPath (forJob's own resolution, and Go's exec.Command for a bare
+internal/convert/sanitizepdf_test.go:86:	out, err := exec.Command("pdftotext", pdfPath, "-").Output()
+internal/convert/sanitizeverify_config_test.go:60:	cmd := exec.Command(os.Args[0], "-test.run", "TestVerifyPDFSurvivesAnUnwritableHome", "-test.v")
+internal/convert/whisper_test.go:529:	out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/convert/whisper_test.go:573:	out, err := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+internal/envcfg/chartscheme_test.go:106:			out, err := exec.Command("helm", "template", "octoconv", chartDir,
+internal/inspect/differential_test.go:88:	out, err := exec.Command("pdftotext", pdftotextArgs(path)...).Output()
+internal/mcpserver/mcp_live_test.go:105:	cmd := exec.Command("go", "build", "-o", binPath, "github.com/tileforge/octoconv/cmd/mcp-server")
+internal/mcpserver/mcp_live_test.go:140:	cmd := exec.Command(binPath)
+internal/mcpserver/mcp_live_test.go:359:	// The CHILD binary's env (exec.Command.Env), not this test process's env
+== class-(b) scripts named in any _test.go or CI entry point
+class-(b) scripts checked: 32; hits=0
+== PROVENANCE.md check (lines naming .planning that are on a parsed line: ## heading, - sha256, - Licence)
+total .planning lines: 128
+on parsed lines: 0
+-- parseProvenance prefixes and WalkDir root in cad_provenance_test.go
+48:		if strings.HasPrefix(line, "- Licence: ") && !provenanceLicence.MatchString(strings.TrimPrefix(line, "- Licence: ")) {
+49:			problems = append(problems, fmt.Sprintf("PROVENANCE.md:%d: licence line outside the D-04 allow-list: %q", n, line))
+51:		if strings.HasPrefix(line, "## ") {
+59:				problems = append(problems, fmt.Sprintf("PROVENANCE.md:%d: byte count %q: %v", n, m[2], err))
+82:	doc, err := os.ReadFile(filepath.Join(root, "PROVENANCE.md"))
+90:	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+110:		if rel == "PROVENANCE.md" {
+114:		b, err := os.ReadFile(path)
+133:			problems = append(problems, fmt.Sprintf("%s: section at PROVENANCE.md:%d names a file that is not committed", rel, list[0].line))
+152:		return []string{fmt.Sprintf("%s: %d per-file sections (PROVENANCE.md lines %s)", rel, len(list), strings.Join(lines, ", "))}
+156:	where := fmt.Sprintf("%s (PROVENANCE.md:%d)", rel, s.line)
+-- cadsniff_test.go PROVENANCE handling
+54:			if e.IsDir() || e.Name() == "PROVENANCE.md" {
+-- any Go test reading PROVENANCE.md
+internal/api/pre59_pinning_test.go:83:// PROVENANCE.md for what each one proves and its reference pdftotext count);
+internal/convert/cad_provenance_test.go:49:			problems = append(problems, fmt.Sprintf("PROVENANCE.md:%d: licence line outside the D-04 allow-list: %q", n, line))
+internal/convert/cad_provenance_test.go:59:				problems = append(problems, fmt.Sprintf("PROVENANCE.md:%d: byte count %q: %v", n, m[2], err))
+internal/convert/cad_provenance_test.go:82:	doc, err := os.ReadFile(filepath.Join(root, "PROVENANCE.md"))
+internal/convert/cad_provenance_test.go:110:		if rel == "PROVENANCE.md" {
+internal/convert/cad_provenance_test.go:133:			problems = append(problems, fmt.Sprintf("%s: section at PROVENANCE.md:%d names a file that is not committed", rel, list[0].line))
+internal/convert/cad_provenance_test.go:152:		return []string{fmt.Sprintf("%s: %d per-file sections (PROVENANCE.md lines %s)", rel, len(list), strings.Join(lines, ", "))}
+internal/convert/cad_provenance_test.go:156:	where := fmt.Sprintf("%s (PROVENANCE.md:%d)", rel, s.line)
+internal/convert/cadsniff_test.go:54:			if e.IsDir() || e.Name() == "PROVENANCE.md" {
+internal/convert/sanitizepdf.go:11:// 10.07.1 (see that directory's PROVENANCE.md, which carries the commands):
+internal/convert/sanitizepdf_test.go:167:// PROVENANCE.md), so the expectation cannot drift toward whatever today's
+internal/convert/sanitizepdf_test.go:184:				t.Fatalf("fixture reference moved: got %d, want %d -- Phase 59's PROVENANCE.md is the source of this number", before, tc.want)
+internal/convert/sanitizepdf_test.go:295:	// corpus PROVENANCE.md for the full set of counts.
+internal/convert/tectonic_missingpkg_test.go:11:// them. testdata/tectonic/PROVENANCE.md records the image, the engine version,
+internal/convert/tectonic_undefined_test.go:22:// was written: testdata/tectonic/PROVENANCE.md.
+internal/inspect/pdftext_test.go:14:// Expected values come from that directory's PROVENANCE.md, which records the
+internal/inspect/pdftext_test.go:29:// Every expectation is the number PROVENANCE.md records for that fixture from
+internal/inspect/pdftext_test.go:413:// verdict, against the reference numbers PROVENANCE.md records from live
+internal/inspect/pdftext_test.go:430:		want int // from testdata/pdf/PROVENANCE.md, measured with pdftotext
+internal/inspect/pdftext_test.go:444:					"testdata/pdf/PROVENANCE.md) -- a count that drifts from pdftotext's makes the two detectors "+
