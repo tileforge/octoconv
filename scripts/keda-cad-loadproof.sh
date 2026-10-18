@@ -20,7 +20,7 @@ APISERVICE="v1beta1.external.metrics.k8s.io"
 FLOOR_KIB=6291456
 CORPUS="internal/convert/testdata/cad"
 IMAGES="api cad-worker webhook-worker mcp-http"
-EVIDENCE_DIR="$ROOT/.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence"
+EVIDENCE_DIR="$ROOT/.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence"
 QUIET_LOAD=11
 QUIET_WAIT_S=3600
 

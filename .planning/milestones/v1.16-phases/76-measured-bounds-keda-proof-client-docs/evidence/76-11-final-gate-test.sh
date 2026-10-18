@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 WRAPPER="$REPO/scripts/final-live-gate.sh"
 T=$(mktemp -d)
 trap 'pkill -f "$T/" 2>/dev/null; rm -rf "$T"' EXIT

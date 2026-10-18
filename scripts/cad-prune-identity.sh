@@ -20,7 +20,7 @@ cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 . "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
-EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad/public"
 PARTS=(LinearSlide-MGN15x-Block.step LM8UU.step SC8UU.step V-Slot-20x20-100mm.step 2020_corner_bracket-Corner.step)
 PY=(/opt/venv/bin/python -I -B)

@@ -18,7 +18,7 @@ export LC_ALL=C
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
-EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 . "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 OCP=7.9.3.1.1

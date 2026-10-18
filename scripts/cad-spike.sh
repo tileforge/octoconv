@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-PHASE_DIR="$REPO_ROOT/.planning/phases/73-cad-class-convert-slice-confined"
+PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/73-cad-class-convert-slice-confined"
 EVID="$PHASE_DIR/evidence/73-01-spikes.txt"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 LOCK_COMMON="$REPO_ROOT/scripts/cad-measure/requirements-common.txt"

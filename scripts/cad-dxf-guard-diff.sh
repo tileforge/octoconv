@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-PHASE_DIR="$REPO_ROOT/.planning/phases/75-dxf-2d-pipeline"
+PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/75-dxf-2d-pipeline"
 EVID="$PHASE_DIR/evidence/75-03-guard.txt"
 EVID_NAME="evidence/75-03-guard.txt"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
@@ -58,7 +58,7 @@ cost  generate the 118 MiB guard stress files (chain, fanout, blocks, wide) and 
       measure_wrap.py. Each wall must be at most 20 s and each peak at most 2842.3 MiB.
 
 Each mode rewrites its own lines in the evidence file (default
-.planning/phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt) and removes the image tags it built.
+.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt) and removes the image tags it built.
 Exit codes: 64 usage, 69 a tool is missing, 3 VM disk below 6 GiB, 1 a check failed or a STOP.
 USAGE
   exit 64

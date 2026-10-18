@@ -12,14 +12,14 @@ usage() {
     '  scripts/cad-worker-sandbox-measure.sh [--stages LIST] [--amd64] [--out FILE]' \
     '  scripts/cad-worker-sandbox-measure.sh --recheck [--stages LIST] [--out FILE]' \
     'LIST is a comma-separated subset of guard,mesh,render,dxf,rsvg. The default guard,mesh,render is the 74-06 run and' \
-    'writes evidence/74-06-landlock.txt; a list with dxf writes .planning/phases/75-dxf-2d-pipeline/evidence/75-08-landlock.txt.' \
+    'writes evidence/74-06-landlock.txt; a list with dxf writes .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-08-landlock.txt.' \
     'render needs mesh and rsvg needs dxf in the same list: their inputs are the outputs of those references.' \
     'Exit codes: 64 usage, 69 docker or go missing, 1 a non-identical result, a probe failure or an emulated image.' >&2
   exit 64
 }
 
-PHASE_EVID="$REPO_ROOT/.planning/phases/74-3d-render-measurements/evidence"
-DRAW_EVID="$REPO_ROOT/.planning/phases/75-dxf-2d-pipeline/evidence"
+PHASE_EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence"
+DRAW_EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 W15_SRC="$CAD_CACHE_DIR/scaled/stl-ascii-nasa-sls-block1-1MiB.stl"
 W15_SHA=77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0

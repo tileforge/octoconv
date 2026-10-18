@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 LIMITS_FILE="$EVID/71-06-limits.txt"
 KEEPLIST="$REPO_ROOT/scripts/cad-measure/vtk-keeplist.txt"
@@ -870,7 +870,7 @@ done'
 fi
 
 if [ "$CMD" = licences ]; then
-  D18=$(sed -n 's/^D-18 outcome: //p' "$REPO_ROOT/.planning/phases/71-evaluation-gate/71-01-SUMMARY.md")
+  D18=$(sed -n 's/^D-18 outcome: //p' "$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/71-01-SUMMARY.md")
   case "$D18" in
     record) ;;
     patchelf) echo "error: the patchelf outcome is not implemented (no image variant removes libfreeimage); 71-01-SUMMARY.md records 'record'" >&2; exit 64 ;;

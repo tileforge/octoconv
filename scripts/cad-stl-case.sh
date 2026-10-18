@@ -23,11 +23,11 @@ one reversed solid is negative_volume in memory and through a STEP file) and STA
 under it and on one shuffled closed shell at the ceiling, each with its shell count and
 within 70% of the memory budget and of the mesh timeout). One evidence line per check goes
 to FILE (relative to the repository root, default
-.planning/phases/74-3d-render-measurements/evidence/74-08-stl-case.txt).
+.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-08-stl-case.txt).
 USAGE
 }
 
-EVID=".planning/phases/74-3d-render-measurements/evidence/74-08-stl-case.txt"
+EVID=".planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-08-stl-case.txt"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--out)
@@ -53,7 +53,7 @@ BASE_REV=f36fd35
 SHELL_BASE_REV=ac81afe
 IMAGE=octoconv-cad-worker:latest
 SYN=internal/convert/testdata/cad/synthetic
-WAVE0=.planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt
+WAVE0=.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-01-wave0.txt
 WRAP_PY=scripts/cad-measure/measure_wrap.py
 LIMIT_MIB=2867.2
 RSS_SHARE_MIB=2007.04

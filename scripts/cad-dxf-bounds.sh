@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-PHASE_DIR="$REPO_ROOT/.planning/phases/75-dxf-2d-pipeline"
+PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/75-dxf-2d-pipeline"
 EVID="$PHASE_DIR/evidence/75-05-bounds.txt"
 EVID_NAME="evidence/75-05-bounds.txt"
 DOCKERFILE="$REPO_ROOT/Dockerfile.cad-worker"
@@ -59,7 +59,7 @@ smoke  runs the same steps on dxf-minsert n=100 and n=1000, the 2 MiB replicate 
 run    runs the 75-03 guard stress shapes, the ceiling rows (100 and 118 MiB replicates), the
        dxf-minsert ladder (60000 to 170031 cells of the 5-entity block), the second repetitions,
        the two check rows and the pre-registered derivation into
-       .planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt.
+       .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt.
 
 floor  the R-10 sweep: uncommon.dxf with one far POINT at 61 distances and the 2 to 50 MiB replicates,
        each drawn, validated, converted to PDF and reported per text by cad-pdf-check --report, and
@@ -70,13 +70,13 @@ stack  the pre-registered 3D stacking probe of plan 76-01 on the production engi
        (cube and the largest liveproof STL), NAUO assemblies on a grid and coincident, STEP copies and
        IGES written from STEP copies, each rung through the production stages (cad-guard, cad-mesh or
        cad-mesh stats, cad-render iso 2048 opaque), into
-       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt with the
+       .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt with the
        STACK_DECISION and STACK_GLOBAL lines. --smoke runs one cube rung into a file under TMPDIR,
        checks stl-tile output against the main-branch generator, and decides nothing.
 
 bounds76  the pre-registered stage bounds of plan 76-02 on the production engine image. --init writes the HDR and RULE
        lines into a new evidence file (default
-       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt); --cells-only builds,
+       .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt); --cells-only builds,
        sniffs and guards every D-02 cell and writes CELL lines; --group refusal|dxf|stl|step|iges|pathb appends one
        group of rows after checking the commit and image id against the init HDR; --finish checks every required
        group and writes SUMMARY; --smoke runs one 3D and one DXF row through every stage kind into a file under
@@ -96,7 +96,7 @@ derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells wri
        convert_iges, render_step, render_iges, render_stl, dxf_svg, dxf_pdf, dxf_png), the CELLSPEC of the cell and
        variant whose rows of band within or margin have the largest sum of per-stage maxima (RULE inworker), with its
        file, sha256 re-checked against the 76-02 CELL line, target, operation and opts (default output
-       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt). A route with no eligible
+       .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt). A route with no eligible
        cell is STOP. --select-cells appends a new section when the file exists and reads the amendments and the
        ladder results of evidence/76-03-ladders.txt.
        --ladder runs one pre-registered ladder of the RULE_AMEND lines of 76-03-cells.txt on the 76-02 engine image,
@@ -1340,7 +1340,7 @@ run_mode() {
   finish 0
 }
 
-STACK_EVID_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
+STACK_EVID_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
 STACK_EVID_NAME=evidence/76-01-stack.txt
 STACK_BUDGET_S=900
 STACK_STEP_BASE=internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step
@@ -2052,8 +2052,8 @@ stack_mode() {
   exit 0
 }
 
-B76_EVID_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt
-B76_STACK_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
+B76_EVID_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt
+B76_STACK_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
 B76_SETTER_S=1800
 B76_CLASS_S=900
 B76_N=5
@@ -3817,7 +3817,7 @@ b76_smoke() {
   exit 0
 }
 
-D76_LADDER_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-ladders.txt
+D76_LADDER_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-ladders.txt
 D76_R_UPPER=402
 D76_POD_MIB=2867.2
 D76_RENDER_RUNGS=(IR16MiB:16777216 IR8MiB:8388608 IR4MiB:4194304 IR2MiB:2097152)
@@ -3825,7 +3825,7 @@ D76_MEMORY_RUNGS=(IM128MiB:134217728 IM120MiB:125829120 IM112MiB:117440512 IM104
 D76_PER=""
 D76_LOAD_MAX=11
 D76_GATE_GIVEUP_S=7200
-D76_QUIET_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-quiet.txt
+D76_QUIET_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-quiet.txt
 D76_FIXED=""
 
 d76_target_of() {
@@ -4192,7 +4192,7 @@ d76_ladder_mode() {
   exit 0
 }
 
-D76_CELLS_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt
+D76_CELLS_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt
 D76_BUDGET_S=886
 
 d76_tools() {
@@ -4961,9 +4961,9 @@ d76_mode() {
   exit "$rc"
 }
 
-D76_DERIVED_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt
-D76_INWORKER_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-inworker.txt
-D76_B75_REL=.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt
+D76_DERIVED_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt
+D76_INWORKER_REL=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-inworker.txt
+D76_B75_REL=.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt
 D76_INK_REL=.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-ink.txt
 
 d76_derive_mode() {
