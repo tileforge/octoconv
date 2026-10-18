@@ -1,0 +1,45 @@
+planning original present during inversion: yes
+### go test -count=1 -v -run '^(TestCADConstantsComeFromThe76Evidence|TestCADRenderReChecksTheDerivedCeilingOfEveryFormat|TestCADPathBFiredForNoFormat)$' ./internal/convert/
+=== RUN   TestCADConstantsComeFromThe76Evidence
+    cad_test.go:750: open testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+--- FAIL: TestCADConstantsComeFromThe76Evidence (0.00s)
+=== RUN   TestCADPathBFiredForNoFormat
+    cad_test.go:794: open testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+--- FAIL: TestCADPathBFiredForNoFormat (0.00s)
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat
+    cadrender_test.go:348: open testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+--- FAIL: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat (0.00s)
+FAIL
+FAIL	github.com/tileforge/octoconv/internal/convert	0.655s
+FAIL
+### rc=1
+### go test -count=1 -v -run '^TestCADDocMatchesTheCode$/^(time_limits|known_limits)$' ./internal/convert/
+=== RUN   TestCADDocMatchesTheCode
+=== RUN   TestCADDocMatchesTheCode/time_limits
+    cad_doc_test.go:610: read testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: open testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+=== RUN   TestCADDocMatchesTheCode/known_limits
+    cad_doc_test.go:669: read testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: open testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+--- FAIL: TestCADDocMatchesTheCode (0.00s)
+    --- FAIL: TestCADDocMatchesTheCode/time_limits (0.00s)
+    --- FAIL: TestCADDocMatchesTheCode/known_limits (0.00s)
+FAIL
+FAIL	github.com/tileforge/octoconv/internal/convert	0.518s
+FAIL
+### rc=1
+### go test -count=1 -v -run '^TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling$' ./internal/api/
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step
+    cad_ceiling_test.go:340: open ../convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges
+    cad_ceiling_test.go:340: open ../convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl
+    cad_ceiling_test.go:340: open ../convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt: no such file or directory
+--- FAIL: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling (0.00s)
+    --- FAIL: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step (0.00s)
+    --- FAIL: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges (0.00s)
+    --- FAIL: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl (0.00s)
+FAIL
+FAIL	github.com/tileforge/octoconv/internal/api	0.551s
+FAIL
+### rc=1
+restore cmp rc=0

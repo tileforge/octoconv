@@ -1,0 +1,57 @@
+### go test -count=1 -v -run '^(TestCADConstantsComeFromThe76Evidence|TestCADRenderReChecksTheDerivedCeilingOfEveryFormat|TestCADPathBFiredForNoFormat)$' ./internal/convert/
+=== RUN   TestCADConstantsComeFromThe76Evidence
+--- PASS: TestCADConstantsComeFromThe76Evidence (0.00s)
+=== RUN   TestCADPathBFiredForNoFormat
+--- PASS: TestCADPathBFiredForNoFormat (0.00s)
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_one_byte_over
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_exactly_at_the_ceiling_reaches_an_engine
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_one_byte_over
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_exactly_at_the_ceiling_reaches_an_engine
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_one_byte_over
+=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_exactly_at_the_ceiling_reaches_an_engine
+--- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat (0.93s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_one_byte_over (0.00s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_exactly_at_the_ceiling_reaches_an_engine (0.40s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_one_byte_over (0.00s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_exactly_at_the_ceiling_reaches_an_engine (0.26s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_one_byte_over (0.00s)
+    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_exactly_at_the_ceiling_reaches_an_engine (0.26s)
+PASS
+ok  	github.com/tileforge/octoconv/internal/convert	2.078s
+### rc=0
+### go test -count=1 -v -run '^TestCADDocMatchesTheCode$/^(time_limits|known_limits)$' ./internal/convert/
+=== RUN   TestCADDocMatchesTheCode
+=== RUN   TestCADDocMatchesTheCode/time_limits
+=== RUN   TestCADDocMatchesTheCode/known_limits
+--- PASS: TestCADDocMatchesTheCode (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/time_limits (0.00s)
+    --- PASS: TestCADDocMatchesTheCode/known_limits (0.00s)
+PASS
+ok  	github.com/tileforge/octoconv/internal/convert	0.495s
+### rc=0
+### go test -count=1 -v -run '^TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling$' ./internal/api/
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step
+2026/10/18 20:37:18 content validation rejected: client_id=e154c444-eb50-4c4b-9eef-9bfb66083c62 filename="big.step" reason=format_size_limit engine=cad format=step size=66060289 parts=1 limit=66060288
+2026/10/18 20:37:18 [АндрейП�/3SIIUa1GOC-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 162.906375ms
+2026/10/18 20:37:18 content validation rejected: client_id=df35bdc3-ef6f-42fb-a06e-33a7491899cf filename="big.step" reason=format_size_limit engine=cad format=step size=66060289 parts=1 limit=66060288
+2026/10/18 20:37:18 [АндрейП�/3SIIUa1GOC-000002] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 287.547542ms
+2026/10/18 20:37:18 [АндрейП�/3SIIUa1GOC-000003] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1766B in 170.000333ms
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges
+2026/10/18 20:37:19 content validation rejected: client_id=58876df4-0d88-49fa-b633-0458b96483b5 filename="big.iges" reason=format_size_limit engine=cad format=iges size=125829126 parts=1 limit=125829120
+2026/10/18 20:37:19 [АндрейП�/3SIIUa1GOC-000004] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 95B in 330.7625ms
+2026/10/18 20:37:19 content validation rejected: client_id=6ac66f20-61dd-4fd2-8db7-c4dda703e100 filename="big.iges" reason=format_size_limit engine=cad format=iges size=125829126 parts=1 limit=125829120
+2026/10/18 20:37:19 [АндрейП�/3SIIUa1GOC-000005] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 95B in 406.929041ms
+2026/10/18 20:37:19 [АндрейП�/3SIIUa1GOC-000006] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1769B in 381.268875ms
+=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl
+2026/10/18 20:37:20 content validation rejected: client_id=6de8dcd2-1b38-41bd-bf1c-e078d9b0669d filename="big.stl" reason=format_size_limit engine=cad format=stl size=190840834 parts=1 limit=190840832
+2026/10/18 20:37:20 [АндрейП�/3SIIUa1GOC-000007] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 551.62875ms
+2026/10/18 20:37:21 [АндрейП�/3SIIUa1GOC-000008] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1550B in 497.277792ms
+--- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling (3.17s)
+    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step (0.69s)
+    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges (1.36s)
+    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl (1.12s)
+PASS
+ok  	github.com/tileforge/octoconv/internal/api	4.489s
+### rc=0

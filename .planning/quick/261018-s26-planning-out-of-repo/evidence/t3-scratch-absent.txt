@@ -1,0 +1,2 @@
+checked_at_utc: 2026-10-18T18:19:17Z (after all seven checks)
+RESULT planning_absent_after_checks=yes

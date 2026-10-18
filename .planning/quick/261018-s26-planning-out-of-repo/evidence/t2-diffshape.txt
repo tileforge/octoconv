@@ -1,0 +1,51 @@
+OK .env.example M5+M6 lines=8
+OK cmd/audio-worker/main.go M6 lines=1
+OK cmd/av-worker/main.go M6 lines=1
+OK cmd/chromium-worker/main.go M6 lines=1
+OK cmd/document-worker/main.go M6 lines=1
+OK cmd/ocr-worker/main.go M6 lines=1
+OK cmd/pandoc-worker/main.go M6 lines=1
+OK cmd/probe-worker/main.go M6 lines=1
+OK cmd/worker/main.go M6 lines=1
+OK deploy/chart/octoconv/templates/deployment-chromium-worker.yaml M6 lines=1
+OK docker-compose.yml M6 lines=1
+OK docs/CAD.md M5 lines=2
+OK internal/api/cad_ceiling_test.go M4 lines=1
+OK internal/convert/audiosandbox_test.go M6 lines=1
+OK internal/convert/avsandbox_test.go M6 lines=1
+OK internal/convert/cad_doc_test.go M1 lines=1
+OK internal/convert/cad_test.go M1+M2 lines=4
+OK internal/convert/caddxfpdffloor_test.go M2 lines=1
+OK internal/convert/cadrender_test.go M3 lines=1
+OK internal/convert/htmlsandbox_test.go M6 lines=1
+OK internal/convert/libvips.go M6 lines=1
+OK internal/convert/libvipssandbox_test.go M6 lines=1
+OK internal/convert/ocrsandbox_test.go M6 lines=1
+OK internal/convert/pandocsandbox.go M6 lines=1
+OK internal/convert/pandocsandbox_test.go M6 lines=1
+OK internal/convert/probesandbox_test.go M6 lines=1
+OK scripts/conf05-crosscheck.sh M6 lines=1
+OK scripts/sandbox-liveproof.sh M6 lines=1
+TOTAL modified_files=28 changed_lines=39 expected_files=28 expected_lines=39
+RESULT PASS
+rc=0
+== mutation probes of t2-diffshape.py (run then reverted): an extra ' (x)' on the sandbox-liveproof.sh + line -> RESULT FAIL rc=1; an appended '// x' line in libvips.go -> RESULT FAIL; after revert -> RESULT PASS
+== git status --porcelain of the new paths
+?? docs/SANDBOX-PATHS.md
+?? internal/convert/testdata/evidence/74-3d-render-measurements/
+?? internal/convert/testdata/evidence/75-dxf-2d-pipeline/
+?? internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-01-stack.txt
+?? internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-09-image-size.txt
+?? internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-09-keda-loadproof.txt
+== git check-ignore --no-index (expect rc=1 for each)
+E2 internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-01-stack.txt check-ignore rc=1
+E3 internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-09-image-size.txt check-ignore rc=1
+E4 internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-09-keda-loadproof.txt check-ignore rc=1
+E5 internal/convert/testdata/evidence/75-dxf-2d-pipeline/75-05-bounds.txt check-ignore rc=1
+E6 internal/convert/testdata/evidence/75-dxf-2d-pipeline/75-03-guard.txt check-ignore rc=1
+E7 internal/convert/testdata/evidence/74-3d-render-measurements/74-01-wave0.txt check-ignore rc=1
+S1 docs/SANDBOX-PATHS.md check-ignore rc=1
+E1 internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt check-ignore rc=1
+== git diff --summary 31c35171 (working tree; only create lines expected, no mode change)
+ create mode 100644 internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt
+== mode change lines: 0

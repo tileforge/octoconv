@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.16
-milestone_name: CAD Engine
 status: Awaiting next milestone
 stopped_at: Milestone v1.16 complete — all phases complete
-last_updated: "2026-10-18T03:16:27.176Z"
+last_updated: "2026-10-18T18:46:33.132Z"
 last_activity: 2026-10-18
 last_activity_desc: Milestone v1.16 completed and archived
-state_head: 186c44fbd171f33431670c7570360e3cc73419d3
+state_head: 8985b9dd8f18bbaa2b5da26e83cff5bb68748652
 progress:
   total_phases: 6
   completed_phases: 6
   total_plans: 49
   completed_plans: 49
   percent: 100
+milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 ---
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-10-18 after v1.16 milestone)
 Phase: Milestone v1.16 complete
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-10-18 — Milestone v1.16 completed and archived
+Last activity: 2026-10-18 - Completed quick task 261018-s26: octoconv self-sufficient without .planning
 
 ## Performance Metrics
 
@@ -276,6 +276,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261018-44q | Phase-71 re-verification gap closed (option a): a per-file PROVENANCE section with a verified sha256 for each of the 126 later testdata/cad files, enforced by TestCADProvenanceCoversEveryCommittedFile; CORPUS-OK and PROVENANCE-COMPLETE exit 0 as written; the three phase-71 sweeps select the 37 phase-71 files from one common.sh function (W24: 163/92/176 -> 37/37/49); the render probe judges every frame with the Go judge (judge-png, no docker); 71-VERIFICATION passed 8/8, docker-only gates NOT RUN | 2026-10-18 | ee30f2e | [261018-44q-phase-71-provenance-per-file-contract-sc](./quick/261018-44q-phase-71-provenance-per-file-contract-sc/) |
 | 261018-bmr | TD-1 аудита v1.16 закрыт: `MAX_UPLOAD_BYTES` и `INSPECT_MAX_UPLOAD_BYTES` чарта и `INSPECT_MAX_UPLOAD_BYTES` compose, `.env.example` и `values-inspect-gate.yaml` подняты со 100 MiB до 191889408 (183 MiB) — следующий целый MiB над потолком STL плюс 4938 байт обёртки самого большого ограниченного запроса; трассер прогоняет самый большой допустимый STL через `POST /v1/jobs` (202, очередь cad) и `POST /v1/inspect` (200, `max_bytes` 190840832) на кэпах чарта, RED на e321261 оба 413; `TestDeployedTransportCapsCoverEveryAdvertisedCeiling` держит каждую поставляемую конфигурацию против каждого объявленного потолка, M1-M6 пойманы; `TRANSPORT_CAP` keda-скрипта следует за чартом, long_select офлайн даёт тот же LONG (render_step M2, 194.90 s). Открытым оставлено: av освобождён точно (D1), его эффективный потолок в k8s вырос со 100 до 183 MiB, а в compose последние 4938 байт ниже 2 GiB получают общий 413; Go-фолбэки `NewServer`/`cmd/api` не тронуты (D2); диск под multipart-спилл api и длина `callback_url` — в todo | 2026-10-18 | f4b33930 | [261018-bmr-helm-upload-cap-at-least-the-measured-ca](./quick/261018-bmr-helm-upload-cap-at-least-the-measured-ca/) |
 | 261018-dlp | Codex P2 на PR #40 закрыт: дедлайн чтения тела `POST /v1/inspect` больше не фиксированные 30 с, а следует минимальной скорости — начало приёма + 30 с + min(получено, `INSPECT_MAX_UPLOAD_BYTES`) / 1 MiB/s; засчитываются только байты, которые вернул Read, дедлайн ставится до первого Read и движется только вперёд, на кэпе чарта не дальше 213 с (130 с на Go-фолбэке 100 MiB); 182-MiB STL при 20-50 Mbit/s больше не режется 400. Тесты на настоящем соединении через `Routes()`: RED на шве с прежним правилом (T1, T4, T5 падают, T2/T3 держат сегодняшнее поведение), M1-M5 пойманы; самый большой допустимый STL на кэпах чарта по темпированному соединению (20 Mbit/s, время ×1/10) получает 200 с оффером cad render png, при M1 — 400 на 3 с; правило один раз сформулировано в описании 400 `/v1/inspect` в `docs/openapi.yaml` и держится тестом из двух констант. Открытым оставлено: create без дедлайна тела и дочитывание после приёма, держащее слот анализа, — в todo; дедлайн после успешного разбора не снимается (D9) | 2026-10-18 | f2a6e11a | [261018-dlp-inspect-intake-read-deadline-follows-a-m](./quick/261018-dlp-inspect-intake-read-deadline-follows-a-m/) |
+| 261018-s26 | octoconv is self-sufficient without .planning: 7 test-read evidence files and SANDBOX-PATHS.md moved to tracked paths, proven in a tree with .planning deleted | 2026-10-18 | 8985b9dd | [261018-s26-planning-out-of-repo](./quick/261018-s26-planning-out-of-repo/) |
 
 ### Pending Todos
 

@@ -1,0 +1,26 @@
+== go version: go version go1.26.4 darwin/arm64
+== conf05 after rc=0; cmp before/after rc=0; DOC_FILE line: 47:DOC_FILE="docs/SANDBOX-PATHS.md"
+== gofmt -l . : []
+== go vet ./... rc=0
+== exec.go vs main diff rc=0
+== Go files with ../../.planning: git grep rc=1 (1 = none)
+== tracked files outside .planning naming the S1 old path: git grep rc=1 (1 = none)
+== all Go lines naming .planning:
+cmd/pandoc-worker/main.go:215:		// See .planning/phases/50-keda-helm-chart-integration/evidence/
+internal/api/handlers.go:1526:// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+internal/api/handlers_test.go:1174:// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md asked
+internal/api/handlers_test.go:1368:// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+internal/convert/cad_test.go:147:	const decision = ".planning/milestones/v1.16-phases/71-evaluation-gate/71-DECISION.md"
+internal/convert/cfb.go:29:// .planning/phases/22-cfb-classification/22-01-PLAN.md for the spec this
+internal/convert/chromium.go:109:// .planning/debug/csp-bypass-before-head.md).
+internal/convert/chromium_live_test.go:4:// way cmd/chromium-worker builds it (69-04-PLAN.md, .planning/debug/
+internal/convert/pdfdictscan.go:26:// .planning/RETROSPECTIVE.md's rule applies: a bound that keeps getting
+internal/convert/pdflex.go:28:// recorded in .planning/RETROSPECTIVE.md and resolved once before by replacing
+internal/convert/pdflex_fuzz_test.go:17:// `.planning/RETROSPECTIVE.md` already names the lesson ("don't predict a
+internal/e2e/e2e_test.go:1192:// .planning/research/PITFALLS.md: ASR output is this project's first
+internal/jobs/admission.go:49:// .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/
+internal/jobs/admission.go:117:// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md (a
+internal/jobs/admission_test.go:323:// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+== non-comment Go lines naming .planning:
+internal/convert/cad_test.go:147:	const decision = ".planning/milestones/v1.16-phases/71-evaluation-gate/71-DECISION.md"
+== non-comment count: 1
