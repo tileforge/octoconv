@@ -1,4 +1,4 @@
-export type JobStatus = 'queued' | 'active' | 'done' | 'failed' | 'canceled';
+export type JobStatus = 'awaiting_upload' | 'queued' | 'active' | 'done' | 'failed' | 'canceled';
 
 export const terminalStatuses = new Set<JobStatus>(['done', 'failed', 'canceled']);
 
@@ -284,4 +284,29 @@ export async function subscribeJobEvents(params: {
   } finally {
     reader.releaseLock();
   }
+}
+
+export type JobSummary = {
+  job_id: string;
+  status: JobStatus;
+  engine: string;
+  source_format: string | null;
+  target_format: string | null;
+  progress_pct: number | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code?: string;
+};
+export type JobsPage = { jobs: JobSummary[]; next_cursor: string | null };
+
+export async function listJobs(params: {
+  apiKey: string; status?: string; engine?: string; cursor?: string; limit?: number;
+}): Promise<JobsPage> {
+  const query = new URLSearchParams();
+  for (const name of ['status', 'engine', 'cursor', 'limit'] as const) {
+    if (params[name] !== undefined && params[name] !== '') query.set(name, String(params[name]));
+  }
+  const response = await fetch(`/v1/jobs${query.size ? `?${query}` : ''}`, { headers: authHeaders(params.apiKey) });
+  return parseResponse<JobsPage>(response);
 }
