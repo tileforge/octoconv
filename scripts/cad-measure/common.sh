@@ -7,10 +7,43 @@
 # The tag goes to stdout, build logs to stderr.
 
 CAD_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CAD_CACHE_DIR="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
-CAD_PRIVATE_DIR="${OCTOCONV_CAD_PRIVATE_CORPUS:-}"
+export CAD_CACHE_DIR="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
+export CAD_PRIVATE_DIR="${OCTOCONV_CAD_PRIVATE_CORPUS:-}"
+CAD_CORPUS_ROOT="$CAD_REPO_ROOT/internal/convert/testdata/cad"
+CAD_CORPUS_GROUPS="public synthetic"
 
 cad_log() { echo "$*" >&2; }
+
+cad_corpus_walk() {
+  local dir=$1 phys root g out
+  shift
+  phys=$(cd "$dir" 2>/dev/null && pwd -P) || { cad_log "error: corpus directory $dir is missing"; return 1; }
+  root=$(cd "$CAD_CORPUS_ROOT" 2>/dev/null && pwd -P) || root=""
+  local -a starts=("$phys")
+  if [ -n "$root" ] && [ "$phys" = "$root" ]; then
+    starts=()
+    for g in $CAD_CORPUS_GROUPS; do
+      [ -d "$phys/$g" ] || { cad_log "error: the corpus root has no $g/ directory"; return 1; }
+      starts+=("$phys/$g")
+    done
+  fi
+  out=$(find "${starts[@]}" -type f ! -path '*/reject/*' "$@") || { cad_log "error: cannot walk $phys"; return 1; }
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | CAD_WALK_PREFIX="$phys/" awk '
+    BEGIN { p = ENVIRON["CAD_WALK_PREFIX"]; n = length(p) }
+    substr($0, 1, n) == p { print substr($0, n + 1); next }
+    { bad = 1 }
+    END { exit bad }' | LC_ALL=C sort
+}
+
+cad_corpus_files() {
+  cad_corpus_walk "$1" ! -name '*.md'
+}
+
+cad_corpus_cad_files() {
+  cad_corpus_walk "$1" \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' \
+    -o -iname '*.stl' -o -iname '*.dxf' \)
+}
 
 cad_inputs_hash() {
   (

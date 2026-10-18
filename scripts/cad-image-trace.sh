@@ -63,8 +63,19 @@ case "$CMD" in
   *) usage ;;
 esac
 
+corpus_inputs() {
+  local corpus=$1 kind=$2 rel
+  rel=$(cad_corpus_cad_files "$corpus") || return 1
+  [ -n "$rel" ] || return 0
+  printf '%s\n' "$rel" | CAD_INPUT_DIR="$corpus" CAD_INPUT_KIND="$kind" awk '
+    { e = tolower($0); sub(/^.*\./, "", e)
+      if (ENVIRON["CAD_INPUT_KIND"] == "mesh") keep = (e == "step" || e == "stp" || e == "iges" || e == "igs")
+      else keep = (e == "stl")
+      if (keep) print ENVIRON["CAD_INPUT_DIR"] "/" $0 }'
+}
+
 corpus_other_expected() {
-  find "$1" -type f \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' -o -iname '*.stl' -o -iname '*.dxf' \) |
+  cad_corpus_cad_files "$1" |
     awk '{ e = tolower($0); sub(/^.*\./, "", e)
            if (e == "step" || e == "stp" || e == "iges" || e == "igs" || e == "stl") n++
            else if (e == "dxf") n += 2 }
@@ -231,19 +242,45 @@ self_test() {
   expect_eq 6 corpus-other-expected-pairs corpus_other_expected "$d/corpus"
   expect no corpus-other-expected-missing-directory corpus_other_expected "$d/empty-dir-that-does-not-exist"
 
+  local dp g r
+  dp=$(cd "$d" && pwd -P)
+  r="$dp/root"
+  for g in public synthetic dxf dxf-out dxf-cr render-bg reject public/reject; do mkdir -p "$r/$g"; done
+  : > "$r/public/a.step"; : > "$r/public/B.STL"; : > "$r/public/c.dxf"; : > "$r/public/README.md"
+  : > "$r/public/reject/n.step"; : > "$r/synthetic/d.iges"; : > "$r/synthetic/e.igs"
+  : > "$r/synthetic/f.stp"; : > "$r/synthetic/g.txt"; : > "$r/dxf/h.dxf"; : > "$r/dxf-out/i.svg"
+  : > "$r/dxf-cr/k.dxf"; : > "$r/render-bg/l.png"; : > "$r/reject/m.step"
+  mkdir -p "$dp/half/public"; : > "$dp/half/public/a.step"
+  sel() {
+    local root=$1 out rc=0
+    shift
+    out=$(CAD_CORPUS_ROOT=$root "$@" 2>/dev/null) || rc=$?
+    printf '%s|rc=%s' "$out" "$rc" | tr '\n' ' '
+  }
+  expect ok corpus-other-expected-root-public-synthetic-only test "$(sel "$r" corpus_other_expected "$r")" = "7|rc=0"
+  expect ok corpus-other-expected-other-tree-walked-as-before test "$(sel "$CAD_CORPUS_ROOT" corpus_other_expected "$r")" = "11|rc=0"
+  expect ok corpus-other-expected-phase71-group-walked-as-before test "$(sel "$r" corpus_other_expected "$r/public")" = "4|rc=0"
+  expect ok corpus-other-expected-later-group-walked-as-before test "$(sel "$r" corpus_other_expected "$r/dxf")" = "2|rc=0"
+  expect ok corpus-other-expected-reject-dir-itself-yields-nothing test "$(sel "$r" corpus_other_expected "$r/reject")" = "0|rc=0"
+  expect ok corpus-other-expected-root-without-synthetic-fails test "$(sel "$dp/half" corpus_other_expected "$dp/half")" = "0|rc=1"
+  expect ok prune-mesh-inputs-root test "$(sel "$r" corpus_inputs "$r" mesh)" = "$r/public/a.step $r/synthetic/d.iges $r/synthetic/e.igs $r/synthetic/f.stp|rc=0"
+  expect ok prune-stl-inputs-root test "$(sel "$r" corpus_inputs "$r" stl)" = "$r/public/B.STL|rc=0"
+  expect ok prune-inputs-reject-dir-itself-yields-nothing test "$(sel "$r" corpus_inputs "$r/reject" mesh)" = "|rc=0"
+  expect ok prune-inputs-root-without-synthetic-fails test "$(sel "$dp/half" corpus_inputs "$dp/half" mesh)" = "|rc=1"
+
   ops_fixture() {
-    local f=$1 hot=${2:-1} ocp op c i
+    local f=$1 hot=${2:-1} ocp op c
     : > "$f"
     for ocp in 7.9.3.1.1 8.0.1.0.0; do
       jp=0; [ "$ocp" != 8.0.1.0.0 ] || jp=1
       printf '%s\timport\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"
-      for i in 1 2 3 4; do printf '%s\tmesh-step\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
-      for i in $(seq 1 $((1 + hot))); do printf '%s\tmesh-iges\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
-      for i in 1 2; do printf '%s\tstlstats\t0\t0\t0\t0\t1\t1\n' "$ocp" >> "$f"; done
+      for _ in 1 2 3 4; do printf '%s\tmesh-step\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
+      for _ in $(seq 1 $((1 + hot))); do printf '%s\tmesh-iges\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
+      for _ in 1 2; do printf '%s\tstlstats\t0\t0\t0\t0\t1\t1\n' "$ocp" >> "$f"; done
     done
     for spec in render-view:7 render-transparent:1 render-512:1 render-2048:1 render-lp1:1 render-lpN:1 render-degenerate:3 render-exit2:1 render-exit3-unreachable:1 dxf:4 rsvg-png:4 rsvg-pdf:4; do
       op=${spec%%:*}; c=${spec#*:}
-      for i in $(seq 1 "$c"); do printf '7.9.3.1.1\t%s\t0\t0\t0\t0\t1\t1\n' "$op" >> "$f"; done
+      for _ in $(seq 1 "$c"); do printf '7.9.3.1.1\t%s\t0\t0\t0\t0\t1\t1\n' "$op" >> "$f"; done
     done
   }
   ops_fixture "$d/ops-ok.tsv" 1
@@ -667,7 +704,9 @@ if [ "$CMD" = prune-check ]; then
   INPUTS="$WORK/inputs.tsv"; : > "$INPUTS"
   add_input() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$INPUTS"; }
 
-  while IFS= read -r f; do
+  MESH_INPUTS=$(corpus_inputs "$CORPUS" mesh)
+  STL_INPUTS=$(corpus_inputs "$CORPUS" stl)
+  [ -z "$MESH_INPUTS" ] || while IFS= read -r f; do
     name=$(basename "$f")
     if mesh_plain "$TAG_FULL" "$f" "$STLDIR/mesh-$name.stl" 4g; then
       add_input "mesh-$name" "$STLDIR/mesh-$name.stl" 2g corpus
@@ -675,9 +714,8 @@ if [ "$CMD" = prune-check ]; then
       emit "PRUNE_SKIP,input=$name,reason=mesh-gave-no-stl-after-3-attempts"
       FAILED=1
     fi
-  done < <(find "$CORPUS" -type f ! -path '*/reject/*' \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' \) | LC_ALL=C sort)
-  while IFS= read -r f; do add_input "$(basename "$f")" "$f" 2g corpus; done \
-    < <(find "$CORPUS" -type f ! -path '*/reject/*' -iname '*.stl' | LC_ALL=C sort)
+  done <<< "$MESH_INPUTS"
+  [ -z "$STL_INPUTS" ] || while IFS= read -r f; do add_input "$(basename "$f")" "$f" 2g corpus; done <<< "$STL_INPUTS"
   FETCHED_EXPECTED=$(awk -F'\t' 'NR > 1 && NF > 0' "$REPO_ROOT/scripts/cad-corpus-manifest.tsv" | wc -l | tr -d ' ')
   FETCHED_FOUND=0
   if [ -d "$CAD_CACHE_DIR/fetched" ]; then

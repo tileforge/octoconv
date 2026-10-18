@@ -50,7 +50,7 @@
 #              tag expected is the one the current inputs hash to; give
 #              --expect-image TAG, and --expect-image-id ID to check the image
 #              id too, to ask about another build.
-# --self-test  run the resume checks on synthetic and committed evidence files.
+# --self-test  run the resume and input-selection checks on synthetic and committed input.
 # --max-wall-s stop cleanly (exit 75) before the next cell once N seconds have
 #              passed, so a long run goes in chunks of a few hours.
 # --floor-from skip a cell whose RSS in the 4g rows of FILE is below
@@ -475,6 +475,20 @@ check_resume_file() {
   resume_scan check "$f" || return 65
 }
 
+abspath() {
+  local p=$1
+  if [ -d "$p" ]; then (cd "$p" && pwd -P)
+  else printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"; fi
+}
+
+list_cad_files() {
+  local dir rel
+  dir=$(cd "$1" && pwd -P) || return 1
+  rel=$(cad_corpus_cad_files "$dir") || return 1
+  [ -n "$rel" ] || return 0
+  printf '%s\n' "$rel" | CAD_LIST_DIR="$dir" awk '{ print ENVIRON["CAD_LIST_DIR"] "/" $0 }'
+}
+
 self_test() {
   local d fails=0 n=0 evid a b
   d=$(mktemp -d "${TMPDIR:-/tmp}/cad-resume-selftest.XXXXXX")
@@ -725,6 +739,34 @@ SYN
     echo "SELF_TEST_NOTE,committed_evidence=absent,skipped=5"
   fi
 
+  local dp g
+  dp=$(cd "$d" && pwd -P)
+  for g in public synthetic dxf dxf-out dxf-cr render-bg reject public/reject; do mkdir -p "$dp/root/$g"; done
+  : > "$dp/root/public/a.step"; : > "$dp/root/public/B.STL"; : > "$dp/root/public/c.dxf"; : > "$dp/root/public/README.md"
+  : > "$dp/root/public/reject/n.step"; : > "$dp/root/synthetic/d.iges"; : > "$dp/root/synthetic/e.igs"
+  : > "$dp/root/synthetic/f.stp"; : > "$dp/root/synthetic/g.txt"; : > "$dp/root/dxf/h.dxf"; : > "$dp/root/dxf-out/i.svg"
+  : > "$dp/root/dxf-cr/k.dxf"; : > "$dp/root/render-bg/l.png"; : > "$dp/root/reject/m.step"
+  ln -s "$dp/root" "$dp/root-link"
+  mkdir -p "$dp/half/public"; : > "$dp/half/public/a.step"
+  sel() {
+    local root=$1 out rc=0
+    shift
+    out=$(CAD_CORPUS_ROOT=$root "$@" 2>/dev/null) || rc=$?
+    printf '%s|rc=%s' "$out" "$rc" | tr '\n' ' '
+  }
+  local r="$dp/root"
+  expect ok select-root-ladder-public-synthetic-only test "$(sel "$r" list_cad_files "$r")" = "$r/public/B.STL $r/public/a.step $r/public/c.dxf $r/synthetic/d.iges $r/synthetic/e.igs $r/synthetic/f.stp|rc=0"
+  expect ok select-root-inventory-public-synthetic-only test "$(sel "$r" cad_corpus_files "$r")" = "public/B.STL public/a.step public/c.dxf synthetic/d.iges synthetic/e.igs synthetic/f.stp synthetic/g.txt|rc=0"
+  expect ok select-root-through-a-symlink test "$(sel "$r" cad_corpus_cad_files "$dp/root-link")" = "public/B.STL public/a.step public/c.dxf synthetic/d.iges synthetic/e.igs synthetic/f.stp|rc=0"
+  expect ok select-later-group-walked-as-before test "$(sel "$r" list_cad_files "$r/dxf")" = "$r/dxf/h.dxf|rc=0"
+  expect ok select-phase71-group-walked-as-before test "$(sel "$r" cad_corpus_cad_files "$r/public")" = "B.STL a.step c.dxf|rc=0"
+  expect ok select-other-tree-walked-as-before test "$(sel "$CAD_CORPUS_ROOT" cad_corpus_cad_files "$r")" = "dxf-cr/k.dxf dxf/h.dxf public/B.STL public/a.step public/c.dxf synthetic/d.iges synthetic/e.igs synthetic/f.stp|rc=0"
+  expect ok select-reject-dir-itself-yields-nothing test "$(sel "$r" list_cad_files "$r/reject")" = "|rc=0"
+  expect ok select-missing-dir-fails test "$(sel "$r" list_cad_files "$dp/no-such-dir")" = "|rc=1"
+  expect ok select-missing-dir-inventory-fails test "$(sel "$r" cad_corpus_files "$dp/no-such-dir")" = "|rc=1"
+  expect ok select-root-without-synthetic-fails test "$(sel "$dp/half" list_cad_files "$dp/half")" = "|rc=1"
+  expect ok select-root-without-synthetic-inventory-fails test "$(sel "$dp/half" cad_corpus_files "$dp/half")" = "|rc=1"
+
   rm -rf "$d"
   echo "SELF_TEST,cases=$n,failed=$fails"
   [ "$fails" = 0 ]
@@ -803,17 +845,6 @@ if [ -n "$RESUME" ] && [ -s "$RESUME" ]; then
   fi
 fi
 
-abspath() {
-  local p=$1
-  if [ -d "$p" ]; then (cd "$p" && pwd -P)
-  else printf '%s/%s\n' "$(cd "$(dirname "$p")" && pwd -P)" "$(basename "$p")"; fi
-}
-
-list_cad_files() {
-  find "$1" -type f ! -path '*/reject/*' \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' \
-    -o -iname '*.igs' -o -iname '*.stl' -o -iname '*.dxf' \)
-}
-
 series_of() {
   local base
   base=$(basename "$1")
@@ -834,7 +865,8 @@ add_file() {
 
 for item in ${INPUTS[@]+"${INPUTS[@]}"}; do
   if [ -d "$item" ]; then
-    while IFS= read -r f; do add_file "$f" public; done < <(list_cad_files "$(abspath "$item")")
+    files=$(list_cad_files "$(abspath "$item")") || { echo "error: cannot select the CAD files of a directory in the argument list" >&2; rm -f "$LIST"; exit 64; }
+    [ -z "$files" ] || while IFS= read -r f; do add_file "$f" public; done <<< "$files"
   elif [ -f "$item" ]; then
     add_file "$(abspath "$item")" public
   else
@@ -847,8 +879,8 @@ done
 PRIVATE_FILES=0
 if [ "$INCLUDE_PRIVATE" = 1 ]; then
   if [ -n "$CAD_PRIVATE_DIR" ] && [ -d "$CAD_PRIVATE_DIR" ]; then
-    while IFS= read -r f; do add_file "$f" private; PRIVATE_FILES=$((PRIVATE_FILES + 1)); done \
-      < <(list_cad_files "$(abspath "$CAD_PRIVATE_DIR")")
+    files=$(list_cad_files "$(abspath "$CAD_PRIVATE_DIR")") || { echo "error: cannot select the CAD files of the private corpus" >&2; rm -f "$LIST"; exit 1; }
+    [ -z "$files" ] || while IFS= read -r f; do add_file "$f" private; PRIVATE_FILES=$((PRIVATE_FILES + 1)); done <<< "$files"
   fi
 fi
 
