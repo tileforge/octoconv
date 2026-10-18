@@ -658,7 +658,8 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 
 ## Phase 75 DXF fixtures (`dxf/`)
 
-- Licence: generated. Every file is written by `scripts/cad-corpus-gen.py`; no third-party material.
+- Licence: generated
+- Origin: Every file is written by `scripts/cad-corpus-gen.py`; no third-party material.
 - Generation command: `scripts/cad-dxf-probe.sh fixtures --write`, which runs `/opt/venv/bin/python -B scripts/cad-corpus-gen.py --dxf-fixtures --out-dir OUT` inside the engine image of `Dockerfile.cad-worker` (ezdxf 1.4.4) and copies the 54 files here. `scripts/cad-dxf-probe.sh fixtures` without `--write` regenerates them and requires every committed file to be byte-identical.
 - Determinism: `PYTHONHASHSEED=0` (the generator refuses to run without it, because ezdxf writes the OBJECTS section in set order), `python -B` rather than `-I` so the seed is honoured, `ezdxf.options.write_fixed_meta_data_for_testing = True` (fixed timestamps and GUIDs), ezdxf pinned to 1.4.4. Byte-level edits and the stdlib-written files use fixed literals only.
 - Check: `python3 scripts/cad-corpus-gen.py --dxf-fixtures --check-only` needs only the standard library and checks the byte markers of every file; the sha256, size and ezdxf strict-read facts of each file are the `FIXTURE` lines in `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`.
@@ -683,14 +684,393 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 | Numbers | `nonnumeric_abc`, `nonnumeric_comma`, `nonnumeric_nan`, `nonnumeric_inf`, `nonnumeric_underscore`, `coord_1e300`, `coord_1e400` | standard library (R12 pairs) | One LINE x coordinate in ENTITIES is `abc`, `1,5`, `nan`, `inf`, `1_0`, `1e300` or `1e400` |
 | Section scope | `nonfinite_header`, `nonfinite_tables`, `nonfinite_objects` | ezdxf R2018, one code-40 value byte-edited | `$LTSCALE` = `nan` in HEADER, a VPORT code 40 = `inf` in TABLES, a LAYOUT (AcDbPlotSettings) code 40 = `1_0` in OBJECTS, with ENTITIES and BLOCKS finite |
 
+## `dxf/all_hidden.dxf` — 16037 bytes
+
+- Licence: generated
+- sha256: 459e79e524ca7d73bd7ca11dd3e5a96a4119062a00bebd790736a31454762356
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/alpha_clear_all.dxf` — 17652 bytes
+
+- Licence: generated
+- sha256: 0ede455e97af4f644bd28f35b5172eecb82ddc8c15871d771eac1ad4566a841b
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/alpha_clear_geometry.dxf` — 17365 bytes
+
+- Licence: generated
+- sha256: ba5a57e46da1d38e8ec63c17f35606a72ee3e43a07ed349aafd8b9e9074f5adf
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/alpha_one_fill.dxf` — 17930 bytes
+
+- Licence: generated
+- sha256: e5fe228e42020556c877a6910beda9c97c7ac94f67422f2efebb1d790e2e9a03
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/alpha_one_visible.dxf` — 17776 bytes
+
+- Licence: generated
+- sha256: 3428b4e1a909989e8c7f4ee594eefa6813dc45fbecee3fce4a14e74865d57422
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/coord_1e300.dxf` — 319 bytes
+
+- Licence: generated
+- sha256: a7918997414ccd8e15817091f082223d5c841ed94e53d8b461ee01320a57d5b0
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/coord_1e400.dxf` — 319 bytes
+
+- Licence: generated
+- sha256: 649dfb1e21035b2ebb32c4b4a8ccd3c304f9a8628bdf74d4219cd636155578a9
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/cyclic_ab.dxf` — 722 bytes
+
+- Licence: generated
+- sha256: f50320aea5ea1558f144886e47b36cbf9686b124285d3f6d3fa948b5232f0654
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/cyclic_case.dxf` — 488 bytes
+
+- Licence: generated
+- sha256: 9cafae08f1efe86506963dd759f0ea780945f46681c92cd3b85cfe688f7f928e
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/cyclic_self.dxf` — 570 bytes
+
+- Licence: generated
+- sha256: 2adecb7704be0f3b2b0a2284fc2f31cac2f0dc6153e4535fb5b1c47197be1927
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/cyclic_unreferenced.dxf` — 745 bytes
+
+- Licence: generated
+- sha256: ec08e16683ec10c2867a2581cbf68889077f421d3348248bf3b753b1a3a511fd
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/degenerate_fill.dxf` — 15665 bytes
+
+- Licence: generated
+- sha256: 33353ef67563c8b9b61e4ca0e6ef4c4aaadcff2253be7e4156f9feab4f7b0103
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/dimension_minsert.dxf` — 1050 bytes
+
+- Licence: generated
+- sha256: 04d2d945b5cfb96877d0663a392e9c32e02d008aa7845211949504b399065af7
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/entities_over.dxf` — 133801 bytes
+
+- Licence: generated
+- sha256: 3ff090e0276e852976e554e4a91a95b95100fed04af71b60fe2403bc2db1af8f
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/faint_only.dxf` — 15810 bytes
+
+- Licence: generated
+- sha256: 2e50614e2f603f56b8db4da3910e45265f12a2d1138949144ad2facc501664de
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/far_point.dxf` — 15887 bytes
+
+- Licence: generated
+- sha256: 592f8629bd8216697d3f27e21f2a41d1788e955973ef440f7e30939e9c879a48
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/header_far_extents.dxf` — 15368 bytes
+
+- Licence: generated
+- sha256: c7812721a011bdbd64e7a1ba8376a571abe05fffcc1fd0184db1c1f52a1b6b99
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/layers_off_frozen.dxf` — 16283 bytes
+
+- Licence: generated
+- sha256: 662533fc0a8d2e442b7e8150b31d58869d3deda43954799ecccdc93c30845080
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/minsert_over_inserts.dxf` — 784 bytes
+
+- Licence: generated
+- sha256: 3a692b00607ce0bf234b7d381e07ba8ecf765f49d115f1c08359844e553ad78c
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nest_d16.dxf` — 2808 bytes
+
+- Licence: generated
+- sha256: 8d6e30b85a216102defee6d8e12d58b05b59ff484830d8861c21f228d9d77a50
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nest_d17.dxf` — 2968 bytes
+
+- Licence: generated
+- sha256: 9d23cd31221c41024bb2115a7a1815762085a9969cccf1eb469ee5dbc85a0a7c
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/never_resolved.dxf` — 18288 bytes
+
+- Licence: generated
+- sha256: b41ae3516de03a9421ac8734202f8c937f3dc7138cdc469e5982384efbceeae8
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonfinite_header.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: d6c8856888b88703fbf9a45bc3641631072b0f5e2d1f6614de4d6435ceeef331
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonfinite_objects.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: 23042031f88c5e2d60264b19dff5b7c1dd2a70f66aa00d6547d5bdaa2c8b3186
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonfinite_tables.dxf` — 15362 bytes
+
+- Licence: generated
+- sha256: 99f4aecc8f904c83812865ea10a43962ce0eaf281e46fdc82fa0868d2aef35a7
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonnumeric_abc.dxf` — 317 bytes
+
+- Licence: generated
+- sha256: 748f988889a42216a662a7ee06520e76938aa9f827dff65401beea7f5813e581
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonnumeric_comma.dxf` — 317 bytes
+
+- Licence: generated
+- sha256: 48ca7e03c97f4e4ab8f21cd433cff4cce377cf0f2e50060f90f7cdc0d9872bd4
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonnumeric_inf.dxf` — 317 bytes
+
+- Licence: generated
+- sha256: 6514420c01cbb7e24e8357b99a05c9a28098e581781f0c67506d15d1e41543c3
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonnumeric_nan.dxf` — 317 bytes
+
+- Licence: generated
+- sha256: 1f2f0ee582a2d624a0b4645188f2e725d28c7c135ac3acb599939e2ba102692c
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/nonnumeric_underscore.dxf` — 317 bytes
+
+- Licence: generated
+- sha256: a32565e3e3c006ba443371c97585c04a0d449a925a1d30ed44dab80694c1c39c
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/single_point.dxf` — 15342 bytes
+
+- Licence: generated
+- sha256: 7395ff64f57d00409d9cbcc9dcd1301b7f9659ee1f5eb33ccb9c99967f1f6ac1
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/tall.dxf` — 15830 bytes
+
+- Licence: generated
+- sha256: 57866cf809178b73e22022d80ac3ab64e883e86ef176980af8b374554fb13232
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/text_alpha.dxf` — 18418 bytes
+
+- Licence: generated
+- sha256: cef5f5e969d84c72e811ce65100d5986a7f5b54d2dc3920d2671829ca7bc9962
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/text_alpha_faint.dxf` — 15567 bytes
+
+- Licence: generated
+- sha256: b4e08323fa71db35dc26e9af614c66c3decaa2866a09b254c74cb506300d6c8d
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/text_cases.dxf` — 58961 bytes
+
+- Licence: generated
+- sha256: 7fc6e1c393ebef985f203193cb66d300e28392a6fc79e90ac8b72192a009729f
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/text_fonts.dxf` — 19601 bytes
+
+- Licence: generated
+- sha256: 72e1097b8aa6731bb70590bffa220b6b80c238121d5fd087cb3b7519c98fa02e
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/text_illegal_chars.dxf` — 15506 bytes
+
+- Licence: generated
+- sha256: f65a360e07e9411f661222c28d47bb18b7d9683c37809cc75ba16979cb0468ab
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_0.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: 98d4c7faa946c9f5925bc0b323a131a2d241fd68ac4390527669d0c820bb89c8
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_1.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: 790d7471e1d249604b4954fd16ea73c84f2eaaae459a6742b70e5ad92c2ca402
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_13.dxf` — 15366 bytes
+
+- Licence: generated
+- sha256: 2da5bf290d0575366988aa09c445e39cb12e260e8aff03e41100d610cb9aaccc
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_2.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: a9761601a43cfb5fa961b694332c7195e967818a16254fe2caf6189ac2348e97
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_21.dxf` — 15366 bytes
+
+- Licence: generated
+- sha256: 77dfc1e3f9b53250c4d2c47863790e405b6710e32a2c7dda5d86b7fa7525c6db
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_3.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: 37cd41cf237c22a503cd2396e2fed04fb58b6d9dddd8bbcd464bbac115d8b7c1
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_4.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: d9c11a7d5b54ca6a9356485761a40321e677b4a5bd749c25d49392f94b5e99bf
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_5.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: a217b68db08342608a7ad7a0af302734a3f3383c9a4b61aa0a5f16ddee1b679a
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_6.dxf` — 15365 bytes
+
+- Licence: generated
+- sha256: 47a70280e10cddeb3e9dd6db99ae71c302dd3bfa511c5d9cc047b0753f75a6fa
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/units_missing.dxf` — 15345 bytes
+
+- Licence: generated
+- sha256: c805ce7d4ec84be199ad96f1e50c73e530c3962bc4332ef954e0ae3b4e087846
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/white_geometry.dxf` — 16433 bytes
+
+- Licence: generated
+- sha256: 3b11df754ed651c1dbe1e8c90fc79117ad143f60a8f2fd679213e92352b212bf
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/white_one_black.dxf` — 16967 bytes
+
+- Licence: generated
+- sha256: 38355868449f58996b9fa5cb9bae669db15060081352e75f9b7f00a76e6a52a6
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/white_text.dxf` — 15546 bytes
+
+- Licence: generated
+- sha256: 0326e47c5016c101f265de93578fd8826ae36698e12b3f8a54a5d4e07aae6a9f
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/wide.dxf` — 15830 bytes
+
+- Licence: generated
+- sha256: 8ce03c03bf4a550620415ac106a266c616178e3bc0773c20d0a04b456d7a050d
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/wrong_extents.dxf` — 15391 bytes
+
+- Licence: generated
+- sha256: ba89caaa5c385e6c257e73fb0ede33ea8d6214b946daf128a2ebe5219f620b73
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/xline_ray.dxf` — 15935 bytes
+
+- Licence: generated
+- sha256: 7cf660ec3fdbee4bdae132f6dd96e78e62114254277c1af20b793a0ac762d6c4
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
+## `dxf/zwsp_text.dxf` — 15519 bytes
+
+- Licence: generated
+- sha256: 0e0df3e5b0752e0a9c32867340ad25c8ff5299c6431b46bc49cf9d2307d5468b
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-fixtures.txt`, the FIXTURE line of this file (same sha256 and bytes)
+
 ---
 
 ## Phase 75 helper outputs (`dxf-out/`)
 
-- Licence: generated. Every file is an output of this repository's `cmd/cad-worker/helper/cad-dxf` (and of `rsvg-convert` run on that output) for a fixture listed above; no third-party material beyond the corpus files they were drawn from (`public/uncommon.dxf`, `public/hatches_2.dxf`, MIT, notices in this document).
+- Licence: generated
+- Origin: Every file is an output of this repository's `cmd/cad-worker/helper/cad-dxf` (and of `rsvg-convert` run on that output) for a fixture listed above; no third-party material beyond the corpus files they were drawn from (`public/uncommon.dxf`, `public/hatches_2.dxf`, MIT, notices in this document).
 - Generation command: `scripts/cad-dxf-probe.sh helper --group all --write-out`. Every run is confined by the candidate Landlock sets of 75-01 under `--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody` with HOME and XDG under the job dir: `cad-dxf --max-drawn-entities 850155 --texts out.texts.json --render-svg out.render.svg --measure out.measure.json in.dxf out.svg`, then `rsvg-convert -f pdf -b white` and the letterboxed PNG argv of D-08 (`[-b white] -w sw -h sh --page-width S --page-height S --left left --top top`), both on the render-only SVG (75-CONTEXT R-9).
 - Two SVGs per drawing (R-9): `<name>.svg` is the client SVG with the exact text, the only SVG returned for dxf to svg; `<name>.render.svg` is the same document with every character outside the resolved DejaVu cmap replaced by U+FFFD, and it is the only input `rsvg-convert` gets. Only `text_cases` has such characters (2 substituted).
-- Image: `octoconv-cad-worker:engine75-88915fc55680`, image id `sha256:f6bb26df31da648ba52fd97c75f644190d2444b0eca29dc5ac14f5def93b432f`, built from commit `a1cb958` (`Dockerfile.cad-worker --target engine`). The sha256 and size of every file are the `OUT` lines in `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`.
+- Image: `octoconv-cad-worker:engine75-88915fc55680`, image id `sha256:f6bb26df31da648ba52fd97c75f644190d2444b0eca29dc5ac14f5def93b432f`, built from commit `a1cb958` (`Dockerfile.cad-worker --target engine`). The sha256 and size of every file committed by 75-02 are the `OUT` lines in `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, except `frames.tsv`: 82ab86b (quick 261012-o2d) rewrote it, and its `OUT` line is in `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`. The files added by later quick tasks are named in the table below, and each file's own section below names its evidence line.
 - The PDFs carry a creation date, so a refresh changes their bytes; the SVG, texts.json, drafts and PNGs are deterministic for a given image.
 
 | Files | Source | What they are for |
@@ -710,6 +1090,377 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 | `wide_1280_opaque.png`, `wide_1280_transparent.png`, `tall_256_opaque.png` | `wide.render.svg`, `tall.render.svg` | Letterboxed frames for the pixel judge |
 | `frames.tsv` | the five PNG runs | `name, size, background, w_mm, h_mm, sw, sh, left, top` of each PNG (tab separated, header row first) |
 
+## `dxf-out/alpha_one_visible.pdf` — 1060 bytes
+
+- Licence: generated
+- sha256: 34efcd9ebe492d03b002d3fdf717f59575ffd76e2257959b37ca764551bdaf3c
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/alpha_one_visible.render.svg` — 1894 bytes
+
+- Licence: generated
+- sha256: db658252767f654fc0528538feed667ed5caf7048839bdc7f71f72ef4298d71d
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/alpha_one_visible.svg` — 1894 bytes
+
+- Licence: generated
+- sha256: db658252767f654fc0528538feed667ed5caf7048839bdc7f71f72ef4298d71d
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/alpha_one_visible.texts.json` — 137 bytes
+
+- Licence: generated
+- sha256: b5b21139f3e572208ed605c6df96acbca1be35798d6f07625516878e84903d96
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/frames.tsv` — 375 bytes
+
+- Licence: generated
+- sha256: 03f91fb932669204bd973ee9fca00fbf8384dbd9db2eaa3a7c1bc9a88cd6d6bf
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/hatches_2.pdf` — 15013 bytes
+
+- Licence: generated
+- sha256: 53fb9a11bcf0c61ce6fb1381d718b14711f2ff2601713b76ca0c051a165f1538
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/hatches_2.render.svg` — 17337 bytes
+
+- Licence: generated
+- sha256: 8dbb251da794792a16747b5a8879bd9b8aeb26a9ae1f8a184af12457645c4694
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/hatches_2.svg` — 17337 bytes
+
+- Licence: generated
+- sha256: 8dbb251da794792a16747b5a8879bd9b8aeb26a9ae1f8a184af12457645c4694
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/hatches_2.texts.json` — 241 bytes
+
+- Licence: generated
+- sha256: 00019b8c5f1bdc0943ad4705738ccf861d50ebbc44d6ac02d1e31ab02d25a028
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/legacy_cp1251.pdf` — 4946 bytes
+
+- Licence: generated
+- sha256: 8533ce1fb9a4005f837659ca5cf401c76413c437ef3ead584ec0086916a7b501
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/legacy_cp1251.render.svg` — 455 bytes
+
+- Licence: generated
+- sha256: a34f365aaf1fa4fa2374b0331f343da6c0c7fddea7b5677352ddda1b91b6fa4e
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/legacy_cp1251.svg` — 455 bytes
+
+- Licence: generated
+- sha256: a34f365aaf1fa4fa2374b0331f343da6c0c7fddea7b5677352ddda1b91b6fa4e
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/legacy_cp1251.texts.json` — 108 bytes
+
+- Licence: generated
+- sha256: 22d7177dcba622634f648865ebf69714d63932200f3cfad39d4c02a1f82d84cb
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/nofont.pdf` — 2298 bytes
+
+- Licence: generated
+- sha256: a0ca6b77070c34fddc32e5e70804b6d1af0cbb1d32a4e6dfc10f684a3d17ebce
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/outline.pdf` — 30820 bytes
+
+- Licence: generated
+- sha256: 9851dd6a5ecc12f4ff9ab68259f864bd1a237a8b255e506b3d45e8439372883d
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/tall.render.svg` — 753 bytes
+
+- Licence: generated
+- sha256: 4f1d9991253f9c75461e091bdc038b871e4e1369110ebe30aff26a313d6fd645
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/tall.svg` — 753 bytes
+
+- Licence: generated
+- sha256: 4f1d9991253f9c75461e091bdc038b871e4e1369110ebe30aff26a313d6fd645
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/tall.texts.json` — 44 bytes
+
+- Licence: generated
+- sha256: a4da04c3bc7d619e4113f1143268eaf3d7f4d6b3de1e5aa7a62f8d57cef92c9a
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/tall_256_opaque.png` — 838 bytes
+
+- Licence: generated
+- sha256: 7b64faf953eed667bd5c51a46b2d5448867b10ebbd3669197e774b5d89dabdef
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha.pdf` — 7300 bytes
+
+- Licence: generated
+- sha256: 99e6a11bd505eb696f25b96e5964004484ccf242c9189578afdd6b12566a1e23
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha.render.svg` — 3230 bytes
+
+- Licence: generated
+- sha256: 28dccb4948824020b06ae051a5200c07bcf133028ff8522336e9b201ba6fb630
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha.svg` — 3230 bytes
+
+- Licence: generated
+- sha256: 28dccb4948824020b06ae051a5200c07bcf133028ff8522336e9b201ba6fb630
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha.texts.json` — 651 bytes
+
+- Licence: generated
+- sha256: 0725429b98ab81531893614b41e82283e38d69421ea6bff76bf44fa2ef9acac6
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint.pdf` — 5067 bytes
+
+- Licence: generated
+- sha256: 5fe1b6219f8b5dd6f13144a0011ad5c56d6dc317f982c6da66cb28c9d64784d4
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint.render.svg` — 639 bytes
+
+- Licence: generated
+- sha256: a1f300f87f9738e8080d6018c0bba8e6d8ea5dbb0412ff748632eeca53179549
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint.svg` — 639 bytes
+
+- Licence: generated
+- sha256: a1f300f87f9738e8080d6018c0bba8e6d8ea5dbb0412ff748632eeca53179549
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint.texts.json` — 106 bytes
+
+- Licence: generated
+- sha256: a5d1910359e59d45d8d3b43a4e619f6197b0ac9662c1ca58c69efef7ef76944c
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint_1280_opaque.png` — 23053 bytes
+
+- Licence: generated
+- sha256: 075d73e0b3269f76ba49c922e241834179933bfaf82805f19854af9fa282982e
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_alpha_faint_1280_transparent.png` — 17581 bytes
+
+- Licence: generated
+- sha256: abc060fd14b315c0ea65f917a55f77ff5b7bd5083f2ece73d66f0995afd9f899
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_cases.pdf` — 14939 bytes
+
+- Licence: generated
+- sha256: 226bc928291420a88a16fc2dd629f01d33696b1031d225a085e93a2c5bae40e1
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_cases.render.svg` — 3781 bytes
+
+- Licence: generated
+- sha256: 20c3d46812b96fcafa1c634b2314bed056c28f200e1a10594673a9e621c0ee40
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_cases.svg` — 3781 bytes
+
+- Licence: generated
+- sha256: ce96c27263937945bac512b93d007d4ce1da6c63936047a4403280e6214832ba
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_cases.texts.json` — 851 bytes
+
+- Licence: generated
+- sha256: e8265853aba7b55458f2c2ad746ee9f038765a5a6441d1c7ed59bdceb1f91e02
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_fonts.pdf` — 28794 bytes
+
+- Licence: generated
+- sha256: 12e0a43da08c6baf81d626a147b78f133c0e4d7f90d7f0233c69f369010f9054
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_fonts.render.svg` — 3116 bytes
+
+- Licence: generated
+- sha256: 3eb1977da23f9666faf77ce952dedcbda29abd98696a4a332b96f68966ff360a
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_fonts.svg` — 3116 bytes
+
+- Licence: generated
+- sha256: 3eb1977da23f9666faf77ce952dedcbda29abd98696a4a332b96f68966ff360a
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/text_fonts.texts.json` — 749 bytes
+
+- Licence: generated
+- sha256: db859426bb13a5a57f970102305a852c1b70964dfd80271dd528e39bd26d7d12
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/uncommon.pdf` — 16581 bytes
+
+- Licence: generated
+- sha256: a91d6995a213a7921a4cef9c410f190a8cc84d4428dc7fd77df442d328104384
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/uncommon.render.svg` — 24056 bytes
+
+- Licence: generated
+- sha256: eb40139afd527928683075ea1f0116da2f293538f4134b610487ea7f07e576ac
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/uncommon.svg` — 24056 bytes
+
+- Licence: generated
+- sha256: eb40139afd527928683075ea1f0116da2f293538f4134b610487ea7f07e576ac
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/uncommon.texts.json` — 1874 bytes
+
+- Licence: generated
+- sha256: 76fda2e53df983ebcff6e99eec01acd46b960d7e6e9fef4ddcf879b31a19ea2b
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/units_3.measure.json` — 229 bytes
+
+- Licence: generated
+- sha256: f36b3243749fb50705f32b553b3123143ddd0ff681877299d757daca31d83b74
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/white_one_black.pdf` — 5387 bytes
+
+- Licence: generated
+- sha256: 6a6ee42d2e8c39796d3598479be236ae54842e8cf5921447f0ed74bbf42d1e2e
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/white_one_black.render.svg` — 1449 bytes
+
+- Licence: generated
+- sha256: 6f8c7e3cb8b41107c56d6338c4d793e7ae4362b6b4c908f367a2f07750b3394e
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/white_one_black.svg` — 1449 bytes
+
+- Licence: generated
+- sha256: 6f8c7e3cb8b41107c56d6338c4d793e7ae4362b6b4c908f367a2f07750b3394e
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/white_one_black.texts.json` — 103 bytes
+
+- Licence: generated
+- sha256: 72578c47513be03f3ae37298ab11cda0a267b51017bc152153bbc5cee2b404e8
+- Command: see the generation command of this group above
+- Evidence: `.planning/quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/evidence/probe-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide.measure.json` — 233 bytes
+
+- Licence: generated
+- sha256: 5257419be07be0b173a684edc18bc929b0928db684f5dd74148e5ba048103752
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide.render.svg` — 753 bytes
+
+- Licence: generated
+- sha256: 06bc9fc8c596e39eea0f998f3c14b2b00443831bd3c45cf884b457e48f27a9be
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide.svg` — 753 bytes
+
+- Licence: generated
+- sha256: 06bc9fc8c596e39eea0f998f3c14b2b00443831bd3c45cf884b457e48f27a9be
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide.texts.json` — 44 bytes
+
+- Licence: generated
+- sha256: 1e322aef7477a0b5824a435cf211f0d32102c3e37ead065e2300e33d70f34fd3
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide_1280_opaque.png` — 7840 bytes
+
+- Licence: generated
+- sha256: 61849ffea6337ffd6c5d9fa297ade7bd03e5c5a80e6541db39ef3084b1aba291
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wide_1280_transparent.png` — 6637 bytes
+
+- Licence: generated
+- sha256: 02fecb0e12146469100447f3963b22462937c7ffd33c7c2dff611c219499945e
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
+## `dxf-out/wrong_extents.measure.json` — 233 bytes
+
+- Licence: generated
+- sha256: 49332bcf90c3915a05ff3358f82976178e3cb59bc28254a93444587b8b38de6d
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`, the OUT line of this file (same sha256 and bytes)
+
 ## Phase 75 line-ending fixtures (`dxf-cr/`)
 
 - Licence: generated by this repository; no third-party material.
@@ -722,11 +1473,75 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 | `cr_carriers.svg`, `.render.svg`, `.texts.json`, `.verdict` | the production `cad-dxf` on `cr_carriers.dxf` | What the helper emits for them: no CR reaches texts.json (TEXT drops `^M`, MTEXT draws it as U+25AF, `\U+000D` stays literal); a raw CR byte in a value makes the file `unreadable/read_error` |
 | `cr_injected.svg`, `.render.svg`, `.texts.json`, `.verdict` | `cr_carriers.svg` with CR, CRLF and CR CR written into three texts by Python's ElementTree, the serializer `cad-dxf` uses; covered and the U+FFFD substitution recomputed from the DejaVu Sans cmap | The SVG carries the raw line endings, texts.json keeps them, the parsed SVG text holds LF |
 
+## `dxf-cr/cr_carriers.dxf` — 14415 bytes
+
+- Licence: generated
+- sha256: c0f9f98d1e76721dec8fd1c80687698e4f0e60379108eb8eea455e6c7d3abd9f
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_carriers.render.svg` — 1241 bytes
+
+- Licence: generated
+- sha256: 2d346792167e00a7b11deae8a0d06dde1a2a898f2bce764b533eb81e28fe09e3
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_carriers.svg` — 1241 bytes
+
+- Licence: generated
+- sha256: 2d346792167e00a7b11deae8a0d06dde1a2a898f2bce764b533eb81e28fe09e3
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_carriers.texts.json` — 223 bytes
+
+- Licence: generated
+- sha256: d6802300c3261ef25553f52213f1713579045c0d6cd1917d8cf9953166946b12
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_carriers.verdict` — 242 bytes
+
+- Licence: generated
+- sha256: 7707651a76fe924476bd00c3ea58e3d48f909784d66c00b707e751888c26c4c6
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_injected.render.svg` — 1246 bytes
+
+- Licence: generated
+- sha256: e5a7133fe1fcaed6d4e540fa6620b36efc372bdf6f34586b2778130a3c998dcd
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_injected.svg` — 1236 bytes
+
+- Licence: generated
+- sha256: b6ed63cbc2825d736959868082c0f709e39590fa3a8aa2d917082aca0a50f3ee
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_injected.texts.json` — 205 bytes
+
+- Licence: generated
+- sha256: 09cd13185ad3e14cedba024af1a7eb182f0a27e3052baca28c3e9e93a9a5cdf1
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
+## `dxf-cr/cr_injected.verdict` — 269 bytes
+
+- Licence: generated
+- sha256: feb09217bf396ee05e2aedefd187eeebe1c46be511fa1526989b7bcb00d30b54
+- Command: see the generation command of this group above
+- Evidence: `.planning/phases/75-dxf-2d-pipeline/evidence/75-07-cr.txt`, the FILE line of this file (same sha256 and bytes)
+
 ---
 
 ## 3D render pairs on both backgrounds (`render-bg/`)
 
-- Licence: generated. Every file is a PNG drawn by this repository's `cmd/cad-worker/helper/cad-render` from a mesh of a corpus file listed above (`public/LinearSlide-MGN15x-Block.step`, CC-BY-3.0, unmodified geometry; the synthetic `degenerate_plate.step` and `degenerate_rod.step`; the derived `stl-ascii` slice of the fetched `nasa-sls-block1.stl`, PD).
+- Licence: generated
+- Origin: Every file is a PNG drawn by this repository's `cmd/cad-worker/helper/cad-render` from a mesh of a corpus file listed above (`public/LinearSlide-MGN15x-Block.step`, CC-BY-3.0, unmodified geometry; the synthetic `degenerate_plate.step` and `degenerate_rod.step`; the derived `stl-ascii` slice of the fetched `nasa-sls-block1.stl`, PD).
 - Added by quick task 261014-0lo. Image `octoconv-cad-worker:latest`, image id `sha256:e2d4105a85da1d8d6743f4820b974b889d4383b7c0011fac4fbf7b599cd96482` (the 261013-0og build; `cmd/cad-worker` and `Dockerfile.cad-worker` are unchanged since). Every run: `--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody`.
 - Meshes: `cad-mesh --format step --quality Q --measure M IN OUT` (production argv), or `cad-mesh stats --measure M IN OUT` for the ASCII STL. Frames: `cad-render --view V --size S --background opaque|transparent IN.stl OUT.png`, once per background from the same STL. Harness and per-pair numbers: `.planning/quick/261014-0lo-render-judge-transparent-and-opaque-back/evidence/` (`harness/`, `pairs.txt`).
 - What they prove: the 3D pixel judge gives the same verdict on the opaque and the transparent render of one mesh, with the same box, margin and dark count, and the transparent part pixels a subset of the opaque ones (the difference is the FXAA fringe, which `cad-render` writes into alpha-0 pixels).
@@ -738,6 +1553,76 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 | `w15_iso_256` | `stl-ascii-nasa-sls-block1-1MiB.stl` (sha256 `77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0`), stats path, 4396 triangles | iso, 256 | thin, the 71 W15 slice |
 | `degenerate_plate_front_1280` | `synthetic/degenerate_plate.step`, standard, 12 triangles | front, 1280 | thin, a plate seen edge on |
 | `degenerate_rod_iso_256` | `synthetic/degenerate_rod.step`, standard, 140 triangles | iso, 256 | refused by J4 on both |
+
+## `render-bg/degenerate_plate_front_1280_opaque.png` — 7741 bytes
+
+- Licence: generated
+- sha256: 4960d07bd66c01ae26741adeb846be5adc8db1097ebfe4df800deadd7fa1a507
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/degenerate_plate_front_1280_transparent.png` — 9503 bytes
+
+- Licence: generated
+- sha256: aecae1feb6e1d92060f04bbebbcee4a5ea60926752b531c4eefd053cc0443509
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/degenerate_rod_iso_256_opaque.png` — 970 bytes
+
+- Licence: generated
+- sha256: d2dd961f9b2444cbf670f7ebc677bae9bd940262f911469fd4598e8b2449486f
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/degenerate_rod_iso_256_transparent.png` — 1054 bytes
+
+- Licence: generated
+- sha256: d6930aa3e94ddccfec335810666e5cbc1f7d77228a0af1578fddb17630cfc724
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/linearslide_iso_256_opaque.png` — 8764 bytes
+
+- Licence: generated
+- sha256: 1761e0f82edc714e5431f45574c90ec3b18142ed15aed07bc0a72c48e54cb173
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/linearslide_iso_256_transparent.png` — 9312 bytes
+
+- Licence: generated
+- sha256: e55f8e721566f76c493115250912bf332791e3a3bdf804f2e6a1b7e6bf06cadc
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/nauo4_iso_1280_opaque.png` — 47041 bytes
+
+- Licence: generated
+- sha256: 470382d75a317c7e72c7ce280dfb61b3d4516dce6412136fa9168cf3df6f4043
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/nauo4_iso_1280_transparent.png` — 53741 bytes
+
+- Licence: generated
+- sha256: a7c7fc0a0bfe867a1122c5a464b8e3dc581bf392fe095d773e8b6278ffdd55b3
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/w15_iso_256_opaque.png` — 1628 bytes
+
+- Licence: generated
+- sha256: 38d96d1902f2448f887db865292754ecf8feccf71f2ab6e6c54f3c9bf6746670
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
+
+## `render-bg/w15_iso_256_transparent.png` — 1789 bytes
+
+- Licence: generated
+- sha256: 5bf66e2cb05e326b4324ee9f568d5e1f77cd258dae4f081ecd71e94db895b265
+- Command: see the pair table of this group above
+- Evidence: no sha256 was recorded when the file was committed in 056a8d2 (quick 261014-0lo); this sha256 is that of the committed file, computed by quick 261018-44q; the file has not changed since 056a8d2.
 
 ---
 
