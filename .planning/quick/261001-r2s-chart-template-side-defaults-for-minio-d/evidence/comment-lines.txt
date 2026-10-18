@@ -1,8 +1,0 @@
-added comment lines in templates, scripts, internal (93ed971..HEAD):
-+{{/* helm upgrade --reuse-values swaps values.yaml for the previous release's values, so a missing or null key must fall back to these defaults. */}}
-
-values.yaml added comment lines (operator documentation):
-+  # non-negative numbers only -- any other value aborts the render. A missing
-+  # or null key (for example after helm upgrade --reuse-values from a release
-+  # made before this block existed) gets the value shown here.
-+    # stops MinIO at startup again. Only true or false; missing or null is true.

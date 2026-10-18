@@ -1,6 +1,0 @@
-clone=/Users/apaderin/.cache/octoconv/clones/07d1024/octoconv head=07d1024aab7f7b342d6b2f8bc394b1f0d82a2f9d tracked_dirt=0 untracked=
-k8s_octoconv_keda=0 running_octoconv=0
-multipart_before=
-quiet_window_found_utc=2026-10-16T22:42:43Z load1=6.69 waited_s=51
-vm_free_kib=26116200 need_kib=19922944 floor_kib=6291456 start_margin_kib=8388608 host_free_kib=31060816
-not starting: free below the start margin or the estimate plus the floor

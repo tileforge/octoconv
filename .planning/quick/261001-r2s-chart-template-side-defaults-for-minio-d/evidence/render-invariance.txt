@@ -1,6 +1,0 @@
-BASE=93ed97192ef318d294bb5f3715d6727a60fd90c2 vs working tree f91b24f
-SAME (2794 lines): helm template octoconv <chart> -f values-local.yaml
-SAME (2275 lines): helm template octoconv <chart> $SECRETS_SET
-SAME (2275 lines): helm template octoconv <chart> $SECRETS_SET --set minio.dataOwnership.uid=1000 --set minio.dataOwnership.gid=2000
-SAME (2249 lines): helm template octoconv <chart> $SECRETS_SET --set minio.dataOwnership.migrate=false
-SAME (2275 lines): helm template octoconv <chart> $SECRETS_SET --set minio.dataOwnership.image=registry.example.invalid/mirror/minio@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb

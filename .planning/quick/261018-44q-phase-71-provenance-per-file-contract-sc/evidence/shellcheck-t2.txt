@@ -1,6 +1,0 @@
-T2,file=scripts/cad-measure/common.sh,error=0,warning=0,info=1,style=0,gcc_notes=1,comment_lines=7,comment_lines_base=7
-T2,file=scripts/cad-corpus-inventory.sh,error=0,warning=0,info=1,style=0,gcc_notes=1,comment_lines=1,comment_lines_base=1
-T2,file=scripts/cad-rss-time-measure.sh,error=0,warning=0,info=5,style=0,gcc_notes=5,comment_lines=65,comment_lines_base=65
-T2,file=scripts/cad-image-trace.sh,error=0,warning=0,info=4,style=0,gcc_notes=4,comment_lines=23,comment_lines_base=23
--# --self-test  run the resume checks on synthetic and committed evidence files.
-+# --self-test  run the resume and input-selection checks on synthetic and committed input.

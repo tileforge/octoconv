@@ -1,6 +1,0 @@
-# race attribution: the ci-local race tier timed out at its fixed 10m budget (internal/convert 606.970s, panic: test timed out). Same machine, same load from other projects' containers, sequential runs, 30m budget:
-## HEAD 2d8d250 go test -race -count=1 ./internal/convert/ -timeout 30m (2026-10-12T17:25:03Z, load: 8.96 9.44 11.00)
-ok  	github.com/apaderin/octoconv/internal/convert	721.111s
-## ebd2e53 same command (2026-10-12T17:37:13Z, load: 9.06 11.71 12.36)
-ok  	github.com/apaderin/octoconv/internal/convert	664.077s
-## end 2026-10-12T17:48:19Z, load: 7.60 7.20 9.16

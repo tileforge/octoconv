@@ -1,8 +1,0 @@
-== go version
-go version go1.26.4 darwin/arm64
-== python3 --version
-Python 3.14.8
-== HEAD
-31c3517175b1a19a4f64adf51f2a05c5ffb64869
-== status
- M .planning/config.json

@@ -1,5 +1,0 @@
-=== RUN   TestCADProvenanceCoversEveryCommittedFile
---- PASS: TestCADProvenanceCoversEveryCommittedFile (0.04s)
-PASS
-ok  	github.com/apaderin/octoconv/internal/convert	0.810s
-rc=0

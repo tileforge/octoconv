@@ -1,9 +1,0 @@
-# write-out rewrote these committed PDFs; each equals its committed bytes once /CreationDate is removed, so the committed bytes were kept
-hatches_2 same_but_date
-legacy_cp1251 same_but_date
-nofont same_but_date
-outline same_but_date
-text_alpha same_but_date
-text_alpha_faint same_but_date
-text_cases same_but_date
-uncommon same_but_date

@@ -1,6 +1,0 @@
-== deleted .planning entries (count): 1690
-== tracked dirt other than ' D .planning/' entries:
-
-== untracked files left by the checks:
-== ignored files left by the checks (top-level entries):
-RESULT tracked_dirt_besides_planning_deletions=0

@@ -1,6 +1,0 @@
-OK: gid=[1000:0] rejected (rc=1)
-OK: values file [uid: 1.5] rejected (rc=1)
-OK: values file [uid: "1000"] rejected (rc=1)
-OK: values file [gid: -5] rejected (rc=1)
-ci-helm exit=0
-ok  	github.com/apaderin/octoconv/internal/e2e	0.579s

@@ -1,5 +1,0 @@
-ATTEMPT,n=3,commit=a3c8a5f117ccf7da2205b9a50238c8c495b0bb80,started_utc=2026-10-16T21:36:46Z,threshold_need_kib=19922944,earlier_check_need_kib=24117248_not_started_free_kib_30304300,result=FAIL
-TIERS,helm=PASS,gate=PASS,internal_convert_s=378.324,race=PASS,docker_build=PASS,e2e=PASS,all_requested_tiers_passed=1
-CAUSE,wrapper defect (Rule 1): step_tectonic counted any TECTONIC_SANDBOX_DISABLED= line in the container env as disabled; compose forwards the variable empty by design (docker-compose.yml TECTONIC_SANDBOX_DISABLED: "${TECTONIC_SANDBOX_DISABLED:-}"), and internal/sandbox ResolveHelper treats only the exact value true as the escape hatch
-OBSERVED,container_env=TECTONIC_SANDBOX_DISABLED=(empty),worker_log=2026/10/16 22:11:40 🔒 tectonic sandbox: landlock via /usr/local/bin/tectonic-worker __sandbox-exec,disabled_log_lines=0,tectonic_pass_lines=both
-VERDICT,the tectonic worker was confined; the FAIL is a false negative of the wrapper and is kept as a FAIL

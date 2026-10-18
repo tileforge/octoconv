@@ -1,8 +1,0 @@
-dockerdev-anycable-1
-dockerdev-memcached-1
-dockerdev-minio-1
-dockerdev-postgres-1
-dockerdev-rails-1
-dockerdev-redis-1
-dockerdev-runner-1
-dockerdev-sidekiq-1
