@@ -3,6 +3,9 @@ created: 2026-10-17
 area: convert
 severity: low
 origin: phase 76 verification, debug session .planning/debug/cad-mesh-timeout-30s-wait.md
+audit_acknowledged:
+  milestone: v1.16
+  at: 2026-10-18
 ---
 
 # On darwin a single group SIGKILL can miss a child forked at that moment

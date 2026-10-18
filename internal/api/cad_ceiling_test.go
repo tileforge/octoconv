@@ -292,7 +292,7 @@ func TestCADCeilingsAtTheDefaults(t *testing.T) {
 	}
 }
 
-const cad76DerivedEvidence = "../../.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+const cad76DerivedEvidence = "../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
 
 func cad76DerivedCeiling(t *testing.T, format string) int64 {
 	t.Helper()

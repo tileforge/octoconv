@@ -10,12 +10,12 @@ usage: scripts/cad-liveproof.sh [--out FILE]
 
 Runs the CAD live proof against the compose stack of this checkout and writes
 one evidence line per check to FILE (relative to the repository root, default
-.planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt).
+.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-07-liveproof.txt).
 Starts only the services that are not running and stops only those.
 USAGE
 }
 
-EVID=".planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt"
+EVID=".planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-07-liveproof.txt"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--out)
@@ -48,7 +48,7 @@ SCALED="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}/scaled"
 REPL50_NAME=dxf-replicate-uncommon-50MiB.dxf
 REPL50_SHA=5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652
 DXF_SPECIAL="A&B <x> \"q\" 'a' & <script>alert(1)</script>"
-P76=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence
+P76=.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence
 DERIVED_FILE="$P76/76-03-derived.txt"
 BOUNDS_FILE="$P76/76-02-bounds.txt"
 STOP_AFTER="${CAD_LIVEPROOF_STOP_AFTER:-}"
@@ -2107,7 +2107,7 @@ ev "WORKER_KILL_RSVG,job=$KV_JOB,input=$REPL50_NAME,killed_pid=$KV_PID,ink_check
 N_KILL_RSVG=1
 
 IMG_SIZE=$(docker image inspect -f '{{.Size}}' "$CAD_IMAGE")
-P73_ID=$(sed -n 's/^HDR,cad_worker_image_id=//p' .planning/phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt | head -1)
+P73_ID=$(sed -n 's/^HDR,cad_worker_image_id=//p' .planning/milestones/v1.16-phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt | head -1)
 P73_SIZE=absent
 if [ -n "$P73_ID" ] && docker image inspect "$P73_ID" >/dev/null 2>&1; then
 	P73_SIZE=$(docker image inspect -f '{{.Size}}' "$P73_ID")

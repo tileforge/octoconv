@@ -1,5 +1,82 @@
 # Milestones
 
+## v1.16 CAD Engine (Shipped: 2026-10-18)
+
+**Phases:** 6 (71–76) | **Plans:** 49 | **Tasks:** 46
+**Range:** 2026-10-02 → 2026-10-18 (17 days, 507 commits, PRs #32–#38)
+**Code:** +6.8k Go (non-test), +17.2k Go test, +2.5k lines of engine helpers in `cmd/cad-worker/helper`
+**Requirements:** EVAL-01..04, CADIN-01..04, RNDR-01..06, MEAS-01..05, CCONV-01..03,
+PREV-01, CADW-01..06 — 29/29 satisfied in all three sources (audit `tech_debt`, no blockers).
+
+### Delivered
+
+A tenth engine class, `cad`, that renders CAD previews and measures geometry
+offline. A client posts step/stp/iges/igs/stl/dxf and gets back a PNG plus a
+versioned `measurements` document, or an STL, SVG or PDF, from engines (OCP,
+VTK + OSMesa, ezdxf, rsvg-convert) that run with no X server, under the same
+measured Landlock confinement as the other nine classes.
+
+**Key accomplishments:**
+
+- **Measured before it was built.** Phase 71 picked the geometry kernel, the
+  renderer and the DXF 2D path by measurement on the real `bookworm-slim` image
+  under Landlock, judged by pixel content: a licensed public corpus with
+  per-file provenance, RSS and wall time at `--cpus=2`, image size and cold
+  pull. OCP (`cadquery-ocp-novtk`) gives FreeCAD's numbers at a fraction of the
+  image; FreeCAD, f3d and Xvfb stay out of the image.
+- **Contract without an engine first.** Fail-closed sniffers for every CAD
+  format shared by job create and `/v1/inspect`, distinct 422 codes (truncated
+  input, ambiguous STL, binary DXF, `dwg` unsupported), a differential against
+  the real readers with a committed divergence table, and the versioned
+  `octoconv.measurements/v1` schema with closed vocabularies held by a doc-sync
+  test.
+- **The class enters the API whole, in one commit.** Registry, queue, enqueue
+  and reconciler routes, per-format ceilings, timeout, estimate, compose,
+  Deployment and ScaledObject land together, with the other nine classes, every
+  golden and the metric label pins byte-identical. Each engine stage (guard,
+  mesh, render, dxf, rsvg) runs under its own measured ruleset recorded in
+  `SANDBOX-PATHS.md` and crosschecked against the Go vars.
+- **`render` → png with a second output.** Closed options (view, size,
+  `quality`, `background`, `assume_unit`); the PNG is `primary`, the
+  measurements JSON is the new `measurements` role, written atomically with it
+  through `AddOutputs`. Volume and surface area are counted only for closed
+  solids, otherwise `null` with a reason code, never `0`; units come from the
+  source with their provenance.
+- **DXF as a 2D pipeline.** `dxf → svg/pdf` and `render dxf → png` through
+  ezdxf and rsvg-convert, with a stdlib guard that keys blocks exactly as ezdxf
+  does (105-input differential, 0 unexplained divergences), an allowlisting SVG
+  re-serializer and one ink judge for emptiness on every DXF output.
+- **Every bound derived from measured rows.** `CAD_ENGINE_TIMEOUT` 886 s
+  (guard 21, mesh 324, render 521 by remainder, I/O 20; DXF route 661 s), the
+  IGES ceiling lowered to 120 MiB by its own memory ladder, and the finding that
+  bytes do not bound 3D render cost (`not_byte_bound` for step/iges/stl), each
+  pinned by a test that reads the evidence.
+- **Proven live.** The cad live proof (164 rows, ALL PASS under quiet_host),
+  KEDA 0→1→2→0 with a 41.28 s cold start so `minReplicaCount: 0` stands, a long
+  render surviving the HPA 2→1 scale-down inside the 906 s grace, and the
+  all-class final gate from a fresh clone at `07d1024` ending `ALL PASS`, 6/6
+  steps. `docs/CAD.md`, `docs/PREVIEW.md` (the SEED-007 preview contract, fixed
+  on CAD), OpenAPI, MCP descriptions and the frontend table are each held to the
+  code by a test.
+
+**Closeout:** override_closeout. Milestone audit `tech_debt` (29/29
+requirements, 24/24 integration, 7/7 flows, no blockers):
+`.planning/milestones/v1.16-MILESTONE-AUDIT.md`. Every phase VERIFICATION
+reports `status: passed`, but `init.manager` at close read phases 72–76 as
+`stale`: later phases and quick tasks legitimately changed files those reports
+cover (and the close's own acknowledgement markers moved two covered files of
+75/76). Phase 71 re-verified passed on the final tree. No re-verification was
+run at close.
+Known verification overrides: 9 newly acknowledged, 45 carried forward from a prior close (see STATE.md Deferred Items).
+The two phase-75 deferred items are already resolved (quick 261012-gos); the
+two phase-76 items and five todos stay open: the Helm upload cap below the
+measured CAD ceilings (audit TD-1), install-time CPU starvation on a small node,
+the deletion-cost annotation racing the HPA, CAD stage progress, the live check
+of the `mc ls` JSON shape, the darwin group-SIGKILL fork race, and two
+selection steps that read load-contaminated rows.
+
+---
+
 ## v1.15 Engine Confinement (Shipped: 2026-10-01)
 
 **Phases:** 4 (67–70) | **Plans:** 20 with artifacts (68–70) + phase 67 as PR #28 | **Tasks:** 43
@@ -74,7 +151,6 @@ at all.
 - **Phase 63's sanitize hardening and probe page ceiling**, and phase 62's
   operational debt tail: an initContainer for all ten pods, a test that had
   stopped asserting about the database, and one requirement that was already met.
-
 
 ## v1.13 Inspect & Operations (Shipped: 2026-09-02)
 
@@ -186,7 +262,6 @@ Known deferred items at close: 13 entries across tech_debt / accepted_risk / inf
 - QUOT-05 closed by a live gate, not by assertion: 10 rounds of 10 concurrent requests at `api.replicas: 2` admitted exactly K=2 and rejected exactly 8 with `quota_exceeded` every round, 0 `rate_limited`, both pods serving both outcomes — 167 assertions, evidence TSVs committed. The gate has a real history of catching genuine failures (a disproven host→ClusterIP reachability assumption, a legitimate-slot-reuse ambiguity at round 4/10) and closing them structurally: a heavy fixture, a self-checking spread bound, and a per-round Postgres precondition proving no admitted job went terminal inside the burst — never by relaxing `==` to `<=`.
 - `internal/jobs/admission.go` now records the inverse of `internal/ratelimit`'s own caveat register: the quota mechanism carries NO `api.replicas: 1`-only caveat, structural argument first, live confirmation second, with the run's bounds (K=2, image engine, exactly 2 replicas) stated as bounds rather than implied as generality.
 
-
 ## v1.11 Pandoc Engine (Shipped: 2026-08-02)
 
 Known deferred items at close: 5 categories (see STATE.md Deferred Items). Milestone audit: passed — 9/9 requirements, 4/4 phases, 6/6 cross-phase seams, 1/1 E2E flow (.planning/milestones/v1.11-MILESTONE-AUDIT.md).
@@ -209,7 +284,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - values-loadproof.yaml pandoc overlay exercising the falsy-0 guard (scaleDownStabilizationSeconds: 0) plus a values-driven Prometheus scrape interval, and a self-contained scripts/keda-pandoc-loadproof.sh SC3 scale-from-zero gate with run-time in-container markdown fixture synthesis (no committed testdata).
 - scripts/keda-pandoc-downscale-survival.sh (a depth-arithmetic drive shape + /proc-based attribution SC4 harness, structurally distinct from the ocr clone source by design) plus committed offline calibration evidence (fixture_bytes=4094606, wall_seconds=18.276, safely inside [15,50]) proving the SC4 job window before any cluster time is spent.
 
-
 ## v1.10 OCR Engine (Shipped: 2026-07-27)
 
 **Phases completed:** 4 phases, 15 plans, 35 tasks
@@ -230,7 +304,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - TestOCRConversionE2E proves image->txt + 20-page PDF->hocr end-to-end against the real ocr-worker container (presigned download + HMAC-signed webhook + live 0<progress_pct<100 ramp), closing the deferred Phase-44 SC4 — and surfaced three production bugs fixed inline.
 - Authored the SC3 scale-from-zero and SC4 downscale-survival live-proof gate scripts for the OCR engine class as structural clones of the av Phase-37 harness, plus the keda.ocr load-proof overlay knob -- statically verified, ready for Plan 03's live OrbStack run.
 - OCR class autoscaling live-proven on OrbStack k8s — scale-from-zero 0→1→0 (SC3, 11 assertions) and a 60-page OCR job surviving a genuine 2→1 downscale with graceful SIGTERM-before-completion / exit-0 / grace=774 (SC4, 22 assertions).
-
 
 ## v1.9 Job Progress & Control (Shipped: 2026-07-25)
 
@@ -253,7 +326,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Added `GET /v1/jobs/{id}/events`: a DB-poll-sourced, single-goroutine SSE handler that mirrors `handleGetJob`'s auth + 404-ownership guard exactly, emits a named `progress` event only on change, heartbeats every 15s, and closes cleanly on terminal status, client disconnect, or a 30m safety cap -- zero goroutine leak by construction (no `go func()` anywhere in the handler).
 - Adds an opt-in, HMAC-signed `progress` webhook event fired from a detached, single-attempt, own-timeout goroutine inside the Phase 41 progressSink — reusing the existing PROG-03 throttle decision and structurally incapable of touching the terminal `done`/`failed` bounded-retry/dead-letter queue — plus the additive `event` discriminator on both webhook bodies and cmd/av-worker's real `webhook.Deliverer` wiring.
 - Authored scripts/sse-liveproof.sh -- a docker-compose-live operator gate that submits a forced hevc@1080 ffmpeg re-encode, opens GET /v1/jobs/{id}/events over a real socket, and hard-gates on Content-Type: text/event-stream, >=2 event: progress frames at distinct wall-clock timestamps before the stream's one terminal frame, >=1 `: keepalive` heartbeat, a clean close shortly after the terminal frame, and a cross-client 404. Task 2 (the live operator run) has NOT been executed -- PUSH-01 stays Pending until an operator runs the script against a live docker-compose stack and confirms the PASS summary.
-
 
 ## v1.8 AV Engine (video/ffmpeg) (Shipped: 2026-07-23)
 
@@ -280,7 +352,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Two statically-verified live-proof gate scripts (scripts/keda-av-loadproof.sh for scale-from-zero, scripts/keda-av-downscale-survival.sh for N->N-1 downscale survival) plus a values-loadproof.yaml keda.av.scaleDownStabilizationSeconds:15 override, ready for Plan 03's live cluster execution.
 - Rebuilding octoconv-api:dev from current HEAD (which already has QueueAV wired into AllConvertQueues()) resolved the prior BLOCKED run's STEP 6 failure outright, and Task 1 (SC3 scale-from-zero) passed clean on the first attempt; Task 2 (SC4 downscale-survival) then surfaced and fixed a second, independent live bug (an inherited WR-05-class jsonpath defect in the non-frozen keda-av-downscale-survival.sh) before passing all 22 assertions on retry, live-proving that a long hevc@1080 av transcode survives a genuine KEDA/HPA 2->1 downscale under production terminationGracePeriodSeconds=783 with a graceful exit 0.
 
-
 ## v1.7 Audio Engine & Hardening (Shipped: 2026-07-18)
 
 **Phases completed:** 5 phases, 18 plans, 44 tasks
@@ -306,7 +377,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - New self-contained scripts/keda-audio-loadproof.sh: structural clone of scripts/keda-load-proof.sh, narrower (no trial-run mode) and with new scope (timestamped kubectl pod-event-timeline capture for the audio class's scale-from-zero proof), statically verified — the two frozen sibling scripts remain byte-unchanged.
 - Live-ran both KEDA load-proof gates on OrbStack: keda-audio-loadproof.sh cleanly proved audio 0->1 scale-from-zero with the whisper model baked in (SC3, AUD-08 complete); the unmodified keda-load-proof.sh re-run newly confirmed SC1/SC2 pass under the WR-01-hardened chart but also empirically surfaced a real, previously-only-theoretical WR-05 jsonpath defect in SC3's BUSY_POD selection (fails loud, as 29-REVIEW.md predicted) -- Phase 29's deferred item is re-verified, not cleanly closed.
 
-
 ## v1.6 Kubernetes & KEDA (Shipped: 2026-07-17)
 
 **Known deferred items at close:** 3 (stale v1.3-era quick-task record + 2 dormant seeds, SEED-004 substantively delivered — see STATE.md Deferred Items)
@@ -330,7 +400,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Three new tools -- a calibratable python-docx heavy-fixture generator, a headless matplotlib CSV-to-PNG dual-axis renderer, and a self-contained 854-line `keda-load-proof.sh` gate implementing the SC1/SC2 image-burst 0->N->0 scenario and the SC3 document-class downscale-soak with deterministic pod-deletion-cost victim selection and the D-09 triple-check -- all statically verified (bash -n, uv smoke runs) and ready for the live in-cluster run in plan 28-03.
 - A single ALL-27-ASSERTIONS-PASSED live gate run against the real OrbStack cluster proving the full 0→4→0 image-class burst cycle (first replica +6s, peak 4 = maxReplicaCount at +11s, drain +76s, scale-to-zero +136s) and a 178s document conversion gracefully surviving a genuine KEDA/HPA 2→1 downscale (SIGTERM 142.8s before job completion, Completed/exit-0 with 188s of the 330s grace window unused) — all captured as committed, credential-free, timestamped evidence.
 
-
 ## v1.5 MCP Access & Document Fidelity (Shipped: 2026-07-13)
 
 **Phases completed:** 4 phases, 10 plans, 22 tasks
@@ -348,7 +417,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - ValidatePDFA wired into validateDocumentOutput's wantPDFA branch (after the /GTS_PDFA pre-filter) via the existing hardened runCommand, extended to capture stdout since veraPDF's `--format xml` report is stdout-only; fail-closed terminal classification (terminalVeraPDFSignatures) lands in the same commit, and VERAPDF_TIMEOUT is injected from cmd/document-worker/main.go via SetVeraPDFTimeout.
 - Live, unconditional proof against the rebuilt document-worker image (real veraPDF JVM in the path): a genuine PDF/A-2b export still reaches done (no regression), and a marker-bearing-but-corrupted PDF/A export injected via an e2e-only soffice shim fails terminally with the exact "pdf/a non-compliant" veraPDF reason recorded in job_events -- all three live tests (TestPDFAExportE2E, TestPDFANonCompliantE2E, TestDocumentConversionE2E) passed in a single 43.16s run; document-worker image build-time delta measured at +12.13s (+8%) via two controlled --no-cache local builds.
 
-
 ## v1.4 CI, Presets & Debt Cleanup (Shipped: 2026-07-12)
 
 **Phases completed:** 3 phases, 8 plans, 15 tasks
@@ -363,7 +431,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - scripts/presets-acceptance.sh — a 33-assertion live hard gate proving all five manage-presets CLI verbs plus preset resolution/provenance/shadowing/no-leak/re-validation against the real compose stack, passing twice in a row (fresh run + idempotent re-run) with a rebuilt api image.
 - Authored `.github/workflows/ci.yml` — OctoConv's first-ever CI workflow, a 4-tier needs-chained pipeline (gate → race → docker-build → e2e) covering CI-01..CI-04, with every tier's exact commands locally hard-gated green before any push.
 - Executed inline by the orchestrator
-
 
 ## v1.3 Document Class v2 (Shipped: 2026-07-12)
 
@@ -389,7 +456,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - All three Phase 16 success criteria live-verified against a freshly built two-webhook-worker stack and human-approved: webhook delivery survives image-worker absence (SC1), survives a mid-delivery consumer kill with zero lost/zero duplicated delivered webhooks (SC2), and exactly one fleet-wide advisory-lock sweeper with ~11s auto-failover (SC3). WEBH-01 satisfied.
 - Verified CR-01/WR-01 pool-slot-leak and shutdown-blocking fixes already landed by a parallel quick-task, and closed the one remaining test gap with a new -race regression test for the TryAcquire/Close mutex interleaving.
 
-
 ## v1.2 Document Engine Class (Shipped: 2026-07-10)
 
 **Phases completed:** 4 phases (8–11), 12 plans (incl. gap-closure 11-04), 26 tasks
@@ -411,7 +477,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - All 6 document format pairs (docx/xlsx/pptx/odt/ods/odp to pdf) converted successfully through a freshly built, live docker-compose stack (api + worker + document-worker + postgres/redis/minio), including a fully HMAC-verified signed webhook delivery for the docx pair — `go test ./internal/e2e/ -run E2E -v` ran (not skipped) and passed in 15.3s.
 - Extended `convert.MIMEType` with the six document formats and `pdf`, closing the last gap in DOC-10 so document job uploads/downloads are served with the correct MIME type instead of `application/octet-stream`, exactly like image jobs.
 
-
 ## v1.1 Tech Debt Cleanup (Shipped: 2026-07-08)
 
 **Phases completed:** 3 phases, 7 plans, 13 tasks
@@ -425,7 +490,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Two real-wall-clock integration tests (`TestSoakRecoversStrandedQueuedJob`, `TestSoakExhaustsAtCap`) prove Phase 3's staleness recovery and cap-exhaustion behavior under genuine elapsed time, using a live Postgres `jobs.Repo` paired with the existing in-memory `fakeEnqueuer`, completing in under 4 seconds combined
 - `convert.Dimensions()` — hand-written binary parsers for PNG/JPEG/WebP/TIFF/HEIC extracting declared pixel width/height from a bounded 64 KiB non-seekable stream prefix, with zero new dependencies and full byte-fixture test coverage.
 - MAX_IMAGE_PIXELS config/env wiring plus a handleCreateJob gate that calls convert.Dimensions between the format pair-check and callback_url validation, rejecting 422 before any storage write when declared pixel dimensions are unknown or exceed the configurable 100-megapixel default.
-
 
 ## v1.0 Hardening MVP (Shipped: 2026-07-08)
 
@@ -448,4 +512,3 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Defined four Prometheus metric families (job outcomes, job duration, webhook deliveries, reconciler actions) plus a pull-based queue-depth collector in a new `internal/metrics` package, and instrumented the existing worker/reconciler terminal exit points to call them — closing the instrumentation half of OBS-01.
 - GET /healthz now pings Postgres, Redis, and S3/MinIO under a shared 3s timeout, returning 200/ok when all reachable and 503/degraded with per-dependency detail otherwise.
 - Second localhost-only `/metrics` HTTP listener mounted in both `cmd/api/main.go` and `cmd/worker/main.go` (promhttp.Handler(), METRICS_ADDR default 127.0.0.1:9090), queue-depth collector registered in the worker, and a pinned `hibiken/asynqmon:0.7.2` dashboard service bound to 127.0.0.1:8980 — all three verified live end-to-end (real conversion job, real metrics scrape, real dashboard query).
-

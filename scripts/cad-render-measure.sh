@@ -24,7 +24,7 @@ cd "$REPO_ROOT"
 
 OCP=7.9.3.1.1
 VARIANT=full
-OUT_DIR="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+OUT_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 BUDGET=${OCTOCONV_CAD_CELL_BUDGET:-300}
 
 usage() {

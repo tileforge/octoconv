@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-REPO=$(cd "$(dirname "$0")/../../../.." && pwd)
+REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 STUB="$T/bin"

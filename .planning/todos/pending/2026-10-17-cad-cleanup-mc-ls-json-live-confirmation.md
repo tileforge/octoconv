@@ -4,6 +4,9 @@ area: final-live-gate
 severity: low
 origin: quick 261017-7y5 sweep
 reworded: 2026-10-17 (quick 261017-f0i)
+audit_acknowledged:
+  milestone: v1.16
+  at: 2026-10-18
 ---
 
 # Confirm live the `mc ls --recursive --json` shape the cad cleanup reads

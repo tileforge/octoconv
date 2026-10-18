@@ -32,7 +32,7 @@ cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 . "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
-EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 LIMITS_FILE="$EVID/71-06-limits.txt"
 MAIN_EVIDENCE="$EVID/71-07-landlock.txt"

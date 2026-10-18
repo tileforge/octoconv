@@ -12,6 +12,7 @@
   - The fix is a chart change, for example a PriorityClass for the always-on services, or a first install at 0 that a later `helm upgrade` does not reset. Either is a design decision (Rule 4) outside this plan.
   - The loadproof works around it by scaling the nine non-cad ScaledObject targets to 0 while `helm install` runs, and records an INSTALL_ASSIST line. cad-worker is untouched.
 - Production relevance: a node pool with fewer free CPUs than the sum of the worker limits can hit the same race on a fresh install.
+  status: acknowledged
 
 ## 76-10: the deletion-cost annotation races the HPA decision
 
@@ -23,3 +24,4 @@
 - Why it still counts: the annotation landed while spec.replicas was 2, it preceded the Killing second, and the victim was the busy pod. Without the annotation, the ReplicaSet controller would have deleted the more recently Ready pod, which was the idle one.
 - Why it is fragile: if the HPA had acted one or two seconds earlier, the idle pod would have been the victim and the run would have failed. The ocr and pandoc scripts use the same order (annotate after the second pod is up).
 - Possible hardening, not done here because the passing run is the evidence and a changed script would need a new run: annotate the only pod as soon as LONG is active, before SHORT is submitted, and keep the engine census after 1->2 as the cross-check.
+  status: acknowledged

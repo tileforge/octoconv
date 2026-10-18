@@ -494,7 +494,7 @@ self_test() {
   d=$(mktemp -d "${TMPDIR:-/tmp}/cad-resume-selftest.XXXXXX")
   DONE_KEYS="$d/done.keys"
   STOPPED="$d/stopped.keys"
-  evid="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+  evid="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
   OCP=7.9.3.1.1; VARIANT=full; MEMS=4g; CPUS=2; PARALLEL=on; LP=default; QUALITY=standard; BUDGET=900
   CONFINE=""; CONFINED=0
   EXPECT_IMAGE=octoconv-cad-measure:ocp7.9.3.1.1-full-aaaaaaaaaaaa; EXPECT_IMAGE_ID=""; EXPECT_ARCH=""

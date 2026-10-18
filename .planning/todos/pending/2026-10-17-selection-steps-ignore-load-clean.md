@@ -3,6 +3,9 @@ created: 2026-10-17
 area: cad-live-proofs
 severity: low
 origin: quick 261017-doa sweep
+audit_acknowledged:
+  milestone: v1.16
+  at: 2026-10-18
 ---
 
 # Two selection steps read load-contaminated rows

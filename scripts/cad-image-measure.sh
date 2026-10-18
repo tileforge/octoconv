@@ -13,7 +13,7 @@ QUIET_LOAD=11
 MAX_ATTEMPTS=6
 QUIET_WAIT_S=3600
 FLOOR_KIB=6291456
-DERIVED="$CAD_REPO_ROOT/.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+DERIVED="$CAD_REPO_ROOT/.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
 
 usage() {
   echo "usage: $0 --image REF --out FILE [--repeats 3] [--preflights 3] [--port 5055] [--quiet-load 11]" >&2

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-PHASE_DIR="$REPO_ROOT/.planning/phases/75-dxf-2d-pipeline"
+PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/75-dxf-2d-pipeline"
 EVID="$PHASE_DIR/evidence/75-01-engine.txt"
 EVID_NAME="evidence/75-01-engine.txt"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
@@ -77,7 +77,7 @@ helper    run the production cad-dxf under its candidate Landlock ruleset and th
           probe-only image derived from the engine, for the fonts group. One HELPER,
           CORPUS or FIDELITY row per check and one SUMMARY line per group. --write-out refreshes
           internal/convert/testdata/cad/dxf-out with the real outputs. The evidence file defaults
-          to .planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt and a group re-run
+          to .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt and a group re-run
           replaces only its own lines.
 judge     draw the 8 phase-71 drawings and wide, tall, far_point, xline_ray and text_cases with
           cad-dxf under its measured ruleset (MEASURED,stage=dxf of evidence/75-08-landlock.txt),
@@ -88,7 +88,7 @@ judge     draw the 8 phase-71 drawings and wide, tall, far_point, xline_ray and 
           transparent frame's Go ink box is compared with its opaque twin's, and a blank 1280
           frame is judged by both. Disagreements are classified by the pre-registered classes E1,
           E2 and E3; anything else is unexplained. The evidence file defaults to
-          .planning/phases/75-dxf-2d-pipeline/evidence/75-08-judge.txt and is rewritten whole.
+          .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-08-judge.txt and is rewritten whole.
 
 ink       draw every committed DXF (testdata/cad/dxf, public, synthetic, dxf-cr) with cad-dxf under its
           measured ruleset, validate the render-only SVG with the Go validator and draw it with
@@ -101,10 +101,10 @@ ink       draw every committed DXF (testdata/cad/dxf, public, synthetic, dxf-cr)
           L170031, R118, C and B from the scaled cache (sha256 checked against 75-05-bounds.txt); a
           ceiling row the production guard refuses is still measured, with the 10x caps 75-05 used,
           and the guard verdict is recorded.
-          The evidence file defaults to .planning/phases/75-dxf-2d-pipeline/evidence/75-ink.txt.
+          The evidence file defaults to .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-ink.txt.
 
 Every mode rewrites its own lines in the evidence file (default
-.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
+.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
 removes the image tags it built. Needs a native arm64 docker server, go, python3 and pdftotext.
 Exit codes: 64 usage, 69 a tool is missing, 3 VM disk below 6 GiB, 1 a check failed.
 USAGE

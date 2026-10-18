@@ -122,7 +122,7 @@ func TestCADDXFPDFReportOnTheHelperFixtures(t *testing.T) {
 }
 
 func TestCADDXFPDFTextFloorComesFromTheEvidence(t *testing.T) {
-	const evidence = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
+	const evidence = "../../.planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
 	raw, err := os.ReadFile(evidence)
 	if err != nil {
 		t.Fatal(err)

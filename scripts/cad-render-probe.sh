@@ -7,9 +7,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
 
-PHASE_DIR="$REPO_ROOT/.planning/phases/74-3d-render-measurements"
+PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/74-3d-render-measurements"
 EVID="$PHASE_DIR/evidence/74-01-wave0.txt"
-EVID71="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID71="$REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
 OLD_IMAGE="octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d"
@@ -73,7 +73,7 @@ judge-png judge committed or saved PNGs with the Go judge, one GOJUDGE line each
           got ok=error.
 
 Every mode rewrites its own lines in the evidence file (default
-.planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt, mesh mode
+.planning/milestones/v1.16-phases/74-3d-render-measurements/evidence/74-01-wave0.txt, mesh mode
 74-02-mesh.txt) and removes the image tags it built. Needs a native arm64 docker server, go and python3;
 judge-png needs go only and writes no evidence file.
 Exit codes: 64 usage, 69 a tool is missing, 1 a check failed.

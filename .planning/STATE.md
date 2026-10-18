@@ -2,39 +2,37 @@
 gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
-current_phase: 76
-current_phase_name: measured-bounds-keda-proof-client-docs
-status: verifying
-stopped_at: Completed 76-11-PLAN.md
-last_updated: "2026-10-17T00:44:27.165Z"
-last_activity: 2026-10-13
-last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 20977da1bcae2930c961276ce5f25e4cdf1813d9
+status: Awaiting next milestone
+stopped_at: Milestone v1.16 complete — all phases complete
+last_updated: "2026-10-18T03:16:27.176Z"
+last_activity: 2026-10-18
+last_activity_desc: Milestone v1.16 completed and archived
+state_head: 186c44fbd171f33431670c7570360e3cc73419d3
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 49
   completed_plans: 49
-  percent: 83
+  percent: 100
+current_phase: 76
+current_phase_name: measured-bounds-keda-proof-client-docs
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
+See: .planning/PROJECT.md (updated 2026-10-18 after v1.16 milestone)
 
-**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 74 — 3D Render & Measurements
+**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации или обработки файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup, LaTeX, CAD) и получить результат — без риска для стабильности или безопасности продакшена.
+**Current focus:** Planning next milestone (`/gsd-new-milestone`)
 
 ## Current Position
 
-Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
-Plan: 11 of 11
-Status: Phase complete — ready for verification
-Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
-
-Progress: [████████░░] 83% (0/6 phases)
+Phase: Milestone v1.16 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-10-18 — Milestone v1.16 completed and archived
 
 ## Performance Metrics
 
@@ -279,7 +277,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
-Ровно восемь, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно девять, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -311,6 +309,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
   флаг загрязнения; обе ошибки толкают только в строгую сторону, стабов у скриптов нет (быстрая
   задача 261017-doa). См.
   `.planning/todos/pending/2026-10-17-selection-steps-ignore-load-clean.md`.
+- **Helm-чарт ограничивает загрузку 100 MiB, ниже замеренных потолков CAD** (IGES 120 MiB,
+  STL 182 MiB, DXF 118 MiB): в k8s такой вход получает общий 413; в compose 2 GiB. TD-1 аудита
+  v1.16. См. `.planning/todos/pending/2026-10-18-helm-upload-cap-below-cad-ceilings.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
@@ -334,7 +335,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Blockers/Concerns
 
-Старт фазы 71 ничем не заблокирован. **v1.16 sequencing and risks carried into the roadmap:**
+v1.16 закрыт 2026-10-18; открытых блокеров нет. Ниже — как риски v1.16 были записаны при создании роадмапа (история). **v1.16 sequencing and risks carried into the roadmap:**
 
 - Жёсткая цепочка: **71 → 72 → 73 → 74 → 76**; фаза 75 зависит от 74 (общий путь второго выхода `measurements`), а её половина convert (dxf → svg/pdf) — только от 73.
 - **Самый длинный шест — замер Landlock-набора в 73**: python + C++ стек, `execve` не виден в трассе `openat`, трассы прототипа сняты на trixie, а не на образе bookworm. Эмулированный amd64 Landlock не получает — замер только на нативной архитектуре.
@@ -373,6 +374,31 @@ Carried from v1.12:
 - RESOLVED 2026-10-16T13:46Z (Docker recovered by itself; the interrupted cleanup finished at 08:42:44Z, deleting 604 objects / 1829130978 bytes; bucket at the 3.1 GiB / 1314-object baseline; `docker compose -p octoconv stop` rc 0, nothing running; VM free 23.56 GiB): was OPEN 2026-10-16 (waits for Docker recovery; OrbStack restart not approved): 76-08 post-run hygiene is not done. The docker daemon stopped responding at about 05:27Z during the cleanup after attempt 6. Still to do: the MinIO cleanup of the uploads and results of attempts 5 and 6 (scratchpad/76-08-minio-cleanup.sh, 76-08 clients only, then append to evidence/76-08-minio-cleanup.txt) and `docker compose -p octoconv stop`. No octoconv k8s or compose run should start before this is done.
 
 ## Deferred Items
+
+Acknowledged and deferred at the v1.16 milestone close on 2026-10-18: 9 items
+(45 acknowledged at earlier closes stay suppressed). The five todos are the live
+CAD follow-ups: stage progress instead of a null progress_pct, the live check of
+the mc ls JSON shape the cad cleanup reads, the darwin group-SIGKILL fork race,
+the two selection steps that read load-contaminated rows, and the Helm upload cap
+below the measured CAD ceilings (audit TD-1). The two phase-75 deferred items are
+already resolved by quick task 261012-gos (job-dir write/read hardening through
+internal/convert/jobdirfs.go, the python >= 3.10 test floor, and the multipart
+spill cleanup in the API handlers); they are acknowledged only because the
+deferred-items.md entries still read as open to the scanner. The two phase-76
+items are open: the chart's install-time CPU starvation on a small node and the
+deletion-cost annotation racing the HPA.
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| todos | 2026-10-15-cad-stage-progress.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-cad-cleanup-mc-ls-json-live-confirmation.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-darwin-killpg-fork-race.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-selection-steps-ignore-load-clean.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-18-helm-upload-cap-below-cad-ceilings.md | (presence-only) | 2026-10-18 | v1.16 |
+| deferred_items | 75/deferred-items.md: From 75-07 - 3D render sidecar written with os.WriteFile after a confined stage; requireCADPython below python 3.10 (resolved: quick 261012-gos) | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 75/deferred-items.md: From 75-10 - internal/api ceiling tests leak a multipart temp file of the full upload size (resolved: quick 261012-gos) | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 76/deferred-items.md: 76-09 - a fresh chart install can starve api or minio on a small node | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 76/deferred-items.md: 76-10 - the deletion-cost annotation races the HPA decision | acknowledged | 2026-10-18 | v1.16 |
 
 Acknowledged and deferred at the v1.15 milestone close on 2026-10-01: 46 items.
 The five todos are the live work from phase 70 (amd64 first deployment, MinIO
@@ -493,9 +519,9 @@ and the soak test that shares a database with parallel packages.
 ## Session Continuity
 
 Last session: 2026-10-17T00:44:25.909Z
-Stopped at: Completed 76-11-PLAN.md
+Stopped at: Milestone v1.16 complete — all phases complete
 Resume file: None
 
 ## Operator Next Steps
 
-- Спланировать фазу 71: `/gsd-plan-phase 71` (фаза-исследование: корпус, рамка кадра VTK, реальный RSS, потоки llvmpipe/OCP при cgroup-квоте)
+- Start the next milestone with /gsd-new-milestone

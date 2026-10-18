@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PORT=5055
 REPEATS=3
-EVID_DIR="$CAD_REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+EVID_DIR="$CAD_REPO_ROOT/.planning/milestones/v1.16-phases/71-evaluation-gate/evidence"
 OUT="$EVID_DIR/71-08-image-size.txt"
 
 usage() { echo "usage: $0 [--port 5055] [--repeats 3] [--out FILE]" >&2; exit 64; }
