@@ -723,7 +723,7 @@ func cadDerivedValue(t *testing.T, evidence, key string) int64 {
 	return n
 }
 
-const cad76Evidence = "../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-derived.txt"
+const cad76Evidence = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt"
 
 func TestCADConstantsComeFromThe76Evidence(t *testing.T) {
 	seconds := func(d time.Duration) int64 { return int64(d / time.Second) }
