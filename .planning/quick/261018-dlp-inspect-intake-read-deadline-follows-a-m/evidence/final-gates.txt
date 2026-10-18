@@ -1,0 +1,94 @@
+== final gates on f2a6e11a + the uncommitted docs/planning edits, 2026-10-18T07:26:33Z; go version go1.26.4 darwin/arm64; python3 3.14.8
+== gofmt -l .
+<empty>
+gofmt: PASS
+== go vet ./...
+go vet: PASS
+== go test ./internal/api/ -race -count=1 -v -run 'TestInspectIntake|TestInspectSlowBodyDoesNotHoldConcurrencySlot|TestInspectPreAdmitGetsFreshContextAfterSlowBody|TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns|TestChartTransportCaps|TestOpenAPI'
+--- PASS: TestInspectSlowBodyDoesNotHoldConcurrencySlot (0.15s)
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+--- PASS: TestInspectPreAdmitGetsFreshContextAfterSlowBody (0.20s)
+--- PASS: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (1.51s)
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.56s)
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+--- PASS: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.02s)
+--- PASS: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+--- PASS: TestInspectIntakeRuleIsStatedInTheOpenAPI (0.05s)
+--- PASS: TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns (4.76s)
+--- PASS: TestOpenAPIPathsMatchRegisteredRoutes (0.02s)
+--- PASS: TestOpenAPIDocumentsEveryEmittedStatus (0.12s)
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFile (6.39s)
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (7.71s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/api	24.562s
+    inspect_intake_test.go:114: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 200 after 1.503954s
+    inspect_intake_test.go:129: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 541.68425ms
+    inspect_intake_test.go:216: worst-case intake slot hold at the chart cap of 191889408 bytes: 3m33s
+    transport_cap_test.go:527: 190840784-byte STL at 25000000 B/s (20 Mbit/s with time scaled down by 10) against a 3s window and 10485760 B/s: 7.649631125s
+race run exit=0
+== go test ./... -count=1
+ok  	github.com/apaderin/octoconv/cmd/api	2.785s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	2.780s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	3.127s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	3.551s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	3.864s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	4.244s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	4.704s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	22.420s
+ok  	github.com/apaderin/octoconv/internal/auth	4.994s
+ok  	github.com/apaderin/octoconv/internal/cancel	5.314s
+ok  	github.com/apaderin/octoconv/internal/clients	4.653s
+ok  	github.com/apaderin/octoconv/internal/convert	387.928s
+ok  	github.com/apaderin/octoconv/internal/db	5.608s
+ok  	github.com/apaderin/octoconv/internal/e2e	5.961s
+ok  	github.com/apaderin/octoconv/internal/envcfg	11.371s
+ok  	github.com/apaderin/octoconv/internal/errcode	5.823s
+ok  	github.com/apaderin/octoconv/internal/inspect	6.638s
+ok  	github.com/apaderin/octoconv/internal/jobs	5.549s
+ok  	github.com/apaderin/octoconv/internal/logfmt	5.064s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	5.735s
+ok  	github.com/apaderin/octoconv/internal/measurements	5.125s
+ok  	github.com/apaderin/octoconv/internal/metrics	4.921s
+ok  	github.com/apaderin/octoconv/internal/presets	4.723s
+ok  	github.com/apaderin/octoconv/internal/queue	4.378s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	3.881s
+ok  	github.com/apaderin/octoconv/internal/reconciler	3.235s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	3.302s
+ok  	github.com/apaderin/octoconv/internal/sandbox	3.415s
+ok  	github.com/apaderin/octoconv/internal/storage	3.712s
+ok  	github.com/apaderin/octoconv/internal/webhook	3.844s
+ok  	github.com/apaderin/octoconv/internal/worker	14.601s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+ok  	github.com/apaderin/octoconv/scripts/cmd/cad-png-compare	4.129s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+full go test exit=0
+== git diff --quiet main -- internal/convert/exec.go
+exec.go identical to main: PASS
+== git diff --quiet 7489c7bfd255fba26453ef1d06eec9d48afb8932 -- internal/api/handlers.go cmd/api/main.go
+handlers.go and cmd/api/main.go unchanged: PASS
+== comment-line counts (want inspect_handlers.go 1079, api.go 358, transport_cap_test.go 0, inspectintake.go 0, inspect_intake_test.go 0, openapi.yaml # lines 1)
+internal/api/inspect_handlers.go 1079
+internal/api/api.go 358
+internal/api/transport_cap_test.go 0
+internal/api/inspectintake.go 0
+internal/api/inspect_intake_test.go 0
+docs/openapi.yaml 1
+== comment lines added anywhere since BASE (diff '+' lines that are // or # comments)
++	// cmd/api/main.go sets httpSrv.ReadHeaderTimeout
++	// the slot just acquired above is released. Ignored when unsupported -- the
+note: the two '+' lines are the D4 deletions, each the remainder of an existing comment line whose deleted fragment shared the line (inspect_handlers.go comment count 1083 -> 1079); no comment line was added
