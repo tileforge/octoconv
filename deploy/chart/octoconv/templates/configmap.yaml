@@ -27,7 +27,7 @@ data:
   # inspect + 6 headroom for ordinary /v1/jobs traffic sharing the same
   # pool). Before this phase MaxConns was never set at all.
   DB_MAX_CONNS: "10"
-  MAX_UPLOAD_BYTES: "104857600"
+  MAX_UPLOAD_BYTES: "191889408"
   MAX_IMAGE_PIXELS: "100000000"
   MAX_DOCUMENT_UNCOMPRESSED_BYTES: "524288000"
   RATE_LIMIT_IP_RPM: "60"
@@ -38,7 +38,7 @@ data:
   # service block) -- see .env.example for the full rationale, including
   # the distinction between the two byte ceilings (upload vs. work) and
   # the D-07 replicas:1 caveat on the rate budget below.
-  INSPECT_MAX_UPLOAD_BYTES: "104857600"
+  INSPECT_MAX_UPLOAD_BYTES: "191889408"
   INSPECT_MAX_WORK_BYTES: "8388608"
   INSPECT_MAX_WORK_DURATION: "2s"
   INSPECT_MAX_CONCURRENT: "4"

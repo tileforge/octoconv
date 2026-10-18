@@ -56,7 +56,7 @@ import sys
 # fires (head window == the first 1 MiB, tail window == the last 64 KiB,
 # defaultTailWindow -- pdf.go:160, NOT capped by maxBytes the way MP4's tail
 # window is, see media.go's own findMoov). Far below
-# INSPECT_MAX_UPLOAD_BYTES (100 MiB default, unchanged by the overlay), so
+# INSPECT_MAX_UPLOAD_BYTES (183 MiB default, unchanged by the overlay), so
 # the request never hits the pre-parse 413 path at all.
 TARGET_TOTAL_BYTES = 2 * 1024 * 1024
 

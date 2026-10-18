@@ -3,6 +3,8 @@ created: 2026-10-18
 area: deploy
 severity: medium
 origin: v1.16 milestone audit, TD-1
+completed: 2026-10-18
+resolution: quick task 261018-bmr; the chart's MAX_UPLOAD_BYTES and INSPECT_MAX_UPLOAD_BYTES and the INSPECT_MAX_UPLOAD_BYTES of docker-compose.yml, .env.example and values-inspect-gate.yaml are 191889408 (183 MiB, the next whole MiB above the STL ceiling plus the 4938-byte envelope of the largest bounded request); TestDeployedTransportCapsCoverEveryAdvertisedCeiling holds every shipped configuration to every advertised ceiling plus that envelope and INSPECT at most MAX, and TestChartTransportCapsAdmitTheLargestCeilingFile streams the largest admissible STL through both endpoints at the chart's caps; av is exempt exactly (decision D1), so av's effective k8s ceiling rises from 100 MiB to 183 MiB
 audit_acknowledged:
   milestone: v1.16
   at: 2026-10-18

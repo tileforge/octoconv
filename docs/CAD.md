@@ -83,22 +83,22 @@ a PNG without its measurements or the other way round.
 
 ## Size ceilings
 
-| format | operation | bytes | MiB | effective under the chart's 100 MiB transport cap |
+| format | operation | bytes | MiB | effective under the chart's 183 MiB transport cap |
 |---|---|---|---|---|
 | `step` | `convert` | 66060288 | 63 | 66060288 |
 | `step` | `render` | 66060288 | 63 | 66060288 |
-| `iges` | `convert` | 125829120 | 120 | 104857600 |
-| `iges` | `render` | 125829120 | 120 | 104857600 |
-| `stl` | `render` | 190840832 | 182 | 104857600 |
-| `dxf` | `convert` | 123731968 | 118 | 104857600 |
-| `dxf` | `render` | 123731968 | 118 | 104857600 |
+| `iges` | `convert` | 125829120 | 120 | 125829120 |
+| `iges` | `render` | 125829120 | 120 | 125829120 |
+| `stl` | `render` | 190840832 | 182 | 190840832 |
+| `dxf` | `convert` | 123731968 | 118 | 123731968 |
+| `dxf` | `render` | 123731968 | 118 | 123731968 |
 
 A file above its format's ceiling is refused at create with 413 `payload_too_large`, and the message names the
 format and its ceiling in MiB. `POST /v1/inspect` reports the same ceiling as `max_bytes` on every `cad` offer,
 and the worker checks it again before any engine runs (`input_too_large`). Convert and render share one ceiling
-per format. The Helm chart sets the global `MAX_UPLOAD_BYTES` and `INSPECT_MAX_UPLOAD_BYTES` to 100 MiB
-(104857600 bytes), and that cap applies first: there the effective ceiling is the smaller of the two, and a file
-above 100 MiB is refused at the transport with the generic message.
+per format. The Helm chart's global `MAX_UPLOAD_BYTES` and `INSPECT_MAX_UPLOAD_BYTES` apply before these
+ceilings and sit above every one of them plus the request's multipart framing, so a file at or below its format's
+ceiling gets the per-format answer from both endpoints.
 
 Inside the pipeline, the engine also refuses a model or drawing that passes the byte ceiling but is too large
 to process. Each of these is `cad_too_complex`:

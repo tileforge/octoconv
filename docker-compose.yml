@@ -124,7 +124,7 @@ services:
       # not measured numbers. See .env.example for the full rationale,
       # including the distinction between the two byte ceilings (upload
       # vs. work) and the D-07 replicas:1 caveat on the rate budget below.
-      INSPECT_MAX_UPLOAD_BYTES: "104857600"
+      INSPECT_MAX_UPLOAD_BYTES: "191889408"
       INSPECT_MAX_WORK_BYTES: "8388608"
       INSPECT_MAX_WORK_DURATION: "2s"
       INSPECT_MAX_CONCURRENT: "4"

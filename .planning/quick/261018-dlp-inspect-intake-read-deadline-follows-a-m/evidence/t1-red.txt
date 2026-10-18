@@ -1,0 +1,48 @@
+== RED at the refactor commit 1e386e5a (deadline() = start + window), new test file only
+=== RUN   TestInspectIntakeConcurrencyIsBounded
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000010] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 429 96B in 72.75µs
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000003] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 429 96B in 72.958µs
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000011] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 429 96B in 76.5µs
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000001] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 301.490833ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000009] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 300.677375ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000002] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 301.302375ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000006] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 300.965125ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000008] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 300.883291ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000005] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 301.002959ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000004] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 301.164292ms
+2026/10/18 10:16:21 [АндрейП�/a6lijD7ROh-000007] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 400 60B in 300.988917ms
+--- PASS: TestInspectIntakeConcurrencyIsBounded (0.30s)
+=== RUN   TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow
+2026/10/18 10:16:22 [АндрейП�/a6lijD7ROh-000012] "POST http://127.0.0.1:63673/v1/inspect HTTP/1.1" from 127.0.0.1 - 400 60B in 401.279125ms
+    inspect_intake_test.go:111: 98542 bytes at 64 KiB/s against a 400ms window and 32 KiB/s: status 400 after 401.735417ms
+    inspect_intake_test.go:113: status 400 payload map[code:invalid_request error:invalid multipart form] after 401.735417ms, want 200 for a body sent at twice the minimum rate
+    inspect_intake_test.go:116: the transfer took 401.735417ms, want at least 1.2s so that it outlasts the window
+--- FAIL: TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow (0.44s)
+=== RUN   TestInspectIntakeCutsABodyBelowTheMinimumRate
+2026/10/18 10:16:22 [АндрейП�/a6lijD7ROh-000013] "POST http://127.0.0.1:63675/v1/inspect HTTP/1.1" from 127.0.0.1 - 400 60B in 401.416959ms
+    inspect_intake_test.go:126: 98542 bytes at 8 KiB/s against a 400ms window and 32 KiB/s: status 400 after 401.794042ms
+--- PASS: TestInspectIntakeCutsABodyBelowTheMinimumRate (0.44s)
+=== RUN   TestInspectIntakeCutsAStalledClientAtTheWindow
+2026/10/18 10:16:23 [АндрейП�/a6lijD7ROh-000014] "POST http://127.0.0.1:63677/v1/inspect HTTP/1.1" from 127.0.0.1 - 400 60B in 401.18225ms
+    inspect_intake_test.go:137: no body byte against a 400ms window: status 400 after 401.487917ms
+--- PASS: TestInspectIntakeCutsAStalledClientAtTheWindow (0.40s)
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit
+    inspect_intake_test.go:190: max deadline 2023-11-15 01:13:21 +0300 MSK, last 2023-11-15 01:13:21 +0300 MSK, want both 2023-11-15 01:13:21.01 +0300 MSK
+=== RUN   TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants
+    inspect_intake_test.go:211: max deadline 2023-11-15 01:13:50 +0300 MSK, want 2023-11-15 01:16:53 +0300 MSK
+    inspect_intake_test.go:213: worst-case intake slot hold at the chart cap of 191889408 bytes: 30s
+--- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/a_body_past_a_small_limit (0.00s)
+    --- FAIL: TestInspectIntakeDeadlineIsBoundedByTheUploadCap/the_chart_cap_with_the_production_constants (0.00s)
+=== RUN   TestInspectIntakeCreditsBytesReturnedNotRequested
+    inspect_intake_test.go:236: deadline 1 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.001 +0300 MSK
+    inspect_intake_test.go:236: deadline 2 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.002 +0300 MSK
+    inspect_intake_test.go:236: deadline 3 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.003 +0300 MSK
+    inspect_intake_test.go:236: deadline 4 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.004 +0300 MSK
+    inspect_intake_test.go:236: deadline 5 = 2023-11-15 01:13:21 +0300 MSK, want 2023-11-15 01:13:21.005 +0300 MSK
+--- FAIL: TestInspectIntakeCreditsBytesReturnedNotRequested (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	2.167s
+FAIL
+exit=1

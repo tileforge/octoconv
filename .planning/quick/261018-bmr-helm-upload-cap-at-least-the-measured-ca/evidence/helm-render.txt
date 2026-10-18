@@ -1,0 +1,7 @@
+# helm template --show-only templates/configmap.yaml (v4.3.0+gbec5b06)
+exit=0
+28:  MAX_UPLOAD_BYTES: "191889408"
+39:  INSPECT_MAX_UPLOAD_BYTES: "191889408"
+102:  # retry/timeout surface even when unused). PANDOC_MAX_INPUT_BYTES is NOT
+111:  # PANDOC_MAX_INPUT_BYTES=3 MiB (Path-B, 49-03-SUMMARY.md 4 MiB -> 50-04
+122:  PANDOC_MAX_INPUT_BYTES: "3145728"

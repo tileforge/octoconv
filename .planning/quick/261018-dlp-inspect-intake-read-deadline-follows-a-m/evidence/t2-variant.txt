@@ -1,0 +1,19 @@
+paced-connection variant on df3c3b30 + the new tests, 2026-10-18T07:22:46Z
+######## passing runs: -race -count=3
+    transport_cap_test.go:527: 190840784-byte STL at 25000000 B/s (20 Mbit/s with time scaled down by 10) against a 3s window and 10485760 B/s: 7.657997709s
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (7.73s)
+    transport_cap_test.go:527: 190840784-byte STL at 25000000 B/s (20 Mbit/s with time scaled down by 10) against a 3s window and 10485760 B/s: 7.65231975s
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (7.72s)
+    transport_cap_test.go:527: 190840784-byte STL at 25000000 B/s (20 Mbit/s with time scaled down by 10) against a 3s window and 10485760 B/s: 7.646148791s
+--- PASS: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (7.71s)
+go test exit=0
+######## variant M1 fixed deadline restored: deadline() returns start + window (internal/api/inspectintake.go)
+  mutation diff: 32,33c32
+  mutation diff: < 	credited := min(r.received, max(r.limit, 0))
+  mutation diff: < 	return r.start.Add(r.window + time.Duration(credited/r.minRate)*time.Second + time.Duration(credited%r.minRate)*time.Second/time.Duration(r.minRate))
+  mutation diff: ---
+  mutation diff: > 	return r.start.Add(r.window)
+    transport_cap_test.go:537: inspect over a paced connection: status = 400 after 3.006927416s, want 200; body={"code":"invalid_request","error":"invalid multipart form"}
+--- FAIL: TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection (3.02s)
+go test exit=1
+reverted: cmp-identical to the saved copy

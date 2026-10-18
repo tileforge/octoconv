@@ -274,10 +274,12 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261017-doa | Codex PR#37 round 2: a contaminated keda-cad-loadproof calibration or timed step fails the proof (stub suite 34/0, M1-M3 caught); downscale calibration exemption recorded in the evidence (NOTE quiet_calibration gates=0); near_white states the all-channel rule, probed through all three judges; seven-script contamination sweep, two fail-safe selection sites to a todo; 76-09/76-10 PASS stand (QUIET contaminated=0) | 2026-10-17 | dacbb97 | [261017-doa-codex-round-2-contaminated-loadproof-tim](./quick/261017-doa-codex-round-2-contaminated-loadproof-tim/) |
 | 261017-f0i | Codex PR#37 round 3: the cad cleanup in the final gate wrapper finds job objects from one `mc ls --recursive --json` of the bucket before and one after deletion; a failed, timed-out, error-carrying or unparseable listing, a job without an uploads key (jobs_without_upload) or an object left under a run prefix (leftover_objects) fails the cad step; stub suite 309/0, knobs 36/0, M1-M7 caught; mc JSON shape unmeasured live, owed in the renamed todo; attempt-4 leftovers not re-proven | 2026-10-17 | 1520527 | [261017-f0i-codex-round-3-cad-cleanup-fails-when-obj](./quick/261017-f0i-codex-round-3-cad-cleanup-fails-when-obj/) |
 | 261018-44q | Phase-71 re-verification gap closed (option a): a per-file PROVENANCE section with a verified sha256 for each of the 126 later testdata/cad files, enforced by TestCADProvenanceCoversEveryCommittedFile; CORPUS-OK and PROVENANCE-COMPLETE exit 0 as written; the three phase-71 sweeps select the 37 phase-71 files from one common.sh function (W24: 163/92/176 -> 37/37/49); the render probe judges every frame with the Go judge (judge-png, no docker); 71-VERIFICATION passed 8/8, docker-only gates NOT RUN | 2026-10-18 | ee30f2e | [261018-44q-phase-71-provenance-per-file-contract-sc](./quick/261018-44q-phase-71-provenance-per-file-contract-sc/) |
+| 261018-bmr | TD-1 аудита v1.16 закрыт: `MAX_UPLOAD_BYTES` и `INSPECT_MAX_UPLOAD_BYTES` чарта и `INSPECT_MAX_UPLOAD_BYTES` compose, `.env.example` и `values-inspect-gate.yaml` подняты со 100 MiB до 191889408 (183 MiB) — следующий целый MiB над потолком STL плюс 4938 байт обёртки самого большого ограниченного запроса; трассер прогоняет самый большой допустимый STL через `POST /v1/jobs` (202, очередь cad) и `POST /v1/inspect` (200, `max_bytes` 190840832) на кэпах чарта, RED на e321261 оба 413; `TestDeployedTransportCapsCoverEveryAdvertisedCeiling` держит каждую поставляемую конфигурацию против каждого объявленного потолка, M1-M6 пойманы; `TRANSPORT_CAP` keda-скрипта следует за чартом, long_select офлайн даёт тот же LONG (render_step M2, 194.90 s). Открытым оставлено: av освобождён точно (D1), его эффективный потолок в k8s вырос со 100 до 183 MiB, а в compose последние 4938 байт ниже 2 GiB получают общий 413; Go-фолбэки `NewServer`/`cmd/api` не тронуты (D2); диск под multipart-спилл api и длина `callback_url` — в todo | 2026-10-18 | f4b33930 | [261018-bmr-helm-upload-cap-at-least-the-measured-ca](./quick/261018-bmr-helm-upload-cap-at-least-the-measured-ca/) |
+| 261018-dlp | Codex P2 на PR #40 закрыт: дедлайн чтения тела `POST /v1/inspect` больше не фиксированные 30 с, а следует минимальной скорости — начало приёма + 30 с + min(получено, `INSPECT_MAX_UPLOAD_BYTES`) / 1 MiB/s; засчитываются только байты, которые вернул Read, дедлайн ставится до первого Read и движется только вперёд, на кэпе чарта не дальше 213 с (130 с на Go-фолбэке 100 MiB); 182-MiB STL при 20-50 Mbit/s больше не режется 400. Тесты на настоящем соединении через `Routes()`: RED на шве с прежним правилом (T1, T4, T5 падают, T2/T3 держат сегодняшнее поведение), M1-M5 пойманы; самый большой допустимый STL на кэпах чарта по темпированному соединению (20 Mbit/s, время ×1/10) получает 200 с оффером cad render png, при M1 — 400 на 3 с; правило один раз сформулировано в описании 400 `/v1/inspect` в `docs/openapi.yaml` и держится тестом из двух констант. Открытым оставлено: create без дедлайна тела и дочитывание после приёма, держащее слот анализа, — в todo; дедлайн после успешного разбора не снимается (D9) | 2026-10-18 | f2a6e11a | [261018-dlp-inspect-intake-read-deadline-follows-a-m](./quick/261018-dlp-inspect-intake-read-deadline-follows-a-m/) |
 
 ### Pending Todos
 
-Ровно девять, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно двенадцать, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -309,9 +311,29 @@ Decisions are logged in PROJECT.md Key Decisions table.
   флаг загрязнения; обе ошибки толкают только в строгую сторону, стабов у скриптов нет (быстрая
   задача 261017-doa). См.
   `.planning/todos/pending/2026-10-17-selection-steps-ignore-load-clean.md`.
-- **Helm-чарт ограничивает загрузку 100 MiB, ниже замеренных потолков CAD** (IGES 120 MiB,
-  STL 182 MiB, DXF 118 MiB): в k8s такой вход получает общий 413; в compose 2 GiB. TD-1 аудита
-  v1.16. См. `.planning/todos/pending/2026-10-18-helm-upload-cap-below-cad-ceilings.md`.
+- **Multipart-спилл api не ограничен по диску:** всё сверх 32 MiB на часть пишется в `/tmp`
+  слоя контейнера; в чарте нет ни `emptyDir`/`sizeLimit`, ни `ephemeral-storage`, в compose нет
+  `tmpfs`; всплеск заполняет диск узла. Было до 261018-bmr, та задача увеличила границу чарта в
+  1.83 раза. См. `.planning/todos/pending/2026-10-18-api-multipart-spill-unbounded-disk.md`.
+- **У `callback_url` нет ограничения длины:** проверяются только схема, хост и адрес; URL в
+  десятки MiB принимается и сохраняется, а длиннее ~1 MiB при самом большом STL получает общий
+  413. См. `.planning/todos/pending/2026-10-18-callback-url-no-length-bound.md`.
+- **`POST /v1/jobs` читает тело без дедлайна и без ограничения приёма:** после заголовков ничто не
+  ограничивает, сколько идёт тело; застрявший create держит горутину, соединение, до 32 MiB кучи и
+  файл спилла сколько угодно, а 60 таких — около 1.9 GiB против 1 GiB пода. 260810-slf сознательно
+  не ставил `ReadTimeout`; дедлайн по минимальной скорости из 261018-dlp этой проблемы не имеет, но
+  окно и скорость для больших кэпов create требуют решения. См.
+  `.planning/todos/pending/2026-10-18-create-intake-no-body-deadline.md`.
+- **Дочитывание тела после приёма в inspect может держать слот анализа до дедлайна приёма:** ответ
+  больше 2048 байт сбрасывается внутри обработчика, и net/http дочитывает до 256 KiB остатка тела
+  под текущим дедлайном, пока `s.inspectSem` занят; разобрано, тестом не воспроизведено; самый
+  дешёвый вариант по-прежнему около 30 с (быстрая задача 261018-dlp, D8). См.
+  `.planning/todos/pending/2026-10-18-inspect-post-intake-discard-holds-analysis-slot.md`.
+
+Ещё один пункт снят потому, что он сделан (сделано, а не передумано): «Helm-чарт ограничивает
+загрузку 100 MiB, ниже замеренных потолков CAD» (TD-1 аудита v1.16) закрыт быстрой задачей
+261018-bmr — кэпы чарта и кэп inspect во всех конфигурациях 183 MiB, тест держит их против
+каждого объявленного потолка → `todos/completed/2026-10-18-helm-upload-cap-below-cad-ceilings.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
