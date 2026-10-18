@@ -15,6 +15,7 @@
   - Proof: at the 75-07 base 3bc583a the test fails the same way with 3.9.6; at f7bf043 it passes with python 3.14 first on PATH. None of these files changed in 75-07.
   - Suggested fix: have `requireCADPython` require 3.10 or later (skip with the found version otherwise), or make the fake call a plain function.
 - **Resolved:** quick 261012-gos, cbca9c8: `requireCADPython` skips below 3.10 and names the version and path it found; it passes with 3.14 first on PATH.
+  status: acknowledged
 
 ## From 75-10
 
@@ -24,3 +25,4 @@
   - Proof: the file sizes are exactly the 63 MiB, 118 MiB and 135 MiB ceilings plus one byte, and their mtimes match the ci-local and `go test` runs of 75-09 and 75-10. 75-10 removed all 74 after checking that no process held them open.
   - Suggested fix: `t.Cleanup(func() { if req.MultipartForm != nil { req.MultipartForm.RemoveAll() } })` in the shared request helper, or serve these tests through `httptest.NewServer`.
 - **Resolved:** quick 261012-gos, 63ad6c9 fcd561b: the real server path leaked too, because chi hands the handler a request copy and net/http removes only the original request's form, so the fix is in the two handlers (a guarded `RemoveAll` defer right after `ParseMultipartForm`); `go test ./internal/api/... -count=1` now leaves 0 multipart files.
+  status: acknowledged

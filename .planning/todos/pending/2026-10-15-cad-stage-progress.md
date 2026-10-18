@@ -3,6 +3,9 @@ created: 2026-10-15
 area: cad
 severity: low
 origin: вопрос пользователя во время v1.16 (фаза 76)
+audit_acknowledged:
+  milestone: v1.16
+  at: 2026-10-18
 ---
 
 # CAD-задания не показывают прогресс: `progress_pct` остаётся `null` до конца

@@ -3,6 +3,9 @@ created: 2026-10-18
 area: deploy
 severity: medium
 origin: v1.16 milestone audit, TD-1
+audit_acknowledged:
+  milestone: v1.16
+  at: 2026-10-18
 ---
 
 # The Helm chart caps uploads below the measured CAD ceilings

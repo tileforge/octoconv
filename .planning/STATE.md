@@ -374,6 +374,31 @@ Carried from v1.12:
 
 ## Deferred Items
 
+Acknowledged and deferred at the v1.16 milestone close on 2026-10-18: 9 items
+(45 acknowledged at earlier closes stay suppressed). The five todos are the live
+CAD follow-ups: stage progress instead of a null progress_pct, the live check of
+the mc ls JSON shape the cad cleanup reads, the darwin group-SIGKILL fork race,
+the two selection steps that read load-contaminated rows, and the Helm upload cap
+below the measured CAD ceilings (audit TD-1). The two phase-75 deferred items are
+already resolved by quick task 261012-gos (job-dir write/read hardening through
+internal/convert/jobdirfs.go, the python >= 3.10 test floor, and the multipart
+spill cleanup in the API handlers); they are acknowledged only because the
+deferred-items.md entries still read as open to the scanner. The two phase-76
+items are open: the chart's install-time CPU starvation on a small node and the
+deletion-cost annotation racing the HPA.
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| todos | 2026-10-15-cad-stage-progress.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-cad-cleanup-mc-ls-json-live-confirmation.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-darwin-killpg-fork-race.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-17-selection-steps-ignore-load-clean.md | (presence-only) | 2026-10-18 | v1.16 |
+| todos | 2026-10-18-helm-upload-cap-below-cad-ceilings.md | (presence-only) | 2026-10-18 | v1.16 |
+| deferred_items | 75/deferred-items.md: From 75-07 - 3D render sidecar written with os.WriteFile after a confined stage; requireCADPython below python 3.10 (resolved: quick 261012-gos) | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 75/deferred-items.md: From 75-10 - internal/api ceiling tests leak a multipart temp file of the full upload size (resolved: quick 261012-gos) | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 76/deferred-items.md: 76-09 - a fresh chart install can starve api or minio on a small node | acknowledged | 2026-10-18 | v1.16 |
+| deferred_items | 76/deferred-items.md: 76-10 - the deletion-cost annotation races the HPA decision | acknowledged | 2026-10-18 | v1.16 |
+
 Acknowledged and deferred at the v1.15 milestone close on 2026-10-01: 46 items.
 The five todos are the live work from phase 70 (amd64 first deployment, MinIO
 off Docker Hub, html /proc, the narrower soffice socket grant, sweep tests and
