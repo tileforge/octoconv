@@ -11,7 +11,7 @@ import (
 )
 
 // The measured writable set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "html" section and this phase's
+// docs/SANDBOX-PATHS.md's "html" section and this phase's
 // CONF-06 decision: chromium puts its shared memory in /tmp regardless of
 // TMPDIR (measured, does not move), and needs /dev/null.
 func TestHTMLReadWriteSetIsTheMeasuredOne(t *testing.T) {

@@ -23,7 +23,7 @@ const (
 	cadDocWorker   = "../../cmd/cad-worker/main.go"
 	cadDocEstimate = "../../internal/api/estimate.go"
 	cadDocValues   = "../../deploy/chart/octoconv/values.yaml"
-	cadDocEvidDir  = "../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/"
+	cadDocEvidDir  = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/"
 )
 
 var (

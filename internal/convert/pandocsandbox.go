@@ -12,7 +12,7 @@ import (
 )
 
 // pandocReadOnly is what the engine needs to read, beyond its own binary,
-// MEASURED rather than reasoned -- .planning/research/SANDBOX-PATHS.md's
+// MEASURED rather than reasoned -- docs/SANDBOX-PATHS.md's
 // "pandoc" section, 2026-09-20.
 //
 // Empty. The release binary is statically linked (ldd: "not a dynamic

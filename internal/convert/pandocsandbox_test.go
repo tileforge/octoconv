@@ -9,7 +9,7 @@ import (
 )
 
 // The measured set, pinned. Every entry here is proven by
-// .planning/research/SANDBOX-PATHS.md's "pandoc" section (2026-09-20):
+// docs/SANDBOX-PATHS.md's "pandoc" section (2026-09-20):
 // the release binary is statically linked, and the trace phase found zero
 // paths outside the job directory across five format targets.
 func TestPandocReadOnlySetIsTheMeasuredOne(t *testing.T) {

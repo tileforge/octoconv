@@ -38,7 +38,7 @@ func (LibvipsConverter) Pairs() []Pair {
 // libvipsReadOnly is what the engine needs to read, MEASURED rather than
 // reasoned: every path here was observed being opened during real conversions
 // and then proven necessary by running the five format pairs under a ruleset
-// built from this list. See .planning/research/SANDBOX-PATHS.md.
+// built from this list. See docs/SANDBOX-PATHS.md.
 //
 // Nothing from /etc but the loader cache, no /tmp, no home directory. The
 // engine's own executable is NOT here because it is resolved at run time --

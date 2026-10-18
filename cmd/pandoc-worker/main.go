@@ -51,7 +51,7 @@ func main() {
 	// confine pandoc must not consume a queue. It would fail every job -- or,
 	// far worse, run the engine unconfined while the deployment believes
 	// otherwise. The paths it grants were MEASURED, not reasoned: see
-	// .planning/research/SANDBOX-PATHS.md and pandocReadOnly.
+	// docs/SANDBOX-PATHS.md and pandocReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(pandocSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("pandoc sandbox: %v", err)

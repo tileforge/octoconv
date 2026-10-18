@@ -44,7 +44,7 @@ set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
-DOC_FILE=".planning/research/SANDBOX-PATHS.md"
+DOC_FILE="docs/SANDBOX-PATHS.md"
 
 DOC_MODE=0
 if [ "${1:-}" = "--doc" ]; then

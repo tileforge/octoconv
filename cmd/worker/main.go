@@ -50,7 +50,7 @@ func main() {
 	// otherwise.
 	//
 	// The paths it grants were MEASURED, not reasoned: see
-	// .planning/research/SANDBOX-PATHS.md and libvipsReadOnly.
+	// docs/SANDBOX-PATHS.md and libvipsReadOnly.
 	sandboxHelper, err := sandbox.ResolveHelper(imageSandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("image sandbox: %v", err)

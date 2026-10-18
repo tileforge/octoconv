@@ -53,7 +53,7 @@ func main() {
 
 	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
 	// confine chromium must not consume a queue. The paths it grants were
-	// MEASURED, not reasoned -- see .planning/research/SANDBOX-PATHS.md's
+	// MEASURED, not reasoned -- see docs/SANDBOX-PATHS.md's
 	// "html" section and the CONF-06 /tmp decision beside it.
 	sandboxHelper, err := sandbox.ResolveHelper(htmlSandboxDisabledEnv)
 	if err != nil {
