@@ -150,10 +150,10 @@ h=$(date -u +%H:%M:%S)
   echo "### tier: helm (started $h UTC)"
   echo "### tier helm: PASS"
   echo "### tier: gate (started $h UTC)"
-  printf 'ok  \tgithub.com/apaderin/octoconv/internal/convert\t%ss\n' "${STUB_CONVERT_S:-400.1}"
+  printf 'ok  \tgithub.com/tileforge/octoconv/internal/convert\t%ss\n' "${STUB_CONVERT_S:-400.1}"
   echo "### tier gate: PASS"
   echo "### tier: race (started $h UTC)"
-  printf 'ok  \tgithub.com/apaderin/octoconv/internal/convert\t999.0s\n'
+  printf 'ok  \tgithub.com/tileforge/octoconv/internal/convert\t999.0s\n'
   echo "### tier race: PASS"
   echo "### tier: e2e (started $h UTC)"
   [ -n "${STUB_NO_TECT_PASS:-}" ] || echo "--- PASS: TestMultiFileLaTeXProjectE2E (1.00s)"
