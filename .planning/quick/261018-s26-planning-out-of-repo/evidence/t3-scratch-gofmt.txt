@@ -1,9 +1,0 @@
-command: sh -c out=$(gofmt -l .); printf "%s\n" "$out"; test -z "$out"
-cwd: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/s26-wt
-start_utc: 2026-10-18T17:53:05Z
-end_utc: 2026-10-18T17:53:05Z
-duration_s: 0
------ output -----
-
------ end output -----
-rc=0

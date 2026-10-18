@@ -1,8 +1,0 @@
-
---- preflight ---
-PASS: no octoconv compose container runs
-FAIL: local port 18099 is in use
-FAIL,step=preflight,reason=local port 18099 is in use
-
-=== TEARDOWN ===
-SUMMARY,mode=keda_cad_downscale_survival,checks=1,exit=1,gate_ok=0,restore=not_taken,end_utc=2026-10-16T16:14:02Z,result=FAIL

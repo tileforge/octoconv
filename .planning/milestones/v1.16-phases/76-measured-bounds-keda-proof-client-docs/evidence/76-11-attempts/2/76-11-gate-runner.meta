@@ -1,8 +1,0 @@
-clone=/Users/apaderin/.cache/octoconv/clones/a3c8a5f/octoconv head=a3c8a5f117ccf7da2205b9a50238c8c495b0bb80 tracked_dirt=0 untracked=
-k8s_octoconv_keda=0 running_octoconv=0
-multipart_before=
-quiet_window_found_utc=2026-10-16T20:44:32Z load1=5.37 waited_s=51
-vm_free_kib=34320424 need_kib=24117248 floor_kib=6291456 start_margin_kib=8388608 host_free_kib=39877304
-start_utc=2026-10-16T20:44:33Z load1=5.37
-end_utc=2026-10-16T21:20:45Z load1=18.28 wrapper_rc=1
-vm_free_kib_end=30840512 host_free_kib_end=36247144

@@ -1,7 +1,0 @@
-helm: v4.3.0+gbec5b06  yq: yq (https://github.com/mikefarah/yq/) version v4.54.1  python3: Python 3.14.7  HEAD: 93ed971  mode: pre
-stub on 127.0.0.1:18471
-control --reset-then-reuse-values: rc=0
---reuse-values: rc=1
---reuse-values stderr (without level=INFO):
-    Error: UPGRADE FAILED: execution error at (octoconv/templates/minio.yaml:57:22): minio.dataOwnership.uid must be a whole number, got <nil> (kind invalid)
-RESULT: PASS

@@ -1,7 +1,0 @@
-== refactor seam 2026-10-18T07:13:57Z HEAD=7489c7bf + working tree
-== gofmt -l internal/api
-== go vet ./internal/api/
-vet-ok
-== go test ./internal/api/ -count=1
-ok  	github.com/apaderin/octoconv/internal/api	10.338s
-exit=0

@@ -1,78 +1,0 @@
-== main integrity (before)
-ls-files .planning: 1690
-STATE.md present
-status .planning: [ M .planning/config.json]
-Preparing worktree (detached HEAD e0ffdfb3)
-Updating files:  42% (1103/2612)Updating files:  43% (1124/2612)Updating files:  44% (1150/2612)Updating files:  45% (1176/2612)Updating files:  46% (1202/2612)Updating files:  47% (1228/2612)Updating files:  48% (1254/2612)Updating files:  49% (1280/2612)Updating files:  50% (1306/2612)Updating files:  51% (1333/2612)Updating files:  52% (1359/2612)Updating files:  53% (1385/2612)Updating files:  54% (1411/2612)Updating files:  55% (1437/2612)Updating files:  56% (1463/2612)Updating files:  57% (1489/2612)Updating files:  58% (1515/2612)Updating files:  59% (1542/2612)Updating files:  60% (1568/2612)Updating files:  61% (1594/2612)Updating files:  62% (1620/2612)Updating files:  63% (1646/2612)Updating files:  64% (1672/2612)Updating files:  65% (1698/2612)Updating files:  66% (1724/2612)Updating files:  67% (1751/2612)Updating files:  68% (1777/2612)Updating files:  68% (1780/2612)Updating files:  69% (1803/2612)Updating files:  70% (1829/2612)Updating files:  71% (1855/2612)Updating files:  72% (1881/2612)Updating files:  73% (1907/2612)Updating files:  74% (1933/2612)Updating files:  75% (1959/2612)Updating files:  76% (1986/2612)Updating files:  77% (2012/2612)Updating files:  78% (2038/2612)Updating files:  79% (2064/2612)Updating files:  80% (2090/2612)Updating files:  81% (2116/2612)Updating files:  82% (2142/2612)Updating files:  83% (2168/2612)Updating files:  84% (2195/2612)Updating files:  85% (2221/2612)Updating files:  86% (2247/2612)Updating files:  87% (2273/2612)Updating files:  88% (2299/2612)Updating files:  89% (2325/2612)Updating files:  90% (2351/2612)Updating files:  91% (2377/2612)Updating files:  91% (2400/2612)Updating files:  92% (2404/2612)Updating files:  93% (2430/2612)Updating files:  94% (2456/2612)Updating files:  95% (2482/2612)Updating files:  96% (2508/2612)Updating files:  97% (2534/2612)Updating files:  98% (2560/2612)Updating files:  99% (2586/2612)Updating files: 100% (2612/2612)Updating files: 100% (2612/2612), done.
-HEAD is now at e0ffdfb3 test: the 76-03 derived evidence is read from a tracked copy in testdata
-toplevel=/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/s26-wt-tracer
-.planning absent in W
-### expected PASS: convert E1 set minus PathB
-=== RUN   TestCADConstantsComeFromThe76Evidence
---- PASS: TestCADConstantsComeFromThe76Evidence (0.00s)
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_one_byte_over
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_exactly_at_the_ceiling_reaches_an_engine
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_one_byte_over
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_exactly_at_the_ceiling_reaches_an_engine
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_one_byte_over
-=== RUN   TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_exactly_at_the_ceiling_reaches_an_engine
---- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat (0.89s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_one_byte_over (0.00s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/step_exactly_at_the_ceiling_reaches_an_engine (0.30s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_one_byte_over (0.00s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/iges_exactly_at_the_ceiling_reaches_an_engine (0.29s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_one_byte_over (0.00s)
-    --- PASS: TestCADRenderReChecksTheDerivedCeilingOfEveryFormat/stl_exactly_at_the_ceiling_reaches_an_engine (0.28s)
-PASS
-ok  	github.com/tileforge/octoconv/internal/convert	1.921s
-### rc1=0
-=== RUN   TestCADDocMatchesTheCode
-=== RUN   TestCADDocMatchesTheCode/time_limits
-=== RUN   TestCADDocMatchesTheCode/known_limits
---- PASS: TestCADDocMatchesTheCode (0.00s)
-    --- PASS: TestCADDocMatchesTheCode/time_limits (0.00s)
-    --- PASS: TestCADDocMatchesTheCode/known_limits (0.00s)
-PASS
-ok  	github.com/tileforge/octoconv/internal/convert	0.506s
-### rc2=0
-=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling
-=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step
-2026/10/18 20:38:26 content validation rejected: client_id=c43838cb-7a9f-4bcb-984f-99ba188e6c23 filename="big.step" reason=format_size_limit engine=cad format=step size=66060289 parts=1 limit=66060288
-2026/10/18 20:38:26 [АндрейП�/O0sThFcCuC-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 138.887167ms
-2026/10/18 20:38:26 content validation rejected: client_id=0f3543cb-0440-48ed-b7ab-2c00830b4521 filename="big.step" reason=format_size_limit engine=cad format=step size=66060289 parts=1 limit=66060288
-2026/10/18 20:38:26 [АндрейП�/O0sThFcCuC-000002] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 176.08525ms
-2026/10/18 20:38:26 [АндрейП�/O0sThFcCuC-000003] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1766B in 135.769958ms
-=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges
-2026/10/18 20:38:27 content validation rejected: client_id=716e7c62-e85c-4d62-bc24-64aa19c38437 filename="big.iges" reason=format_size_limit engine=cad format=iges size=125829126 parts=1 limit=125829120
-2026/10/18 20:38:27 [АндрейП�/O0sThFcCuC-000004] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 95B in 328.579958ms
-2026/10/18 20:38:27 content validation rejected: client_id=02789793-839c-46dd-b2b7-41afdfb49659 filename="big.iges" reason=format_size_limit engine=cad format=iges size=125829126 parts=1 limit=125829120
-2026/10/18 20:38:27 [АндрейП�/O0sThFcCuC-000005] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 95B in 348.670042ms
-2026/10/18 20:38:27 [АндрейП�/O0sThFcCuC-000006] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1769B in 334.527ms
-=== RUN   TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl
-2026/10/18 20:38:28 content validation rejected: client_id=b1298299-c2f2-4207-ac5d-feb055432102 filename="big.stl" reason=format_size_limit engine=cad format=stl size=190840834 parts=1 limit=190840832
-2026/10/18 20:38:28 [АндрейП�/O0sThFcCuC-000007] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 413 94B in 405.634292ms
-2026/10/18 20:38:28 [АндрейП�/O0sThFcCuC-000008] "POST http://example.com/v1/inspect HTTP/1.1" from 192.0.2.1 - 200 1550B in 598.774167ms
---- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling (2.82s)
-    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/step (0.52s)
-    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/iges (1.24s)
-    --- PASS: TestCADEveryOperationRefusesAboveTheDerivedFormatCeiling/stl (1.06s)
-PASS
-ok  	github.com/tileforge/octoconv/internal/api	4.036s
-### rc3=0
-### control (expected FAIL naming the planning path)
-=== RUN   TestCADPathBFiredForNoFormat
-    cad_test.go:798: open ../../.planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt: no such file or directory
---- FAIL: TestCADPathBFiredForNoFormat (0.00s)
-FAIL
-FAIL	github.com/tileforge/octoconv/internal/convert	0.500s
-FAIL
-### rc4=1
-summary: rc1=0 rc2=0 rc3=0 control_rc=1 control_failed_for_planning_path=yes skip_count=0
-== git worktree list
-/Users/apaderin/dev/octoconv e0ffdfb3 [gsd/planning-out-of-repo]
-== main integrity (after)
-ls-files .planning: 1690
-STATE.md present
-status .planning: [ M .planning/config.json]
-RESULT PASS

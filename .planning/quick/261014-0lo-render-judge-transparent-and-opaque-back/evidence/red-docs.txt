@@ -1,6 +1,0 @@
-# RED: docs sync test on the docs at HEAD
---- FAIL: TestCADDocsStateOneVerdictOnBothBackgrounds (0.00s)
-    cad_docs_sync_test.go:216: ../../docs/MEASUREMENTS.md has no paragraph starting with "**PNG check.**"
-FAIL
-FAIL	github.com/apaderin/octoconv/internal/convert	1.419s
-FAIL

@@ -1,6 +1,0 @@
-W24_CHECK,a-inventory-pairs-equal-71-03,ok=1,selected=37,public=19,synthetic=18,phase71_cnt_lines=37
-W24_CHECK,b-ladder-names-equal-71-04,ok=1,selected=37,phase71_names=37
-W24_CHECK,c-prune-inputs-equal-71-07,ok=1,selected_3d=25,phase71_corpus_inputs=25
-W24_CHECK,d-prune-other-pairs,ok=1,pairs=49,3d=25,dxf=12
-W24_CHECK,e-no-corpus-walk-outside-common,ok=1,walks_outside_common=[],uses=[scripts/cad-corpus-inventory.sh:2 scripts/cad-rss-time-measure.sh:7 scripts/cad-image-trace.sh:2 ]
-W24-OK
