@@ -48,6 +48,7 @@ type Job struct {
 	CreatedAt    time.Time
 	StartedAt    *time.Time
 	FinishedAt   *time.Time
+	Attempts     int
 	// ProgressPct / EtaSeconds / SourceDurationSeconds are the Phase 41
 	// denormalized progress columns (0007_job_progress.sql), written by the
 	// non-locking Repo.UpdateProgress/Repo.SetSourceDuration paths (D-03b) --

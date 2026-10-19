@@ -31,6 +31,7 @@ type sseSnapshot struct {
 	eta      int
 	stage    string
 	stageIdx int
+	attempts int
 }
 
 func snapshotOf(job *jobs.Job) sseSnapshot {
@@ -50,6 +51,7 @@ func snapshotOf(job *jobs.Job) sseSnapshot {
 	if job.StageIndex != nil {
 		snap.stageIdx = *job.StageIndex
 	}
+	snap.attempts = job.Attempts
 	return snap
 }
 
@@ -108,6 +110,9 @@ func emitTerminal(rc *http.ResponseController, w http.ResponseWriter, status str
 
 func stageCatchUp(last sseSnapshot, job *jobs.Job) []sseCADProgressPayload {
 	if job.Engine != convert.EngineCAD || job.Stage == nil || job.StageIndex == nil || job.StageCount == nil {
+		return nil
+	}
+	if last.attempts != 0 && last.attempts != job.Attempts {
 		return nil
 	}
 	from := 0

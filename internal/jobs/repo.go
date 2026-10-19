@@ -700,12 +700,12 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
 		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
 		       progress_pct, eta_seconds, source_duration_seconds, correlation_id,
-		       stage, stage_index, stage_count
+		       stage, stage_index, stage_count, attempts
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
 		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
 		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr,
-		&j.Stage, &j.StageIndex, &j.StageCount)
+		&j.Stage, &j.StageIndex, &j.StageCount, &j.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
