@@ -81,6 +81,44 @@ document before it uploads anything, uploads the PNG and the JSON, and only then
 transaction and marks the job `done`. A render that fails at any step records neither, so a client never sees
 a PNG without its measurements or the other way round.
 
+## Stages
+
+A `cad` job reports the stage it is in. `GET /v1/jobs/{id}`, every `progress` event of
+`GET /v1/jobs/{id}/events` and every progress webhook of a `cad` job carry three keys: `stage`, the word of
+the current stage; `stage_index`, its position in the job's route, counted from 1; and `stage_count`, the
+length of the route. `progress_pct` and `eta_seconds` of a `cad` job are always null, from `queued` to the
+terminal status: the stage is the progress of this class. A job of any other class carries none of the three
+keys.
+
+The three keys are null while the job is `queued` and before its first stage starts. A new attempt and a
+return to the queue reset them to null, and the route starts again from 1. On `done`, `failed` and
+`canceled` the last reported stage stays: a `done` job reads the last stage of its route with `stage_index`
+equal to `stage_count`, a failed job reads the stage it stopped in. When the event stream polls past more
+than one stage, it sends one event for every stage it missed, in order and each with `status` `active`,
+before the event of the current state.
+
+| operation | from | to | stages | stage_count |
+|---|---|---|---|---|
+| `convert` | `step` | `stl` | `guard` → `mesh` → `judge` | `3` |
+| `convert` | `iges` | `stl` | `guard` → `mesh` → `judge` | `3` |
+| `convert` | `dxf` | `svg` | `guard` → `dxf` → `ink` | `3` |
+| `convert` | `dxf` | `pdf` | `guard` → `dxf` → `ink` → `rsvg` → `judge` | `5` |
+| `render` | `step` | `png` | `guard` → `mesh` → `render` → `judge` | `4` |
+| `render` | `iges` | `png` | `guard` → `mesh` → `render` → `judge` | `4` |
+| `render` | `stl` | `png` | `mesh` → `render` → `judge` | `3` |
+| `render` | `dxf` | `png` | `guard` → `dxf` → `ink` → `rsvg` → `judge` | `5` |
+
+- `guard` checks the input before the heavy work starts.
+- `mesh` builds the mesh of the model; for `stl` → `png` it is the `cad-mesh stats` step over the uploaded mesh.
+- `render` draws the 3D preview.
+- `dxf` draws the DXF to SVG and validates that SVG.
+- `ink` rasterises the drawing once and checks that the raster has ink on it.
+- `rsvg` writes the final PNG or PDF.
+- `judge` checks the finished result.
+
+`dxf` → `svg` has no `judge`. Its SVG is validated inside the `dxf` stage and no code runs after `ink`, so the
+route ends there and a `done` job reads `ink` 3/3.
+
 ## Size ceilings
 
 | format | operation | bytes | MiB | effective under the chart's 183 MiB transport cap |

@@ -386,7 +386,7 @@ func TestCADOpenAPIMatchesTheCode(t *testing.T) {
 		if len(vocab) == 0 {
 			t.Fatal("CADStageVocabulary is empty: the comparison would read nothing")
 		}
-		cadDocSameSet(t, "the stage CHECK of the migrations", cadOpenAPIStageCheck(t), vocab)
+		cadDocSameSet(t, "the stage CHECK of the migrations, read as the document, against CADStageVocabulary", cadOpenAPIStageCheck(t), vocab)
 
 		for _, name := range []string{"JobStatus", "ProgressEvent", "ProgressWebhookEvent"} {
 			props := cadOpenAPIBlock(t, lines, "components:", "schemas:", name+":", "properties:")

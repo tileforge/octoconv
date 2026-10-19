@@ -180,7 +180,66 @@ components:
           example: svc-checkout/req-8f31c2a4
         status:
           type: string
-          enum: [queued, active, done, failed]
+          enum: [queued, active, done, failed, canceled]
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+          description: >-
+            Percent done, for the engines that measure it. null means
+            unknown, never zero. A done job of such an engine reads 100, a
+            failed or canceled one keeps its last value. A cad job reads null
+            from queued to its terminal status; its progress is stage.
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+          description: >-
+            Estimated seconds left, for the engines that measure it. null
+            means unknown, never zero. A cad job reads null from queued to its
+            terminal status.
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            The stage a cad job is in. Present only for a job of engine cad;
+            a job of any other class has no stage key at all, nor
+            stage_index nor stage_count. null while the job is queued and
+            before its first stage starts. A new attempt and a return to the
+            queue reset it to null. On done, failed and canceled the last
+            reported stage stays: a done job reads the last stage of its
+            route, a failed job reads the stage it stopped in.
+
+            Stages by route, in order:
+
+            convert step->stl: guard, mesh, judge
+
+            convert iges->stl: guard, mesh, judge
+
+            render step->png: guard, mesh, render, judge
+
+            render iges->png: guard, mesh, render, judge
+
+            render stl->png: mesh, render, judge
+
+            convert dxf->svg: guard, dxf, ink
+
+            convert dxf->pdf: guard, dxf, ink, rsvg, judge
+
+            render dxf->png: guard, dxf, ink, rsvg, judge
+
+            What each stage does is in docs/CAD.md, section Stages.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: >-
+            Position of the current stage in the job's route, counted from 1.
+            Present only for a cad job; null exactly when stage is null.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: >-
+            Number of stages in the job's route. Present only for a cad job;
+            null exactly when stage is null.
         opts:
           description: >-
             Shape depends on the target engine — AudioOpts for audio-engine
@@ -248,6 +307,93 @@ components:
           type: string
           description: Human-readable failure detail. Only present when status=failed.
       required: [job_id, status]
+
+    ProgressEvent:
+      type: object
+      description: >-
+        The JSON data of one `event: progress` frame of GET
+        /v1/jobs/{id}/events. Every frame but the last carries status,
+        progress_pct and eta_seconds, with the same meaning as in JobStatus;
+        a frame of a cad job also carries stage, stage_index and stage_count.
+        A frame the stream sends for a stage it polled past carries status
+        active, progress_pct and eta_seconds null, and that stage. The last
+        frame, sent on a terminal status, carries status only.
+      properties:
+        status:
+          type: string
+          enum: [queued, active, done, failed, canceled]
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            Only in the frames of a cad job, as in JobStatus.stage.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the frames of a cad job, as in JobStatus.stage_index.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the frames of a cad job, as in JobStatus.stage_count.
+      required: [status]
+
+    ProgressWebhookEvent:
+      type: object
+      description: >-
+        The body of an intermediate webhook, POSTed to callback_url when the
+        job was created with progress_webhook "true". It is signed like the
+        completion webhook: X-OctoConv-Timestamp carries the Unix time in
+        seconds and X-OctoConv-Signature the hex HMAC-SHA256 of
+        "<timestamp>.<body>" under the service's webhook signing secret.
+
+        Each delivery is one attempt with no retry. It is not recorded as a
+        webhook delivery and does not use the retry budget of the
+        completion webhook, so a receiver that is down misses it for good;
+        GET /v1/jobs/{id} always has the current state.
+
+        A cad job sends one delivery on every stage change, with
+        progress_pct and eta_seconds null. The deliveries of one job leave
+        one at a time, in stage order. stage, stage_index and stage_count
+        are present only in the deliveries of a cad job.
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        event:
+          type: string
+          enum: [progress]
+        correlation_id:
+          type: string
+          maxLength: 128
+          description: Present only when the job was created with a Correlation-Id.
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            Only in the deliveries of a cad job, as in JobStatus.stage.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the deliveries of a cad job, as in JobStatus.stage_index.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the deliveries of a cad job, as in JobStatus.stage_count.
+      required: [job_id, event, progress_pct, eta_seconds]
 
     AudioOpts:
       type: object
@@ -964,6 +1110,15 @@ paths:
                   type: string
                   format: uri
                   description: Optional SSRF-validated webhook URL notified on completion.
+                progress_webhook:
+                  type: string
+                  enum: ["true", "false"]
+                  description: >-
+                    When "true" and callback_url is set, the service also POSTs
+                    intermediate events to callback_url while the job runs; the
+                    body is ProgressWebhookEvent. Any other value, or no
+                    callback_url, sends none. Without callback_url the flag does
+                    nothing and is not an error.
                 preset:
                   type: string
                   description: Named server preset supplying target_format and opts. Mutually exclusive with target/opts.
@@ -1372,7 +1527,18 @@ paths:
         status (`done`/`failed`/`canceled`). The terminal event carries
         `status` only -- never a presigned URL; fetch `GET /v1/jobs/{id}` for
         the result. Streams are also closed by a server-side maximum duration
-        (`SSE_MAX_STREAM_DURATION`).
+        (`SSE_MAX_STREAM_DURATION`). The data of every event is
+        ProgressEvent.
+
+        For a cad job an event is also emitted when `stage` changes, and its
+        data carries `stage`, `stage_index` and `stage_count`. The stream
+        reads the job on a poll, so a short stage can pass between two polls.
+        When the job moved on by more than one stage, the stream sends one
+        event for every stage it missed, in route order and each with
+        `status` `active`, before the event of the current state. A client
+        that connects in the middle of a job gets one event with the current
+        stage and no history. A new attempt resets the stage to null and
+        sends one event without any catch-up.
       parameters:
         - name: id
           in: path
@@ -1405,6 +1571,26 @@ paths:
                     data: {"status":"active","progress_pct":42,"eta_seconds":18}
 
                     : keepalive
+
+                    event: progress
+                    data: {"status":"done"}
+                cadStages:
+                  summary: A cad render step->png, with the render stage caught up after a poll that missed it
+                  value: |
+                    event: progress
+                    data: {"status":"queued","progress_pct":null,"eta_seconds":null,"stage":null,"stage_index":null,"stage_count":null}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"guard","stage_index":1,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"mesh","stage_index":2,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"render","stage_index":3,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"done","progress_pct":null,"eta_seconds":null,"stage":"judge","stage_index":4,"stage_count":4}
 
                     event: progress
                     data: {"status":"done"}
