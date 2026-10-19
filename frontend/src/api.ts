@@ -50,6 +50,14 @@ export type ProgressEvent = {
   eta_seconds: number | null;
 };
 
+export function formatStage(s: {
+  stage?: string | null;
+  stage_index?: number | null;
+  stage_count?: number | null;
+}): string | null {
+  return null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   // Machine-readable error code from the response body's flat {"error","code"}

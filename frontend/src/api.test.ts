@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ApiError, getJobWithRetry, isRetryableError } from './api';
+import { ApiError, formatStage, getJobWithRetry, isRetryableError } from './api';
 import type { FormatsResponse, JobStatusResponse } from './api';
 
 describe('isRetryableError', () => {
@@ -38,6 +38,24 @@ function makeJob(overrides: Partial<JobStatusResponse> = {}): JobStatusResponse 
     ...overrides,
   };
 }
+
+describe('formatStage', () => {
+  it('names the stage with its position in the route', () => {
+    expect(formatStage({ stage: 'mesh', stage_index: 2, stage_count: 4 })).toBe('stage 2/4: mesh');
+  });
+
+  it('returns null when the stage is null', () => {
+    expect(formatStage({ stage: null, stage_index: null, stage_count: null })).toBeNull();
+  });
+
+  it('returns null when stage_index is null', () => {
+    expect(formatStage({ stage: 'mesh', stage_index: null, stage_count: 4 })).toBeNull();
+  });
+
+  it('returns null for a job without stage keys', () => {
+    expect(formatStage({})).toBeNull();
+  });
+});
 
 describe('getJobWithRetry', () => {
   it('resolves on the first successful call with no retry', async () => {

@@ -154,6 +154,11 @@ type JobStatus struct {
 	// it on every response.
 	ProgressPct *int `json:"progress_pct" jsonschema:"percent complete 0-100, or null when the engine cannot report progress (only av jobs report it today); null means indeterminate, never zero"`
 	EtaSeconds  *int `json:"eta_seconds" jsonschema:"estimated seconds remaining, or null when indeterminate"`
+
+	Stage      *string `json:"-"`
+	StageIndex *int    `json:"-"`
+	StageCount *int    `json:"-"`
+
 	// Outputs is every artifact a done job produced, present only when the
 	// job has more than one (a single-output convert job keeps the
 	// pre-Phase-57 body shape and reports its one artifact through
