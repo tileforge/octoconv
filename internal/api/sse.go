@@ -23,7 +23,7 @@ import (
 const sseUnset = -1
 
 // sseSnapshot is the D-01 comparable summary of the fields that gate a new
-// emit: status, progress_pct, eta_seconds, and for a CAD job stage and stage_index.
+// emit: status, progress_pct, eta_seconds, and for a CAD job stage, stage_index and attempts.
 // Two snapshots compare equal with == iff none of those changed since the last emit.
 type sseSnapshot struct {
 	status   string
@@ -160,7 +160,7 @@ func writeFrame(rc *http.ResponseController, w http.ResponseWriter, event string
 // The stream is DB-poll-sourced (repeated s.repo.Get -- the SAME method
 // handleGetJob calls; no in-memory pub/sub), so any stateless api replica
 // can serve any client. It emits a named `progress` event ONLY when
-// {status, progress_pct, eta_seconds, stage, stage_index} changed since the last emit, sends a
+// {status, progress_pct, eta_seconds, stage, stage_index, attempts} changed since the last emit, sends a
 // `: keepalive` heartbeat comment on its own cadence to survive proxy
 // idle-timeouts, and closes after one final event on a terminal status
 // (done/failed/canceled, D-02).
