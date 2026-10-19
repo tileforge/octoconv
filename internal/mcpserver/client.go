@@ -152,12 +152,12 @@ type JobStatus struct {
 	// both keys outright, so an agent polling get_job_status on a long video
 	// conversion saw no progress at all even though the API was publishing
 	// it on every response.
-	ProgressPct *int `json:"progress_pct" jsonschema:"percent complete 0-100, or null when the engine cannot report progress (only av jobs report it today); null means indeterminate, never zero"`
+	ProgressPct *int `json:"progress_pct" jsonschema:"percent complete 0-100, or null when the engine cannot report progress; null means indeterminate, never zero. A cad job always reads null here and reports its progress in stage instead"`
 	EtaSeconds  *int `json:"eta_seconds" jsonschema:"estimated seconds remaining, or null when indeterminate"`
 
-	Stage      *string `json:"-"`
-	StageIndex *int    `json:"-"`
-	StageCount *int    `json:"-"`
+	Stage      *string `json:"stage,omitempty" jsonschema:"the stage a cad job is in: guard, mesh, render, dxf, ink, rsvg or judge. Present only for cad jobs that have started a stage; absent for every other class"`
+	StageIndex *int    `json:"stage_index,omitempty" jsonschema:"1-based position of the current stage within the job's route"`
+	StageCount *int    `json:"stage_count,omitempty" jsonschema:"number of stages in the job's route"`
 
 	// Outputs is every artifact a done job produced, present only when the
 	// job has more than one (a single-output convert job keeps the

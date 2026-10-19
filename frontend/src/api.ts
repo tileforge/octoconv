@@ -26,6 +26,9 @@ export type JobStatusResponse = {
   status: JobStatus;
   progress_pct: number | null;
   eta_seconds: number | null;
+  stage?: string | null;
+  stage_index?: number | null;
+  stage_count?: number | null;
   opts?: Record<string, unknown>;
   download_url?: string;
   error_code?: string;
@@ -48,6 +51,9 @@ export type ProgressEvent = {
   status: JobStatus;
   progress_pct: number | null;
   eta_seconds: number | null;
+  stage?: string | null;
+  stage_index?: number | null;
+  stage_count?: number | null;
 };
 
 export function formatStage(s: {
@@ -55,7 +61,10 @@ export function formatStage(s: {
   stage_index?: number | null;
   stage_count?: number | null;
 }): string | null {
-  return null;
+  if (s.stage == null || s.stage_index == null || s.stage_count == null) {
+    return null;
+  }
+  return `stage ${s.stage_index}/${s.stage_count}: ${s.stage}`;
 }
 
 export class ApiError extends Error {

@@ -5,6 +5,7 @@ import {
   JobStatusResponse,
   cancelJob,
   createJob,
+  formatStage,
   getJob,
   getJobWithRetry,
   isTerminal,
@@ -453,7 +454,7 @@ export default function App() {
               {!isTerminal(job.status) && job.progress_pct == null && (
                 <div className="result-row">
                   <span>Progress</span>
-                  <p className="hint">processing…</p>
+                  <p className="hint">{formatStage(job) ?? 'processing…'}</p>
                 </div>
               )}
 
