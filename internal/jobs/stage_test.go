@@ -247,3 +247,21 @@ func TestStageFreezesOnTerminal(t *testing.T) {
 		assertStage(t, r, id, "guard", 1, 4)
 	})
 }
+
+func TestGetReadsAttempts(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	id := createCADStageJob(t, r, "attempts")
+	for want := 1; want <= 2; want++ {
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive %d: %v", want, err)
+		}
+		got, err := r.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Attempts != want {
+			t.Fatalf("Attempts = %d after %d MarkActive, want %d", got.Attempts, want, want)
+		}
+	}
+}

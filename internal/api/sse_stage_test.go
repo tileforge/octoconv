@@ -385,6 +385,9 @@ func TestStageCatchUpIsPure(t *testing.T) {
 			[]string{"active nil nil guard 1/4", "active nil nil mesh 2/4"}},
 		{"guard_to_done_judge", cadJob(jobs.StatusActive, "guard", 1, 4), cadJob(jobs.StatusDone, "judge", 4, 4),
 			[]string{"active nil nil mesh 2/4", "active nil nil render 3/4"}},
+		{"new_attempt", inAttempt(cadJob(jobs.StatusActive, "guard", 1, 4), 1), inAttempt(cadJob(jobs.StatusActive, "render", 3, 4), 2), nil},
+		{"same_attempt", inAttempt(cadJob(jobs.StatusActive, "guard", 1, 4), 2), inAttempt(cadJob(jobs.StatusActive, "render", 3, 4), 2),
+			[]string{"active nil nil mesh 2/4"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -402,5 +405,87 @@ func TestStageCatchUpIsPure(t *testing.T) {
 				t.Fatalf("stageCatchUp changed the job stage: %s, was %s", after, before)
 			}
 		})
+	}
+}
+
+func inAttempt(j *jobs.Job, n int) *jobs.Job {
+	j.Attempts = n
+	return j
+}
+
+func TestSSE_CADNewAttemptSendsOneFrameWithoutCatchUp(t *testing.T) {
+	t.Run("same_stage_as_the_last_attempt", func(t *testing.T) {
+		body, frames := runCADStream(t,
+			inAttempt(cadJob(jobs.StatusActive, "mesh", 2, 4), 1),
+			inAttempt(cadJob(jobs.StatusActive, "mesh", 2, 4), 2),
+			inAttempt(cadJob(jobs.StatusFailed, "mesh", 2, 4), 2),
+		)
+		assertFrames(t, body, frames, []string{
+			`"active" null null "mesh" 2/4`,
+			`"active" null null "mesh" 2/4`,
+			`"failed" null null "mesh" 2/4`,
+			`terminal "failed"`,
+		})
+	})
+	t.Run("past_the_last_attempt", func(t *testing.T) {
+		body, frames := runCADStream(t,
+			inAttempt(cadJob(jobs.StatusActive, "guard", 1, 4), 1),
+			inAttempt(cadJob(jobs.StatusActive, "render", 3, 4), 2),
+			inAttempt(cadJob(jobs.StatusFailed, "render", 3, 4), 2),
+		)
+		assertFrames(t, body, frames, []string{
+			`"active" null null "guard" 1/4`,
+			`"active" null null "render" 3/4`,
+			`"failed" null null "render" 3/4`,
+			`terminal "failed"`,
+		})
+	})
+	t.Run("catch_up_resumes_within_the_new_attempt", func(t *testing.T) {
+		body, frames := runCADStream(t,
+			inAttempt(cadJob(jobs.StatusActive, "render", 3, 4), 1),
+			inAttempt(cadJob(jobs.StatusActive, "guard", 1, 4), 2),
+			inAttempt(cadJob(jobs.StatusDone, "judge", 4, 4), 2),
+		)
+		assertFrames(t, body, frames, []string{
+			`"active" null null "render" 3/4`,
+			`"active" null null "guard" 1/4`,
+			`"active" null null "mesh" 2/4`,
+			`"active" null null "render" 3/4`,
+			`"done" null null "judge" 4/4`,
+			`terminal "done"`,
+		})
+	})
+	t.Run("first_attempt_from_queued_still_catches_up", func(t *testing.T) {
+		body, frames := runCADStream(t,
+			inAttempt(cadJob(jobs.StatusQueued, "", 0, 0), 0),
+			inAttempt(cadJob(jobs.StatusActive, "render", 3, 4), 1),
+			inAttempt(cadJob(jobs.StatusDone, "judge", 4, 4), 1),
+		)
+		assertFrames(t, body, frames, []string{
+			`"queued" null null null null/null`,
+			`"active" null null "guard" 1/4`,
+			`"active" null null "mesh" 2/4`,
+			`"active" null null "render" 3/4`,
+			`"done" null null "judge" 4/4`,
+			`terminal "done"`,
+		})
+	})
+}
+
+func TestSSE_NonCADNewAttemptSendsNoFrame(t *testing.T) {
+	pct := 40
+	avJob := func(status string, attempts int) *jobs.Job {
+		p := pct
+		return &jobs.Job{
+			ID: stageJobID, ClientID: stageClient.ID, Operation: convert.OperationConvert, Engine: convert.EngineAV,
+			SourceFormat: "mov", TargetFormat: "mp4", Status: status, ProgressPct: &p, Attempts: attempts,
+		}
+	}
+	body, _ := runCADStream(t, avJob(jobs.StatusActive, 1), avJob(jobs.StatusActive, 2), avJob(jobs.StatusFailed, 2))
+	want := "event: progress\ndata: " + `{"status":"active","progress_pct":40,"eta_seconds":null}` + "\n\n" +
+		"event: progress\ndata: " + `{"status":"failed","progress_pct":40,"eta_seconds":null}` + "\n\n" +
+		"event: progress\ndata: " + `{"status":"failed"}` + "\n\n"
+	if body != want {
+		t.Fatalf("body:\n  got  %q\n  want %q", body, want)
 	}
 }
