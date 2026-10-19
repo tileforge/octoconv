@@ -1732,6 +1732,7 @@ services:
       CAD_DXF_TIMEOUT: "186s"
       CAD_RSVG_TIMEOUT: "217s"
       CAD_SANDBOX_DISABLED: "${CAD_SANDBOX_DISABLED:-}"
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
       IMAGE_MAX_RETRY: "4"
       ENGINE_TIMEOUT: "120s"
       DOCUMENT_MAX_RETRY: "3"

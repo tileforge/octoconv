@@ -23,6 +23,7 @@ import (
 	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/sandbox"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/webhook"
 	"github.com/tileforge/octoconv/internal/worker"
 )
 
@@ -125,6 +126,20 @@ func main() {
 		nil,
 	)
 
+	progressMinInterval := envDurationSeconds("PROGRESS_MIN_INTERVAL_SECONDS", 2*time.Second)
+	progressMinDeltaPct := envInt("PROGRESS_MIN_DELTA_PCT", 1)
+	h.SetProgressThrottle(progressMinInterval, progressMinDeltaPct)
+	log.Printf("📈 PROGRESS_MIN_INTERVAL_SECONDS=%v PROGRESS_MIN_DELTA_PCT=%d", progressMinInterval, progressMinDeltaPct)
+
+	webhookSigningSecret := []byte(os.Getenv("WEBHOOK_SIGNING_SECRET"))
+	progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)
+	if len(webhookSigningSecret) > 0 {
+		h.SetProgressWebhook(webhook.NewDeliverer(), webhookSigningSecret, progressWebhookTimeout)
+		log.Printf("🔔 progress webhooks enabled (PROGRESS_WEBHOOK_TIMEOUT=%v)", progressWebhookTimeout)
+	} else {
+		log.Printf("🔕 progress webhooks disabled (WEBHOOK_SIGNING_SECRET unset)")
+	}
+
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(queue.TypeCADJob, worker.NewRunner(h, worker.CADDescriptor).Handle)
 
@@ -184,6 +199,22 @@ func envDuration(key string, def time.Duration) time.Duration {
 			return d
 		}
 	}
+	return def
+}
+
+func envDurationSeconds(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f := firstField(v)
+	if d, err := time.ParseDuration(f); err == nil && d >= 0 {
+		return d
+	}
+	if sec, err := strconv.Atoi(f); err == nil && sec >= 0 {
+		return time.Duration(sec) * time.Second
+	}
+	log.Printf("⚠️ %s=%q is neither a duration (\"2s\") nor bare integer seconds (\"2\"); using default %v", key, f, def)
 	return def
 }
 
