@@ -1,18 +1,18 @@
-:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #272727; background: #f5f5f5; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #263b3b; background: #f1f6f5; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
 button, input, select { font: inherit; }
-.workspace { --accent: #d73700; min-height: 100vh; font-size: 13px; line-height: 1.5; background: #f5f5f5; }
+.workspace { --accent: #087f83; min-height: 100vh; font-size: 13px; line-height: 1.5; background: #f1f6f5; }
 .workspace button, .workspace .oc-filepicker { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 9px 13px; border: 1px solid #dfdfdf; border-radius: 7px; background: white; color: #424242; cursor: pointer; font-size: 12px; font-weight: 550; white-space: nowrap; }
-.workspace button:hover:not(:disabled), .workspace .oc-filepicker:hover { background: #faf7f4; border-color: #c8a899; }
+.workspace button:hover:not(:disabled), .workspace .oc-filepicker:hover { background: #f1f6f5; border-color: #99bfbd; }
 .workspace button:disabled { cursor: not-allowed; opacity: .45; }
-.workspace button:focus-visible, .workspace a:focus-visible, .workspace input:focus-visible, .workspace select:focus-visible, .workspace .oc-filepicker:focus-within { outline: 3px solid #e8a787; outline-offset: 3px; }
+.workspace button:focus-visible, .workspace a:focus-visible, .workspace input:focus-visible, .workspace select:focus-visible, .workspace .oc-filepicker:focus-within { outline: 3px solid #72b8b4; outline-offset: 3px; }
 .workspace button.oc-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 650; }
-.workspace button.oc-primary:hover:not(:disabled), .workspace .oc-download:hover { background: #b92e00; }
+.workspace button.oc-primary:hover:not(:disabled), .workspace .oc-download:hover { background: #06666a; }
 .workspace button.oc-outline { color: var(--accent); border-color: var(--accent); }
 .workspace svg { width: 17px; height: 17px; flex-shrink: 0; }
 .workspace .oc-nav { display: flex; align-items: center; gap: 18px; min-height: 67px; padding: 14px 32px; background: #fff; border-bottom: 2px solid var(--accent); }
-.workspace .oc-logo { text-decoration: none; color: #262626; font-size: 24px; font-weight: 800; letter-spacing: -1px; }
+.workspace .oc-logo { text-decoration: none; color: #263b3b; font-size: 24px; font-weight: 800; letter-spacing: -1px; }
 .workspace .oc-logo b { color: var(--accent); }
 .workspace .oc-nav nav { display: flex; gap: 12px; margin-left: 18px; }
 .workspace .oc-nav nav button { background: none; border: 0; color: #777; }
@@ -33,13 +33,13 @@ button, input, select { font: inherit; }
 .workspace .oc-pad { padding: 20px; }
 .workspace .oc-upload-panel { margin-bottom: 20px; }
 .workspace .oc-compactform { display: grid; grid-template-columns: minmax(220px, 1.8fr) minmax(120px, 1fr) minmax(110px, .8fr) auto; gap: 14px; align-items: end; padding: 18px; }
-.workspace .oc-uploadsmall { display: flex; align-items: center; gap: 10px; border: 1px dashed #dfbaa9; background: #fffaf7; border-radius: 8px; padding: 12px; min-width: 0; }
+.workspace .oc-uploadsmall { display: flex; align-items: center; gap: 10px; border: 1px dashed #99bfbd; background: #e5f3f0; border-radius: 8px; padding: 12px; min-width: 0; }
 .workspace .oc-uploadsmall > svg { color: var(--accent); width: 24px; height: 24px; }
 .workspace .oc-uploadname { display: grid; gap: 2px; min-width: 0; }
 .workspace .oc-uploadname strong { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .workspace .oc-uploadsmall .oc-filepicker { position: relative; margin-left: auto; flex: 0 0 auto; display: inline-flex; min-width: auto; }
 .workspace .oc-filepicker input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
-.workspace .oc-uploadsmall.oc-dragging { background: #ffeadc; border-color: var(--accent); }
+.workspace .oc-uploadsmall.oc-dragging { background: #d1eae5; border-color: var(--accent); }
 .workspace label { display: grid; gap: 6px; min-width: 0; color: #737373; font-size: 11px; }
 .workspace input, .workspace select { width: 100%; min-width: 0; color: #333; background: #fff; border: 1px solid #dedede; border-radius: 6px; font-size: 12px; padding: 9px 10px; min-height: 37px; }
 .workspace .oc-layout { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; align-items: start; }
@@ -55,27 +55,27 @@ button, input, select { font: inherit; }
 .workspace th { padding: 13px; border-bottom: 1px solid #eee; color: #898989; font-size: 10px; letter-spacing: .7px; text-transform: uppercase; font-weight: 600; }
 .workspace td { padding: 16px 13px; border-bottom: 1px solid #f0f0f0; }
 .workspace tbody tr:last-child td { border-bottom: 0; }
-.workspace .oc-selected { background: #fff7f1; }
+.workspace .oc-selected { background: #e5f3f0; }
 .workspace button.oc-rowselect { padding: 0; border: 0; background: none; text-align: left; justify-content: start; white-space: normal; min-width: 155px; }
 .workspace .oc-rowselect strong { display: block; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .workspace .oc-rowselect .oc-muted { display: block; margin-top: 3px; font-size: 11px; }
-.workspace .oc-fileicon { display: grid; place-items: center; background: #f7eee8; color: #b56838; border-radius: 5px; width: 32px; min-height: 38px; padding: 3px; flex-shrink: 0; font-size: 9px; font-weight: 700; }
+.workspace .oc-fileicon { display: grid; place-items: center; background: #e5f3f0; color: #087f83; border-radius: 5px; width: 32px; min-height: 38px; padding: 3px; flex-shrink: 0; font-size: 9px; font-weight: 700; }
 .workspace .oc-pill { display: inline-block; padding: 3px 7px; background: #f0f1f3; color: #69717a; border-radius: 5px; font-size: 11px; white-space: nowrap; }
 .workspace .oc-status-done { background: #eaf7ee; color: #158348; }
-.workspace .oc-status-active { background: #fff0e5; color: #b4520a; }
+.workspace .oc-status-active { background: #e5f3f0; color: #06666a; }
 .workspace .oc-status-failed { background: #ffeded; color: #b33125; }
 .workspace .oc-date { font-size: 11px; color: #777; white-space: nowrap; }
 .workspace .oc-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; border-top: 1px solid #eee; padding: 11px 16px; color: #888; font-size: 11px; }
 .workspace .oc-pagination { display: flex; gap: 5px; }
 .workspace .oc-pagination button { font-size: 11px; padding: 5px 9px; }
 .workspace .oc-empty { display: grid; justify-items: center; text-align: center; padding: 40px 22px; gap: 10px; color: #777; min-height: 210px; align-content: center; }
-.workspace .oc-empty > svg { width: 28px; height: 28px; color: #bd8c71; }
+.workspace .oc-empty > svg { width: 28px; height: 28px; color: #548582; }
 .workspace .oc-empty p { max-width: 340px; font-size: 12px; }
 .workspace .oc-empty h3 { color: #333; }
 .workspace .oc-minihead { text-transform: uppercase; letter-spacing: 1px; color: #8b8b8b; font-size: 10px; margin-bottom: 12px; }
 .workspace .oc-detail-title { overflow-wrap: anywhere; }
 .workspace .oc-id { color: #8b8b8b; font-size: 10px; overflow-wrap: anywhere; margin-top: 5px; }
-.workspace .oc-filehero { display: grid; place-items: center; width: 52px; min-height: 62px; padding: 6px; border-radius: 8px; background: #fff0e7; color: var(--accent); font-weight: 650; margin: 18px 0 14px; }
+.workspace .oc-filehero { display: grid; place-items: center; width: 52px; min-height: 62px; padding: 6px; border-radius: 8px; background: #e5f3f0; color: var(--accent); font-weight: 650; margin: 18px 0 14px; }
 .workspace .oc-rule { height: 1px; background: #ededed; margin: 17px 0; }
 .workspace .oc-meta { display: flex; justify-content: space-between; gap: 12px; margin: 12px 0; font-size: 11px; }
 .workspace .oc-meta span:first-child { color: #808080; }
@@ -83,7 +83,7 @@ button, input, select { font: inherit; }
 .workspace .oc-full { width: 100%; margin-top: 10px; }
 .workspace .oc-download { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px; color: #fff; background: var(--accent); border-radius: 7px; margin-top: 10px; text-decoration: none; font-size: 12px; overflow-wrap: anywhere; }
 .workspace .oc-detail-empty { display: grid; justify-items: start; gap: 12px; padding-top: 16px; padding-bottom: 10px; }
-.workspace .oc-detail-empty svg { width: 32px; height: 32px; color: #cba589; }
+.workspace .oc-detail-empty svg { width: 32px; height: 32px; color: #548582; }
 .workspace .oc-connection-text { margin: 8px 0 5px; }
 .workspace .oc-notice { display: flex; align-items: center; gap: 7px; margin-top: 23px; color: #929292; font-size: 11px; }
 .workspace .oc-notice svg { width: 14px; height: 14px; }
@@ -96,12 +96,11 @@ button, input, select { font: inherit; }
 .workspace .oc-error { color: #a33726; background: #fff0ec; padding: 12px; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
 .workspace .oc-inset { margin: 0 18px 16px; }
 .workspace .oc-inline-error { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 0 18px 16px; font-size: 12px; color: #a33726; }
-.workspace progress { display: block; width: 100%; height: 5px; margin-top: 8px; border: none; border-radius: 3px; accent-color: var(--accent); background: #f5e9e1; overflow: hidden; }
-.workspace progress::-webkit-progress-bar { background: #f5e9e1; }
+.workspace progress { display: block; width: 100%; height: 5px; margin-top: 8px; border: none; border-radius: 3px; accent-color: var(--accent); background: #d8e8e5; overflow: hidden; }
+.workspace progress::-webkit-progress-bar { background: #d8e8e5; }
 .workspace progress::-webkit-progress-value { background: var(--accent); }
 .workspace .oc-liveprogress { margin-top: 12px; }
 .workspace .oc-liveprogress p { margin-top: 8px; font-size: 11px; }
-.legacy-navigation { padding: 15px 24px; display: flex; align-items: center; gap: 20px; background: #fff; font-size: 13px; color: #68738a; }
 @media (max-width: 1000px) { .workspace .oc-compactform { grid-template-columns: minmax(220px, 1.4fr) 1fr 1fr; } .workspace .oc-compactform > button { grid-column: 1 / -1; justify-self: end; } .workspace .oc-layout { grid-template-columns: minmax(0, 1fr) 235px; gap: 14px; } }
 @media (max-width: 760px) { .workspace .oc-nav { flex-wrap: wrap; padding: 13px 16px; gap: 10px; } .workspace .oc-nav nav { margin-left: 0; gap: 0; } .workspace .oc-nav .oc-connection { margin-left: auto; font-size: 0; padding: 10px; } .workspace .oc-connection .oc-dot { width: 8px; height: 8px; } .workspace .oc-main { padding: 24px 16px 40px; } .workspace .oc-layout { grid-template-columns: 1fr; } .workspace .oc-compactform { grid-template-columns: 1fr 1fr; gap: 12px; padding: 15px; } .workspace .oc-uploadsmall { grid-column: 1 / -1; } .workspace .oc-compactform > button { width: 100%; } .workspace table { min-width: 540px; } .workspace .oc-heading { display: block; } .workspace .oc-heading > button { margin-bottom: 18px; } .workspace .oc-subtitle { margin-bottom: 16px; } .workspace .oc-settings-grid { grid-template-columns: 1fr; } .workspace .oc-settings-foot { flex-wrap: wrap; } .workspace .oc-stack { grid-template-columns: 1fr; } .workspace .oc-foot { align-items: start; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }

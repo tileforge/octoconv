@@ -28,7 +28,7 @@ var (
 // TestNoConsumerBranchesOnErrorMessageText (ERRC-03, D-08, PITFALLS.md
 // Pitfall 12) mechanically scans every non-test consumer source this plan
 // migrated -- internal/mcpserver's production Go files (excluding
-// *_test.go) and the frontend's api.ts/App.tsx, scanned as plain text --
+// *_test.go) and the frontend's API and workspace error consumers, scanned as plain text --
 // for a branch keyed on human-readable error message text instead of the
 // machine-readable code. Test files are intentionally excluded: asserting
 // on message text IN A TEST is legitimate and several existing tests
@@ -60,6 +60,8 @@ func TestNoConsumerBranchesOnErrorMessageText(t *testing.T) {
 	for _, rel := range []string{
 		filepath.Join("frontend", "src", "api.ts"),
 		filepath.Join("frontend", "src", "App.tsx"),
+		filepath.Join("frontend", "src", "errors.ts"),
+		filepath.Join("frontend", "src", "Workspace.tsx"),
 	} {
 		violations = append(violations, scanFileForMessageBranch(t, filepath.Join(repoRoot, rel), tsMessageBranchPattern)...)
 	}

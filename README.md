@@ -526,7 +526,6 @@ The workspace in [`frontend/`](frontend/) (React + Vite + TypeScript) shows your
 with status/engine filters, pagination, live progress, cancellation and result downloads.
 Open **Settings** (Настройки) to enter an API key and optional JSON conversion parameters,
 then choose a file, operation and target format. Formats come from the API.
-The previous upload interface remains available through **Legacy**.
 
 Historical jobs display their IDs and formats because the list API does not return filenames.
 Filenames are shown for uploads made in the current workspace session. Active jobs refresh

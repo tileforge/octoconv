@@ -38,10 +38,12 @@ function scanFileForMessageBranch(relativeFile: string): string[] {
 }
 
 describe('no consumer branches on error message text (ERRC-03)', () => {
-  it('api.ts and App.tsx contain no message-text branch', () => {
+  it('API and workspace error consumers contain no message-text branch', () => {
     const violations = [
       ...scanFileForMessageBranch('api.ts'),
       ...scanFileForMessageBranch('App.tsx'),
+      ...scanFileForMessageBranch('errors.ts'),
+      ...scanFileForMessageBranch('Workspace.tsx'),
     ];
 
     expect(violations, `found message-text branch(es):\n${violations.join('\n')}`).toEqual([]);
