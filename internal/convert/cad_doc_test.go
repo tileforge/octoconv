@@ -10,6 +10,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ var (
 	cadDocSource      = regexp.MustCompile(`^evidence/(\S+) ([A-Z_]+)(?:\[(\w+)=([^\]]+)\])?\.(\w+)$`)
 	cadDocNearInk     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is ink`)
 	cadDocNearNot     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is not`)
+	cadDocStageWord   = regexp.MustCompile("`([a-z]+)`")
 )
 
 var cadDocScalingEvidence = []string{
@@ -430,6 +432,50 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			got[key] = true
 		}
 		cadDocSameSet(t, "pairs", got, want)
+	})
+
+	t.Run("stages", func(t *testing.T) {
+		got := map[string][]string{}
+		words := map[string]bool{}
+		for _, r := range cadDocTable(t, doc, "## Stages", "operation", "from", "to", "stages", "stage_count") {
+			key := cadDocOne(t, r[0], "operation") + " " + cadDocOne(t, r[1], "from") + " " + cadDocOne(t, r[2], "to")
+			if _, dup := got[key]; dup {
+				t.Errorf("docs/CAD.md lists the stages of %s twice", key)
+			}
+			var stages []string
+			for _, m := range cadDocStageWord.FindAllStringSubmatch(r[3], -1) {
+				stages = append(stages, m[1])
+				words[m[1]] = true
+			}
+			got[key] = stages
+			n, err := strconv.Atoi(cadDocOne(t, r[4], "stage_count"))
+			if err != nil {
+				t.Errorf("docs/CAD.md: the stage_count of %s is not an integer: %v", key, err)
+			} else if n != len(stages) {
+				t.Errorf("docs/CAD.md gives %s stage_count %d for %d stages", key, n, len(stages))
+			}
+		}
+		docKeys := map[string]bool{}
+		for k := range got {
+			docKeys[k] = true
+		}
+		code := map[string]bool{}
+		for k, route := range cadStageRoutes {
+			key := k.op + " " + k.from + " " + k.to
+			code[key] = true
+			if stages, ok := got[key]; ok && !slices.Equal(stages, route) {
+				t.Errorf("docs/CAD.md gives %s the stages %v, the code runs %v", key, stages, route)
+			}
+		}
+		cadDocSameSet(t, "stage routes", docKeys, code)
+		cadDocSameSet(t, "stage words", words, cadOpenAPISet(CADStageVocabulary()...))
+		registry := map[string]bool{}
+		for op, ps := range pairs {
+			for _, p := range ps {
+				registry[op+" "+p.From+" "+p.To] = true
+			}
+		}
+		cadDocSameSet(t, "stage routes against the registry pairs", docKeys, registry)
 	})
 
 	t.Run("options", func(t *testing.T) {
