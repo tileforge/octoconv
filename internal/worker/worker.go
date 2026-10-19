@@ -1222,6 +1222,8 @@ type progressSink struct {
 	webhookSecret  []byte
 	webhookDelivr  progressWebhookDeliverer
 	webhookTimeout time.Duration
+
+	stageQueue chan []byte
 }
 
 // SourceDuration reports the probed source duration once, best-effort.
@@ -1232,6 +1234,8 @@ func (s *progressSink) SourceDuration(seconds float64) {
 func (s *progressSink) Stage(u convert.StageUpdate) {
 	_ = s.repo.UpdateStage(s.ctx, s.jobID, u.Stage, u.Index, u.Count)
 }
+
+func (s *progressSink) closeStages() {}
 
 // Update applies the dual-gate throttle and, if it passes, persists the
 // tick best-effort, then (D-04) fires a best-effort progress webhook from
