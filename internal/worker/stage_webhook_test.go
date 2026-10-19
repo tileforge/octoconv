@@ -539,21 +539,36 @@ func TestStageDrainIsBounded(t *testing.T) {
 
 type refusingStageRepo struct {
 	spyProgressRepo
-	err error
+	applied bool
+	err     error
 }
 
-func (r *refusingStageRepo) UpdateStage(context.Context, uuid.UUID, string, int, int) error {
-	return r.err
+func (r *refusingStageRepo) UpdateStage(context.Context, uuid.UUID, string, int, int) (bool, error) {
+	return r.applied, r.err
 }
 
 func TestStageWebhookOnlyForAStageTheRowRecorded(t *testing.T) {
-	d := &stageDeliveries{}
-	s := stageSink(d, "")
-	s.repo = &refusingStageRepo{err: errors.New("postgres is down")}
-	s.Stage(convert.StageUpdate{Stage: "guard", Index: 1, Count: 3})
-	s.closeStages()()
+	cases := []struct {
+		name    string
+		applied bool
+		err     error
+		want    int
+	}{
+		{"postgres_down", false, errors.New("postgres is down"), 0},
+		{"row_not_active_or_not_monotonic", false, nil, 0},
+		{"applied", true, nil, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &stageDeliveries{}
+			s := stageSink(d, "")
+			s.repo = &refusingStageRepo{applied: tc.applied, err: tc.err}
+			s.Stage(convert.StageUpdate{Stage: "guard", Index: 1, Count: 3})
+			s.closeStages()()
 
-	if n := len(d.snapshot()); n != 0 {
-		t.Fatalf("deliveries = %d for a stage the job row never recorded, want 0", n)
+			if n := len(d.snapshot()); n != tc.want {
+				t.Fatalf("deliveries = %d, want %d", n, tc.want)
+			}
+		})
 	}
 }

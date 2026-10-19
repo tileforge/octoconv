@@ -66,8 +66,8 @@ func TestUpdateStage(t *testing.T) {
 	ctx := context.Background()
 	id := createCADStageJob(t, r, "update")
 
-	if err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil {
-		t.Fatalf("UpdateStage on queued job: %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil || applied {
+		t.Fatalf("UpdateStage on queued job: applied=%v err=%v, want applied=false", applied, err)
 	}
 	assertNoStage(t, r, id)
 
@@ -76,23 +76,23 @@ func TestUpdateStage(t *testing.T) {
 	}
 	eventsBefore := countJobEvents(t, r, id)
 
-	if err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil {
-		t.Fatalf("UpdateStage(guard 1/4): %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil || !applied {
+		t.Fatalf("UpdateStage(guard 1/4): applied=%v err=%v, want applied=true", applied, err)
 	}
 	assertStage(t, r, id, "guard", 1, 4)
 
-	if err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil {
-		t.Fatalf("UpdateStage(mesh 2/4): %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil || !applied {
+		t.Fatalf("UpdateStage(mesh 2/4): applied=%v err=%v, want applied=true", applied, err)
 	}
 	assertStage(t, r, id, "mesh", 2, 4)
 
-	if err := r.UpdateStage(ctx, id, "render", 2, 4); err != nil {
-		t.Fatalf("UpdateStage(render 2/4): %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "render", 2, 4); err != nil || applied {
+		t.Fatalf("UpdateStage(render 2/4): applied=%v err=%v, want applied=false", applied, err)
 	}
 	assertStage(t, r, id, "mesh", 2, 4)
 
-	if err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil {
-		t.Fatalf("UpdateStage(guard 1/4) after mesh: %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil || applied {
+		t.Fatalf("UpdateStage(guard 1/4) after mesh: applied=%v err=%v, want applied=false", applied, err)
 	}
 	assertStage(t, r, id, "mesh", 2, 4)
 
@@ -121,7 +121,7 @@ func TestUpdateStageRejectsWhatTheChecksForbid(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := r.UpdateStage(ctx, id, tc.stage, tc.index, 4)
+			_, err := r.UpdateStage(ctx, id, tc.stage, tc.index, 4)
 			if err == nil || !strings.Contains(err.Error(), tc.constraint) {
 				t.Fatalf("UpdateStage(%q, %d, 4) err = %v, want %s", tc.stage, tc.index, err, tc.constraint)
 			}
@@ -145,8 +145,8 @@ func TestMarkActiveResetsTheStage(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
-	if err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil {
-		t.Fatalf("UpdateStage(mesh 2/4): %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil || !applied {
+		t.Fatalf("UpdateStage(mesh 2/4): applied=%v err=%v, want applied=true", applied, err)
 	}
 	assertStage(t, r, id, "mesh", 2, 4)
 
@@ -162,8 +162,8 @@ func TestMarkActiveResetsTheStage(t *testing.T) {
 	}
 	assertNoStage(t, r, id)
 
-	if err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil {
-		t.Fatalf("UpdateStage(guard 1/4) after retry: %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil || !applied {
+		t.Fatalf("UpdateStage(guard 1/4) after retry: applied=%v err=%v, want applied=true", applied, err)
 	}
 	assertStage(t, r, id, "guard", 1, 4)
 }
@@ -175,8 +175,8 @@ func TestRequeueStaleResetsTheStage(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
-	if err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil {
-		t.Fatalf("UpdateStage(mesh 2/4): %v", err)
+	if applied, err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil || !applied {
+		t.Fatalf("UpdateStage(mesh 2/4): applied=%v err=%v, want applied=true", applied, err)
 	}
 
 	if err := r.RequeueStale(ctx, id, "stale_active"); err != nil {
@@ -201,8 +201,8 @@ func TestStageFreezesOnTerminal(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
-		if err := r.UpdateStage(ctx, id, "judge", 4, 4); err != nil {
-			t.Fatalf("UpdateStage(judge 4/4): %v", err)
+		if applied, err := r.UpdateStage(ctx, id, "judge", 4, 4); err != nil || !applied {
+			t.Fatalf("UpdateStage(judge 4/4): applied=%v err=%v, want applied=true", applied, err)
 		}
 		addPrimaryOutput(t, r, id)
 		if err := r.MarkDone(ctx, id, 0); err != nil {
@@ -216,15 +216,15 @@ func TestStageFreezesOnTerminal(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
-		if err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil {
-			t.Fatalf("UpdateStage(mesh 2/4): %v", err)
+		if applied, err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil || !applied {
+			t.Fatalf("UpdateStage(mesh 2/4): applied=%v err=%v, want applied=true", applied, err)
 		}
 		if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil, 0); err != nil {
 			t.Fatalf("MarkFailed: %v", err)
 		}
 		assertStage(t, r, id, "mesh", 2, 4)
-		if err := r.UpdateStage(ctx, id, "render", 3, 4); err != nil {
-			t.Fatalf("UpdateStage after failed: %v", err)
+		if applied, err := r.UpdateStage(ctx, id, "render", 3, 4); err != nil || applied {
+			t.Fatalf("UpdateStage after failed: applied=%v err=%v, want applied=false", applied, err)
 		}
 		assertStage(t, r, id, "mesh", 2, 4)
 	})
@@ -234,15 +234,15 @@ func TestStageFreezesOnTerminal(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
-		if err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil {
-			t.Fatalf("UpdateStage(guard 1/4): %v", err)
+		if applied, err := r.UpdateStage(ctx, id, "guard", 1, 4); err != nil || !applied {
+			t.Fatalf("UpdateStage(guard 1/4): applied=%v err=%v, want applied=true", applied, err)
 		}
 		if err := r.Cancel(ctx, id); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
 		assertStage(t, r, id, "guard", 1, 4)
-		if err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil {
-			t.Fatalf("UpdateStage after canceled: %v", err)
+		if applied, err := r.UpdateStage(ctx, id, "mesh", 2, 4); err != nil || applied {
+			t.Fatalf("UpdateStage after canceled: applied=%v err=%v, want applied=false", applied, err)
 		}
 		assertStage(t, r, id, "guard", 1, 4)
 	})

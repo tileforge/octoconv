@@ -754,16 +754,16 @@ func (r *Repo) UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *i
 	return nil
 }
 
-func (r *Repo) UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error {
-	_, err := r.pool.Exec(ctx, `
+func (r *Repo) UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
 		UPDATE jobs SET stage = $2, stage_index = $3, stage_count = $4
 		WHERE id = $1 AND status = $5 AND (stage_index IS NULL OR stage_index < $3)`,
 		id, stage, index, count, StatusActive,
 	)
 	if err != nil {
-		return fmt.Errorf("update stage for job %s: %w", id, err)
+		return false, fmt.Errorf("update stage for job %s: %w", id, err)
 	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // SetSourceDuration persists the ffprobe-derived source duration once per

@@ -755,9 +755,9 @@ type spyProgressRepo struct {
 	stages    []convert.StageUpdate
 }
 
-func (s *spyProgressRepo) UpdateStage(_ context.Context, _ uuid.UUID, stage string, index, count int) error {
+func (s *spyProgressRepo) UpdateStage(_ context.Context, _ uuid.UUID, stage string, index, count int) (bool, error) {
 	s.stages = append(s.stages, convert.StageUpdate{Stage: stage, Index: index, Count: count})
-	return nil
+	return true, nil
 }
 
 func (s *spyProgressRepo) UpdateProgress(_ context.Context, _ uuid.UUID, pct int, eta *int) error {
@@ -1327,8 +1327,8 @@ func (r *opGateRepo) UpdateProgress(_ context.Context, _ uuid.UUID, _ int, _ *in
 func (r *opGateRepo) SetSourceDuration(_ context.Context, _ uuid.UUID, _ float64) error {
 	return nil
 }
-func (r *opGateRepo) UpdateStage(_ context.Context, _ uuid.UUID, _ string, _, _ int) error {
-	return nil
+func (r *opGateRepo) UpdateStage(_ context.Context, _ uuid.UUID, _ string, _, _ int) (bool, error) {
+	return true, nil
 }
 
 // identityTestConverter is a synthetic Converter registered ONLY under

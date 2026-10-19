@@ -677,7 +677,7 @@ type convertRepo interface {
 	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
-	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error
+	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) (bool, error)
 }
 
 // webhookEnqueuer is the narrow, interface-segregated subset of
@@ -1140,7 +1140,7 @@ func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, 
 type progressRepo interface {
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
-	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error
+	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) (bool, error)
 }
 
 // progressWebhookDeliverer is the narrow subset of *webhook.Deliverer the
@@ -1197,7 +1197,10 @@ func (s *progressSink) SourceDuration(seconds float64) {
 }
 
 func (s *progressSink) Stage(u convert.StageUpdate) {
-	_ = s.repo.UpdateStage(s.ctx, s.jobID, u.Stage, u.Index, u.Count)
+	applied, err := s.repo.UpdateStage(s.ctx, s.jobID, u.Stage, u.Index, u.Count)
+	if err != nil || !applied {
+		return
+	}
 	if s.webhookEnabled && s.callbackURL != "" && s.webhookDelivr != nil {
 		s.queueStageWebhook(u)
 	}
