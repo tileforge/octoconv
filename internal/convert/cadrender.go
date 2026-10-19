@@ -28,11 +28,11 @@ func CADMeasurementsPath(outPath string) string {
 	return outPath + ".measurements.json"
 }
 
-func (c CADRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error {
-	return c.Convert(ctx, inPath, outPath, opts)
+func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	return c.ConvertWithStages(ctx, inPath, outPath, opts, nil)
 }
 
-func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
+func (c CADRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) (err error) {
 	parsed, err := CADOptsFromMap(opts)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)
@@ -46,6 +46,7 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 		return fmt.Errorf("cad: %w", err)
 	}
 	o := parsed.Resolved()
+	st := newCADStager(sink, OperationRender, format, "png")
 
 	info, err := os.Stat(inPath)
 	if err != nil {
@@ -70,14 +71,17 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 	renderInput := filepath.Join(jobDir, cadMeshSTLName)
 	var verdict cadVerdict
 	if format == "stl" {
+		st.enter(cadStageMesh)
 		verdict, err = c.statsStage(ctx, jobDir, inPath, renderInput, draftPath)
 		if err != nil {
 			return err
 		}
 	} else {
+		st.enter(cadStageGuard)
 		if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
 			return err
 		}
+		st.enter(cadStageMesh)
 		verdict, err = c.meshStage(ctx, jobDir, format, inPath, renderInput, o.Quality, draftPath)
 		if err != nil {
 			return err
@@ -109,10 +113,12 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
 	}
 
+	st.enter(cadStageRender)
 	if err := c.renderStage(ctx, jobDir, renderInput, outPath, o); err != nil {
 		return err
 	}
 
+	st.enter(cadStageJudge)
 	f, _, err := OpenJobFile(outPath)
 	if err != nil {
 		return fmt.Errorf("cad: %w: no image at %s: %v", ErrCADRenderRejected, outPath, err)

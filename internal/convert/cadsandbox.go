@@ -373,7 +373,7 @@ func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspa
 		return fmt.Errorf("the cad guard stage in dxf mode refuses the fixture inside the job directory under its sandbox: %w", err)
 	}
 	clean := filepath.Join(w.jobDir, cadDXFCleanName)
-	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", "")
+	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", "", cadStager{})
 	if errors.Is(err, ErrCADNothingDrawable) {
 		return fmt.Errorf("the ink check finds nothing on the fixture's page drawn under the rsvg-convert ruleset: %w", err)
 	}
