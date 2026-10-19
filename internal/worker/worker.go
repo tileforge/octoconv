@@ -749,12 +749,24 @@ type Handler struct {
 	sideOutputs func(ctx context.Context, job *jobs.Job, outPath string) ([]SideOutput, error)
 }
 
+// SetProgressWebhook installs the D-04 opt-in inline progress-webhook
+// delivery config (mirrors SetProgressThrottle's post-construction-setter
+// precedent). Never calling this (every worker cmd started without
+// WEBHOOK_SIGNING_SECRET) leaves progressWebhookDelivr nil, which
+// progressSink treats as "progress webhooks disabled" — the DB write still
+// lands unchanged.
 func (h *Handler) SetProgressWebhook(d progressWebhookDeliverer, secret []byte, timeout time.Duration) {
 	h.progressWebhookDelivr = d
 	h.progressWebhookSecret = secret
 	h.progressWebhookTimeout = timeout
 }
 
+// SetProgressThrottle installs the PROG-03 dual-gate progress-write throttle
+// (mirrors Phase 39's SetCancelPublisher post-construction-setter precedent).
+// Never calling this leaves progressMinInterval at its zero value, which
+// runConvertWithOptionalProgress treats as "percent progress disabled" — the
+// plain conv.Convert path runs unchanged. Stages of a convert.StageConverter
+// are not throttled (D-12).
 func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int) {
 	h.progressMinInterval = minInterval
 	h.progressMinDeltaPct = minDeltaPct
@@ -1153,17 +1165,17 @@ type progressWebhookDeliverer interface {
 	Deliver(ctx context.Context, url string, body []byte, timestamp int64, signature string) (int, error)
 }
 
-// progressSink implements convert.ProgressSink for the worker: it applies
-// the PROG-03 dual-gate throttle (D-03) to every Update — a write lands only
-// when BOTH at least minInterval has elapsed since the last write AND the
-// value moved by at least minDeltaPct — and persists through the
-// non-locking progressRepo. SourceDuration persists the probed duration once
-// (D-05). Every write is best-effort: a progress/telemetry write must never
+// progressSink implements convert.ProgressSink and convert.StageSink for the
+// worker: it applies the PROG-03 dual-gate throttle (D-03) to every Update —
+// a write lands only when BOTH at least minInterval has elapsed since the
+// last write AND the value moved by at least minDeltaPct — and persists
+// through the non-locking progressRepo. SourceDuration persists the probed
+// duration once (D-05). Every write is best-effort: a progress/telemetry write must never
 // fail the conversion, so the error progressRepo returns is deliberately
 // ignored (mirrors the best-effort webhook-enqueue discipline used
 // elsewhere in this file); library code never logs (CLAUDE.md). Zero value
-// is unusable (minInterval/minDeltaPct must be set) — callers always
-// construct this via runConvertWithOptionalProgress, never directly.
+// is unusable — callers always construct this via
+// runConvertWithOptionalProgress, never directly.
 type progressSink struct {
 	ctx  context.Context
 	repo progressRepo
@@ -1332,6 +1344,18 @@ func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
 	}()
 }
 
+// runConvertWithOptionalProgress is the D-01 seam. A convert.StageConverter
+// is driven through ConvertWithStages, unthrottled and with no terminal write.
+// Otherwise it type-asserts conv for convert.ProgressConverter and, ONLY when
+// that capability is present AND progress throttling is configured
+// (minInterval > 0, i.e. SetProgressThrottle was called), drives a throttled
+// progressSink through ConvertWithProgress; every other converter takes the
+// plain conv.Convert path. On a SUCCESSFUL ConvertWithProgress return the
+// terminal 100% write bypasses the throttle, always lands (D-03a) and fires
+// no progress webhook (A2). On an ERROR return nothing further is written:
+// the last throttled value stays frozen (D-06). The returned func waits,
+// bounded, for the stage webhooks still queued on the StageConverter branch
+// and is a no-op on every other branch.
 func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, correlationID string, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) (func(), error) {
 	if sconv, ok := conv.(convert.StageConverter); ok {
 		sink := &progressSink{
