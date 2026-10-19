@@ -238,7 +238,7 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1 WHERE id = $1`, id)
+			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1, stage = NULL, stage_index = NULL, stage_count = NULL WHERE id = $1`, id)
 		return err
 	})
 }
@@ -466,7 +466,7 @@ func nullableInterval(d time.Duration) any {
 func (r *Repo) RequeueStale(ctx context.Context, id uuid.UUID, reason string) error {
 	detail := map[string]any{"action": detailActionRecovery, "reason": reason}
 	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued' WHERE id = $1`, id)
+		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued', stage = NULL, stage_index = NULL, stage_count = NULL WHERE id = $1`, id)
 		return err
 	})
 }
