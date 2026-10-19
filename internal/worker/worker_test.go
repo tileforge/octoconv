@@ -826,7 +826,7 @@ func TestProgressThrottle(t *testing.T) {
 				{Pct: 10}, {Pct: 11}, {Pct: 12}, {Pct: 100},
 			},
 		}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
+		if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if conv.plainCalled {
@@ -853,7 +853,7 @@ func TestProgressThrottle(t *testing.T) {
 	t.Run("non-progress converter falls back to plain Convert unchanged", func(t *testing.T) {
 		repo := &spyProgressRepo{}
 		conv := &fakeNonProgressConverter{}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
+		if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if !conv.plainCalled {
@@ -867,7 +867,7 @@ func TestProgressThrottle(t *testing.T) {
 	t.Run("progress converter with throttling disabled (minInterval<=0) uses plain Convert", func(t *testing.T) {
 		repo := &spyProgressRepo{}
 		conv := &fakeProgressConverter{sourceSecs: 60, updates: []convert.ProgressUpdate{{Pct: 50}}}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 0, 0, false, "", nil, nil, 0); err != nil {
+		if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, "", 0, 0, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if !conv.plainCalled {
@@ -891,7 +891,7 @@ func TestProgressFreezeOnAbort(t *testing.T) {
 		updates:    []convert.ProgressUpdate{{Pct: 30}},
 		err:        errors.New("simulated mid-stream ffmpeg failure"),
 	}
-	err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), "", 2*time.Second, 1, false, "", nil, nil, 0)
+	_, err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), "", 2*time.Second, 1, false, "", nil, nil, 0)
 	if err == nil {
 		t.Fatal("runConvertWithOptionalProgress = nil error, want the simulated failure propagated")
 	}
@@ -934,7 +934,7 @@ func TestOCRBlankPageConvertSucceeds_OCRE05(t *testing.T) {
 	outPath := filepath.Join(dir, "out.txt")
 	repo := &spyProgressRepo{}
 
-	err := runConvertWithOptionalProgress(context.Background(), fakeBlankOCRConverter{}, "in.png", outPath, nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0)
+	_, err := runConvertWithOptionalProgress(context.Background(), fakeBlankOCRConverter{}, "in.png", outPath, nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0)
 	if err != nil {
 		t.Fatalf("runConvertWithOptionalProgress(blank-output OCR result) = %v, want nil (OCRE-05: blank page is a VALID success, not a failure)", err)
 	}
@@ -1069,7 +1069,7 @@ func TestProgressWebhookNeverEnqueues(t *testing.T) {
 		sourceSecs: 100,
 		updates:    []convert.ProgressUpdate{{Pct: 10}, {Pct: 50}, {Pct: 90}},
 	}
-	if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "http://example.invalid", delivr, []byte("s3cr3t"), 50*time.Millisecond); err != nil {
+	if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "http://example.invalid", delivr, []byte("s3cr3t"), 50*time.Millisecond); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
@@ -1267,7 +1267,7 @@ func TestPandocEmptyOutputSucceeds_SC4(t *testing.T) {
 	outPath := filepath.Join(dir, "out.html")
 	repo := &spyProgressRepo{}
 
-	err := runConvertWithOptionalProgress(context.Background(), fakeBlankPandocConverter{}, "in.md", outPath, nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0)
+	_, err := runConvertWithOptionalProgress(context.Background(), fakeBlankPandocConverter{}, "in.md", outPath, nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0)
 	if err != nil {
 		t.Fatalf("runConvertWithOptionalProgress(blank-output pandoc result) = %v, want nil (SC4: empty-but-valid output is done, not failed)", err)
 	}

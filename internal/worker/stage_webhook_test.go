@@ -206,7 +206,7 @@ func TestStageWebhooksArriveInStageOrder(t *testing.T) {
 		conv := failingRouteConverter{routeConverter{convert.OperationRender, "step", "png"}, 2}
 
 		start := time.Now()
-		err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond)
+		_, err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond)
 		if err == nil {
 			t.Fatal("runConvertWithOptionalProgress returned nil, want the engine error")
 		}
@@ -274,7 +274,7 @@ func TestStageBypassesTheThrottle(t *testing.T) {
 	d := &stageDeliveries{}
 	repo := &spyProgressRepo{}
 	conv := routeConverter{convert.OperationRender, "step", "png"}
-	if err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond); err != nil {
+	if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 	if len(repo.stages) != 4 {
@@ -287,7 +287,7 @@ func TestStageWebhookNeverEnqueues(t *testing.T) {
 	repo := &poisonedProgressRepo{}
 	d := &stageDeliveries{}
 	conv := routeConverter{convert.OperationRender, "step", "png"}
-	if err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond); err != nil {
+	if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.png", nil, repo, uuid.New(), "", 2*time.Second, 1, true, "https://example.invalid/hook", d, []byte("s3cr3t"), 200*time.Millisecond); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 	d.wait(t, 1)
@@ -483,4 +483,56 @@ func TestStageWebhooksOfOneAttemptPrecedeTheNext(t *testing.T) {
 	if got := log.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("webhooks = %v, want %v", got, want)
 	}
+}
+
+type stuckDeliverer struct{ release chan struct{} }
+
+func (d stuckDeliverer) Deliver(context.Context, string, []byte, int64, string) (int, error) {
+	<-d.release
+	return 200, nil
+}
+
+func TestStageDrainIsBounded(t *testing.T) {
+	t.Run("deliverer_ignores_its_timeout", func(t *testing.T) {
+		d := stuckDeliverer{release: make(chan struct{})}
+		defer close(d.release)
+		s := stageSink(d, "")
+		s.webhookTimeout = 40 * time.Millisecond
+		s.Stage(convert.StageUpdate{Stage: "guard", Index: 1, Count: 3})
+		s.Stage(convert.StageUpdate{Stage: "mesh", Index: 2, Count: 3})
+
+		drain := s.closeStages()
+		start := time.Now()
+		drain()
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("drain waited %v for a deliverer that never returns, want it bounded by the webhook timeout", elapsed)
+		}
+	})
+
+	t.Run("attempt_canceled", func(t *testing.T) {
+		d := stuckDeliverer{release: make(chan struct{})}
+		defer close(d.release)
+		ctx, cancel := context.WithCancel(context.Background())
+		s := stageSink(d, "")
+		s.ctx = ctx
+		s.webhookTimeout = time.Hour
+		s.Stage(convert.StageUpdate{Stage: "guard", Index: 1, Count: 3})
+
+		drain := s.closeStages()
+		cancel()
+		start := time.Now()
+		drain()
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("drain waited %v after the attempt was canceled", elapsed)
+		}
+	})
+
+	t.Run("no_stage_webhook", func(t *testing.T) {
+		s := stageSink(nil, "")
+		start := time.Now()
+		s.closeStages()()
+		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+			t.Fatalf("drain with no queue took %v", elapsed)
+		}
+	})
 }

@@ -38,7 +38,7 @@ func (c routeConverter) ConvertWithStages(_ context.Context, _, _ string, _ map[
 func TestStageBranchWritesNoPercent(t *testing.T) {
 	repo := &spyProgressRepo{}
 	conv := routeConverter{convert.OperationConvert, "step", "stl"}
-	if err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.stl", nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0); err != nil {
+	if _, err := runConvertWithOptionalProgress(context.Background(), conv, "in.step", "out.stl", nil, repo, uuid.New(), "", 0, 0, false, "", nil, nil, 0); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 	if len(repo.updates) != 0 {
@@ -83,7 +83,7 @@ func TestCADStageReachesTheJobRow(t *testing.T) {
 		t.Fatalf("MarkActive: %v", err)
 	}
 	conv := routeConverter{convert.OperationConvert, "step", "stl"}
-	if err := runConvertWithOptionalProgress(ctx, conv, "in.step", "out.stl", nil, repo, id, "", 0, 0, false, "", nil, nil, 0); err != nil {
+	if _, err := runConvertWithOptionalProgress(ctx, conv, "in.step", "out.stl", nil, repo, id, "", 0, 0, false, "", nil, nil, 0); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 	job, err := repo.Get(ctx, id)

@@ -66,7 +66,7 @@ func TestOCRProgressIntegration(t *testing.T) {
 		defer cancel()
 
 		inPath := filepath.Join("..", "convert", "testdata", "ocr", "multipage_image_only.pdf")
-		if err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", minInterval, minDeltaPct, false, "", nil, nil, 0); err != nil {
+		if _, err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", minInterval, minDeltaPct, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 
@@ -110,7 +110,7 @@ func TestOCRProgressIntegration(t *testing.T) {
 		defer cancel()
 
 		inPath := filepath.Join("..", "convert", "testdata", "ocr", "text_sample.png")
-		if err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", minInterval, minDeltaPct, false, "", nil, nil, 0); err != nil {
+		if _, err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", minInterval, minDeltaPct, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 
@@ -150,7 +150,7 @@ func TestOCRProgressIntegrationSingleOutput(t *testing.T) {
 	defer cancel()
 
 	inPath := filepath.Join("..", "convert", "testdata", "ocr", "text_sample.png")
-	if err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", 0, 0, false, "", nil, nil, 0); err != nil {
+	if _, err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", 0, 0, false, "", nil, nil, 0); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress: %v", err)
 	}
 

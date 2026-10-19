@@ -1188,6 +1188,7 @@ type progressSink struct {
 	webhookTimeout time.Duration
 
 	stageQueue chan []byte
+	stageDone  chan struct{}
 }
 
 // SourceDuration reports the probed source duration once, best-effort.
@@ -1225,7 +1226,8 @@ func (s *progressSink) queueStageWebhook(u convert.StageUpdate) {
 	}
 	if s.stageQueue == nil {
 		s.stageQueue = make(chan []byte, max(u.Count, 1))
-		go s.sendStageWebhooks(s.stageQueue)
+		s.stageDone = make(chan struct{})
+		go s.sendStageWebhooks(s.stageQueue, s.stageDone)
 	}
 	select {
 	case s.stageQueue <- body:
@@ -1233,7 +1235,8 @@ func (s *progressSink) queueStageWebhook(u convert.StageUpdate) {
 	}
 }
 
-func (s *progressSink) sendStageWebhooks(q <-chan []byte) {
+func (s *progressSink) sendStageWebhooks(q <-chan []byte, done chan<- struct{}) {
+	defer close(done)
 	for body := range q {
 		ctx, cancel := context.WithTimeout(context.Background(), s.webhookTimeout)
 		ts := time.Now().Unix()
@@ -1243,10 +1246,21 @@ func (s *progressSink) sendStageWebhooks(q <-chan []byte) {
 	}
 }
 
-func (s *progressSink) closeStages() {
-	if s.stageQueue != nil {
-		close(s.stageQueue)
-		s.stageQueue = nil
+func (s *progressSink) closeStages() func() {
+	if s.stageQueue == nil {
+		return func() {}
+	}
+	q, done := s.stageQueue, s.stageDone
+	close(q)
+	s.stageQueue, s.stageDone = nil, nil
+	return func() {
+		bound := time.NewTimer(time.Duration(len(q)+2) * s.webhookTimeout)
+		defer bound.Stop()
+		select {
+		case <-done:
+		case <-bound.C:
+		case <-s.ctx.Done():
+		}
 	}
 }
 
@@ -1315,7 +1329,7 @@ func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
 	}()
 }
 
-func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, correlationID string, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) error {
+func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, correlationID string, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) (func(), error) {
 	if sconv, ok := conv.(convert.StageConverter); ok {
 		sink := &progressSink{
 			ctx: ctx, repo: repo, jobID: jobID, correlationID: correlationID,
@@ -1323,12 +1337,13 @@ func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter,
 			webhookEnabled: webhookEnabled, callbackURL: callbackURL, webhookDelivr: webhookDelivr,
 			webhookSecret: webhookSecret, webhookTimeout: webhookTimeout,
 		}
-		defer sink.closeStages()
-		return sconv.ConvertWithStages(ctx, inPath, outPath, opts, sink)
+		err := sconv.ConvertWithStages(ctx, inPath, outPath, opts, sink)
+		return sink.closeStages(), err
 	}
+	noDrain := func() {}
 	pconv, ok := conv.(convert.ProgressConverter)
 	if !ok || minInterval <= 0 {
-		return conv.Convert(ctx, inPath, outPath, opts)
+		return noDrain, conv.Convert(ctx, inPath, outPath, opts)
 	}
 
 	sink := &progressSink{
@@ -1338,12 +1353,12 @@ func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter,
 		webhookSecret: webhookSecret, webhookTimeout: webhookTimeout,
 	}
 	if err := pconv.ConvertWithProgress(ctx, inPath, outPath, opts, sink); err != nil {
-		return err
+		return noDrain, err
 	}
 	// D-03a/A2: terminal 100% write bypasses the throttle entirely, always
 	// lands on a successful convert, and fires no progress webhook.
 	_ = repo.UpdateProgress(ctx, jobID, 100, nil)
-	return nil
+	return noDrain, nil
 }
 
 func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
@@ -1445,8 +1460,12 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// pass-through for every non-audio engine, so removing the
 	// always-audio-shaped wrapper here changes no externally observable
 	// behavior.
+	drainStages := func() {}
+	defer func() { drainStages() }()
 	convertFn := func() error {
-		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, job.CorrelationID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
+		drain, err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, job.CorrelationID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout)
+		drainStages = drain
+		if err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil

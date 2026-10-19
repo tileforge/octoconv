@@ -359,8 +359,8 @@ components:
         GET /v1/jobs/{id} always has the current state.
 
         A cad job sends one delivery on every stage change, with
-        progress_pct and eta_seconds null. The deliveries of one job leave
-        one at a time, in stage order. stage, stage_index and stage_count
+        progress_pct and eta_seconds null. The deliveries of one attempt
+        leave one at a time, in stage order. stage, stage_index and stage_count
         are present only in the deliveries of a cad job.
       properties:
         job_id:
