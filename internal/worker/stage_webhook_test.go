@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -231,6 +232,7 @@ func TestStageNeverWaitsForASlowCallback(t *testing.T) {
 	var reqCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&reqCount, 1)
+		_, _ = io.Copy(io.Discard, r.Body)
 		select {
 		case <-time.After(2 * time.Second):
 		case <-r.Context().Done():
