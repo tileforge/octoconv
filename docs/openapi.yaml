@@ -1115,8 +1115,9 @@ paths:
                   enum: ["true", "false"]
                   description: >-
                     When "true" and callback_url is set, the service also POSTs
-                    intermediate events to callback_url while the job runs; the
-                    body is ProgressWebhookEvent. Any other value, or no
+                    intermediate events to callback_url while the job runs, if
+                    its engine reports progress (a cad job reports its stage);
+                    the body is ProgressWebhookEvent. Any other value, or no
                     callback_url, sends none. Without callback_url the flag does
                     nothing and is not an error.
                 preset:
