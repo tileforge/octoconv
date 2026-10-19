@@ -1,7 +1,7 @@
 # Separate OctoConv web client
 
 ## Purpose and agreed scope
-The frontend belongs to a separate team and is optional in OctoConv installations. Keep the Go API independently buildable, testable and deployable. The web client keeps the approved teal/graphite Workspace, with Legacy removed. The destination GitHub repository is private in the tileforge organization; its final name is selected by the user before creation.
+The frontend belongs to a separate team and is optional in OctoConv installations. Keep the Go API independently buildable, testable and deployable. The web client keeps the approved teal/graphite Workspace, with Legacy removed. The destination GitHub repository is private tileforge/octoconv-ui; the user selected its name and visibility.
 
 ## Repository boundary
 - The new repository contains the contents of frontend/ at its root: React application, API client, Vite configuration, lockfile and frontend tests.
