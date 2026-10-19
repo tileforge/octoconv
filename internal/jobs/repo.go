@@ -699,11 +699,13 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
 		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
-		       progress_pct, eta_seconds, source_duration_seconds, correlation_id
+		       progress_pct, eta_seconds, source_duration_seconds, correlation_id,
+		       stage, stage_index, stage_count
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
 		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
-		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr)
+		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr,
+		&j.Stage, &j.StageIndex, &j.StageCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -748,6 +750,18 @@ func (r *Repo) UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *i
 	)
 	if err != nil {
 		return fmt.Errorf("update progress for job %s: %w", id, err)
+	}
+	return nil
+}
+
+func (r *Repo) UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE jobs SET stage = $2, stage_index = $3, stage_count = $4
+		WHERE id = $1 AND status = $5 AND (stage_index IS NULL OR stage_index < $3)`,
+		id, stage, index, count, StatusActive,
+	)
+	if err != nil {
+		return fmt.Errorf("update stage for job %s: %w", id, err)
 	}
 	return nil
 }

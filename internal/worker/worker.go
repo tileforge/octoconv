@@ -677,6 +677,7 @@ type convertRepo interface {
 	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
+	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error
 }
 
 // webhookEnqueuer is the narrow, interface-segregated subset of
@@ -1167,6 +1168,7 @@ func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, 
 type progressRepo interface {
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
+	UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) error
 }
 
 // progressWebhookDeliverer is the narrow subset of *webhook.Deliverer the
@@ -1225,6 +1227,10 @@ type progressSink struct {
 // SourceDuration reports the probed source duration once, best-effort.
 func (s *progressSink) SourceDuration(seconds float64) {
 	_ = s.repo.SetSourceDuration(s.ctx, s.jobID, seconds)
+}
+
+func (s *progressSink) Stage(u convert.StageUpdate) {
+	_ = s.repo.UpdateStage(s.ctx, s.jobID, u.Stage, u.Index, u.Count)
 }
 
 // Update applies the dual-gate throttle and, if it passes, persists the
@@ -1319,6 +1325,15 @@ func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
 // non-av-worker cmd passes webhookEnabled=false / webhookDelivr=nil, which
 // keeps the DB-write path byte-identical to before this plan.
 func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, correlationID string, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) error {
+	if sconv, ok := conv.(convert.StageConverter); ok {
+		sink := &progressSink{
+			ctx: ctx, repo: repo, jobID: jobID, correlationID: correlationID,
+			minInterval: minInterval, minDeltaPct: minDeltaPct,
+			webhookEnabled: webhookEnabled, callbackURL: callbackURL, webhookDelivr: webhookDelivr,
+			webhookSecret: webhookSecret, webhookTimeout: webhookTimeout,
+		}
+		return sconv.ConvertWithStages(ctx, inPath, outPath, opts, sink)
+	}
 	pconv, ok := conv.(convert.ProgressConverter)
 	if !ok || minInterval <= 0 {
 		return conv.Convert(ctx, inPath, outPath, opts)

@@ -157,6 +157,9 @@ func (r *pinRepo) UpdateProgress(_ context.Context, _ uuid.UUID, _ int, _ *int) 
 func (r *pinRepo) SetSourceDuration(_ context.Context, _ uuid.UUID, _ float64) error {
 	return nil
 }
+func (r *pinRepo) UpdateStage(_ context.Context, _ uuid.UUID, _ string, _, _ int) error {
+	return nil
+}
 
 // pinEnqueuer implements webhookEnqueuer, appending into the SAME shared
 // ordered log pinRepo writes to (see pinRepo's doc comment).

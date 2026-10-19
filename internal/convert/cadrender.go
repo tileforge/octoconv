@@ -28,6 +28,10 @@ func CADMeasurementsPath(outPath string) string {
 	return outPath + ".measurements.json"
 }
 
+func (c CADRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error {
+	return c.Convert(ctx, inPath, outPath, opts)
+}
+
 func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
 	parsed, err := CADOptsFromMap(opts)
 	if err != nil {

@@ -1299,6 +1299,11 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	// fabricated value ever being invented here.
 	resp["progress_pct"] = job.ProgressPct
 	resp["eta_seconds"] = job.EtaSeconds
+	if job.Engine == convert.EngineCAD {
+		resp["stage"] = job.Stage
+		resp["stage_index"] = job.StageIndex
+		resp["stage_count"] = job.StageCount
+	}
 
 	switch job.Status {
 	case jobs.StatusDone:

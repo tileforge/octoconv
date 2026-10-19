@@ -49,6 +49,8 @@ const (
 	cadStageRender   = "render"
 	cadStageDXF      = "dxf"
 	cadStageRsvg     = "rsvg"
+	cadStageInk      = "ink"
+	cadStageJudge    = "judge"
 	stlHeaderBytes   = 84
 	stlTriangleBytes = 50
 	stlBlockTriangle = 4096
@@ -136,6 +138,10 @@ func (c CADConverter) rsvgTimeout() time.Duration {
 }
 
 func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	return c.ConvertWithStages(ctx, inPath, outPath, opts, nil)
+}
+
+func (c CADConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error {
 	o, err := CADOptsFromMap(opts)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)
@@ -156,13 +162,17 @@ func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 	}
 
 	jobDir := filepath.Dir(outPath)
+	st := newCADStager(sink, OperationConvert, format, "stl")
+	st.enter(cadStageGuard)
 	if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
 		return err
 	}
+	st.enter(cadStageMesh)
 	verdict, err := c.meshStage(ctx, jobDir, format, inPath, outPath, o.Resolved().Quality, "")
 	if err != nil {
 		return err
 	}
+	st.enter(cadStageJudge)
 	n, _, err := judgeBinarySTL(outPath)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)

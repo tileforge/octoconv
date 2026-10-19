@@ -58,6 +58,9 @@ type Job struct {
 	ProgressPct           *int
 	EtaSeconds            *int
 	SourceDurationSeconds *float64
+	Stage                 *string
+	StageIndex            *int
+	StageCount            *int
 }
 
 // Input is a row of the job_inputs table.

@@ -39,6 +39,10 @@ type cadDXFDrawing struct {
 	verdict        cadVerdict
 }
 
+func (c CADDXFConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error {
+	return c.Convert(ctx, inPath, outPath, opts)
+}
+
 func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
 	parsed, err := CADOptsFromMap(opts)
 	if err != nil {
@@ -93,6 +97,10 @@ func (CADDXFRenderConverter) Operation() string { return OperationRender }
 
 func (CADDXFRenderConverter) Pairs() []Pair {
 	return []Pair{{From: "dxf", To: "png"}}
+}
+
+func (c CADDXFRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error {
+	return c.Convert(ctx, inPath, outPath, opts)
 }
 
 func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
