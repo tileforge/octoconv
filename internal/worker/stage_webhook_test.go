@@ -536,3 +536,24 @@ func TestStageDrainIsBounded(t *testing.T) {
 		}
 	})
 }
+
+type refusingStageRepo struct {
+	spyProgressRepo
+	err error
+}
+
+func (r *refusingStageRepo) UpdateStage(context.Context, uuid.UUID, string, int, int) error {
+	return r.err
+}
+
+func TestStageWebhookOnlyForAStageTheRowRecorded(t *testing.T) {
+	d := &stageDeliveries{}
+	s := stageSink(d, "")
+	s.repo = &refusingStageRepo{err: errors.New("postgres is down")}
+	s.Stage(convert.StageUpdate{Stage: "guard", Index: 1, Count: 3})
+	s.closeStages()()
+
+	if n := len(d.snapshot()); n != 0 {
+		t.Fatalf("deliveries = %d for a stage the job row never recorded, want 0", n)
+	}
+}
