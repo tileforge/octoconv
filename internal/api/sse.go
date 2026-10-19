@@ -50,6 +50,19 @@ type sseProgressPayload struct {
 	EtaSeconds  *int   `json:"eta_seconds"`
 }
 
+type sseCADProgressPayload struct {
+	Status      string  `json:"status"`
+	ProgressPct *int    `json:"progress_pct"`
+	EtaSeconds  *int    `json:"eta_seconds"`
+	Stage       *string `json:"stage"`
+	StageIndex  *int    `json:"stage_index"`
+	StageCount  *int    `json:"stage_count"`
+}
+
+func stageCatchUp(last sseSnapshot, job *jobs.Job) []sseCADProgressPayload {
+	return nil
+}
+
 // emit writes one named SSE event carrying the null-aware progress payload
 // and flushes immediately (no client-visible buffering delay).
 func emit(rc *http.ResponseController, w http.ResponseWriter, event string, job *jobs.Job) error {
