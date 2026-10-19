@@ -2,8 +2,6 @@
 /bin/
 *.test
 .DS_Store
-frontend/node_modules
-frontend/dist
 /.planning/
 # Python bytecode from scripts/fixtures generators
 __pycache__/

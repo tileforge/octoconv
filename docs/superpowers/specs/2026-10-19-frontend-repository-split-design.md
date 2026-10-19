@@ -28,3 +28,15 @@ Success means both repositories can be checked out and verified independently; i
 
 ## Failure and recovery
 Do not remove the backend copy until the separate repository exists and is verified. If export, remote creation or publication fails, preserve the backend copy and local export. Existing feature commits and worktree remain available. No force pushes, source history rewriting, deletion of the previous branch or automatic merge is required.
+
+## Migration evidence (2026-10-19)
+- Private destination: https://github.com/tileforge/octoconv-ui; local checkout: /Users/apaderin/dev/octoconv-ui.
+- Source commit: 8c0aaa59092f3bfaa8123b5a7b702c0368d0fcd9. Split commit: e2e17d12ba057f2fdbdc665a9e5d47c7a1363d49. Source frontend and split root tree both equal 783aed46565ab534c3176e88fae6edb28c6c5388.
+- Published UI head after the README clarification: 8e2623f (CI verified the same code/container at bc83b00c4f672d203b0fc9b27c03e6b90df99be2). The remote is PRIVATE and contains the frontend history only.
+- UI verification: 57 tests, production build, Docker image build, 7 container/proxy tests, Compose config validation and Kubernetes client-side manifest parsing passed. No Kubernetes resources were applied.
+- Manual CI: https://github.com/tileforge/octoconv-ui/actions/runs/39248568772 completed successfully. Workflow creation used the connected GitHub app after OAuth rejected the workflow path; no credential permissions were expanded and no force push was used.
+- Independent review identified the remaining Go alias cross-source test and default frontend final-gate step. Both were removed from the backend boundary, preserving separate alias tests and adding CLI regression checks. No production API change.
+- Browser dev preview now runs from the independent UI checkout on 127.0.0.1:5174. No worker/S3 conversion or production deployment is claimed by this migration.
+
+### Backend verification limitation
+`go build ./...`, coded-error boundary checks, format alias tests and backend-only gate CLI regressions passed. Full `go test ./...` completed with one failure in `TestLibreOfficeConverter_TimeoutKillsRealProcess` (soffice.bin did not appear). A targeted rerun on an unchanged archive of the source commit reproduced the same failure. Other results were 4833 passing test/subtest events and 232 conditional skips. Live worker/S3 acceptance is outside this verification. The LibreOffice failure was left visible rather than weakened or hidden.
