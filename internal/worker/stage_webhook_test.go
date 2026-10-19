@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -15,8 +17,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hibiken/asynq"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/webhook"
 )
 
@@ -344,5 +349,138 @@ func TestProgressWebhookBodyHasNoStageKeys(t *testing.T) {
 	got := capture.wait(t)
 	if keys, want := sortedKeys(got), []string{"eta_seconds", "event", "job_id", "progress_pct"}; !slices.Equal(keys, want) {
 		t.Fatalf("progress body keys = %v, want %v", keys, want)
+	}
+}
+
+type orderedLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *orderedLog) add(e string) {
+	l.mu.Lock()
+	l.events = append(l.events, e)
+	l.mu.Unlock()
+}
+
+func (l *orderedLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.events)
+}
+
+type slowStageDeliverer struct {
+	log   *orderedLog
+	delay time.Duration
+}
+
+func (d *slowStageDeliverer) Deliver(_ context.Context, _ string, body []byte, _ int64, _ string) (int, error) {
+	time.Sleep(d.delay)
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return 0, err
+	}
+	d.log.add(fmt.Sprint(m["stage"]))
+	return 200, nil
+}
+
+type orderedEnqueuer struct{ log *orderedLog }
+
+func (e *orderedEnqueuer) EnqueueWebhookDeliver(context.Context, uuid.UUID) error {
+	e.log.add("completion")
+	return nil
+}
+
+type attemptRepo struct {
+	*cadOutRepo
+	job *jobs.Job
+}
+
+func (r attemptRepo) Get(context.Context, uuid.UUID) (*jobs.Job, error) { return r.job, nil }
+
+type scriptedStageConverter struct {
+	routeConverter
+	attempts *int
+	failures []error
+	stopAt   []int
+}
+
+func (c scriptedStageConverter) ConvertWithStages(_ context.Context, _, outPath string, _ map[string]any, sink convert.StageSink) error {
+	n := *c.attempts
+	*c.attempts++
+	route, _ := convert.CADStages(c.op, c.from, c.to)
+	stop := len(route)
+	var failure error
+	if n < len(c.failures) {
+		stop, failure = c.stopAt[n], c.failures[n]
+	}
+	for i, stage := range route[:stop] {
+		sink.Stage(convert.StageUpdate{Stage: stage, Index: i + 1, Count: len(route)})
+	}
+	if failure != nil {
+		return failure
+	}
+	return os.WriteFile(outPath, []byte("stl-bytes"), 0o600)
+}
+
+func newStageOrderRunner(t *testing.T, conv scriptedStageConverter, log *orderedLog) (*Runner, *jobs.Job) {
+	t.Helper()
+	inKey := "uploads/77-review/0-in.step"
+	store, _ := newFakeS3(t, map[string][]byte{inKey: []byte("model-bytes")}, nil)
+	registry := convert.NewRegistry()
+	registry.Register(conv)
+	job := &jobs.Job{
+		ID: uuid.New(), ClientID: uuid.New(), Engine: convert.EngineCAD, Operation: convert.OperationConvert,
+		SourceFormat: "step", TargetFormat: "stl", CallbackURL: "https://example.invalid/hook", ProgressWebhook: true,
+	}
+	repo := attemptRepo{cadOutRepo: &cadOutRepo{inputs: []jobs.Input{{Ordinal: 0, ObjectKey: inKey, Filename: "in.step", Format: "step"}}}, job: job}
+	h := &Handler{repo: repo, store: store, registry: registry, engineTimout: 30 * time.Second, enqueuer: &orderedEnqueuer{log: log}}
+	h.processFn = h.process
+	h.SetProgressWebhook(&slowStageDeliverer{log: log, delay: 80 * time.Millisecond}, []byte("s3cr3t"), time.Second)
+	return NewRunner(h, CADDescriptor), job
+}
+
+func TestCompletionWebhookNeverOvertakesStageWebhooks(t *testing.T) {
+	cases := []struct {
+		name     string
+		failures []error
+		stopAt   []int
+		want     []string
+	}{
+		{"done", nil, nil, []string{"guard", "mesh", "judge", "completion"}},
+		{"failed", []error{fmt.Errorf("%w: engine refused the model", asynq.SkipRetry)}, []int{2}, []string{"guard", "mesh", "completion"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &orderedLog{}
+			attempts := 0
+			conv := scriptedStageConverter{routeConverter{convert.OperationConvert, "step", "stl"}, &attempts, tc.failures, tc.stopAt}
+			r, job := newStageOrderRunner(t, conv, log)
+
+			_ = r.Handle(context.Background(), newTask(t, queue.TypeCADJob, job.ID))
+
+			if got := log.snapshot(); !slices.Equal(got, tc.want) {
+				t.Fatalf("webhooks when Handle returned = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStageWebhooksOfOneAttemptPrecedeTheNext(t *testing.T) {
+	log := &orderedLog{}
+	attempts := 0
+	conv := scriptedStageConverter{routeConverter{convert.OperationConvert, "step", "stl"}, &attempts, []error{errors.New("transient blip")}, []int{2}}
+	r, job := newStageOrderRunner(t, conv, log)
+
+	if err := r.Handle(context.Background(), newTask(t, queue.TypeCADJob, job.ID)); err == nil {
+		t.Fatal("first attempt returned nil, want the transient error")
+	}
+	if err := r.Handle(context.Background(), newTask(t, queue.TypeCADJob, job.ID)); err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+
+	want := []string{"guard", "mesh", "guard", "mesh", "judge", "completion"}
+	if got := log.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("webhooks = %v, want %v", got, want)
 	}
 }
