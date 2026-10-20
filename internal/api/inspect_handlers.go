@@ -383,7 +383,8 @@ type inspectResponse struct {
 // s.storage.Upload or s.repo.Create.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// 1. Accept.
-	//
+	rc, start := s.armIntakeDeadline(w)
+
 	// T-SLF-02/T-SLF-03 (PR #9 findings at inspectgate.go:120 and
 	// inspect_handlers.go:114): body intake happens BEFORE this handler
 	// takes the concurrency-gate slot AND before the D-06 mechanism-1 work
@@ -420,7 +421,6 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc, start := s.armIntakeDeadline(w)
 	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.inspectMaxUploadBytes)
 	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
 	if r.MultipartForm != nil {

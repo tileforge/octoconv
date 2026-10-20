@@ -20,7 +20,9 @@ func (r *intakeReader) Read(p []byte) (int, error) {
 	n, err := r.body.Read(p)
 	if n > 0 {
 		r.received += int64(n)
-		_ = r.setDeadline(r.deadline())
+		if err == nil {
+			_ = r.setDeadline(r.deadline())
+		}
 	}
 	return n, err
 }
