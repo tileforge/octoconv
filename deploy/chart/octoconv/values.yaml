@@ -49,10 +49,16 @@ api:
   # no worker carries -- do not lower memory below this starting point
   # without re-running the live gate; a migration failing mid-startup under
   # memory pressure is a worse failure mode than a worker OOM.
+  spill:
+    mountPath: "/var/tmp/octoconv"
+    sizeLimit: "3837788160"
   resources:
+    requests:
+      ephemeralStorage: "3972005888"
     limits:
       cpu: "2"
       memory: "1Gi"
+      ephemeralStorage: "3972005888"
 
 worker:
   image:
