@@ -45,8 +45,45 @@ func newSlotServer(t *testing.T, cfg Config) (*signalPreAdmitRepo, *Server, *htt
 	t.Helper()
 	repo := &signalPreAdmitRepo{fakeRepo: &fakeRepo{}, hit: make(chan struct{})}
 	cfg.InspectMaxConcurrent = 1
-	srv, ts := newIntakeServerWith(t, repo, &fakeStorage{}, cfg, 2*time.Second, 1<<30)
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
+	srv.intakeWindow = 2 * time.Second
+	srv.intakeMinRate = 1 << 30
+	ts := httptest.NewUnstartedServer(srv.Routes())
+	ts.Config.ReadHeaderTimeout = 10 * time.Second
+	ts.Start()
+	t.Cleanup(func() {
+		closed := make(chan struct{})
+		go func() {
+			ts.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(10 * time.Second):
+			t.Error("the server did not shut down within 10s: a handler never returned")
+		}
+	})
 	return repo, srv, ts
+}
+
+func inspectWithin(t *testing.T, srv *Server, filename string, data []byte) (int, []byte) {
+	t.Helper()
+	body, ct := multipartBody(t, filename, "", data)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/inspect", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.Routes().ServeHTTP(rec, req)
+	}()
+	select {
+	case <-done:
+		return rec.Code, rec.Body.Bytes()
+	case <-time.After(5 * time.Second):
+		t.Fatal("B's handler did not return within 5s")
+		return 0, nil
+	}
 }
 
 func stallAfterForm(t *testing.T, ts *httptest.Server, data []byte) (net.Conn, *bufio.Reader) {
@@ -118,7 +155,7 @@ func TestInspectReleasesTheAnalysisSlotBeforeTheDiscardRead(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	bStart := time.Now()
-	bStatus, bBody := doInspect(t, srv, "b.png", pngBytesFixture())
+	bStatus, bBody := inspectWithin(t, srv, "b.png", pngBytesFixture())
 	t.Logf("B while A stalls after its form: status %d after %v", bStatus, time.Since(bStart))
 	if bStatus != http.StatusOK {
 		t.Errorf("B got %d, want 200: A's discard read holds the analysis slot: %.300s", bStatus, bBody)
@@ -174,7 +211,7 @@ func TestInspectRemovesTheSpillBeforeTheDiscardRead(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	bStatus, bBody := doInspect(t, srv, "b.png", pngBytesFixture())
+	bStatus, bBody := inspectWithin(t, srv, "b.png", pngBytesFixture())
 	if bStatus != http.StatusOK {
 		t.Fatalf("B got %d, want 200: %.300s", bStatus, bBody)
 	}
