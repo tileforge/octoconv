@@ -53,6 +53,7 @@ const (
 	// schema while bounding the DoS surface of an oversized field.
 	maxOptsBytes                      = 4096
 	maxCallbackURLBytes               = 2048
+	maxInputFilenameBytes             = 255
 	createIntakeMaxConcurrent         = 8
 	createIntakeBusyRetryAfterSeconds = 3
 	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
@@ -173,6 +174,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	if len(r.FormValue(formFieldCallbackURL)) > maxCallbackURLBytes {
 		writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "callback_url field too large")
 		return
+	}
+	if r.MultipartForm != nil {
+		if fhs := r.MultipartForm.File[formFieldFile]; len(fhs) > 0 && len(rawPartFilename(fhs[0])) > maxInputFilenameBytes {
+			writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "file name too long")
+			return
+		}
 	}
 
 	// preset, target, and opts are read up front so the D-01 mutual-

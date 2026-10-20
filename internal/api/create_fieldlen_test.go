@@ -166,3 +166,9 @@ func TestCreateRefusesAnOverlongInputFilename(t *testing.T) {
 		})
 	}
 }
+
+func TestInputFilenameBoundMatchesTheJobsRule(t *testing.T) {
+	if got := maxInputFilenameLength(t); maxInputFilenameBytes != got {
+		t.Errorf("maxInputFilenameBytes = %d, jobs.SafeInputFilename admits names up to %d bytes", maxInputFilenameBytes, got)
+	}
+}
