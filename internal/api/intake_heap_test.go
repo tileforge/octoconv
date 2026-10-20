@@ -270,3 +270,25 @@ func TestNoFormMemoryOutlivesTheIntakeSlot(t *testing.T) {
 		}
 	})
 }
+
+func TestDropMultipartFormLeavesNothingReachable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	body, ct := multipartBody(t, "in.md", "html", paddedMarkdown(multipartInMemoryBudget+1<<20))
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", body)
+	req.Header.Set("Content-Type", ct)
+	if err := req.ParseMultipartForm(multipartInMemoryBudget); err != nil {
+		t.Fatal(err)
+	}
+	if len(spillFiles(t, dir)) == 0 || req.MultipartForm == nil || req.Form == nil || req.PostForm == nil {
+		t.Fatalf("the fixture did not spill and set the form: spill %v", spillFiles(t, dir))
+	}
+	dropMultipartForm(req)
+	if left := spillFiles(t, dir); len(left) != 0 {
+		t.Errorf("%d spill files outlived dropMultipartForm: %v", len(left), left)
+	}
+	if req.MultipartForm != nil || req.Form != nil || req.PostForm != nil {
+		t.Errorf("dropMultipartForm left MultipartForm %v, Form %v, PostForm %v reachable from the request", req.MultipartForm != nil, req.Form != nil, req.PostForm != nil)
+	}
+	dropMultipartForm(req)
+}
