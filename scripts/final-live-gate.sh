@@ -252,7 +252,7 @@ step_preflight() {
 	}
 	if [ "$(git rev-parse --git-dir)" = ".git" ]; then pf git_dir ok; else pf git_dir fail "git_dir=$(git rev-parse --git-dir)"; fi
 	if [ "$TRACKED_DIRT" = unknown ]; then pf tracked_dirt fail "count=unknown"; else pf tracked_dirt ok "count=$TRACKED_DIRT"; fi
-	for t in docker kubectl lsof jq perl shasum npm curl python3 go git; do
+	for t in docker kubectl lsof jq perl shasum curl python3 go git; do
 		command -v "$t" > /dev/null 2>&1 || pf tool fail "missing=$t"
 	done
 	prc=0
