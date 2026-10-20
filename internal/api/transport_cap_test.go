@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -496,64 +497,98 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 	}
 }
 
+type atomicCapStorage struct {
+	*fakeStorage
+	bytes   atomic.Int64
+	uploads atomic.Int32
+}
+
+func (s *atomicCapStorage) Upload(_ context.Context, _ string, r io.Reader, _ int64, _ string) error {
+	n, err := io.Copy(io.Discard, r)
+	s.bytes.Add(n)
+	s.uploads.Add(1)
+	return err
+}
+
 func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("streams a request of the largest admissible STL over a paced connection")
 	}
 	window := intakeReadDeadline / 10
 	minRate := intakeMinBytesPerSecond * 10
-	_, ts := newIntakeServer(t, Config{
+	cfg := Config{
 		MaxUploadBytes:        chartLiteral(t, "MAX_UPLOAD_BYTES"),
 		InspectMaxUploadBytes: chartLiteral(t, "INSPECT_MAX_UPLOAD_BYTES"),
-	}, window, minRate)
+	}
 	fileName := transportCapFileName(maxInputFilenameLength(t), "stl")
-
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	file, size := largestAdmissibleSTL()
-	go func() {
-		pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file))
-	}()
 	const rate = 25000000
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/inspect", &pacedReader{r: pr, rate: rate, chunk: 256 << 10})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	start := time.Now()
-	resp, err := ts.Client().Do(authed(req))
-	elapsed := time.Since(start)
-	_ = pr.Close()
-	t.Logf("%d-byte STL at %d B/s (20 Mbit/s with time scaled down by 10) against a %v window and %d B/s: %v", size, rate, window, minRate, elapsed)
-	if err != nil {
-		t.Fatalf("inspect over a paced connection failed after %v: %v", elapsed, err)
-	}
-	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("inspect over a paced connection: status = %d after %v, want 200; body=%.300s", resp.StatusCode, elapsed, raw)
-	}
-	var rep inspectResponse
-	if err := json.Unmarshal(raw, &rep); err != nil {
-		t.Fatalf("decode inspect body: %v; body=%.300s", err, raw)
-	}
-	found := false
-	for _, o := range rep.Operations {
-		if o.Engine != convert.EngineCAD || o.Operation != convert.OperationRender || o.Target != "png" {
-			continue
+
+	paced := func(t *testing.T, ts *httptest.Server, path string) (int, []byte, int64, time.Duration) {
+		t.Helper()
+		pr, pw := io.Pipe()
+		mw := multipart.NewWriter(pw)
+		file, size := largestAdmissibleSTL()
+		go func() {
+			pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file))
+		}()
+		req, err := http.NewRequest(http.MethodPost, ts.URL+path, &pacedReader{r: pr, rate: rate, chunk: 256 << 10})
+		if err != nil {
+			t.Fatal(err)
 		}
-		found = true
-		if !o.Available || o.MaxBytes != int64(convert.CADMaxSTLBytes) {
-			t.Errorf("offer %+v: want Available true and MaxBytes %d", o, int64(convert.CADMaxSTLBytes))
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		start := time.Now()
+		resp, err := ts.Client().Do(authed(req))
+		elapsed := time.Since(start)
+		_ = pr.Close()
+		t.Logf("%s: %d-byte STL at %d B/s (20 Mbit/s with time scaled down by 10) against a %v window and %d B/s: %v", path, size, rate, window, minRate, elapsed)
+		if err != nil {
+			t.Fatalf("%s over a paced connection failed after %v: %v", path, elapsed, err)
 		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed <= window {
+			t.Errorf("the upload took %v, want more than the %v window", elapsed, window)
+		}
+		return resp.StatusCode, raw, size, elapsed
 	}
-	if !found {
-		t.Errorf("no cad render png offer; operations=%+v", rep.Operations)
-	}
-	if elapsed <= window {
-		t.Errorf("the upload took %v, want more than the %v window", elapsed, window)
-	}
+
+	t.Run("/v1/jobs", func(t *testing.T) {
+		store := &atomicCapStorage{fakeStorage: &fakeStorage{}}
+		_, ts := newIntakeServerWith(t, &fakeRepo{}, store, cfg, window, minRate)
+		status, raw, size, elapsed := paced(t, ts, "/v1/jobs")
+		if status != http.StatusAccepted {
+			t.Fatalf("create over a paced connection: status = %d after %v, want 202; body=%.300s", status, elapsed, raw)
+		}
+		if store.uploads.Load() != 1 || store.bytes.Load() != size {
+			t.Errorf("uploads = %d, uploaded %d bytes, want 1 upload of %d bytes", store.uploads.Load(), store.bytes.Load(), size)
+		}
+	})
+
+	t.Run("/v1/inspect", func(t *testing.T) {
+		_, ts := newIntakeServer(t, cfg, window, minRate)
+		status, raw, _, elapsed := paced(t, ts, "/v1/inspect")
+		if status != http.StatusOK {
+			t.Fatalf("inspect over a paced connection: status = %d after %v, want 200; body=%.300s", status, elapsed, raw)
+		}
+		var rep inspectResponse
+		if err := json.Unmarshal(raw, &rep); err != nil {
+			t.Fatalf("decode inspect body: %v; body=%.300s", err, raw)
+		}
+		found := false
+		for _, o := range rep.Operations {
+			if o.Engine != convert.EngineCAD || o.Operation != convert.OperationRender || o.Target != "png" {
+				continue
+			}
+			found = true
+			if !o.Available || o.MaxBytes != int64(convert.CADMaxSTLBytes) {
+				t.Errorf("offer %+v: want Available true and MaxBytes %d", o, int64(convert.CADMaxSTLBytes))
+			}
+		}
+		if !found {
+			t.Errorf("no cad render png offer; operations=%+v", rep.Operations)
+		}
+	})
 }

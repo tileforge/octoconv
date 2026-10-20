@@ -264,17 +264,11 @@ func TestInspectIntakeCreditsBytesReturnedNotRequested(t *testing.T) {
 	}
 }
 
-func TestInspectIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
-	raw, err := os.ReadFile(specPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var node any
-	if err := yaml.Unmarshal(raw, &node); err != nil {
-		t.Fatalf("decode %s: %v", specPath, err)
-	}
+func openAPIString(t *testing.T, doc any, keys ...string) string {
+	t.Helper()
+	node := doc
 	walked := "$"
-	for _, key := range []string{"paths", "/v1/inspect", "post", "responses", "400", "description"} {
+	for _, key := range keys {
 		m, ok := node.(map[string]any)
 		if !ok {
 			t.Fatalf("%s: %s is %T, not a mapping", specPath, walked, node)
@@ -285,21 +279,39 @@ func TestInspectIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
 			t.Fatalf("%s: %s is missing", specPath, walked)
 		}
 	}
-	description, ok := node.(string)
+	s, ok := node.(string)
 	if !ok {
 		t.Fatalf("%s: %s is %T, not a string", specPath, walked, node)
+	}
+	return s
+}
+
+func TestIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
 	}
 	if intakeReadDeadline%time.Second != 0 || intakeMinBytesPerSecond%(1<<20) != 0 {
 		t.Fatalf("intakeReadDeadline %v is not whole seconds or intakeMinBytesPerSecond %d is not whole MiB", intakeReadDeadline, intakeMinBytesPerSecond)
 	}
 	w := int64(intakeReadDeadline / time.Second)
 	r := intakeMinBytesPerSecond >> 20
-	for _, want := range []string{
-		fmt.Sprintf("The body has %d s, plus one second for every %d MiB received so far, to arrive", w, r),
-		fmt.Sprintf("a body that falls below %d MiB/s once its first %d s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)", r, w),
-	} {
-		if !strings.Contains(description, want) {
-			t.Errorf("%s: %s does not state %q; it reads %q", specPath, walked, want, description)
+	for _, path := range []string{"/v1/inspect", "/v1/jobs"} {
+		description := openAPIString(t, doc, "paths", path, "post", "responses", "400", "description")
+		for _, want := range []string{
+			fmt.Sprintf("The body has %d s, plus one second for every %d MiB received so far, to arrive", w, r),
+			fmt.Sprintf("a body that falls below %d MiB/s once its first %d s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)", r, w),
+		} {
+			if !strings.Contains(description, want) {
+				t.Errorf("%s: the 400 of POST %s does not state %q; it reads %q", specPath, path, want, description)
+			}
 		}
+	}
+	if description := openAPIString(t, doc, "paths", "/v1/jobs", "post", "responses", "429", "description"); !strings.Contains(description, "intake_busy") {
+		t.Errorf("%s: the 429 of POST /v1/jobs does not name intake_busy; it reads %q", specPath, description)
 	}
 }
