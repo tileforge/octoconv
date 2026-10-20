@@ -4,25 +4,25 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
-ALL_STEPS=(preflight ci-local tectonic sandbox cad frontend)
+ALL_STEPS=(preflight ci-local tectonic sandbox cad)
 FLOOR_KIB=6291456
 BUDGET_S=540
 D19_QUIET_LOAD=8
 ROW_QUIET_LOAD=11
 CHECK_PORTS="18090 8091 9100 9101 9190 9191 5434 6379 8980"
 SANDBOX_CLASSES="image pandoc ocr av audio html probe document cad"
-OUTPUT_NAMES="76-11-final-gate.txt 76-11-sandbox-liveproof.txt 76-11-liveproof.txt 76-11-liveproof-load.txt 76-11-liveproof-console.txt 76-11-liveproof-rerun.txt 76-11-liveproof-rerun-load.txt 76-11-liveproof-rerun-console.txt 76-11-frontend.txt 76-11-tectonic-worker.log 76-11-watchdog.txt"
+OUTPUT_NAMES="76-11-final-gate.txt 76-11-sandbox-liveproof.txt 76-11-liveproof.txt 76-11-liveproof-load.txt 76-11-liveproof-console.txt 76-11-liveproof-rerun.txt 76-11-liveproof-rerun-load.txt 76-11-liveproof-rerun-console.txt 76-11-tectonic-worker.log 76-11-watchdog.txt"
 OVERRIDE_FILE="$ROOT/docker-compose.override.yml"
 E2E_PORTS_FILE="$ROOT/docker-compose.e2e-ports.yml"
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 usage() {
-	echo "usage: scripts/final-live-gate.sh --evidence-dir DIR [--steps preflight,ci-local,tectonic,sandbox,cad,frontend]" >&2
+	echo "usage: scripts/final-live-gate.sh --evidence-dir DIR [--steps preflight,ci-local,tectonic,sandbox,cad]" >&2
 	exit 64
 }
 
 EVD=""
-STEPS_ARG="preflight,ci-local,tectonic,sandbox,cad,frontend"
+STEPS_ARG="preflight,ci-local,tectonic,sandbox,cad"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--evidence-dir)
@@ -252,7 +252,7 @@ step_preflight() {
 	}
 	if [ "$(git rev-parse --git-dir)" = ".git" ]; then pf git_dir ok; else pf git_dir fail "git_dir=$(git rev-parse --git-dir)"; fi
 	if [ "$TRACKED_DIRT" = unknown ]; then pf tracked_dirt fail "count=unknown"; else pf tracked_dirt ok "count=$TRACKED_DIRT"; fi
-	for t in docker kubectl lsof jq perl shasum npm curl python3 go git; do
+	for t in docker kubectl lsof jq perl shasum curl python3 go git; do
 		command -v "$t" > /dev/null 2>&1 || pf tool fail "missing=$t"
 	done
 	prc=0
@@ -671,46 +671,6 @@ step_cad() {
 	return 0
 }
 
-step_frontend() {
-	local f="$EVD/76-11-frontend.txt" rc_ci=0 rc_t=-1 rc_b=-1 lock=0 tl tf ok=1
-	STEP_TRANSCRIPT=76-11-frontend.txt
-	echo "== npm --prefix frontend ci ==" > "$f"
-	bg_run tmo 1800 env NO_COLOR=1 npm --prefix frontend ci >> "$f" 2>&1 || rc_ci=$?
-	echo "rc=$rc_ci" >> "$f"
-	[ "$STOPPED" = 0 ] || return 2
-	if [ "$rc_ci" = 0 ]; then
-		echo "== npm --prefix frontend test ==" >> "$f"
-		rc_t=0
-		bg_run tmo 1800 env NO_COLOR=1 npm --prefix frontend test >> "$f" 2>&1 || rc_t=$?
-		echo "rc=$rc_t" >> "$f"
-		[ "$STOPPED" = 0 ] || return 2
-	fi
-	if [ "$rc_t" = 0 ]; then
-		echo "== npm --prefix frontend run build ==" >> "$f"
-		rc_b=0
-		bg_run tmo 1800 env NO_COLOR=1 npm --prefix frontend run build >> "$f" 2>&1 || rc_b=$?
-		echo "rc=$rc_b" >> "$f"
-		[ "$STOPPED" = 0 ] || return 2
-	fi
-	git diff --quiet HEAD -- frontend/package.json frontend/package-lock.json || lock=1
-	tl=$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$f" | grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+ passed' | tail -1 || true)
-	tf=$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$f" | grep -E '^[[:space:]]*(Tests|Test Files)[[:space:]]' | grep -c 'failed' || true)
-	[ "$rc_ci" = 0 ] && [ "$rc_t" = 0 ] && [ "$rc_b" = 0 ] || ok=0
-	[ -n "$tl" ] || ok=0
-	[ "$tf" = 0 ] || ok=0
-	[ "$lock" = 0 ] || ok=0
-	ev "FRONTEND,npm_ci_rc=$rc_ci,test_rc=$rc_t,build_rc=$rc_b,vitest=$(san "$(echo "$tl" | sed 's/^[[:space:]]*//')"),failed_summary_lines=$tf,lockfile_changed=$lock,result=$([ "$ok" = 1 ] && echo ok || echo fail)"
-	if [ "$ok" = 1 ]; then
-		STEP_RC=0
-		return 0
-	fi
-	STEP_RC=$rc_ci
-	[ "$STEP_RC" != 0 ] || STEP_RC=$rc_t
-	[ "$STEP_RC" -gt 0 ] 2> /dev/null || STEP_RC=$rc_b
-	[ "$STEP_RC" -gt 0 ] 2> /dev/null || STEP_RC=1
-	return 1
-}
-
 for name in "${ALL_STEPS[@]}"; do
 	if ! selected "$name"; then
 		ev "STEP,name=$name,rc=na,result=NOT_RUN,started_utc=na,ended_utc=na,transcript=na"
@@ -738,7 +698,6 @@ for name in "${ALL_STEPS[@]}"; do
 	tectonic) step_tectonic || r=$? ;;
 	sandbox) step_sandbox || r=$? ;;
 	cad) step_cad || r=$? ;;
-	frontend) step_frontend || r=$? ;;
 	esac
 	ended=$(utc)
 	if [ "$STOPPED" = 1 ]; then
@@ -785,7 +744,7 @@ CODE=0
 if [ "$FC" -gt 0 ] || [ "$VEQ" = 0 ] || [ "$TRACKED_DIRT" != 0 ] || [ "$DIRT_END" != 0 ]; then
 	RESULT=FAIL
 	CODE=1
-elif [ "$STOPPED" = 1 ] || [ "$NRC" -gt 0 ] || [ "$P" != 6 ]; then
+elif [ "$STOPPED" = 1 ] || [ "$NRC" -gt 0 ] || [ "$P" != "${#ALL_STEPS[@]}" ]; then
 	RESULT=INCOMPLETE
 	CODE=2
 else
@@ -798,5 +757,5 @@ if [ "$STOPPED" = 1 ]; then
 	esac
 fi
 ev "VERDICT,fail_steps=$FC,not_run=$NRC,volumes_equal=$VEQ,tracked_dirt=$TRACKED_DIRT,tracked_dirt_end=$DIRT_END,stopped=$STOPPED,exit=$CODE"
-ev "SUMMARY,result=$RESULT,commit=$COMMIT,steps=6,pass=$P,fail=$FC,not_run=$NRC"
+ev "SUMMARY,result=$RESULT,commit=$COMMIT,steps=${#ALL_STEPS[@]},pass=$P,fail=$FC,not_run=$NRC"
 exit "$CODE"

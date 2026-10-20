@@ -130,7 +130,6 @@ internal/
   envcfg/ e2e/        — env parsing shared by every cmd; the live end-to-end suite
 deploy/chart/         — Helm chart with KEDA queue-depth autoscaling
 docs/                 — OpenAPI spec and reference docs
-frontend/             — reference UI (React + Vite)
 ```
 
 </details>
@@ -522,12 +521,14 @@ Also reads `OCTOCONV_OUTPUT_DIR`, `OCTOCONV_CONVERT_TIMEOUT`, `OCTOCONV_POLL_INT
 
 ## Frontend
 
-A reference UI in [`frontend/`](frontend/) (React + Vite + TypeScript): enter an API key,
-pick a file and target format, submit, poll until the download link is ready.
+The optional web workspace is maintained separately in
+[**tileforge/octoconv-ui**](https://github.com/tileforge/octoconv-ui) (private).
+It has its own React/Vite build, tests, container and deployment examples.
+See that repository for setup and API upstream configuration.
 
-```bash
-cd frontend && npm install && npm run dev   # :5173, proxies /v1 and /healthz to :8090
-```
+OctoConv's API, workers, Compose stack and Helm chart work without the UI or
+Node.js. Installing the web workspace is optional and does not change the API
+contract in [`docs/openapi.yaml`](docs/openapi.yaml).
 
 ## Roadmap
 
