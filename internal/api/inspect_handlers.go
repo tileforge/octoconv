@@ -270,9 +270,9 @@ const (
 	// underlying connection's Read may block -- rather than a context
 	// timeout: a context deadline alone does not unblock an in-progress
 	// net.Conn.Read the way SetReadDeadline does.
-	inspectIntakeReadDeadline = 30 * time.Second
+	intakeReadDeadline = 30 * time.Second
 
-	inspectIntakeMinBytesPerSecond int64 = 1 << 20
+	intakeMinBytesPerSecond int64 = 1 << 20
 
 	// inspectIntakeBusyMessage mirrors inspectBusyMessage's own
 	// non-leaking discipline (inspectgate.go) -- names the SERVICE's
@@ -382,15 +382,7 @@ type inspectResponse struct {
 // aspiration): no call in this file, or anything it calls, reaches
 // s.storage.Upload or s.repo.Create.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
-	// 1. Accept. Deliberately repeats handleCreateJob's own multipart
-	// intake SHAPE (MaxBytesReader -> ParseMultipartForm -> FormFile,
-	// http.MaxBytesError -> 413, anything else -> 400) rather than
-	// factoring it into a shared helper: two endpoints that both accept a
-	// file upload must fail identically at the body-size boundary, and
-	// inspect's own ceiling (s.inspectMaxUploadBytes) is deliberately
-	// separate from and smaller than s.maxUploadByte (Config.
-	// InspectMaxUploadBytes's own doc comment, api.go) -- this is a
-	// conscious repetition of a proven shape, not copy-paste debt.
+	// 1. Accept.
 	//
 	// T-SLF-02/T-SLF-03 (PR #9 findings at inspectgate.go:120 and
 	// inspect_handlers.go:114): body intake happens BEFORE this handler
@@ -428,23 +420,8 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// See inspectIntakeReadDeadline's own doc comment: bounds how long THIS
-	// request's own ParseMultipartForm call may block on the network before
-	// the slot just acquired above is released. Ignored when unsupported -- the
-	// inspectIntakeMaxConcurrent bound above still holds either way, since
-	// it does not depend on this deadline to be effective.
-	rc := http.NewResponseController(w)
-	start := time.Now()
-	_ = rc.SetReadDeadline(start.Add(s.inspectIntakeWindow))
-
-	r.Body = &inspectIntakeReader{
-		body:        http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes),
-		setDeadline: rc.SetReadDeadline,
-		start:       start,
-		window:      s.inspectIntakeWindow,
-		minRate:     s.inspectIntakeMinRate,
-		limit:       s.inspectMaxUploadBytes,
-	}
+	rc, start := s.armIntakeDeadline(w)
+	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.inspectMaxUploadBytes)
 	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()

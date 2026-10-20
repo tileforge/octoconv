@@ -242,9 +242,10 @@ type Server struct {
 	// why this bound protects a deployment-topology fact (the pod's own
 	// resources.limits.memory), not a per-environment tuning knob. Never nil
 	// after NewServer.
-	inspectIntakeSem     chan struct{}
-	inspectIntakeWindow  time.Duration
-	inspectIntakeMinRate int64
+	inspectIntakeSem chan struct{}
+	createIntakeSem  chan struct{}
+	intakeWindow     time.Duration
+	intakeMinRate    int64
 	// inspectRateRPM mirrors Config.InspectRateLimitRPM (D-06 mechanism 4).
 	inspectRateRPM int
 	// engineTimeouts mirrors Config.EngineTimeouts (INSP-04, Plan 58-07):
@@ -668,8 +669,9 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		inspectMaxWorkDuration:       cfg.InspectMaxWorkDuration,
 		inspectSem:                   newInspectSemaphore(cfg.InspectMaxConcurrent),
 		inspectIntakeSem:             make(chan struct{}, inspectIntakeMaxConcurrent),
-		inspectIntakeWindow:          inspectIntakeReadDeadline,
-		inspectIntakeMinRate:         inspectIntakeMinBytesPerSecond,
+		createIntakeSem:              make(chan struct{}, createIntakeMaxConcurrent),
+		intakeWindow:                 intakeReadDeadline,
+		intakeMinRate:                intakeMinBytesPerSecond,
 		inspectRateRPM:               cfg.InspectRateLimitRPM,
 		engineTimeouts:               cfg.EngineTimeouts,
 	}

@@ -500,8 +500,8 @@ func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *tes
 	if testing.Short() {
 		t.Skip("streams a request of the largest admissible STL over a paced connection")
 	}
-	window := inspectIntakeReadDeadline / 10
-	minRate := inspectIntakeMinBytesPerSecond * 10
+	window := intakeReadDeadline / 10
+	minRate := intakeMinBytesPerSecond * 10
 	_, ts := newIntakeServer(t, Config{
 		MaxUploadBytes:        chartLiteral(t, "MAX_UPLOAD_BYTES"),
 		InspectMaxUploadBytes: chartLiteral(t, "INSPECT_MAX_UPLOAD_BYTES"),

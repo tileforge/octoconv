@@ -51,7 +51,10 @@ const (
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
-	maxOptsBytes = 4096
+	maxOptsBytes                      = 4096
+	createIntakeMaxConcurrent         = 8
+	createIntakeBusyRetryAfterSeconds = 3
+	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
 	// multipartInMemoryBudget caps how many bytes of a multipart upload
 	// ParseMultipartForm buffers in the process heap; larger file parts spill
 	// to temp files on disk (Go's documented behavior). It is deliberately
