@@ -222,38 +222,11 @@ const (
 	// slot, which was never actually consumed while waiting on the network
 	// and therefore should never be held for it.
 	//
-	// The arithmetic this capacity was chosen from, stated here because a
-	// future "simplification" that drops it is exactly the kind of change
-	// this project's own history shows recurring:
-	//   - multipartInMemoryBudget (handlers.go) = 32 MiB: the MOST heap
-	//     ParseMultipartForm will ever hold for ONE request, regardless of
-	//     INSPECT_MAX_UPLOAD_BYTES's own 100 MiB ceiling on total body size
-	//     -- bytes past this budget spill to a disk-backed temp file, not
-	//     RAM (net/http's own ParseMultipartForm doc comment).
-	//   - inspectIntakeMaxConcurrent (this constant) = 8.
-	//   - Worst case: 8 * 32 MiB = 256 MiB -- a QUARTER of the deployed api
-	//     pod's own resources.limits.memory = 1 GiB
-	//     (deploy/chart/octoconv/values.yaml), not the ~30 * 32 MiB ≈
-	//     960 MiB (94% of that same 1 GiB) an UNBOUNDED intake stage can
-	//     reach under the default RATE_LIMIT_INSPECT_RPM=30 burst budget
-	//     (api.go's own InspectRateLimitRPM default) -- the exact PR9R8-F1
-	//     scenario this constant closes.
-	//   - This is a SEPARATE budget from INSPECT_MAX_CONCURRENT's own
-	//     default of 4 (Config.InspectMaxConcurrent): that one bounds the
-	//     ANALYSIS phase, which only starts once a request has already
-	//     released THIS slot (see handleInspect's own step-1/step-2 split),
-	//     so the two are never charged against the same 1 GiB for the same
-	//     concurrent request at the same time -- 4 concurrent analyses at
-	//     INSPECT_MAX_WORK_BYTES's own 8 MiB default costs a further
-	//     32 MiB, comfortably inside the 768 MiB this constant leaves free.
-	//   - Deliberately NOT sized to 30 (matching RATE_LIMIT_INSPECT_RPM's
-	//     own default): that would merely rename PR9R8-F1's own bug, not
-	//     close it.
-	//   - Deliberately a fixed Go constant, not a new env-configurable
-	//     Config field: this bound protects a deployment-topology fact
-	//     already hard-coded in the Helm chart (the pod's own memory
-	//     ceiling), not a per-environment tuning knob like
-	//     INSPECT_MAX_CONCURRENT.
+	// Deliberately a fixed Go constant, not a new env-configurable
+	// Config field: this bound protects a deployment-topology fact
+	// already hard-coded in the Helm chart (the pod's own memory
+	// ceiling), not a per-environment tuning knob like
+	// INSPECT_MAX_CONCURRENT.
 	inspectIntakeMaxConcurrent = 8
 
 	// cmd/api/main.go sets httpSrv.ReadHeaderTimeout
@@ -406,10 +379,9 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// T-SLF-02 by moving s.inspectSem's own acquisition to AFTER this
 	// point, but that left THIS call -- the one that actually buffers an
 	// untrusted upload into the process heap -- with no concurrency bound
-	// of its own at all. inspectIntakeSem closes that gap; see
-	// inspectIntakeMaxConcurrent's own doc comment for the arithmetic this
-	// capacity was chosen from. Acquired non-blocking, exactly like
-	// s.inspectSem's own acquireOrReject below: a saturated intake stage is
+	// of its own at all. inspectIntakeSem closes that gap. Acquired
+	// non-blocking, exactly like s.inspectSem's own acquireOrReject below:
+	// a saturated intake stage is
 	// an immediate, honest 429 (the same closed-vocabulary InspectBusy
 	// code, never a 500), not a queued wait that would itself accumulate
 	// goroutines.
