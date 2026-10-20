@@ -153,9 +153,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
-		if r.MultipartForm != nil {
-			_ = r.MultipartForm.RemoveAll()
-		}
+		dropMultipartForm(r)
 		<-s.createIntakeSem
 	}()
 

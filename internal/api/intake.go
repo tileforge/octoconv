@@ -53,3 +53,12 @@ func (s *Server) newIntakeReader(w http.ResponseWriter, body io.ReadCloser, rc *
 		limit:       limit,
 	}
 }
+
+func dropMultipartForm(r *http.Request) {
+	if r.MultipartForm != nil {
+		_ = r.MultipartForm.RemoveAll()
+	}
+	r.MultipartForm = nil
+	r.Form = nil
+	r.PostForm = nil
+}
