@@ -28,6 +28,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tileforge/octoconv/internal/auth"
@@ -418,7 +419,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errcode.MissingFile, "missing file")
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+		}
+	}()
 
 	// 2. Gate. The D-06 mechanism-2 concurrency slot is taken HERE -- after
 	// body intake has fully completed, immediately before the CPU-bound
@@ -435,6 +440,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release = sync.OnceFunc(release)
 	defer release()
 
 	filename := path.Base(header.Filename)
@@ -508,6 +514,10 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// ever reachable from this function or anything it calls (D-09/T-58-37)
 	// -- inspect has no state that could go stale and no object that would
 	// need a TTL, because it never creates either.
+	_ = file.Close()
+	file = nil
+	dropMultipartForm(r)
+	release()
 	writeJSON(w, http.StatusOK, inspectResponse{Report: report, Operations: operations})
 }
 
