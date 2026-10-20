@@ -352,7 +352,9 @@ func TestRequestContextSurvivesTheDeadlineAfterBodyEOF(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", ct)
-		resp, err := ts.Client().Do(authed(req))
+		client := ts.Client()
+		client.Timeout = 10 * time.Second
+		resp, err := client.Do(authed(req))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -45,24 +45,7 @@ func newSlotServer(t *testing.T, cfg Config) (*signalPreAdmitRepo, *Server, *htt
 	t.Helper()
 	repo := &signalPreAdmitRepo{fakeRepo: &fakeRepo{}, hit: make(chan struct{})}
 	cfg.InspectMaxConcurrent = 1
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
-	srv.intakeWindow = 2 * time.Second
-	srv.intakeMinRate = 1 << 30
-	ts := httptest.NewUnstartedServer(srv.Routes())
-	ts.Config.ReadHeaderTimeout = 10 * time.Second
-	ts.Start()
-	t.Cleanup(func() {
-		closed := make(chan struct{})
-		go func() {
-			ts.Close()
-			close(closed)
-		}()
-		select {
-		case <-closed:
-		case <-time.After(10 * time.Second):
-			t.Error("the server did not shut down within 10s: a handler never returned")
-		}
-	})
+	srv, ts := newIntakeServerWith(t, repo, &fakeStorage{}, cfg, 2*time.Second, 1<<30)
 	return repo, srv, ts
 }
 

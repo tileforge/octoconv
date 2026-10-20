@@ -31,8 +31,22 @@ func newIntakeServerWith(t *testing.T, repo Repo, store Storage, cfg Config, win
 	ts := httptest.NewUnstartedServer(srv.Routes())
 	ts.Config.ReadHeaderTimeout = 10 * time.Second
 	ts.Start()
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
 	return srv, ts
+}
+
+func closeWithin(t *testing.T, ts *httptest.Server, limit time.Duration) {
+	t.Helper()
+	closed := make(chan struct{})
+	go func() {
+		ts.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(limit):
+		t.Errorf("the server did not shut down within %v: a handler never returned", limit)
+	}
 }
 
 type pacedReader struct {
