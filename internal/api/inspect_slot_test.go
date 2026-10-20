@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -18,17 +21,23 @@ import (
 
 type signalPreAdmitRepo struct {
 	*fakeRepo
-	mu    sync.Mutex
-	calls int
-	once  sync.Once
-	hit   chan struct{}
+	mu      sync.Mutex
+	calls   int
+	once    sync.Once
+	hit     chan struct{}
+	atFirst func()
 }
 
 func (r *signalPreAdmitRepo) PreAdmit(_ context.Context, _ uuid.UUID, _ string, _ int64) error {
 	r.mu.Lock()
 	r.calls++
 	r.mu.Unlock()
-	r.once.Do(func() { close(r.hit) })
+	r.once.Do(func() {
+		if r.atFirst != nil {
+			r.atFirst()
+		}
+		close(r.hit)
+	})
 	return nil
 }
 
@@ -43,6 +52,11 @@ func newSlotServer(t *testing.T, cfg Config) (*signalPreAdmitRepo, *Server, *htt
 func stallAfterForm(t *testing.T, ts *httptest.Server, data []byte) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	body, ct := multipartBody(t, "in.png", "", data)
+	return sendFormAndStall(t, ts, body, ct)
+}
+
+func sendFormAndStall(t *testing.T, ts *httptest.Server, body *bytes.Buffer, ct string) (net.Conn, *bufio.Reader) {
+	t.Helper()
 	addr := ts.Listener.Addr().String()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -127,4 +141,80 @@ func TestInspectReleasesTheAnalysisSlotBeforeTheDiscardRead(t *testing.T) {
 		}
 	}
 	t.Logf("A: status %d, %d body bytes, %d operations, %d unknown quota, after %v", status, len(raw), len(resp.Operations), unknown, time.Since(start))
+}
+
+func paddedPNG(size int) []byte {
+	data := make([]byte, size)
+	copy(data, pngBytesFixture())
+	return data
+}
+
+func requireStalledInTheDiscard(t *testing.T, observedAt, answeredAt time.Duration) {
+	t.Helper()
+	if answeredAt < 1500*time.Millisecond || answeredAt <= observedAt {
+		t.Fatalf("A answered after %v (observed at %v); it did not stall in the discard read, so the observation proves nothing", answeredAt, observedAt)
+	}
+}
+
+func TestInspectRemovesTheSpillBeforeTheDiscardRead(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	repo, srv, ts := newSlotServer(t, Config{InspectMaxUploadBytes: 64 << 20})
+	var duringAnalysis []string
+	repo.atFirst = func() {
+		duringAnalysis, _ = filepath.Glob(filepath.Join(dir, "multipart-*"))
+	}
+
+	data := paddedPNG(len(pngBytesFixture()) + multipartInMemoryBudget + 1<<20)
+	start := time.Now()
+	conn, br := stallAfterForm(t, ts, data)
+	waitPreAdmit(t, repo)
+	if len(duringAnalysis) == 0 {
+		t.Fatal("no spill file while A was analysed, so an empty TMPDIR later proves nothing")
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	bStatus, bBody := doInspect(t, srv, "b.png", pngBytesFixture())
+	if bStatus != http.StatusOK {
+		t.Fatalf("B got %d, want 200: %.300s", bStatus, bBody)
+	}
+	during := spillFiles(t, dir)
+	observedAt := time.Since(start)
+	if len(during) != 0 {
+		t.Errorf("spill files while A stalls after B: %v; the spill outlives the analysis slot", during)
+	}
+
+	status, raw := readStalledInspect(t, conn, br)
+	answeredAt := time.Since(start)
+	requireDiscardInsideHandler(t, status, raw)
+	requireStalledInTheDiscard(t, observedAt, answeredAt)
+	t.Logf("spill during analysis %v, during the discard %v; A: %d body bytes after %v", duringAnalysis, during, len(raw), answeredAt)
+	runtime.KeepAlive(data)
+}
+
+func TestInspectDropsTheFormBeforeTheDiscardRead(t *testing.T) {
+	repo, _, ts := newSlotServer(t, Config{InspectMaxUploadBytes: 64 << 20})
+
+	const size = 12 << 20
+	data := paddedPNG(size)
+	body, ct := multipartBody(t, "in.png", "", data)
+	base := liveHeap()
+	start := time.Now()
+	conn, br := sendFormAndStall(t, ts, body, ct)
+	waitPreAdmit(t, repo)
+	time.Sleep(200 * time.Millisecond)
+	during := liveHeap()
+	observedAt := time.Since(start)
+	growth := int64(during) - int64(base)
+	if growth >= size/2 {
+		t.Errorf("live heap grew by %d bytes (%.1f MiB) while A stalls in the discard read; the %d-byte form outlives the analysis slot", growth, float64(growth)/(1<<20), size)
+	}
+
+	status, raw := readStalledInspect(t, conn, br)
+	answeredAt := time.Since(start)
+	requireDiscardInsideHandler(t, status, raw)
+	requireStalledInTheDiscard(t, observedAt, answeredAt)
+	t.Logf("live heap growth during the discard %d bytes (%.2f MiB); A: %d body bytes after %v", growth, float64(growth)/(1<<20), len(raw), answeredAt)
+	runtime.KeepAlive(data)
+	runtime.KeepAlive(body)
 }
