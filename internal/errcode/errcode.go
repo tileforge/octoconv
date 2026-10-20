@@ -31,7 +31,7 @@ const (
 	OptsNotApplicable    = "opts_not_applicable" // opts are well-formed but not meaningful for this conversion
 	MissingFile          = "missing_file"        // no file part in the multipart body
 	UnknownPreset        = "unknown_preset"      // named preset does not exist / is not active
-	PayloadTooLarge      = "payload_too_large"   // 413: body or opts field exceeds its cap
+	PayloadTooLarge      = "payload_too_large"   // 413: body over its cap; 422: one field over its own cap (opts, callback_url, file name)
 	NotFound             = "not_found"           // 404: job or preset does not exist for this client
 	InvalidCursor        = "invalid_cursor"      // 400: opaque list cursor failed to decode
 	AlreadyExists        = "already_exists"      // 409: preset name collision

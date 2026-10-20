@@ -1098,6 +1098,9 @@ paths:
                     the stem is what is reserved, not the prefix. At most 32
                     parts per job. A name is refused rather than repaired: a
                     repaired name is not the name your document \inputs.
+                    The document's file name, as sent in its
+                    Content-Disposition, is at most 255 bytes; a longer name is
+                    refused with 422 (payload_too_large), never truncated.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
@@ -1112,7 +1115,12 @@ paths:
                 callback_url:
                   type: string
                   format: uri
-                  description: Optional SSRF-validated webhook URL notified on completion.
+                  description: >-
+                    Optional SSRF-validated webhook URL notified on completion.
+                    At most 2048 bytes; a longer value is refused with 422
+                    (payload_too_large), never truncated. The bound applies
+                    when a job is created; jobs created before it keep their
+                    callback_url.
                 progress_webhook:
                   type: string
                   enum: ["true", "false"]
@@ -1236,7 +1244,13 @@ paths:
             That last check reads a BOUNDED window of the preamble and
             abstains when the preamble runs past it -- such a document is
             accepted here and fails later with the SAME code in the job's
-            error_code, which is why the two vocabularies share it.
+            error_code, which is why the two vocabularies share it. A
+            callback_url above 2048 bytes or a document file name above 255
+            bytes is refused with payload_too_large before anything is
+            stored. Of the form fields only opts, callback_url and the
+            document's file name have a length bound of their own;
+            progress_webhook and any field this endpoint does not read are
+            bounded only by the multipart parser's allowance.
           content:
             application/json:
               schema:
