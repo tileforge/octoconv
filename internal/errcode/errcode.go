@@ -47,9 +47,10 @@ const (
 	// rate"; QuotaExceeded means "you exhausted your own daily/concurrent
 	// job budget"; InspectBusy means "the service as a whole is at its
 	// parallel-parsing ceiling right now — your budget is not the issue at
-	// all." Declared directly after RateLimited so the three 429 codes read
+	// all." Declared directly after RateLimited so the 429 codes read
 	// together in one place.
 	InspectBusy = "inspect_busy"
+	IntakeBusy  = "intake_busy"
 
 	// UnsupportedPackage is its own class and not InvalidRequest, because it
 	// is the one 422 in this list a client can act on WITHOUT changing what
@@ -94,6 +95,7 @@ var all = []string{
 	QuotaExceeded,
 	RateLimited,
 	InspectBusy,
+	IntakeBusy,
 	UnsupportedPackage,
 	TruncatedCADFile,
 	AmbiguousSTL,

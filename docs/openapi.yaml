@@ -105,9 +105,11 @@ components:
         vocabulary frozen by docs/ERROR-CODES.md (milestone v1.13 Phase 56,
         ERRC-01); internal/errcode/openapi_sync_test.go mechanically proves
         this enum never drifts from internal/errcode's Go constants. On a
-        429, code distinguishes the two independent producers of that status:
-        the per-IP/per-client rate limiter (rate_limited) and the per-client
-        quota admission gate (quota_exceeded, QUOT-01..04).
+        429, code distinguishes the independent producers of that status:
+        the per-IP/per-client rate limiter (rate_limited), the per-client
+        quota admission gate (quota_exceeded, QUOT-01..04), the inspect
+        concurrency gates (inspect_busy) and the create intake slots
+        (intake_busy).
       properties:
         error:
           type: string
@@ -129,6 +131,7 @@ components:
             - quota_exceeded
             - rate_limited
             - inspect_busy
+            - intake_busy
             - unsupported_package
             - truncated_cad_file
             - ambiguous_stl
@@ -1236,7 +1239,23 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: >-
+            One of three independent 429 producers rejected this request,
+            distinguished by the body's code field: the per-IP/per-client
+            rate limiter (rate_limited), the per-client quota admission
+            gate (quota_exceeded, QUOT-01..04), or the create intake slots
+            (intake_busy) -- every slot this API process has for reading a
+            create body is taken, so the request is refused before its body
+            is read; this is the service's own capacity, not the caller's
+            budget. Retry unchanged after Retry-After.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 

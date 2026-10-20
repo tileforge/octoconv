@@ -132,6 +132,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // the job in Postgres (queued) and enqueues the conversion task.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	rc, start := s.armIntakeDeadline(w)
 
 	// BEFORE the body is read, let alone uploaded. A value this service will
 	// not carry is worth refusing while the request has cost nothing -- and
@@ -145,14 +146,22 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap the request body to reject oversized uploads before buffering them.
-	// The total-size ceiling is enforced here by MaxBytesReader; the separate,
-	// smaller multipartInMemoryBudget bounds heap use during parsing (CR-01).
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadByte)
-	err := r.ParseMultipartForm(multipartInMemoryBudget)
-	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+	select {
+	case s.createIntakeSem <- struct{}{}:
+	default:
+		w.Header().Set("Retry-After", strconv.Itoa(createIntakeBusyRetryAfterSeconds))
+		writeError(w, http.StatusTooManyRequests, errcode.IntakeBusy, createIntakeBusyMessage)
+		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+		<-s.createIntakeSem
+	}()
+
+	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.maxUploadByte)
+	err := r.ParseMultipartForm(multipartInMemoryBudget)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
