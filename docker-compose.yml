@@ -108,6 +108,7 @@ services:
       # never set at all.
       DB_MAX_CONNS: "10"
       MAX_UPLOAD_BYTES: "2147483648"
+      TMPDIR: "/var/tmp/octoconv"
       MAX_IMAGE_PIXELS: "100000000"
       MAX_DOCUMENT_UNCOMPRESSED_BYTES: "524288000"
       API_KEY_SALT: "dev-only-change-me-in-real-deploys"
@@ -218,6 +219,8 @@ services:
     ports:
       - "8090:8090"
       - "8091:8091"
+    volumes:
+      - api_spill:/var/tmp/octoconv
     # D-06b (Phase 58): api's FIRST resource limit ever, mirroring worker's
     # own deploy.resources.limits shape below verbatim (this compose file's
     # only limit syntax -- not `mem_limit`/`cpus` top-level keys). Compose is
@@ -1780,4 +1783,6 @@ volumes:
   postgres_data:
     driver: local
   minio_data:
+    driver: local
+  api_spill:
     driver: local

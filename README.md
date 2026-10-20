@@ -469,6 +469,15 @@ documented list — including how each measured limit was derived.
 > endpoints by default. `WEBHOOK_ALLOW_PRIVATE_IPS` opts into RFC1918 for internal-network
 > deployments; loopback and link-local stay blocked with no override.
 
+> [!NOTE]
+> Multipart parts larger than the API's in-memory budget are written to `TMPDIR`. The
+> chart mounts a disk-backed `emptyDir` there with a `sizeLimit` equal to the create
+> intake slots × `MAX_UPLOAD_BYTES` plus the inspect intake and analysis slots ×
+> `INSPECT_MAX_UPLOAD_BYTES`, and gives the api container equal `ephemeral-storage`
+> request and limit, so an overrun evicts the api pod rather than its neighbours.
+> `docker-compose.yml` only moves the spill out of the container's writable layer onto the
+> named volume `api_spill`, with no hard size: the chart is what bounds the disk.
+
 ## Documentation
 
 | Document | What's in it |

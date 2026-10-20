@@ -12,6 +12,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/api /usr/local/bin/api
+RUN install -d -o nobody -g nogroup -m 0700 /var/tmp/octoconv
 USER nobody
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/api"]
