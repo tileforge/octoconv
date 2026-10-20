@@ -1201,7 +1201,10 @@ paths:
           description: >-
             Invalid multipart form / missing file / missing target format /
             cannot determine source format from filename / invalid
-            callback_url / invalid preset name.
+            callback_url / invalid preset name. The body has 30 s, plus one
+            second for every 1 MiB received so far, to arrive: a body that
+            falls below 1 MiB/s once its first 30 s have passed is cut and
+            answered with this 400 (invalid_request, invalid multipart form).
           content:
             application/json:
               schema:

@@ -261,6 +261,9 @@ really pings Postgres, Redis and S3.
 - Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`
 - Over quota → `429` with `Retry-After` and `code: "quota_exceeded"` — a consumption limit,
   never an authorization boundary
+- Every create intake slot of the API process taken → `429` with `Retry-After` and
+  `code: "intake_busy"` — the service's own capacity, not your budget; retry the request
+  unchanged
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
 
