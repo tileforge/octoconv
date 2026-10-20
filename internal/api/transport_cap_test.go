@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +71,11 @@ func transportCapFileName(length int, ext string) string {
 	return strings.Repeat("a", length-len(ext)-1) + "." + ext
 }
 
+func transportCapCallbackURL() string {
+	prefix := "https://8.8.8.8/"
+	return prefix + strings.Repeat("a", maxCallbackURLBytes-len(prefix))
+}
+
 func writeTransportCapRequest(mw *multipart.Writer, engine, operation, target, fileName string, file io.Reader) error {
 	fw, err := mw.CreateFormFile(formFieldFile, fileName)
 	if err != nil {
@@ -87,7 +93,7 @@ func writeTransportCapRequest(mw *multipart.Writer, engine, operation, target, f
 		}
 	}
 	opts := "{" + strings.Repeat(" ", maxOptsBytes-2) + "}"
-	for _, f := range [][2]string{{formFieldTarget, target}, {formFieldOperation, operation}, {formFieldOpts, opts}} {
+	for _, f := range [][2]string{{formFieldTarget, target}, {formFieldOperation, operation}, {formFieldOpts, opts}, {formFieldCallbackURL, transportCapCallbackURL()}} {
 		if err := mw.WriteField(f[0], f[1]); err != nil {
 			return err
 		}
@@ -399,6 +405,7 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 	}
 	nextMiB := transportCapNextMiB(largestNeed)
 	t.Logf("largest requirement %d bytes (%s %s %s->%s ceiling %d plus envelope %d); next whole MiB %d (%d MiB)", largestNeed, largest.operation, largest.engine, largest.pair.From, largest.pair.To, largest.limit, largest.envelope, nextMiB, nextMiB>>20)
+	t.Logf("D-14 residual of phase 78: %s and any form field the handler does not read have no length bound of their own; they are bounded only by the mime/multipart allowance for non-file parts, multipartInMemoryBudget %d + 10 MiB = %d bytes", formFieldProgressWebhook, multipartInMemoryBudget, multipartInMemoryBudget+10<<20)
 
 	atLargest := map[string]bool{}
 	for _, cfg := range configs {
@@ -591,4 +598,49 @@ func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *tes
 			t.Errorf("no cad render png offer; operations=%+v", rep.Operations)
 		}
 	})
+}
+
+func TestTransportCapEnvelopeCarriesEveryBoundedField(t *testing.T) {
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	if err := writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", transportCapFileName(maxInputFilenameBytes, "stl"), strings.NewReader("solid")); err != nil {
+		t.Fatal(err)
+	}
+	mr := multipart.NewReader(&b, mw.Boundary())
+	fields := map[string]string{}
+	var fileNames []string
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.FormName() == formFieldFile {
+			_, params, err := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+			if err != nil {
+				t.Fatalf("file part Content-Disposition: %v", err)
+			}
+			fileNames = append(fileNames, params["filename"])
+			continue
+		}
+		v, err := io.ReadAll(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields[p.FormName()] = string(v)
+	}
+	if len(fileNames) == 0 || len(fileNames[0]) != maxInputFilenameBytes {
+		t.Errorf("file part names %q, want a first part whose raw name is %d bytes", fileNames, maxInputFilenameBytes)
+	}
+	cb, ok := fields[formFieldCallbackURL]
+	if !ok || len(cb) != maxCallbackURLBytes {
+		t.Errorf("callback_url present %v, %d bytes, want %d bytes", ok, len(cb), maxCallbackURLBytes)
+	} else if err := validateCallbackURL(cb); err != nil {
+		t.Errorf("the envelope's callback_url is refused by validateCallbackURL: %v", err)
+	}
+	if len(fields[formFieldOpts]) != maxOptsBytes {
+		t.Errorf("opts is %d bytes, want %d", len(fields[formFieldOpts]), maxOptsBytes)
+	}
 }

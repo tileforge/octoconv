@@ -3,13 +3,17 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/errcode"
 )
@@ -170,5 +174,64 @@ func TestCreateRefusesAnOverlongInputFilename(t *testing.T) {
 func TestInputFilenameBoundMatchesTheJobsRule(t *testing.T) {
 	if got := maxInputFilenameLength(t); maxInputFilenameBytes != got {
 		t.Errorf("maxInputFilenameBytes = %d, jobs.SafeInputFilename admits names up to %d bytes", maxInputFilenameBytes, got)
+	}
+}
+
+func TestFieldBoundsAreStatedInTheContracts(t *testing.T) {
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
+	}
+	props := []string{"paths", "/v1/jobs", "post", "requestBody", "content", "multipart/form-data", "schema", "properties"}
+	for _, c := range []struct {
+		where string
+		keys  []string
+		want  []string
+	}{
+		{"callback_url", append(append([]string{}, props...), formFieldCallbackURL, "description"), []string{
+			fmt.Sprintf("At most %d bytes; a longer value is refused with 422 (payload_too_large), never truncated", maxCallbackURLBytes),
+		}},
+		{"file", append(append([]string{}, props...), formFieldFile, "description"), []string{
+			fmt.Sprintf("is at most %d bytes; a longer name is refused with 422 (payload_too_large), never truncated", maxInputFilenameBytes),
+		}},
+		{"the 422", []string{"paths", "/v1/jobs", "post", "responses", "422", "description"}, []string{
+			fmt.Sprintf("A %s above %d bytes or a document file name above %d bytes is refused with payload_too_large before anything is stored", formFieldCallbackURL, maxCallbackURLBytes, maxInputFilenameBytes),
+			fmt.Sprintf("%s and any field this endpoint does not read are bounded only by the multipart parser's allowance", formFieldProgressWebhook),
+		}},
+	} {
+		description := openAPIString(t, doc, c.keys...)
+		for _, want := range c.want {
+			if !strings.Contains(description, want) {
+				t.Errorf("%s: %s of POST /v1/jobs does not state %q; it reads %q", specPath, c.where, want, description)
+			}
+		}
+	}
+
+	const errorCodesPath = "../../docs/ERROR-CODES.md"
+	codes, err := os.ReadFile(errorCodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, line := range strings.Split(string(codes), "\n") {
+		if strings.HasPrefix(line, "| `payload_too_large` |") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("%s has no payload_too_large row", errorCodesPath)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("`%s` above %d bytes", formFieldOpts, maxOptsBytes),
+		fmt.Sprintf("`%s` above %d bytes", formFieldCallbackURL, maxCallbackURLBytes),
+		fmt.Sprintf("file name above %d bytes", maxInputFilenameBytes),
+	} {
+		if !strings.Contains(row, want) {
+			t.Errorf("%s: the payload_too_large row does not state %q; it reads %q", errorCodesPath, want, row)
+		}
 	}
 }
