@@ -117,7 +117,18 @@ func TestCreateIntakeConcurrencyIsBounded(t *testing.T) {
 	var once sync.Once
 	open := func() { once.Do(func() { close(store.release) }) }
 	var wg sync.WaitGroup
-	t.Cleanup(wg.Wait)
+	t.Cleanup(func() {
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("create handlers still running 10s after the release")
+		}
+	})
 	t.Cleanup(open)
 	srv := NewServer(&lockedRepo{fakeRepo: &fakeRepo{}}, store, &lockedQueue{fakeQueue: &fakeQueue{}}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), createIntakeConfig(64<<20))
 	h := srv.Routes()
