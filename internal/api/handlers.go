@@ -52,6 +52,7 @@ const (
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
 	maxOptsBytes                      = 4096
+	maxCallbackURLBytes               = 2048
 	createIntakeMaxConcurrent         = 8
 	createIntakeBusyRetryAfterSeconds = 3
 	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
@@ -166,6 +167,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
+		return
+	}
+
+	if len(r.FormValue(formFieldCallbackURL)) > maxCallbackURLBytes {
+		writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "callback_url field too large")
 		return
 	}
 
