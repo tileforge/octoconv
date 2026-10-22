@@ -325,7 +325,7 @@ func TestDecodePDFStreamClassification(t *testing.T) {
 		{"undecodable declared filter", build("<< /Filter /LZWDecode >>", "\x80\x0b\x60"), pdfStreamOpaque},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ranges, _ := scanPDFStreamRanges(tc.buf, nil)
+			ranges, _ := scanPDFStreamRanges(tc.buf, nil, pdfMaxOpaqueRanges(len(tc.buf)), nil)
 			if len(ranges) == 0 {
 				t.Fatal("fixture produced no stream range")
 			}
@@ -589,7 +589,7 @@ func TestProvenSkipMarkersStillSkip(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := []byte("1 0 obj\n" + tc.dict + "\nstream\n\x00\x01\x02\nendstream\nendobj\n")
-			ranges, _ := scanPDFStreamRanges(buf, nil)
+			ranges, _ := scanPDFStreamRanges(buf, nil, pdfMaxOpaqueRanges(len(buf)), nil)
 			if len(ranges) == 0 {
 				t.Fatal("fixture produced no stream range")
 			}

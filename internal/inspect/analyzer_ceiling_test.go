@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -484,7 +485,7 @@ func TestPDFInflateStaysUnderTheAllowance(t *testing.T) {
 }
 
 func literalRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
-	return scanPDFLiteralAndHexStringRanges(buf, tr)
+	return scanPDFLiteralAndHexStringRanges(buf, nil, math.MaxInt, tr)
 }
 
 func sameRanges(a, b []pdfOpaqueRange) bool {
@@ -559,6 +560,7 @@ func TestPDFOpaqueRangesStayUnderTheirCap(t *testing.T) {
 	elapsed := time.Since(start)
 	live := int64(liveHeap()) - int64(base)
 	runtime.KeepAlive(ranges)
+	runtime.KeepAlive(head)
 	limit := pdfMaxOpaqueRanges(len(head))
 	bound := int64(max(len(head)/2, 24*pdfOpaqueRangeFloor))
 	t.Logf("pdf_ranges head %d B: %d merged ranges (cap %d, %d B of backing array), ceilingHit=%v, live heap over base %d B (%.2f MiB), bound max(len/2, 24 x %d) = %d B, %s",
@@ -568,6 +570,9 @@ func TestPDFOpaqueRangesStayUnderTheirCap(t *testing.T) {
 	}
 	if live > bound {
 		t.Errorf("live heap after scanPDFOpaqueRanges = %d B, want at most %d B", live, bound)
+	}
+	if backing := int64(24 * cap(ranges)); backing > bound {
+		t.Errorf("the merged ranges keep a backing array of %d ranges; with the old array alive while it grew that is %d B, want at most %d B", cap(ranges), backing, bound)
 	}
 }
 

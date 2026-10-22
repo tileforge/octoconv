@@ -653,14 +653,24 @@ func pdfMaxOpaqueRanges(n int) int {
 }
 
 func scanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
-	var ranges []pdfOpaqueRange
-	streamRanges, streamCeilingHit := scanPDFStreamRanges(buf, tr)
-	commentRanges, commentCeilingHit := scanPDFCommentRanges(buf, tr)
-	stringRanges, stringCeilingHit := scanPDFLiteralAndHexStringRanges(buf, tr)
-	ranges = append(ranges, streamRanges...)
-	ranges = append(ranges, commentRanges...)
-	ranges = append(ranges, stringRanges...)
+	limit := pdfMaxOpaqueRanges(len(buf))
+	ranges, streamCeilingHit := scanPDFStreamRanges(buf, nil, limit, tr)
+	ranges, commentCeilingHit := scanPDFCommentRanges(buf, ranges, limit, tr)
+	ranges, stringCeilingHit := scanPDFLiteralAndHexStringRanges(buf, ranges, limit, tr)
 	return mergeOpaqueRanges(ranges), streamCeilingHit || commentCeilingHit || stringCeilingHit
+}
+
+func appendOpaqueRange(ranges []pdfOpaqueRange, r pdfOpaqueRange, limit int, tr *Tracker) ([]pdfOpaqueRange, bool) {
+	if len(ranges) >= limit {
+		tr.MarkCeilingHit()
+		return ranges, false
+	}
+	if len(ranges) == cap(ranges) {
+		grown := make([]pdfOpaqueRange, len(ranges), min(max(64, 2*cap(ranges)), limit))
+		copy(grown, ranges)
+		ranges = grown
+	}
+	return append(ranges, r), true
 }
 
 // scanPDFStreamRanges finds every "stream"..."endstream" body in buf,
@@ -671,8 +681,9 @@ func scanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
 // is called at the exact point that happens (quick/260811-r3s: the
 // receptacle, not a return value a caller could drop, is what makes this
 // fact reach Coverage unconditionally).
-func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFStreamRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
 	for iter := 0; ; iter++ {
 		if iter >= maxTokenScanIterations {
 			ceilingHit = true
@@ -689,11 +700,16 @@ func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceil
 			// No matching "endstream" within the scanned window at all --
 			// treat everything from here to the end of buf as opaque
 			// (the stream may simply continue past this window).
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: len(buf)}, limit, tr); !ok {
+				ceilingHit = true
+			}
 			break
 		}
 		end := start + endIdx
-		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+			ceilingHit = true
+			break
+		}
 		pos = end + len("endstream")
 		if pos >= len(buf) {
 			break
@@ -705,8 +721,9 @@ func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceil
 // scanPDFCommentRanges finds every "%"-to-end-of-line comment range in buf,
 // capped by maxTokenScanIterations for the same reason scanPDFStreamRanges
 // is; ceilingHit/tr.MarkCeilingHit mirror scanPDFStreamRanges's own.
-func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFCommentRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
 	for iter := 0; ; iter++ {
 		if iter >= maxTokenScanIterations {
 			ceilingHit = true
@@ -722,7 +739,10 @@ func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, cei
 		for end < len(buf) && buf[end] != '\n' && buf[end] != '\r' {
 			end++
 		}
-		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+			ceilingHit = true
+			break
+		}
 		pos = end
 		if pos >= len(buf) {
 			break
@@ -747,32 +767,33 @@ func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, cei
 // mirror scanPDFStreamRanges's own -- this is the sub-scan quick/260811-r3s's
 // pdf.go:543 finding names directly (4096 harmless delimiters followed by a
 // risk token inside the 4097th string).
-func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFLiteralAndHexStringRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
+	nextParen, nextAngle := -2, -2
 	for iter := 0; ; iter++ {
 		if iter >= maxTokenScanIterations {
 			ceilingHit = true
 			tr.MarkCeilingHit()
 			return ranges, ceilingHit
 		}
-		idxParen := bytes.IndexByte(buf[pos:], '(')
-		idxAngle := bytes.IndexByte(buf[pos:], '<')
+		nextParen = nextPDFByteAt(buf, pos, nextParen, '(')
+		nextAngle = nextPDFByteAt(buf, pos, nextAngle, '<')
 
-		var next int
+		var start int
 		isParen := false
 		switch {
-		case idxParen < 0 && idxAngle < 0:
+		case nextParen < 0 && nextAngle < 0:
 			return ranges, ceilingHit
-		case idxParen < 0:
-			next, isParen = idxAngle, false
-		case idxAngle < 0:
-			next, isParen = idxParen, true
-		case idxParen < idxAngle:
-			next, isParen = idxParen, true
+		case nextParen < 0:
+			start, isParen = nextAngle, false
+		case nextAngle < 0:
+			start, isParen = nextParen, true
+		case nextParen < nextAngle:
+			start, isParen = nextParen, true
 		default:
-			next, isParen = idxAngle, false
+			start, isParen = nextAngle, false
 		}
-		start := pos + next
 
 		if isParen {
 			depth := 1
@@ -789,7 +810,9 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 				}
 				j++
 			}
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: j})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: j}, limit, tr); !ok {
+				return ranges, true
+			}
 			pos = j
 		} else {
 			if start+1 < len(buf) && buf[start+1] == '<' {
@@ -806,11 +829,15 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 				// No closing ">" within the scanned window -- treat the
 				// rest of buf as opaque, the same over-approximation
 				// scanPDFStreamRanges applies to an unterminated stream.
-				ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+				if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: len(buf)}, limit, tr); !ok {
+					ceilingHit = true
+				}
 				return ranges, ceilingHit
 			}
 			end := start + 1 + closeIdx + 1
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+				return ranges, true
+			}
 			pos = end
 		}
 		if pos >= len(buf) {
@@ -818,6 +845,17 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 		}
 	}
 	return ranges, ceilingHit
+}
+
+func nextPDFByteAt(buf []byte, pos, cached int, c byte) int {
+	if cached == -1 || cached >= pos {
+		return cached
+	}
+	idx := bytes.IndexByte(buf[pos:], c)
+	if idx < 0 {
+		return -1
+	}
+	return pos + idx
 }
 
 // mergeOpaqueRanges sorts ranges by start and merges any that overlap or
