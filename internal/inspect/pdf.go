@@ -646,6 +646,12 @@ type pdfOpaqueRange struct {
 // SET this function returns is incomplete, and AnalyzePDF's caller-facing
 // verdict rule (verdictStatus/verdictReason) must know that, not just this
 // function's own local state.
+const pdfOpaqueRangeFloor = 4096
+
+func pdfMaxOpaqueRanges(n int) int {
+	return max(n/48, pdfOpaqueRangeFloor)
+}
+
 func scanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
 	var ranges []pdfOpaqueRange
 	streamRanges, streamCeilingHit := scanPDFStreamRanges(buf, tr)

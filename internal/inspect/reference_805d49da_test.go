@@ -20,15 +20,20 @@ type referenceStreamStep struct {
 }
 
 type referenceRun struct {
-	steps     []referenceStreamStep
-	textState pdfTextScanState
-	textRow   string
-	truncated bool
-	encrypted bool
+	steps      []referenceStreamStep
+	textState  pdfTextScanState
+	textRow    string
+	headRanges int
+	tailRanges int
+	headLen    int
+	tailLen    int
+	truncated  bool
+	encrypted  bool
 }
 
 type referenceOracle struct {
 	textLayer func(steps []referenceStreamStep) (row string, state pdfTextScanState)
+	opaqueCap bool
 }
 
 func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker, o referenceOracle) (FamilyResult, referenceRun) {
@@ -79,11 +84,14 @@ func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker,
 		res.Characteristics["pdf_version"] = v
 	}
 
-	headOpaque, headOpaqueCeilingHit := referenceScanPDFOpaqueRanges(head, tr)
+	headOpaque, headOpaqueCeilingHit, headRanges := referenceCappedOpaqueRanges(head, tr, o.opaqueCap)
+	run.headRanges = headRanges
+	run.headLen = len(head)
+	run.tailLen = len(tail)
 	var tailOpaque []pdfOpaqueRange
 	var tailOpaqueCeilingHit bool
 	if tailOK {
-		tailOpaque, tailOpaqueCeilingHit = referenceScanPDFOpaqueRanges(tail, tr)
+		tailOpaque, tailOpaqueCeilingHit, run.tailRanges = referenceCappedOpaqueRanges(tail, tr, o.opaqueCap)
 	}
 
 	encrypted := false
@@ -169,7 +177,7 @@ func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker,
 	return res, run
 }
 
-func referenceScanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
+func referenceCappedOpaqueRanges(buf []byte, tr *Tracker, capped bool) ([]pdfOpaqueRange, bool, int) {
 	var ranges []pdfOpaqueRange
 	streamRanges, streamCeilingHit := referenceScanPDFStreamRanges(buf, tr)
 	commentRanges, commentCeilingHit := referenceScanPDFCommentRanges(buf, tr)
@@ -177,7 +185,14 @@ func referenceScanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bo
 	ranges = append(ranges, streamRanges...)
 	ranges = append(ranges, commentRanges...)
 	ranges = append(ranges, stringRanges...)
-	return mergeOpaqueRanges(ranges), streamCeilingHit || commentCeilingHit || stringCeilingHit
+	total := len(ranges)
+	ceilingHit := streamCeilingHit || commentCeilingHit || stringCeilingHit
+	if limit := pdfMaxOpaqueRanges(len(buf)); capped && total > limit {
+		ranges = ranges[:limit]
+		ceilingHit = true
+		tr.MarkCeilingHit()
+	}
+	return mergeOpaqueRanges(ranges), ceilingHit, total
 }
 
 func referenceScanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
