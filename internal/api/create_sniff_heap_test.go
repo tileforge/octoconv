@@ -6,9 +6,17 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"net/textproto"
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -18,6 +26,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const cfbClassifyHeapBytes = 1 << 20
@@ -580,5 +589,465 @@ func TestSniffCreateContainerNeverReportsOKForUnexaminedInput(t *testing.T) {
 				t.Errorf("%d reads after the bound could not read the tail: the archive was parsed without the bound having examined it", file.reads)
 			}
 		})
+	}
+}
+
+const (
+	sniffMagicHeapBytes          = 64 << 10
+	htmlLowerGrowthBytes         = 1048576 + 1318912 + 1654784
+	htmlSniffHeapBytes           = (convert.SniffWindowBytes + htmlLowerGrowthBytes + 64<<10 - 1) &^ (64<<10 - 1)
+	sniffWindowHeapBytes         = (convert.SniffWindowBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
+	cadSplitBytes                = 106496
+	cadSniffHeapBytes            = (convert.CADHeadBytes + convert.CADTailBytes + cadSplitBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
+	cfbSniffHeapBytes            = (cfbClassifyHeapBytes + 8 + 64<<10 - 1) &^ (64<<10 - 1)
+	avPeekLenBytes               = 4 * 1024
+	mp3PeekLenBytes              = 512 * 1024
+	videoSniffHeapBytes          = (avPeekLenBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
+	audioSniffHeapBytes          = (mp3PeekLenBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
+	heicBoxTypeBytes             = 4 * (convert.DimensionPeekBytes / 8) * 4
+	dimensionsHeapBytes          = (convert.DimensionPeekBytes + heicBoxTypeBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
+	contentDispositionMinParam   = 6
+	contentDispositionParamBytes = 640
+	contentDispositionHeapBytes  = (maxFormNonFileBytes/contentDispositionMinParam*contentDispositionParamBytes + 64<<10 - 1) &^ (64<<10 - 1)
+	attachmentNamesHeapBytes     = contentDispositionHeapBytes + 64<<10
+	optsHeapBytes                = 64 << 10
+	acceptedResponseHeapBytes    = 64 << 10
+)
+
+type sniffRow struct {
+	name       string
+	calls      []string
+	site       string
+	bound      int64
+	derivation string
+	measure    func(t *testing.T) int64
+}
+
+func readerFile(data []byte) memMultipartFile { return memMultipartFile{bytes.NewReader(data)} }
+
+func paddedFile(prefix []byte, size int) []byte {
+	data := make([]byte, size)
+	copy(data, prefix)
+	return data
+}
+
+func worstContentDisposition(budget int) string {
+	cd := `form-data; name="file"; filename="a.tex"`
+	for i := 0; ; i++ {
+		param := fmt.Sprintf("; k%x*0=v", i)
+		if len(cd)+len(param) > budget {
+			return cd
+		}
+		cd += param
+	}
+}
+
+func worstOpts() []byte {
+	inner := `"pdf_profile":"pdf/a-2b"`
+	return []byte("{" + inner + strings.Repeat(" ", maxOptsBytes-len(inner)-2) + "}")
+}
+
+func createSniffInventory() []sniffRow {
+	return []sniffRow{
+		{"sniff_magic", []string{"convert.Sniff"}, "convert.Sniff(file)", sniffMagicHeapBytes,
+			"sniffLen 12 B buffer, bytes.Reader and io.MultiReader (sniff.go:129); under 1 KiB, rounded up to 64 KiB",
+			func(t *testing.T) int64 {
+				f := readerFile(make([]byte, 1<<20))
+				return allocatedBy(func() { _, _, _ = convert.Sniff(f) })
+			}},
+		{"zip_directory", []string{"sniffCreateContainer"}, "sniffCreateContainer(file, header.Size)", zipSniffHeapBytes,
+			"zipSniffTerms (D-27a): inspect bound windows and zip.NewReader on at most 4096 records",
+			func(t *testing.T) int64 {
+				data := worstZipDirectory(inspectMaxZipDirEntries)
+				binary.LittleEndian.PutUint16(data[len(data)-2:], 0xFFFF)
+				data = append(data, make([]byte, 0xFFFF)...)
+				f := readerFile(data)
+				return allocatedBy(func() { _, _, _ = sniffCreateContainer(f, int64(len(data))) })
+			}},
+		{"html", []string{"convert.LooksLikeHTML"}, "convert.LooksLikeHTML(file, header.Size)", htmlSniffHeapBytes,
+			"readSniffPrefix window SniffWindowBytes (markupsniff.go:98) and bytes.ToLower over it (htmlsniff.go:73): bytes.Map starts at len and grows 1.25x to 1.5x len for 2-byte runes whose lower case is 3 bytes (U+023A -> U+2C65): 1048576 + 1318912 + 1654784",
+			func(t *testing.T) int64 {
+				data := []byte(strings.Repeat("Ⱥ", convert.SniffWindowBytes/2))
+				f := readerFile(data)
+				return allocatedBy(func() { _ = convert.LooksLikeHTML(f, int64(len(data))) })
+			}},
+		{"latex_window", []string{"readSniffWindow", "convert.ValidateSniffPrefix", "convert.LooksLikeLaTeXFromPrefix"}, "readSniffWindow(file, header.Size)", sniffWindowHeapBytes,
+			"readSniffWindow allocates min(size, SniffWindowBytes) (inspect_handlers.go readSniffWindow) and under 1 KiB of small objects; ValidateSniffPrefix and LooksLikeLaTeXFromPrefix slice it; kept as latexPrefix until the handler returns",
+			func(t *testing.T) int64 {
+				prefix, _, _ := worstTeXWindow(t)
+				data := append(prefix, make([]byte, 1<<20)...)
+				for i := convert.SniffWindowBytes; i < len(data); i++ {
+					data[i] = ' '
+				}
+				f := readerFile(data)
+				return allocatedBy(func() {
+					if w, err := readSniffWindow(f, int64(len(data))); err == nil {
+						if p, ok := convert.ValidateSniffPrefix(w, int64(len(data))); ok {
+							_ = convert.LooksLikeLaTeXFromPrefix(p)
+						}
+					}
+				})
+			}},
+		{"text", []string{"convert.LooksLikeText"}, "convert.LooksLikeText(file, header.Size)", sniffWindowHeapBytes,
+			"readSniffPrefix window SniffWindowBytes (markupsniff.go:98) and under 1 KiB of small objects; hasDisallowedControlByte reads it in place",
+			func(t *testing.T) int64 {
+				data := bytes.Repeat([]byte("text "), (2<<20)/5)
+				f := readerFile(data)
+				return allocatedBy(func() { _ = convert.LooksLikeText(f, int64(len(data))) })
+			}},
+		{"cad", []string{"convert.ReadCADWindows", "convert.SniffCADWindows"}, "convert.ReadCADWindows(file, header.Size)", cadSniffHeapBytes,
+			"CADHeadBytes and CADTailBytes windows (cadsniff.go:68, :52) and bytes.Split of the head in sniffDXF: (CADHeadBytes + 1) x 24 B slice headers = 98328 B, rounded up to 13 pages",
+			func(t *testing.T) int64 {
+				data := bytes.Repeat([]byte("\n"), 1<<20)
+				f := readerFile(data)
+				return allocatedBy(func() {
+					if head, tail, err := convert.ReadCADWindows(f, int64(len(data))); err == nil {
+						_ = convert.SniffCADWindows(head, tail, int64(len(data)), "dxf")
+					}
+				})
+			}},
+		{"cfb", []string{"convert.IsOLECFB", "convert.ClassifyCFB"}, "convert.IsOLECFB(file)", cfbSniffHeapBytes,
+			"IsOLECFB reads 8 B (olecfb.go:24); ClassifyCFB is cfbClassifyHeapBytes (78-13)",
+			func(t *testing.T) int64 {
+				data, _ := worstCFB(12)
+				f := readerFile(data)
+				return allocatedBy(func() {
+					if convert.IsOLECFB(f) {
+						_ = convert.ClassifyCFB(f, int64(len(data)))
+					}
+				})
+			}},
+		{"video", []string{"convert.SniffVideo"}, "convert.SniffVideo(rest)", videoSniffHeapBytes,
+			"avPeekLen 4096 B peek (avsniff.go:200) and its io.MultiReader; held by rest until the handler returns",
+			func(t *testing.T) int64 {
+				_, rest, _ := convert.Sniff(readerFile(make([]byte, 1<<20)))
+				return allocatedBy(func() { _, _, _ = convert.SniffVideo(rest) })
+			}},
+		{"audio", []string{"convert.SniffAudio"}, "convert.SniffAudio(rest)", audioSniffHeapBytes,
+			"mp3PeekLen 512 KiB peek (audiosniff.go:99) and its io.MultiReader; held until the handler returns",
+			func(t *testing.T) int64 {
+				_, rest, _ := convert.Sniff(readerFile(make([]byte, 1<<20)))
+				return allocatedBy(func() { _, _, _ = convert.SniffAudio(rest) })
+			}},
+		{"dimensions", []string{"convert.Dimensions"}, "convert.Dimensions(detected, rest)", dimensionsHeapBytes,
+			"DimensionPeekBytes peek (dimensions.go:58) and the 4-byte box type strings walkBoxes makes for heic, at most 4 levels x DimensionPeekBytes/8 boxes",
+			nil},
+		{"tex_gate", []string{"convert.VisitTeXPreamblePackages"}, "convert.VisitTeXPreamblePackages(latexPrefix", texScanHeapBytes,
+			"texScanHeapBytes (78-13): the string(prefix) copy of the window",
+			func(t *testing.T) int64 {
+				prefix, _, _ := worstTeXWindow(t)
+				return allocatedBy(func() {
+					convert.VisitTeXPreamblePackages(prefix, func(pkg string) bool { return convert.TeXPackageResolvable(pkg) })
+				})
+			}},
+		{"document_filename", []string{"rawPartFilename"}, "len(rawPartFilename(fhs[0]))", contentDispositionHeapBytes,
+			"mime.ParseMediaType of the part's Content-Disposition (inputnames_helper.go rawPartFilename): per RFC 2231 parameter with a fresh base name a map header 48 B and a first group 288 B (mediatype.go:181, :189), the continuation and params map growth, fmt.Sprintf and the stitched value (mediatype.go:208-231), at most 640 B; at most maxFormNonFileBytes / 6 parameters (\";k*0=v\" is the shortest)",
+			func(t *testing.T) int64 {
+				fh := &multipart.FileHeader{Filename: "a.tex", Header: textproto.MIMEHeader{"Content-Disposition": {worstContentDisposition(maxFormNonFileBytes)}}}
+				return allocatedBy(func() { _ = rawPartFilename(fh) })
+			}},
+		{"attachment_names", []string{"jobs.SafeInputFilename"}, "jobs.SafeInputFilename(rawPartFilename(a))", attachmentNamesHeapBytes,
+			"one rawPartFilename per attachment, at most jobs.MaxInputParts - 1, all part headers together within maxFormNonFileBytes; SafeInputFilename and the names map of at most 32 names of 255 B",
+			func(t *testing.T) int64 {
+				var fhs []*multipart.FileHeader
+				budget := maxFormNonFileBytes
+				for i := 0; i < jobs.MaxInputParts-1; i++ {
+					name := fmt.Sprintf("%03d", i) + strings.Repeat("n", maxInputFilenameBytes-7) + ".bib"
+					cd := `form-data; name="file"; filename="` + name + `"`
+					if i == 0 {
+						cd = worstContentDisposition(budget - (jobs.MaxInputParts-2)*(len(cd)+8))
+					}
+					fhs = append(fhs, &multipart.FileHeader{Filename: name, Header: textproto.MIMEHeader{"Content-Disposition": {cd}}})
+				}
+				return allocatedBy(func() {
+					names := map[string]bool{"doc.tex": true}
+					for _, a := range fhs {
+						if name, err := jobs.SafeInputFilename(rawPartFilename(a)); err == nil {
+							names[name] = true
+						}
+					}
+				})
+			}},
+		{"opts", []string{"convert.ParseDocOpts"}, "convert.ParseDocOpts([]byte(rawOpts))", optsHeapBytes,
+			"opts at most maxOptsBytes: the []byte copy, the strict decode, json.Marshal of the normalized struct and json.Unmarshal into a map; the largest of the seven engine parsers",
+			func(t *testing.T) int64 {
+				raw := string(worstOpts())
+				var most int64
+				for _, parse := range []func([]byte) (any, error){
+					func(b []byte) (any, error) { return convert.ParseDocOpts(b) },
+					func(b []byte) (any, error) { return convert.ParseHTMLOpts(b) },
+					func(b []byte) (any, error) { return convert.ParseAudioOpts(b) },
+					func(b []byte) (any, error) { return convert.ParseAVOpts(b) },
+					func(b []byte) (any, error) { return convert.ParseOCROpts(b) },
+					func(b []byte) (any, error) { return convert.ParsePandocOpts(b) },
+					func(b []byte) (any, error) { return convert.ParseCADOpts(b) },
+				} {
+					a := allocatedBy(func() {
+						o, _ := parse([]byte(raw))
+						normalized, _ := json.Marshal(o)
+						var m map[string]any
+						_ = json.Unmarshal(normalized, &m)
+					})
+					most = max(most, a)
+				}
+				return most
+			}},
+		{"accepted_response", []string{"writeJSON"}, "writeJSON(w, http.StatusAccepted, resp)", acceptedResponseHeapBytes,
+			"the 202 body: job id, status and the normalized opts map, encoded by json.Encoder (handlers.go writeJSON)",
+			func(t *testing.T) int64 {
+				var opts map[string]any
+				_ = json.Unmarshal([]byte(`{"pdf_profile":"pdf/a-2b"}`), &opts)
+				resp := map[string]any{"job_id": "00000000-0000-0000-0000-000000000000", "status": "queued", "opts": opts}
+				rec := httptest.NewRecorder()
+				return allocatedBy(func() { writeJSON(rec, http.StatusAccepted, resp) })
+			}},
+	}
+}
+
+type dimensionsCase struct {
+	format string
+	data   []byte
+}
+
+func worstDimensionsInputs() []dimensionsCase {
+	png := paddedFile([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\xff\xff\xff\xff\xff\xff\xff\xff"), 1<<20)
+	jpg := paddedFile([]byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0xFF, 0xFF, 0xFF, 0xFF}, 1<<20)
+	webp := paddedFile([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff"), 1<<20)
+	tiff := paddedFile([]byte{0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x02, 0x00,
+		0x00, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+		0x01, 0x01, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}, 1<<20)
+	heic := make([]byte, 1<<20)
+	box := func(b []byte, size int, typ string) {
+		binary.BigEndian.PutUint32(b, uint32(size))
+		copy(b[4:8], typ)
+	}
+	peek := convert.DimensionPeekBytes
+	box(heic, peek, "meta")
+	box(heic[12:], peek-12, "iprp")
+	box(heic[20:], peek-20, "ipco")
+	for off := 28; off+8 <= peek-20; off += 8 {
+		box(heic[off:], 8, "free")
+	}
+	box(heic[peek-20:], 20, "ispe")
+	binary.BigEndian.PutUint32(heic[peek-8:], 0xFFFFFFFF)
+	binary.BigEndian.PutUint32(heic[peek-4:], 0xFFFFFFFF)
+	return []dimensionsCase{{"png", png}, {"jpg", jpg}, {"webp", webp}, {"tiff", tiff}, {"heic", heic}}
+}
+
+func measuredRows(t *testing.T) map[string]int64 {
+	t.Helper()
+	got := map[string]int64{}
+	for _, row := range createSniffInventory() {
+		if row.measure == nil {
+			continue
+		}
+		got[row.name] = row.measure(t)
+	}
+	for _, c := range worstDimensionsInputs() {
+		_, rest, _ := convert.Sniff(readerFile(c.data))
+		a := allocatedBy(func() { _, _, _, _ = convert.Dimensions(c.format, rest) })
+		got["dimensions"] = max(got["dimensions"], a)
+	}
+	return got
+}
+
+func handlersSourceLine(t *testing.T, site string) int {
+	t.Helper()
+	raw, err := os.ReadFile("handlers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(raw), "\n") {
+		if strings.Contains(line, site) {
+			return i + 1
+		}
+	}
+	t.Fatalf("handlers.go has no line containing %q", site)
+	return 0
+}
+
+func TestCreateSniffInventoryRowsStayWithinTheirBounds(t *testing.T) {
+	for _, row := range createSniffInventory() {
+		if row.measure == nil {
+			continue
+		}
+		t.Run(row.name, func(t *testing.T) {
+			got := row.measure(t)
+			t.Logf("handlers.go:%d %s: allocated %d B (%.3f MiB), bound %d B (%.3f MiB): %s", handlersSourceLine(t, row.site), row.name, got, mib(got), row.bound, mib(row.bound), row.derivation)
+			if got > row.bound {
+				t.Errorf("%s allocated %d B on its worst input, more than its bound %d", row.name, got, row.bound)
+			}
+		})
+	}
+	for _, c := range worstDimensionsInputs() {
+		t.Run("dimensions_"+c.format, func(t *testing.T) {
+			_, rest, _ := convert.Sniff(readerFile(c.data))
+			var w, h uint32
+			var err error
+			got := allocatedBy(func() { w, h, _, err = convert.Dimensions(c.format, rest) })
+			t.Logf("handlers.go:%d dimensions %s: %dx%d err %v, allocated %d B, bound %d B", handlersSourceLine(t, "convert.Dimensions(detected, rest)"), c.format, w, h, err, got, dimensionsHeapBytes)
+			if err != nil || uint64(w)*uint64(h) < 1<<31 {
+				t.Errorf("%s: %dx%d err %v, want huge declared dimensions read without error", c.format, w, h, err)
+			}
+			if got > dimensionsHeapBytes {
+				t.Errorf("Dimensions(%s) allocated %d B, more than dimensionsHeapBytes %d", c.format, got, dimensionsHeapBytes)
+			}
+		})
+	}
+}
+
+type sniffPath struct {
+	name string
+	rows []string
+	why  string
+}
+
+func createSniffPaths() []sniffPath {
+	return []sniffPath{
+		{"document_filename", []string{"document_filename"}, "the file name bound runs right after the form, before any sniffer"},
+		{"zip", []string{"sniff_magic", "zip_directory"}, "rest keeps Sniff's prefix; the zip.Reader is dropped when sniffCreateContainer returns"},
+		{"html", []string{"sniff_magic", "html"}, "the window and its lower-case copy die with LooksLikeHTML"},
+		{"latex_gate", []string{"sniff_magic", "latex_window", "tex_gate"}, "latexPrefix is held from its read to the end; the gate copies it"},
+		{"latex_attachments", []string{"sniff_magic", "latex_window", "attachment_names"}, "only tectonic takes attachments, so latexPrefix is held; the gate's copy is dead by then"},
+		{"latex_accepted", []string{"sniff_magic", "latex_window", "opts", "accepted_response"}, "latexPrefix held to the 202"},
+		{"latex_falls_through", []string{"sniff_magic", "latex_window", "video", "audio"}, "a text-shaped .tex that is not LaTeX keeps latexPrefix while video and audio peek"},
+		{"text", []string{"sniff_magic", "text"}, "the window dies with LooksLikeText"},
+		{"cad", []string{"sniff_magic", "cad"}, "head and tail die with the CAD branch"},
+		{"cfb", []string{"sniff_magic", "cfb"}, "every CFB verdict returns 422"},
+		{"av_accepted", []string{"sniff_magic", "video", "audio", "opts", "accepted_response"}, "rest holds both peeks to the 202"},
+		{"image_accepted", []string{"sniff_magic", "dimensions", "opts", "accepted_response"}, "images are found by Sniff, so video and audio never run"},
+	}
+}
+
+func createSniffHeapTerm() (term int64, sums map[string]int64) {
+	bounds := map[string]int64{}
+	for _, row := range createSniffInventory() {
+		bounds[row.name] = row.bound
+	}
+	sums = map[string]int64{}
+	for _, p := range createSniffPaths() {
+		for _, r := range p.rows {
+			sums[p.name] += bounds[r]
+		}
+		term = max(term, sums[p.name])
+	}
+	return term, sums
+}
+
+const createSniffHeapBytes = 8257536
+
+func TestCreateSniffHeapTermCoversTheInventory(t *testing.T) {
+	rows := map[string]sniffRow{}
+	for _, row := range createSniffInventory() {
+		rows[row.name] = row
+	}
+	inPath := map[string]bool{}
+	for _, p := range createSniffPaths() {
+		for _, r := range p.rows {
+			if _, ok := rows[r]; !ok {
+				t.Errorf("path %s names row %s, which the inventory does not have", p.name, r)
+			}
+			inPath[r] = true
+		}
+	}
+	for name := range rows {
+		if !inPath[name] {
+			t.Errorf("row %s is in no path: its heap is never added to createSniffHeapBytes", name)
+		}
+	}
+	term, sums := createSniffHeapTerm()
+	measured := measuredRows(t)
+	var most int64
+	var mostRow string
+	t.Logf("%-18s %-12s %10s %10s  %s", "row", "site", "bound", "measured", "derivation")
+	for _, row := range createSniffInventory() {
+		t.Logf("%-18s handlers.go:%-4d %10d %10d  %s", row.name, handlersSourceLine(t, row.site), row.bound, measured[row.name], row.derivation)
+		if measured[row.name] > most {
+			most, mostRow = measured[row.name], row.name
+		}
+	}
+	for _, p := range createSniffPaths() {
+		t.Logf("path %-20s %10d B (%.3f MiB) = %s: %s", p.name, sums[p.name], mib(sums[p.name]), strings.Join(p.rows, " + "), p.why)
+	}
+	t.Logf("createSniffHeapBytes %d B (%.3f MiB): the largest path; the largest single measurement is %s, %d B (%.3f MiB)", createSniffHeapBytes, mib(createSniffHeapBytes), mostRow, most, mib(most))
+	if createSniffHeapBytes != term {
+		t.Errorf("createSniffHeapBytes = %d, the largest path sums to %d", createSniffHeapBytes, term)
+	}
+	if createSniffHeapBytes < most {
+		t.Errorf("createSniffHeapBytes %d is below the largest measurement %d (%s)", createSniffHeapBytes, most, mostRow)
+	}
+}
+
+var createSnifferCall = regexp.MustCompile(`^(Sniff|LooksLike|ReadCAD|SniffCAD|IsOLECFB|ClassifyCFB|SniffVideo|SniffAudio|Dimensions|VisitTeXPreamblePackages|ValidateSniffPrefix)`)
+
+func TestCreateSniffInventoryCoversEveryCall(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "handlers.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body *ast.BlockStmt
+	for _, d := range file.Decls {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "handleCreateJob" {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("handlers.go has no handleCreateJob")
+	}
+	called := map[string]int{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "convert" && createSnifferCall.MatchString(fun.Sel.Name) {
+				called["convert."+fun.Sel.Name] = fset.Position(call.Pos()).Line
+			}
+			if pkg, ok := fun.X.(*ast.Ident); ok && pkg.Name == "jobs" && fun.Sel.Name == "SafeInputFilename" {
+				called["jobs.SafeInputFilename"] = fset.Position(call.Pos()).Line
+			}
+		case *ast.Ident:
+			switch fun.Name {
+			case "readSniffWindow", "sniffCreateContainer", "rawPartFilename", "writeJSON":
+				called[fun.Name] = fset.Position(call.Pos()).Line
+			}
+		}
+		return true
+	})
+	listed := map[string]string{}
+	for _, row := range createSniffInventory() {
+		for _, c := range row.calls {
+			listed[c] = row.name
+		}
+	}
+	for c, line := range called {
+		if _, ok := listed[c]; !ok {
+			t.Errorf("handleCreateJob calls %s at handlers.go:%d and no inventory row names it", c, line)
+		}
+	}
+	for c, row := range listed {
+		if c == "convert.ParseDocOpts" {
+			continue
+		}
+		if _, ok := called[c]; !ok {
+			t.Errorf("row %s names %s, which handleCreateJob does not call", row, c)
+		}
+	}
+	t.Logf("%d sniffer calls in handleCreateJob, every one in a row", len(called))
+
+	for _, c := range []struct{ file, decl string }{
+		{"../convert/avsniff.go", "const avPeekLen = 4 * 1024"},
+		{"../convert/audiosniff.go", "const mp3PeekLen = 512 * 1024"},
+	} {
+		raw, err := os.ReadFile(c.file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), c.decl) {
+			t.Errorf("%s no longer declares %q: avPeekLenBytes and mp3PeekLenBytes copy those values", c.file, c.decl)
+		}
 	}
 }
