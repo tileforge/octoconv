@@ -111,4 +111,6 @@ var RejectBindings = map[string]RejectBinding{
 	"ambiguous_stl":          {ErrCode: errcode.AmbiguousSTL},
 	"binary_dxf_unsupported": {ErrCode: errcode.BinaryDXFUnsupported},
 	"dwg_unsupported":        {ErrCode: errcode.DWGUnsupported},
+
+	"zip_directory_too_large": {ErrCode: errcode.InvalidRequest},
 }
