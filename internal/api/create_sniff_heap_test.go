@@ -3,10 +3,16 @@ package api
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"io"
+	"net/http"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/convert"
 )
@@ -14,6 +20,10 @@ import (
 const cfbClassifyHeapBytes = 1 << 20
 
 const texScanHeapBytes = convert.SniffWindowBytes + 64<<10
+
+const zipSniffHeapBytes = 1 << 20
+
+const worstZipDirectoryRecords = 182000
 
 const (
 	worstCFBFATSectors = 109
@@ -55,6 +65,50 @@ func worstCFB(sectorShift uint16) (data []byte, lastDirOffset int64) {
 		}
 	}
 	return buf, int64(1+int(firstDir)+worstCFBDirSectors-1) * int64(ss)
+}
+
+func worstZipDirectory(records int) []byte {
+	var b bytes.Buffer
+	local := make([]byte, 30)
+	binary.LittleEndian.PutUint32(local[0:], 0x04034b50)
+	b.Write(local)
+	dirOff := b.Len()
+	rec := make([]byte, zipCentralDirMinRecordLen)
+	binary.LittleEndian.PutUint32(rec[0:], 0x02014b50)
+	for i := 0; i < records; i++ {
+		b.Write(rec)
+	}
+	dirSize := b.Len() - dirOff
+	eocd := make([]byte, zipEOCDFixedLen)
+	binary.LittleEndian.PutUint32(eocd[0:], 0x06054b50)
+	binary.LittleEndian.PutUint16(eocd[8:], uint16(records))
+	binary.LittleEndian.PutUint16(eocd[10:], uint16(records))
+	binary.LittleEndian.PutUint32(eocd[12:], uint32(dirSize))
+	binary.LittleEndian.PutUint32(eocd[16:], uint32(dirOff))
+	b.Write(eocd)
+	return b.Bytes()
+}
+
+func zipEntriesAtTheBound(t *testing.T) int {
+	t.Helper()
+	within := func(n int) bool {
+		data := manyEntriesDocxFixture(t, n)
+		outcome, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+		return !outcome.exceeds()
+	}
+	lo, hi := 50, inspectMaxZipDirEntries+1
+	if !within(lo) || within(hi) {
+		t.Fatalf("manyEntriesDocxFixture: %d entries must be within inspect's bound and %d past it", lo, hi)
+	}
+	for hi-lo > 1 {
+		mid := (lo + hi) / 2
+		if within(mid) {
+			lo = mid
+		} else {
+			hi = mid
+		}
+	}
+	return lo
 }
 
 func worstTeXWindow(t *testing.T) (prefix []byte, name string, names int) {
@@ -163,4 +217,203 @@ func TestCreateSniffersStayWithinTheirTerms(t *testing.T) {
 			t.Errorf("the TeX package gate allocated %d B on the worst window, more than texScanHeapBytes %d", allocated, texScanHeapBytes)
 		}
 	})
+
+	t.Run("zip_directory_worst", func(t *testing.T) {
+		data := worstZipDirectory(worstZipDirectoryRecords)
+		file := memMultipartFile{bytes.NewReader(data)}
+		var cr convert.ContainerResult
+		var outcome zipBoundOutcome
+		var err error
+		allocated := allocatedBy(func() {
+			cr, outcome, err = sniffCreateContainer(file, int64(len(data)))
+		})
+		t.Logf("%d minimal central-directory records, file %d B (%.2f MiB): outcome %v, format %q, err %v, allocated by the call %d B (%.2f MiB), term %d B (%.2f MiB)",
+			worstZipDirectoryRecords, len(data), mib(int64(len(data))), outcome, cr.Format, err, allocated, mib(allocated), zipSniffHeapBytes, mib(zipSniffHeapBytes))
+		if outcome != zipBoundExceedsCeiling {
+			t.Errorf("outcome = %v, want zipBoundExceedsCeiling: the directory is past inspect's structural bound", outcome)
+		}
+		if allocated > zipSniffHeapBytes {
+			t.Errorf("sniffCreateContainer allocated %d B on a %d-record directory, more than zipSniffHeapBytes %d", allocated, worstZipDirectoryRecords, zipSniffHeapBytes)
+		}
+	})
+
+	t.Run("zip_directory_at_the_bound", func(t *testing.T) {
+		n := zipEntriesAtTheBound(t)
+		data := manyEntriesDocxFixture(t, n)
+		file := memMultipartFile{bytes.NewReader(data)}
+		var cr convert.ContainerResult
+		var outcome zipBoundOutcome
+		var err error
+		allocated := allocatedBy(func() {
+			cr, outcome, err = sniffCreateContainer(file, int64(len(data)))
+		})
+		t.Logf("manyEntriesDocxFixture(%d), %d entries, file %d B (%.2f MiB): outcome %v, format %q, err %v, allocated by the call %d B (%.2f MiB), term %d B (%.2f MiB)",
+			n, n+1, len(data), mib(int64(len(data))), outcome, cr.Format, err, allocated, mib(allocated), zipSniffHeapBytes, mib(zipSniffHeapBytes))
+		if outcome != zipBoundOK || err != nil || cr.Format != "docx" {
+			t.Errorf("outcome %v, err %v, format %q: want zipBoundOK, nil and docx for the largest archive inspect still reads", outcome, err, cr.Format)
+		}
+		if allocated > zipSniffHeapBytes {
+			t.Errorf("sniffCreateContainer allocated %d B on the largest archive inspect still reads, more than zipSniffHeapBytes %d", allocated, zipSniffHeapBytes)
+		}
+	})
+}
+
+type zipVerdictInput struct {
+	name string
+	data []byte
+}
+
+func zipVerdictCorpus(t *testing.T) []zipVerdictInput {
+	t.Helper()
+	var in []zipVerdictInput
+	for _, c := range zipDirectoryDifferentialCorpus(t) {
+		in = append(in, zipVerdictInput{c.name, c.data})
+	}
+	n := zipEntriesAtTheBound(t)
+	const nameLen = 2000
+	recordLen := uint32(zipCentralDirMinRecordLen + nameLen)
+	corruptSignature := docxFixture(t)
+	idx := bytes.Index(corruptSignature, []byte{'P', 'K', 0x01, 0x02})
+	if idx < 0 {
+		t.Fatal("docxFixture has no central-directory record")
+	}
+	corruptSignature[idx+2], corruptSignature[idx+3] = 0x09, 0x09
+	overshoot := docxFixture(t)
+	binary.LittleEndian.PutUint16(overshoot[idx+30:idx+32], 0xFFF0)
+	return append(in,
+		zipVerdictInput{"many_entries_50", manyEntriesDocxFixture(t, 50)},
+		zipVerdictInput{"many_entries_over_the_entry_ceiling", manyEntriesDocxFixture(t, inspectMaxZipDirEntries+1)},
+		zipVerdictInput{"many_entries_at_the_bound", manyEntriesDocxFixture(t, n)},
+		zipVerdictInput{"many_entries_one_past_the_bound", manyEntriesDocxFixture(t, n+1)},
+		zipVerdictInput{"real_directory_window_exhaustion", realZipCentralDirectoryFixture(100, nameLen, 100, 100*recordLen)},
+		zipVerdictInput{"real_directory_lying_dirbytes", realZipCentralDirectoryFixture(65537, 0, 1, zipCentralDirMinRecordLen)},
+		zipVerdictInput{"corrupt_directory_signature", corruptSignature},
+		zipVerdictInput{"record_overshoots_the_directory", overshoot},
+		zipVerdictInput{"worst_directory", worstZipDirectory(worstZipDirectoryRecords)},
+	)
+}
+
+func postCreateZip(t *testing.T, data []byte) (rawResult, *fakeRepo, *fakeStorage) {
+	t.Helper()
+	repo, store := &fakeRepo{}, &fakeStorage{}
+	_, ts := newIntakeServerWith(t, repo, store, createIntakeConfig(64<<20), 30*time.Second, 32<<10)
+	body, ct := multipartBody(t, "big.docx", "pdf", data)
+	return rawPost(t, ts, "/v1/jobs", nil, ct, int64(body.Len()), body), repo, store
+}
+
+func createZipVerdict(t *testing.T, res rawResult, repo *fakeRepo) string {
+	t.Helper()
+	const mismatch = "declared format docx does not match detected content "
+	switch {
+	case res.status == http.StatusAccepted && repo.created != nil:
+		return "format " + repo.created.SourceFormat
+	case res.status != http.StatusUnprocessableEntity || res.payload["code"] != "invalid_request":
+	case res.payload["error"] == createZipDirectoryTooLargeMessage:
+		return "directory too large"
+	case res.payload["error"] == "unrecognized file content for big.docx":
+		return "not a recognized container"
+	case strings.HasPrefix(res.payload["error"], mismatch):
+		return "format " + strings.TrimPrefix(res.payload["error"], mismatch)
+	}
+	t.Fatalf("create answered %d %v: not a verdict about the archive", res.status, res.payload)
+	return ""
+}
+
+func inspectZipVerdict(t *testing.T, srv *Server, data []byte) string {
+	t.Helper()
+	status, body := doInspect(t, srv, "big.docx", data)
+	if status != http.StatusOK {
+		t.Fatalf("inspect answered %d: %s", status, body)
+	}
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode inspect body: %v", err)
+	}
+	switch resp.Format {
+	case inspectZipTooLargeFormat:
+		return "directory too large"
+	case inspectZipReadFailedFormat, inspectZipMalformedFormat, "":
+		return "not a recognized container"
+	}
+	return "format " + resp.Format
+}
+
+func TestCreateRefusesAnOversizedZipDirectory(t *testing.T) {
+	data := worstZipDirectory(worstZipDirectoryRecords)
+	res, repo, store := postCreateZip(t, data)
+	t.Logf("big.docx with %d minimal central-directory records (%d B): status %d %v", worstZipDirectoryRecords, len(data), res.status, res.payload)
+	if res.status != http.StatusUnprocessableEntity || res.payload["code"] != "invalid_request" || res.payload["error"] != createZipDirectoryTooLargeMessage {
+		t.Errorf("status %d payload %v, want 422 invalid_request %q", res.status, res.payload, createZipDirectoryTooLargeMessage)
+	}
+	if store.uploaded {
+		t.Error("the archive reached storage")
+	}
+	if repo.created != nil {
+		t.Errorf("a job was created: %+v", repo.created)
+	}
+}
+
+func TestCreateAndInspectAgreeOnZipDirectories(t *testing.T) {
+	inspectSrv, _ := newIntakeServer(t, createIntakeConfig(64<<20), 30*time.Second, 32<<10)
+	for _, in := range zipVerdictCorpus(t) {
+		t.Run(in.name, func(t *testing.T) {
+			res, repo, _ := postCreateZip(t, in.data)
+			created := createZipVerdict(t, res, repo)
+			inspected := inspectZipVerdict(t, inspectSrv, in.data)
+			t.Logf("%d B: create %q (status %d), inspect %q", len(in.data), created, res.status, inspected)
+			if created != inspected {
+				t.Errorf("create says %q, inspect says %q: one file, two verdicts", created, inspected)
+			}
+		})
+	}
+}
+
+func TestZipDirectoryRefusalIsStatedInTheContracts(t *testing.T) {
+	want := createZipDirectoryTooLargeMessage
+	collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+	codes, err := os.ReadFile("../../docs/ERROR-CODES.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row string
+	for _, line := range strings.Split(string(codes), "\n") {
+		if strings.HasPrefix(line, "| `invalid_request` |") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatal("docs/ERROR-CODES.md has no invalid_request row")
+	}
+	if !strings.Contains(row, want) {
+		t.Errorf("docs/ERROR-CODES.md: the invalid_request row does not state %q; it reads %q", want, row)
+	}
+	if !strings.Contains(row, "422") {
+		t.Errorf("docs/ERROR-CODES.md: the invalid_request row does not name 422, the status create refuses the archive with; it reads %q", row)
+	}
+
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
+	}
+	if d := openAPIString(t, doc, "paths", "/v1/jobs", "post", "responses", "422", "description"); !strings.Contains(collapse(d), want) {
+		t.Errorf("%s: the 422 of POST /v1/jobs does not state %q; it reads %q", specPath, want, d)
+	}
+
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, semantics, ok := strings.Cut(string(readme), "**Status semantics**")
+	if !ok {
+		t.Fatal("README.md has no Status semantics section")
+	}
+	semantics, _, _ = strings.Cut(semantics, "\n**")
+	if !strings.Contains(collapse(semantics), want) {
+		t.Errorf("README.md: Status semantics does not state %q; it reads %q", want, semantics)
+	}
 }

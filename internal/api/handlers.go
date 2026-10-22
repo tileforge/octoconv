@@ -60,6 +60,7 @@ const (
 	createIntakeMaxConcurrent         = 8
 	createIntakeBusyRetryAfterSeconds = 3
 	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
+	createZipDirectoryTooLargeMessage = "the archive's central directory is larger than this service reads; repackage the archive with fewer entries"
 	// multipartInMemoryBudget caps how many bytes of a multipart upload
 	// ParseMultipartForm buffers in the process heap; larger file parts spill
 	// to temp files on disk (Go's documented behavior). It is deliberately
