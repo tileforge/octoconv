@@ -137,20 +137,22 @@ func TestIntakeIgnoresUnknownFieldsWithinTheBound(t *testing.T) {
 
 func TestIntakeRefusesANonMultipartBodyUnread(t *testing.T) {
 	for _, c := range boundFormCases() {
-		t.Run(c.path, func(t *testing.T) {
-			body := io.MultiReader(strings.NewReader("a="), strings.NewReader(strings.Repeat("b", 1<<20)))
-			res := postBoundForm(t, c.path, "application/x-www-form-urlencoded", body)
-			t.Logf("%s: status %d after %d bytes of the body were read", c.path, res.rec.Code, res.read)
-			if res.rec.Code != http.StatusBadRequest {
-				t.Errorf("%s: status = %d, want 400", c.path, res.rec.Code)
-			}
-			assertErrorCode(t, res.rec.Body.Bytes(), "invalid_request")
-			if got := errorMessage(t, res.rec.Body.Bytes()); got != "invalid multipart form" {
-				t.Errorf("%s: error = %q, want %q", c.path, got, "invalid multipart form")
-			}
-			if res.read != 0 {
-				t.Errorf("%s: %d bytes of a non-multipart body were read, want 0", c.path, res.read)
-			}
-		})
+		for _, contentType := range []string{"application/x-www-form-urlencoded", "application/x-www-form-urlencoded; boundary=intakeform"} {
+			t.Run(c.path+" "+contentType, func(t *testing.T) {
+				body := io.MultiReader(strings.NewReader("a="), strings.NewReader(strings.Repeat("b", 1<<20)))
+				res := postBoundForm(t, c.path, contentType, body)
+				t.Logf("%s %s: status %d after %d bytes of the body were read", c.path, contentType, res.rec.Code, res.read)
+				if res.rec.Code != http.StatusBadRequest {
+					t.Errorf("%s: status = %d, want 400", c.path, res.rec.Code)
+				}
+				assertErrorCode(t, res.rec.Body.Bytes(), "invalid_request")
+				if got := errorMessage(t, res.rec.Body.Bytes()); got != "invalid multipart form" {
+					t.Errorf("%s: error = %q, want %q", c.path, got, "invalid multipart form")
+				}
+				if res.read != 0 {
+					t.Errorf("%s %s: %d bytes of a non-multipart body were read, want 0", c.path, contentType, res.read)
+				}
+			})
+		}
 	}
 }
