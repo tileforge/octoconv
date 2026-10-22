@@ -416,3 +416,29 @@ func allocatedBy(call func()) uint64 {
 	runtime.ReadMemStats(&after)
 	return after.TotalAlloc - before.TotalAlloc
 }
+
+func TestPDFInflateStaysUnderTheAllowance(t *testing.T) {
+	const work = int64(8 << 20)
+	data, streams := worstFlatePDF(work)
+	limit := uint64(work + 2*(work/4+1) + 4<<20)
+	var res FamilyResult
+	var elapsed time.Duration
+	allocated := allocatedBy(func() {
+		tr := NewTracker(Budget{MaxBytes: work})
+		start := time.Now()
+		res = AnalyzePDF(bytes.NewReader(data), int64(len(data)), work, tr)
+		elapsed = time.Since(start)
+	})
+	t.Logf("pdf_flate_worst: %d streams of %d inflated bytes, %d B file, work %d: allocated %d B (%.2f MiB, limit %d B = %.2f MiB), %s (MaxDuration %s), text_layer %v/%v",
+		streams, pdfMaxInflatedStreamBytes, len(data), work, allocated, float64(allocated)/(1<<20), limit, float64(limit)/(1<<20), elapsed, defaultMaxDuration,
+		res.Characteristics["text_layer"], res.Characteristics["text_layer_reason"])
+	if res.Characteristics["text_layer"] != nil || res.Characteristics["text_layer_reason"] != string(ReasonWorkCeilingBytes) {
+		t.Errorf("text_layer = %v/%v, want <nil>/%s as the reference reports", res.Characteristics["text_layer"], res.Characteristics["text_layer_reason"], ReasonWorkCeilingBytes)
+	}
+	if allocated > limit {
+		t.Errorf("AnalyzePDF allocated %d B on pdf_flate_worst, want at most work + 2 x (inflateAllowance + 1) + 4 MiB = %d B", allocated, limit)
+	}
+	if elapsed > defaultMaxDuration {
+		t.Errorf("AnalyzePDF took %s on pdf_flate_worst, want at most MaxDuration %s", elapsed, defaultMaxDuration)
+	}
+}
