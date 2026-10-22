@@ -268,6 +268,10 @@ really pings Postgres, Redis and S3.
   unchanged
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
+- A ZIP-based upload whose central directory is past the bound `POST /v1/inspect` reads →
+  `422` with `code: "invalid_request"` and the message "the archive's central directory is
+  larger than this service reads; repackage the archive with fewer entries", rejected before
+  anything touches storage
 
 **Correlating a job with your own request.** Send your identifier as a
 `Correlation-Id` header on `POST /v1/jobs`. It comes back in the job status and in the

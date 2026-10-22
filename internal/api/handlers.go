@@ -330,8 +330,13 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// disturbs Sniff's sequential cursor, so rest remains valid below.
 		var prefix [4]byte
 		if n, _ := file.ReadAt(prefix[:], 0); n == 4 && bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
-			cr, _, cerr := sniffCreateContainer(file, header.Size)
-			if cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
+			cr, outcome, cerr := sniffCreateContainer(file, header.Size)
+			if outcome == zipBoundExceedsCeiling {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=zip_directory_too_large", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, createZipDirectoryTooLargeMessage)
+				return
+			}
+			if cerr == nil && outcome == zipBoundOK && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				// D-02/D-04: reject a zip-bomb-shaped declared uncompressed
 				// total before any storage write or decompression.
@@ -1242,8 +1247,35 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func sniffCreateContainer(file multipart.File, size int64) (cr convert.ContainerResult, outcome zipBoundOutcome, err error) {
+	bounded := &readFailureRecorder{r: file}
+	if outcome, _, _ = zipDirectoryExceedsStructuralBound(bounded, size); outcome.exceeds() {
+		return convert.ContainerResult{}, outcome, nil
+	}
+	if bounded.err != nil {
+		return convert.ContainerResult{}, zipBoundReadFailed, bounded.err
+	}
 	cr, err = convert.SniffContainer(file, size)
-	return cr, zipBoundOK, err
+	switch {
+	case err == nil:
+		return cr, zipBoundOK, nil
+	case errors.Is(err, convert.ErrNotAZip):
+		return convert.ContainerResult{}, zipBoundMalformed, err
+	default:
+		return convert.ContainerResult{}, zipBoundReadFailed, err
+	}
+}
+
+type readFailureRecorder struct {
+	r   io.ReaderAt
+	err error
+}
+
+func (f *readFailureRecorder) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.r.ReadAt(p, off)
+	if err != nil && err != io.EOF && f.err == nil {
+		f.err = err
+	}
+	return n, err
 }
 
 // enqueueForEngine routes one created job to its engine-class queue. The

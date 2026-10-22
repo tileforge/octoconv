@@ -1272,6 +1272,11 @@ paths:
             progress_webhook and any field this endpoint does not read count
             toward the 65536-byte bound on the form's non-file data (413
             payload_too_large, form fields too large).
+            A ZIP-based upload whose central directory is past the bound
+            POST /v1/inspect reads is refused with invalid_request and the
+            message "the archive's central directory is larger than this
+            service reads; repackage the archive with fewer entries", before
+            anything is stored.
           content:
             application/json:
               schema:

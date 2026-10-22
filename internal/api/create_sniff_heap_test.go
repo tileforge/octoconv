@@ -1,9 +1,11 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"go.yaml.in/yaml/v3"
 
@@ -21,7 +24,73 @@ const cfbClassifyHeapBytes = 1 << 20
 
 const texScanHeapBytes = convert.SniffWindowBytes + 64<<10
 
-const zipSniffHeapBytes = 1 << 20
+const zipSniffHeapBytes = 23 << 16
+
+type heapTerm struct {
+	what   string
+	file   string
+	line   int
+	source string
+	bytes  int64
+}
+
+const zipFileSliceGrowthBytes = 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1152 + 2304 + 4864 + 8192 + 12288 + 18432 + 24576 + 32768 + 49152
+
+func zipSniffTerms() []heapTerm {
+	records := int64(inspectMaxZipDirEntries + 1)
+	return []heapTerm{
+		{"inspect bound: EOCD tail window, 66560 B rounded up to 9 pages", "internal/api/inspect_handlers.go", 0, "buf := make([]byte, tailLen)", 73728},
+		{"inspect bound: directory window inspectMaxZipDirBytes, 23 pages", "internal/api/inspect_handlers.go", 0, "window := make([]byte, windowLen)", inspectMaxZipDirBytes},
+		{"zip.NewReader: EOCD search, 1024 B then 65*1024 B rounded up to 9 pages", "$GOROOT/src/archive/zip/reader.go", 576, "buf = make([]byte, int(bLen))", 1024 + 73728},
+		{"zip.NewReader: EOCD comment copy, 65535 B rounded up to 8 pages", "$GOROOT/src/archive/zip/reader.go", 605, "d.comment = string(b[:l])", 65536},
+		{"zip.NewReader: bufio.Reader over the directory, 4096 B buffer and the struct", "$GOROOT/src/archive/zip/reader.go", 140, "buf := bufio.NewReader(rs)", 4096 + 80},
+		{"zip.NewReader: one File per record and one for the read that ends the walk, 176 B size class", "$GOROOT/src/archive/zip/reader.go", 147, "f := &File{zip: r, zipr: rdr}", records * 176},
+		{"readDirectoryHeader: the 46-byte header buffer escapes, 48 B size class", "$GOROOT/src/archive/zip/reader.go", 358, "var buf [directoryHeaderLen]byte", records * 48},
+		{"zip.NewReader: r.File grows by append to 4096 pointers, nextslicecap and roundupsize with the malloc header: 16 allocations up to 49152 B", "$GOROOT/src/archive/zip/reader.go", 156, "r.File = append(r.File, f)", zipFileSliceGrowthBytes},
+		{"small objects: zip.Reader (reader.go:111), directoryEnd (reader.go:592), readerAtRecorder and nameCount (docsniff.go), readFailureRecorder (handlers.go)", "$GOROOT/src/archive/zip/reader.go", 111, "zr := new(Reader)", 1024},
+	}
+}
+
+func heapTermsSum(terms []heapTerm) int64 {
+	var sum int64
+	for _, term := range terms {
+		sum += term.bytes
+	}
+	return sum
+}
+
+func roundUp64KiB(n int64) int64 {
+	return (n + 64<<10 - 1) &^ (64<<10 - 1)
+}
+
+func checkHeapTermSources(t *testing.T, terms []heapTerm) {
+	t.Helper()
+	for _, term := range terms {
+		path := strings.Replace(term.file, "$GOROOT", runtime.GOROOT(), 1)
+		if !strings.HasPrefix(term.file, "$GOROOT") {
+			path = "../../" + term.file
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", term.what, err)
+		}
+		lines := strings.Split(string(raw), "\n")
+		at := term.line
+		if at == 0 {
+			for i, l := range lines {
+				if strings.Contains(l, term.source) {
+					at = i + 1
+					break
+				}
+			}
+		}
+		if at == 0 || at > len(lines) || !strings.Contains(lines[at-1], term.source) {
+			t.Errorf("%s: %s:%d does not read %q", term.what, term.file, at, term.source)
+			continue
+		}
+		t.Logf("%8d B  %s:%d  %s", term.bytes, term.file, at, term.what)
+	}
+}
 
 const worstZipDirectoryRecords = 182000
 
@@ -237,6 +306,27 @@ func TestCreateSniffersStayWithinTheirTerms(t *testing.T) {
 		}
 	})
 
+	t.Run("zip_directory_worst_within_bound", func(t *testing.T) {
+		data := worstZipDirectory(inspectMaxZipDirEntries)
+		binary.LittleEndian.PutUint16(data[len(data)-2:], 0xFFFF)
+		data = append(data, make([]byte, 0xFFFF)...)
+		file := memMultipartFile{bytes.NewReader(data)}
+		var cr convert.ContainerResult
+		var outcome zipBoundOutcome
+		var err error
+		allocated := allocatedBy(func() {
+			cr, outcome, err = sniffCreateContainer(file, int64(len(data)))
+		})
+		t.Logf("%d minimal central-directory records and a 65535-byte EOCD comment, file %d B: outcome %v, format %q, err %v, allocated by the call %d B (%.3f MiB), term %d B (%.4f MiB)",
+			inspectMaxZipDirEntries, len(data), outcome, cr.Format, err, allocated, mib(allocated), zipSniffHeapBytes, mib(zipSniffHeapBytes))
+		if outcome != zipBoundOK || err != nil {
+			t.Errorf("outcome %v, err %v: want zipBoundOK and nil, the directory is inside inspect's bound", outcome, err)
+		}
+		if allocated > zipSniffHeapBytes {
+			t.Errorf("sniffCreateContainer allocated %d B on the worst directory inside inspect's bound, more than zipSniffHeapBytes %d", allocated, zipSniffHeapBytes)
+		}
+	})
+
 	t.Run("zip_directory_at_the_bound", func(t *testing.T) {
 		n := zipEntriesAtTheBound(t)
 		data := manyEntriesDocxFixture(t, n)
@@ -415,5 +505,80 @@ func TestZipDirectoryRefusalIsStatedInTheContracts(t *testing.T) {
 	semantics, _, _ = strings.Cut(semantics, "\n**")
 	if !strings.Contains(collapse(semantics), want) {
 		t.Errorf("README.md: Status semantics does not state %q; it reads %q", want, semantics)
+	}
+}
+
+func TestZipSniffHeapTermIsDerived(t *testing.T) {
+	terms := zipSniffTerms()
+	checkHeapTermSources(t, terms)
+	sum := heapTermsSum(terms)
+	t.Logf("sum %d B (%.3f MiB), rounded up to 64 KiB %d B, zipSniffHeapBytes %d B (%.4f MiB)", sum, mib(sum), roundUp64KiB(sum), zipSniffHeapBytes, mib(zipSniffHeapBytes))
+	if roundUp64KiB(sum) != zipSniffHeapBytes {
+		t.Errorf("zipSniffHeapBytes = %d, the terms sum to %d and round up to %d", zipSniffHeapBytes, sum, roundUp64KiB(sum))
+	}
+	if got := int64(unsafe.Sizeof(zip.File{})); got != 176 {
+		t.Errorf("unsafe.Sizeof(zip.File{}) = %d, the per-record term assumes 176", got)
+	}
+	var files []*zip.File
+	growth := allocatedBy(func() {
+		for i := 0; i < inspectMaxZipDirEntries; i++ {
+			files = append(files, nil)
+		}
+	})
+	runtime.KeepAlive(files)
+	t.Logf("append of %d *zip.File from nil: %d B allocated, term %d B", inspectMaxZipDirEntries, growth, zipFileSliceGrowthBytes)
+	if growth > zipFileSliceGrowthBytes {
+		t.Errorf("growing []*zip.File to %d entries allocated %d B, more than zipFileSliceGrowthBytes %d", inspectMaxZipDirEntries, growth, zipFileSliceGrowthBytes)
+	}
+}
+
+type flakyReadAtFile struct {
+	*bytes.Reader
+	failOn map[int]bool
+	reads  int
+}
+
+func (f *flakyReadAtFile) ReadAt(p []byte, off int64) (int, error) {
+	f.reads++
+	if f.failOn[f.reads] {
+		return 0, errors.New("injected read failure")
+	}
+	return f.Reader.ReadAt(p, off)
+}
+
+func (f *flakyReadAtFile) Close() error { return nil }
+
+func TestSniffCreateContainerNeverReportsOKForUnexaminedInput(t *testing.T) {
+	docx := docxFixture(t)
+	noEOCD := append([]byte{'P', 'K', 3, 4}, make([]byte, 100)...)
+	for _, c := range []struct {
+		name    string
+		data    []byte
+		failOn  map[int]bool
+		want    zipBoundOutcome
+		format  string
+		maxRead int
+	}{
+		{"valid_docx", docx, nil, zipBoundOK, "docx", 0},
+		{"bare_zip", bareZipFixture(t), nil, zipBoundOK, "", 0},
+		{"tail_read_fails_once", docx, map[int]bool{1: true}, zipBoundReadFailed, "", 1},
+		{"directory_read_fails_after_the_bound", docx, map[int]bool{3: true}, zipBoundReadFailed, "", 0},
+		{"shorter_than_an_eocd", []byte{'P', 'K', 3, 4}, nil, zipBoundMalformed, "", 0},
+		{"no_eocd", noEOCD, nil, zipBoundMalformed, "", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			file := &flakyReadAtFile{Reader: bytes.NewReader(c.data), failOn: c.failOn}
+			cr, outcome, err := sniffCreateContainer(file, int64(len(c.data)))
+			t.Logf("%d B: outcome %v, format %q, err %v, reads %d", len(c.data), outcome, cr.Format, err, file.reads)
+			if outcome != c.want || cr.Format != c.format {
+				t.Errorf("outcome %v format %q, want %v %q", outcome, cr.Format, c.want, c.format)
+			}
+			if outcome == zipBoundOK && err != nil {
+				t.Errorf("zipBoundOK with error %v", err)
+			}
+			if c.maxRead > 0 && file.reads > c.maxRead {
+				t.Errorf("%d reads after the bound could not read the tail: the archive was parsed without the bound having examined it", file.reads)
+			}
+		})
 	}
 }
