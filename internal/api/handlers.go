@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -306,8 +307,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	// Detect the actual content format by magic bytes BEFORE anything else
 	// touches storage or Postgres (D-01/D-02/D-05). rest re-stitches the
-	// peeked prefix onto the remaining stream so the full file still reaches
-	// s3.Upload below.
+	// peeked prefix onto the remaining stream for the stream sniffers below;
+	// s3.Upload reads the file itself by offset, not rest.
 	// latexPrefix holds the validated sniff window for a declared-latex upload,
 	// read ONCE below and used twice: for the content check that sets
 	// detected == "latex", and for the tex-package admission gate after the
@@ -518,8 +519,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// whether or not it finds a match. If `rest` were only reassigned on
 		// a match, a miss would silently leave `rest` pointing at a reader
 		// that has already lost its first bytes to this drain, and
-		// SniffAudio's subsequent read (or, on a genuine unrecognized upload
-		// with no further sniffer, s.storage.Upload) would receive a
+		// SniffAudio's subsequent read (or any later stream sniffer that
+		// reads rest, such as Dimensions) would receive a
 		// truncated stream (the exact T-31-02 class of bug). `rest` is
 		// therefore ALWAYS rebound to SniffVideo's returned reader on
 		// verr == nil, regardless of match; only `detected` is conditional.
@@ -539,8 +540,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// byte-0 reader), NOT `file` -- file's sequential cursor has already
 		// advanced past Sniff's first sniffLen=12 bytes, and SniffAudio
 		// re-stitches its OWN rest from whatever reader it's given. Passing
-		// `file` here instead would silently drop the first 12 bytes of every
-		// audio upload at s.storage.Upload below (T-31-02). No source gate --
+		// `file` here instead would hide the first 12 bytes of every audio
+		// upload from SniffAudio's magic-byte match (T-31-02). No source gate --
 		// SniffAudio self-identifies from magic bytes, matching the
 		// unconditional ZIP/OLE-CFB detection shape above.
 		if audioDetected, audioRest, aerr := convert.SniffAudio(rest); aerr == nil && audioDetected != "" {
@@ -775,21 +776,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	// VALID-03: reject a decompression-bomb-shaped upload (declared pixel
 	// dimensions exceeding the configured limit) before any storage write.
-	// convert.Dimensions re-stitches its own bounded peek onto rest, so the
-	// full original stream still reaches s.storage.Upload below unmodified.
+	// convert.Dimensions reads only a bounded peek of rest; s.storage.Upload
+	// below reads the file by offset, so the peeked stream is not reused.
 	// HasDimensionLimit scopes this to image formats only — pixel dimensions
 	// are not a document concept, so documents skip the block entirely
 	// (fixes the confirmed regression where Dimensions() unconditionally
 	// 422'd every document upload, RESEARCH.md Pitfall 5).
 	if convert.HasDimensionLimit(detected) {
-		width, height, dimRest, err := convert.Dimensions(detected, rest)
+		width, height, _, err := convert.Dimensions(detected, rest)
 		if err != nil {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimensions_unknown", client.ID, filename)
 			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"cannot determine declared image dimensions for "+filename)
 			return
 		}
-		rest = dimRest
 		totalPixels := uint64(width) * uint64(height)
 		if totalPixels > s.maxImagePixels {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimension_limit width=%d height=%d limit=%d", client.ID, filename, width, height, s.maxImagePixels)
@@ -1074,7 +1074,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// the client-supplied multipart header (D-06).
 	contentType := convert.MIMEType(detected)
 
-	if err := s.storage.Upload(ctx, key, rest, header.Size, contentType); err != nil {
+	if err := s.storage.Upload(ctx, key, io.NewSectionReader(file, 0, header.Size), header.Size, contentType); err != nil {
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 		return
 	}

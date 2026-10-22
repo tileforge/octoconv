@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	uploadWorkerHeapBytes = 256 << 10
+	uploadWorkerHeapBytes = 384 << 10
 	uploadHeapBytes       = storage.UploadPartThreads * uploadWorkerHeapBytes
 	uploadPartBytes       = 16 << 20
 	uploadMaxBytes        = 191889408

@@ -70,6 +70,7 @@ func New(ctx context.Context) (*Client, error) {
 func (c *Client) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
 	_, err := c.mc.PutObject(ctx, c.bucket, key, r, size, minio.PutObjectOptions{
 		ContentType: contentType,
+		NumThreads:  uint(UploadPartThreads),
 	})
 	if err != nil {
 		return fmt.Errorf("upload %q: %w", key, err)
