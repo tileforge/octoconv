@@ -395,7 +395,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.inspectMaxUploadBytes)
-	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
+	parseErr := parseIntakeForm(r)
 	defer dropMultipartForm(r)
 	// Released HERE, immediately after the buffering call returns --
 	// success or failure -- not deferred to handler exit: the resource this

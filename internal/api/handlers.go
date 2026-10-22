@@ -54,6 +54,8 @@ const (
 	maxOptsBytes                      = 4096
 	maxCallbackURLBytes               = 2048
 	maxInputFilenameBytes             = 255
+	maxFormNonFileBytes               = 64 << 10
+	formFieldsTooLargeMessage         = "form fields too large"
 	createIntakeMaxConcurrent         = 8
 	createIntakeBusyRetryAfterSeconds = 3
 	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
@@ -160,7 +162,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.maxUploadByte)
-	err := r.ParseMultipartForm(multipartInMemoryBudget)
+	err := parseIntakeForm(r)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
