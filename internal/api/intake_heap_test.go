@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -745,7 +746,23 @@ func admissibleFormOnTheLine(t *testing.T, kind, mode string) intakeForm {
 	return form
 }
 
+func raceInstrumentedBuild() bool {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return false
+	}
+	for _, s := range info.Settings {
+		if s.Key == "-race" && s.Value == "true" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
+	if raceInstrumentedBuild() {
+		t.Skip("built with -race: go1.26.4 cmd/compile disables isAppendOfMake under instrumentation, so bytes.growSlice holds an extra temporary buffer; this test measures the shipped, uninstrumented build (D-24), proven by the runs without -race")
+	}
 	configs := intakeHeapConfigs(t)
 	smallest := configs[0]
 	for _, c := range configs {
