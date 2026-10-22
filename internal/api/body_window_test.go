@@ -36,7 +36,7 @@ func bodyWindowProbe(mutate func(*Config)) *Server {
 func serveBodyWindow(t *testing.T, h http.Handler) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(h)
-	ts.Config.ReadHeaderTimeout = 10 * time.Second
+	ts.Config = NewHTTPServer("", h)
 	ts.Start()
 	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
 	return ts

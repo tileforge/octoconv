@@ -30,7 +30,7 @@ func newIntakeServerWith(t *testing.T, repo Repo, store Storage, cfg Config, win
 	srv.intakeWindow = window
 	srv.intakeMinRate = minRate
 	ts := httptest.NewUnstartedServer(srv.Routes())
-	ts.Config.ReadHeaderTimeout = 10 * time.Second
+	ts.Config = NewHTTPServer("", ts.Config.Handler)
 	ts.Start()
 	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
 	return srv, ts

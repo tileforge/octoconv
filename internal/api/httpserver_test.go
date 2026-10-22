@@ -2,14 +2,21 @@ package api
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/tileforge/octoconv/internal/convert"
 )
 
 const (
@@ -25,10 +32,13 @@ func preAuthRequestHeapBytes() int64 {
 	return int64((headerHeapPerByte+requestLineCopies)*headerReadLimit + preAuthConnBytes)
 }
 
-func startShippedServer(t *testing.T, handler http.Handler) *httptest.Server {
+func startShippedServer(t *testing.T, handler http.Handler, scale ...func(*http.Server)) *httptest.Server {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(handler)
 	ts.Config = NewHTTPServer("", handler)
+	for _, f := range scale {
+		f(ts.Config)
+	}
 	ts.Start()
 	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
 	return ts
@@ -237,5 +247,219 @@ func TestShippedServerHoldsAtMostThePreAuthTermPerRequest(t *testing.T) {
 				t.Errorf("%s: one keyless request with a stalled body holds %d bytes (%.3f MiB) of heap and stack, above preAuthRequestHeapBytes %d (%.3f MiB)", h.name, grown, mib(grown), bound, mib(bound))
 			}
 		})
+	}
+}
+
+func queryHeadOnTheLine(unit string) string {
+	prefix := preAuthTarget + "?q="
+	k := (headerReadLimit - len(preAuthHead(prefix, "")) - 16) / len(unit)
+	return preAuthHead(prefix+strings.Repeat(unit, k), "")
+}
+
+func TestShippedServerHeaderTermPerShape(t *testing.T) {
+	ts := startShippedServer(t, heapProbeServer().Routes())
+	addr := ts.Listener.Addr().String()
+	measure := func(t *testing.T, head string) (int64, int64) {
+		t.Helper()
+		var lo, hi int64
+		for run := range 3 {
+			grown, conns := preAuthHeapOverTCP(t, addr, head, 1, time.Second)
+			releasePreAuth(conns)
+			if run == 0 || grown < lo {
+				lo = grown
+			}
+			if run == 0 || grown > hi {
+				hi = grown
+			}
+		}
+		return lo, hi
+	}
+	baseHead := preAuthHead(preAuthTarget, "")
+	baseLo, baseHi := measure(t, baseHead)
+	t.Logf("base, no extra headers: head %d bytes; heap+stack grown min %d max %d", len(baseHead), baseLo, baseHi)
+	bound := int64((headerHeapPerByte + requestLineCopies) * headerReadLimit)
+	shapes := []struct {
+		name string
+		head string
+	}{
+		{"distinct-lf", preAuthHeadOnTheLine("distinct-lf")},
+		{"distinct-crlf", preAuthHeadOnTheLine("distinct-crlf")},
+		{"distinct-lf-v", preAuthHeadOnTheLine("distinct-lf-v")},
+		{"repeated", preAuthHeadOnTheLine("repeated")},
+		{"pad", preAuthHeadOnTheLine("pad")},
+		{"query-%41", queryHeadOnTheLine("%41")},
+		{"query-plus", queryHeadOnTheLine("+")},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			if len(sh.head) > headerReadLimit || len(sh.head) < headerReadLimit-64 {
+				t.Fatalf("%s: head %d bytes, want within [headerReadLimit - 64, headerReadLimit] = [%d, %d]", sh.name, len(sh.head), headerReadLimit-64, headerReadLimit)
+			}
+			lo, hi := measure(t, sh.head)
+			grown := hi - baseLo
+			t.Logf("%s: head %d bytes, %d lines; heap+stack grown min %d max %d; term max(form) - min(base) = %d (%.3f MiB) = %.2f B per head byte; bound (headerHeapPerByte %d + requestLineCopies %d) x headerReadLimit %d = %d (%.3f MiB)", sh.name, len(sh.head), strings.Count(sh.head, "\n"), lo, hi, grown, mib(grown), float64(grown)/float64(len(sh.head)), headerHeapPerByte, requestLineCopies, headerReadLimit, bound, mib(bound))
+			if grown > bound {
+				t.Errorf("%s: a head on the line holds %d bytes (%.3f MiB) before auth, above (headerHeapPerByte + requestLineCopies) x headerReadLimit = %d (%.3f MiB)", sh.name, grown, mib(grown), bound, mib(bound))
+			}
+		})
+	}
+}
+
+func TestPreAuthConnectionTermIsMeasured(t *testing.T) {
+	const n = 80
+	ts := startShippedServer(t, heapProbeServer().Routes())
+	head := preAuthHead(preAuthTarget, "")
+	grown, conns := preAuthHeapOverTCP(t, ts.Listener.Addr().String(), head, n, 2*time.Second)
+	releasePreAuth(conns)
+	per := grown / n
+	t.Logf("%d keyless stalled requests without extra headers, head %d bytes: heap+stack grown %d (%.3f MiB) = %d bytes per request; preAuthConnBytes %d", n, len(head), grown, mib(grown), per, preAuthConnBytes)
+	if per > preAuthConnBytes {
+		t.Errorf("one keyless request without extra headers holds %d bytes of heap and stack, above preAuthConnBytes %d", per, preAuthConnBytes)
+	}
+}
+
+func TestMassPreAuthRequestsStayWithinTheirTerm(t *testing.T) {
+	const n = 80
+	ts := startShippedServer(t, heapProbeServer().Routes())
+	head := preAuthHeadOnTheLine("distinct-lf")
+	start := time.Now()
+	grown, conns := preAuthHeapOverTCP(t, ts.Listener.Addr().String(), head, n, 2*time.Second)
+	bound := n * preAuthRequestHeapBytes()
+
+	type answer struct {
+		status int
+		at     time.Duration
+		err    error
+	}
+	answers := make([]answer, n)
+	var wg sync.WaitGroup
+	for i, c := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = c.SetReadDeadline(time.Now().Add(intakeReadDeadline + 10*time.Second))
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			answers[i].at = time.Since(start)
+			if err != nil {
+				answers[i].err = err
+				return
+			}
+			_ = resp.Body.Close()
+			answers[i].status = resp.StatusCode
+		}()
+	}
+	wg.Wait()
+
+	statuses := map[int]int{}
+	var last time.Duration
+	for i, a := range answers {
+		if a.err != nil {
+			t.Errorf("request %d: no answer after %v: %v", i, a.at, a.err)
+			continue
+		}
+		statuses[a.status]++
+		last = max(last, a.at)
+	}
+	t.Logf("MASS %d keyless POST %s from one IP, Content-Length 100000, no body bytes, distinct-lf head %d bytes on the line %d: heap+stack 2 s later grown %d (%.1f MiB) = %.3f MiB per request; preAuthRequestHeapBytes %d (%.3f MiB), bound %d x preAuthRequestHeapBytes = %d (%.1f MiB); statuses %v; last answer %v after the first dial (limit intakeReadDeadline + 2 s = %v)", n, preAuthTarget, len(head), headerReadLimit, grown, mib(grown), mib(grown)/n, preAuthRequestHeapBytes(), mib(preAuthRequestHeapBytes()), n, bound, mib(bound), statuses, last.Round(time.Millisecond), intakeReadDeadline+2*time.Second)
+	if grown > bound {
+		t.Errorf("%d keyless requests hold %d bytes (%.1f MiB) of heap and stack, above %d x preAuthRequestHeapBytes = %d (%.1f MiB)", n, grown, mib(grown), n, bound, mib(bound))
+	}
+	if statuses[http.StatusUnauthorized] != 60 || statuses[http.StatusTooManyRequests] != 20 || len(statuses) != 2 {
+		t.Errorf("statuses %v, want 60 x 401 and 20 x 429", statuses)
+	}
+	if last > intakeReadDeadline+2*time.Second {
+		t.Errorf("the last answer came %v after the first dial, later than intakeReadDeadline + 2 s = %v", last, intakeReadDeadline+2*time.Second)
+	}
+}
+
+func TestShippedServerClosesAnIdleKeepAliveConnection(t *testing.T) {
+	const idle = time.Second
+	ts := startShippedServer(t, heapProbeServer().Routes(), func(s *http.Server) { s.IdleTimeout = idle })
+	c, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	br := bufio.NewReader(c)
+	start := time.Now()
+	for i := range 2 {
+		if _, err := io.WriteString(c, "GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+			t.Fatalf("request %d on the kept-alive connection: %v", i+1, err)
+		}
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatalf("answer %d on the kept-alive connection: %v", i+1, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Close {
+			t.Fatalf("answer %d: status %d, close %v; want 200 on a kept-alive connection", i+1, resp.StatusCode, resp.Close)
+		}
+	}
+	answered := time.Now()
+	if d := answered.Sub(start); d > 500*time.Millisecond {
+		t.Errorf("two requests on one connection took %v, want within 500ms", d)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(idle + 5*time.Second))
+	_, err = br.ReadByte()
+	closed := time.Since(answered)
+	t.Logf("IdleTimeout %v: two GET /healthz on one connection in %v; the idle connection was closed %v after the second answer (%v)", idle, answered.Sub(start), closed, err)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("read on the idle connection returned %v after %v, want EOF from the server", err, closed)
+	}
+	if closed < idle-100*time.Millisecond || closed > idle+2*time.Second {
+		t.Errorf("the idle connection was closed %v after the second answer, want within [%v, %v]", closed, idle-100*time.Millisecond, idle+2*time.Second)
+	}
+}
+
+func TestIdleTimeoutDoesNotCutAnActiveUpload(t *testing.T) {
+	const idle = time.Second
+	const rate = 2 << 20
+	ts := startShippedServer(t, heapProbeServer().Routes(), func(s *http.Server) { s.IdleTimeout = idle })
+	triangles := int64(12<<20-84) / 50
+	header := make([]byte, 84)
+	binary.LittleEndian.PutUint32(header[80:], uint32(triangles))
+	size := 84 + 50*triangles
+	file := io.MultiReader(bytes.NewReader(header), io.LimitReader(transportCapZeros{}, 50*triangles))
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", "a.stl", file, 0))
+	}()
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/jobs", &pacedReader{r: pr, rate: rate, chunk: 256 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	start := time.Now()
+	resp, err := ts.Client().Do(authed(req))
+	elapsed := time.Since(start)
+	_ = pr.Close()
+	if err != nil {
+		t.Fatalf("create over a paced connection failed after %v: %v", elapsed, err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	t.Logf("IdleTimeout %v: %d-byte STL at %d B/s took %v; status %d", idle, size, rate, elapsed, resp.StatusCode)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("create over a paced connection: status %d after %v, want 202; body=%.300s", resp.StatusCode, elapsed, raw)
+	}
+	if elapsed < 5*idle {
+		t.Errorf("the upload took %v, want at least 5 x IdleTimeout = %v", elapsed, 5*idle)
+	}
+}
+
+func TestIntakeTestServersUseTheShippedConfig(t *testing.T) {
+	_, intake := newIntakeServer(t, Config{MaxUploadBytes: 1 << 20, InspectMaxUploadBytes: 1 << 20}, intakeReadDeadline, intakeMinBytesPerSecond)
+	window := serveBodyWindow(t, http.NewServeMux())
+	for _, c := range []struct {
+		name string
+		ts   *httptest.Server
+	}{{"newIntakeServer", intake}, {"serveBodyWindow", window}} {
+		cfg := c.ts.Config
+		if cfg.MaxHeaderBytes != apiMaxHeaderBytes || cfg.IdleTimeout != apiIdleTimeout || cfg.ReadHeaderTimeout != apiReadHeaderTimeout {
+			t.Errorf("%s: MaxHeaderBytes %d, IdleTimeout %v, ReadHeaderTimeout %v; want the shipped %d, %v, %v", c.name, cfg.MaxHeaderBytes, cfg.IdleTimeout, cfg.ReadHeaderTimeout, apiMaxHeaderBytes, apiIdleTimeout, apiReadHeaderTimeout)
+		}
 	}
 }
