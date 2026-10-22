@@ -43,6 +43,15 @@ func (s *Server) armIntakeDeadline(w http.ResponseWriter) (*http.ResponseControl
 	return rc, start
 }
 
+func (s *Server) armBodyWindow(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			s.armIntakeDeadline(w)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) newIntakeReader(w http.ResponseWriter, body io.ReadCloser, rc *http.ResponseController, start time.Time, limit int64) *intakeReader {
 	return &intakeReader{
 		body:        http.MaxBytesReader(w, body, limit),
