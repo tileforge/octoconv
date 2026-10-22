@@ -16,6 +16,8 @@ import (
 	"github.com/tileforge/octoconv/internal/envcfg"
 )
 
+const UploadPartThreads = 4
+
 // Client is a thin wrapper over the MinIO SDK bound to a single bucket.
 type Client struct {
 	mc     *minio.Client

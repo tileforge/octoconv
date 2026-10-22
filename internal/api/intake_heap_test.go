@@ -319,6 +319,10 @@ func readFormContentBound(budget int64) int64 {
 	return 2*budget + lastDoubling(budget) + 2*bytes.MinRead*(readFormMaxParts+1)
 }
 
+func readFormSettledBound(budget int64) int64 {
+	return 2*budget + 2*bytes.MinRead*(readFormMaxParts+1)
+}
+
 type intakeHeapTerms struct {
 	content int64
 	nonFile int64
