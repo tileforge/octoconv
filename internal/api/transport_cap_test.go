@@ -76,7 +76,26 @@ func transportCapCallbackURL() string {
 	return prefix + strings.Repeat("a", maxCallbackURLBytes-len(prefix))
 }
 
-func writeTransportCapRequest(mw *multipart.Writer, engine, operation, target, fileName string, file io.Reader) error {
+func writeTransportCapRequest(mw *multipart.Writer, engine, operation, target, fileName string, file io.Reader, padTo int64) error {
+	padLen := int64(-1)
+	if padTo > 0 {
+		var c transportCapCounter
+		probe := multipart.NewWriter(&c)
+		if err := probe.SetBoundary(mw.Boundary()); err != nil {
+			return err
+		}
+		if err := writeTransportCapForm(probe, engine, operation, target, fileName, bytes.NewReader(nil), 0); err != nil {
+			return err
+		}
+		padLen = padTo - c.n
+		if padLen < 0 {
+			return fmt.Errorf("the known fields carry %d bytes of non-file data, above the pad target %d", c.n, padTo)
+		}
+	}
+	return writeTransportCapForm(mw, engine, operation, target, fileName, file, padLen)
+}
+
+func writeTransportCapForm(mw *multipart.Writer, engine, operation, target, fileName string, file io.Reader, padLen int64) error {
 	fw, err := mw.CreateFormFile(formFieldFile, fileName)
 	if err != nil {
 		return err
@@ -95,6 +114,11 @@ func writeTransportCapRequest(mw *multipart.Writer, engine, operation, target, f
 	opts := "{" + strings.Repeat(" ", maxOptsBytes-2) + "}"
 	for _, f := range [][2]string{{formFieldTarget, target}, {formFieldOperation, operation}, {formFieldOpts, opts}, {formFieldCallbackURL, transportCapCallbackURL()}} {
 		if err := mw.WriteField(f[0], f[1]); err != nil {
+			return err
+		}
+	}
+	if padLen >= 0 {
+		if err := mw.WriteField("x_pad", strings.Repeat("x", int(padLen))); err != nil {
 			return err
 		}
 	}
@@ -135,7 +159,7 @@ func postLargestSTL(t *testing.T, srv *Server, path, fileName string) *httptest.
 	mw := multipart.NewWriter(pw)
 	file, _ := largestAdmissibleSTL()
 	go func() {
-		pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file))
+		pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file, maxFormNonFileBytes-multipartPeekBufferBytes))
 	}()
 	req := authed(httptest.NewRequest(http.MethodPost, path, pr))
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -342,7 +366,7 @@ func (c *transportCapCounter) Write(p []byte) (int, error) {
 func transportCapEnvelope(t *testing.T, engine, operation string, pair convert.Pair, nameLen int) int64 {
 	t.Helper()
 	var c transportCapCounter
-	if err := writeTransportCapRequest(multipart.NewWriter(&c), engine, operation, pair.To, transportCapFileName(nameLen, pair.From), bytes.NewReader(nil)); err != nil {
+	if err := writeTransportCapRequest(multipart.NewWriter(&c), engine, operation, pair.To, transportCapFileName(nameLen, pair.From), bytes.NewReader(nil), 0); err != nil {
 		t.Fatal(err)
 	}
 	return c.n
@@ -384,7 +408,10 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 						t.Errorf("%s: %s %s %s->%s is advertised with no ceiling, so the transport cap is its only bound", cfg.name, operation, engine, pair.From, pair.To)
 						continue
 					}
-					e := transportCapEntry{operation, engine, pair, limit, transportCapEnvelope(t, engine, operation, pair, nameLen)}
+					if env := transportCapEnvelope(t, engine, operation, pair, nameLen); env > maxFormNonFileBytes-multipartPeekBufferBytes {
+						t.Errorf("%s: %s %s %s->%s: the known fields carry %d bytes of non-file data, above the admit line maxFormNonFileBytes - multipartPeekBufferBytes = %d", cfg.name, operation, engine, pair.From, pair.To, env, maxFormNonFileBytes-multipartPeekBufferBytes)
+					}
+					e := transportCapEntry{operation, engine, pair, limit, maxFormNonFileBytes}
 					entries[cfg.name] = append(entries[cfg.name], e)
 					if engine == convert.EngineCAD {
 						cad++
@@ -404,8 +431,8 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 		}
 	}
 	nextMiB := transportCapNextMiB(largestNeed)
-	t.Logf("largest requirement %d bytes (%s %s %s->%s ceiling %d plus envelope %d); next whole MiB %d (%d MiB)", largestNeed, largest.operation, largest.engine, largest.pair.From, largest.pair.To, largest.limit, largest.envelope, nextMiB, nextMiB>>20)
-	t.Logf("D-14 residual of phase 78: %s and any form field the handler does not read have no length bound of their own; they are bounded only by the mime/multipart allowance for non-file parts, multipartInMemoryBudget %d + 10 MiB = %d bytes", formFieldProgressWebhook, multipartInMemoryBudget, multipartInMemoryBudget+10<<20)
+	t.Logf("largest requirement %d bytes (%s %s %s->%s ceiling %d plus the non-file bound %d); next whole MiB %d (%d MiB)", largestNeed, largest.operation, largest.engine, largest.pair.From, largest.pair.To, largest.limit, largest.envelope, nextMiB, nextMiB>>20)
+	t.Logf("D-19: every non-file byte of a create or inspect form is inside maxFormNonFileBytes %d; the largest requirement is a format ceiling plus that bound", maxFormNonFileBytes)
 
 	atLargest := map[string]bool{}
 	for _, cfg := range configs {
@@ -460,7 +487,7 @@ func TestDeployedTransportCapsCoverEveryAdvertisedCeiling(t *testing.T) {
 			return fmt.Sprint(order[i]) < fmt.Sprint(order[j])
 		})
 		for _, g := range order {
-			t.Errorf("%s: %s = %d is below %s %s ceiling %d plus envelope %d = %d for %s; set at least %d (next whole MiB above the largest requirement %d)", cfg.name, g.key, cfg.values[g.key], g.operation, g.engine, g.limit, g.envelope, g.limit+g.envelope, strings.Join(failures[g], " "), nextMiB, largestNeed)
+			t.Errorf("%s: %s = %d is below %s %s ceiling %d plus the non-file bound %d = %d for %s; set at least %d (next whole MiB above the largest requirement %d)", cfg.name, g.key, cfg.values[g.key], g.operation, g.engine, g.limit, g.envelope, g.limit+g.envelope, strings.Join(failures[g], " "), nextMiB, largestNeed)
 		}
 		if cfg.values["INSPECT_MAX_UPLOAD_BYTES"] > cfg.values["MAX_UPLOAD_BYTES"] {
 			t.Errorf("%s: INSPECT_MAX_UPLOAD_BYTES %d is above MAX_UPLOAD_BYTES %d", cfg.name, cfg.values["INSPECT_MAX_UPLOAD_BYTES"], cfg.values["MAX_UPLOAD_BYTES"])
@@ -536,7 +563,7 @@ func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *tes
 		mw := multipart.NewWriter(pw)
 		file, size := largestAdmissibleSTL()
 		go func() {
-			pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file))
+			pw.CloseWithError(writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", fileName, file, maxFormNonFileBytes-multipartPeekBufferBytes))
 		}()
 		req, err := http.NewRequest(http.MethodPost, ts.URL+path, &pacedReader{r: pr, rate: rate, chunk: 256 << 10})
 		if err != nil {
@@ -603,7 +630,7 @@ func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *tes
 func TestTransportCapEnvelopeCarriesEveryBoundedField(t *testing.T) {
 	var b bytes.Buffer
 	mw := multipart.NewWriter(&b)
-	if err := writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", transportCapFileName(maxInputFilenameBytes, "stl"), strings.NewReader("solid")); err != nil {
+	if err := writeTransportCapRequest(mw, convert.EngineCAD, convert.OperationRender, "png", transportCapFileName(maxInputFilenameBytes, "stl"), strings.NewReader("solid"), 0); err != nil {
 		t.Fatal(err)
 	}
 	mr := multipart.NewReader(&b, mw.Boundary())
@@ -642,5 +669,48 @@ func TestTransportCapEnvelopeCarriesEveryBoundedField(t *testing.T) {
 	}
 	if len(fields[formFieldOpts]) != maxOptsBytes {
 		t.Errorf("opts is %d bytes, want %d", len(fields[formFieldOpts]), maxOptsBytes)
+	}
+
+	type envelopeCase struct {
+		operation, engine string
+		pair              convert.Pair
+	}
+	var multi []envelopeCase
+	for operation, engines := range convert.Default.OperationClasses() {
+		for engine, pairs := range engines {
+			if !convert.EngineTakesMultipleInputs(engine) {
+				continue
+			}
+			for _, pair := range pairs {
+				multi = append(multi, envelopeCase{operation, engine, pair})
+			}
+		}
+	}
+	if len(multi) == 0 {
+		t.Fatal("no engine takes multiple inputs, so the envelope with MaxInputParts file parts is not exercised")
+	}
+	sort.Slice(multi, func(i, j int) bool { return fmt.Sprint(multi[i]) < fmt.Sprint(multi[j]) })
+	nameLen := maxInputFilenameLength(t)
+	line := int64(maxFormNonFileBytes - multipartPeekBufferBytes)
+	for _, c := range []envelopeCase{{convert.OperationRender, convert.EngineCAD, convert.Pair{From: "stl", To: "png"}}, multi[0]} {
+		for _, padTo := range []int64{0, line} {
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			if err := writeTransportCapRequest(mw, c.engine, c.operation, c.pair.To, transportCapFileName(nameLen, c.pair.From), bytes.NewReader(nil), padTo); err != nil {
+				t.Fatal(err)
+			}
+			size := int64(body.Len())
+			if padTo > 0 && size != padTo {
+				t.Errorf("%s %s %s->%s padded to %d: the request carries %d bytes of non-file data", c.operation, c.engine, c.pair.From, c.pair.To, padTo, size)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/v1/jobs", &body)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			err := parseIntakeForm(req)
+			dropMultipartForm(req)
+			t.Logf("%s %s %s->%s: %d bytes of non-file data, parseIntakeForm = %v", c.operation, c.engine, c.pair.From, c.pair.To, size, err)
+			if err != nil {
+				t.Errorf("%s %s %s->%s: the request with %d bytes of non-file data is refused by parseIntakeForm: %v", c.operation, c.engine, c.pair.From, c.pair.To, size, err)
+			}
+		}
 	}
 }
