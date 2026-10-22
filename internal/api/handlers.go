@@ -67,7 +67,7 @@ const (
 	// upload ceiling (2 GiB since D-07) as the in-memory budget would let one
 	// large-video upload buffer up to 2 GiB in RAM -- linear in concurrent
 	// uploads, a real memory-exhaustion vector.
-	multipartInMemoryBudget = 12 << 20
+	multipartInMemoryBudget = 7 << 20
 	// maxPresetNameBytes bounds the client-supplied preset name before any DB
 	// lookup (T-18-09) -- an opaque-string DoS guard, request-independent of
 	// preset existence, so a 400 here leaks nothing about the presets table.
