@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -214,26 +215,21 @@ func writeZeroField(mw *multipart.Writer, name string, size int64) error {
 	return copyZeros(fw, size)
 }
 
-func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
+func liveHeapOf(t *testing.T, srv *Server, path, query string, header http.Header, contentType string, write func(w io.Writer, pause func()) error, settle time.Duration) intakeProbe {
 	t.Helper()
 	base := liveHeap()
 	pr, pw := io.Pipe()
 	cw := &countingWriter{w: pw}
-	mw := multipart.NewWriter(cw)
-	contentType := mw.FormDataContentType()
 	paused, resume := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	signal := func() { once.Do(func() { close(paused) }) }
 	writeErr := make(chan error, 1)
 	go func() {
-		err := form.write(mw, func() {
+		err := write(cw, func() {
 			signal()
 			<-resume
 		})
 		signal()
-		if err == nil {
-			err = mw.Close()
-		}
 		pw.CloseWithError(err)
 		writeErr <- err
 	}()
@@ -241,12 +237,18 @@ func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := authed(httptest.NewRequest(http.MethodPost, path+"?q="+strings.Repeat("%41", intakeQueryRepeats), pr))
+		req := authed(httptest.NewRequest(http.MethodPost, path+"?"+query, pr))
 		req.Header.Set("Content-Type", contentType)
+		for k, v := range header {
+			req.Header[k] = v
+		}
 		srv.Routes().ServeHTTP(rec, req)
 		_ = pr.Close()
 	}()
 	<-paused
+	if settle > 0 {
+		time.Sleep(settle)
+	}
 	mid := liveHeap()
 	close(resume)
 	<-done
@@ -256,6 +258,21 @@ func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) 
 		probe.heap = mid - base
 	}
 	return probe
+}
+
+func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
+	t.Helper()
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	return liveHeapOf(t, srv, path, "q="+strings.Repeat("%41", intakeQueryRepeats), nil, "multipart/form-data; boundary="+boundary, func(w io.Writer, pause func()) error {
+		mw := multipart.NewWriter(w)
+		if err := mw.SetBoundary(boundary); err != nil {
+			return err
+		}
+		if err := form.write(mw, pause); err != nil {
+			return err
+		}
+		return mw.Close()
+	}, 0)
 }
 
 func minHeapOfThree(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
@@ -275,6 +292,209 @@ func heapProbeServer() *Server {
 		MaxUploadBytes:        64 << 20,
 		InspectMaxUploadBytes: 64 << 20,
 	})
+}
+
+const (
+	readFormMaxParts     = 1000
+	readFormMaxHeaders   = 10000
+	nonFileHeapPerByte   = 32
+	requestLineCopies    = 3
+	intakeFixedHeapBytes = 256 << 10
+	rawFormBoundary      = "b"
+	rawFilePartHeader    = "Content-Disposition:form-data;name=" + formFieldFile + ";filename=a"
+)
+
+func lastDoubling(budget int64) int64 {
+	p := int64(bytes.MinRead)
+	for 2*p <= budget+bytes.MinRead {
+		p *= 2
+	}
+	return p
+}
+
+func readFormContentBound(budget int64) int64 {
+	return 2*budget + lastDoubling(budget) + 2*bytes.MinRead*(readFormMaxParts+1)
+}
+
+type intakeHeapTerms struct {
+	content int64
+	nonFile int64
+	request int64
+	fixed   int64
+	total   int64
+}
+
+func intakeHeapModel(budget int64) intakeHeapTerms {
+	m := intakeHeapTerms{
+		content: readFormContentBound(budget),
+		nonFile: nonFileHeapPerByte * maxFormNonFileBytes,
+		request: requestLineCopies * http.DefaultMaxHeaderBytes,
+		fixed:   intakeFixedHeapBytes,
+	}
+	m.total = m.content + m.nonFile + m.request + m.fixed
+	return m
+}
+
+func leadPieces(d int64) []int64 {
+	var pieces []int64
+	for d > 0 {
+		c := int64(2 * bytes.MinRead)
+		for 2*c-(bytes.MinRead-1) <= d {
+			c *= 2
+		}
+		piece := min(c-(bytes.MinRead-1), d)
+		pieces = append(pieces, piece)
+		d -= piece
+	}
+	return pieces
+}
+
+func worstSplit(budget, last int64) []int64 {
+	return append(leadPieces(budget-last), last)
+}
+
+type rawSegment struct {
+	raw   string
+	zeros int64
+	pause bool
+}
+
+type rawIntakeForm struct {
+	name     string
+	segments []rawSegment
+}
+
+func rawPartOpening(first bool) string {
+	if first {
+		return "--" + rawFormBoundary + "\r\n"
+	}
+	return "\r\n--" + rawFormBoundary + "\r\n"
+}
+
+func rawFileParts(name string, sizes []int64, beforeLast []rawSegment, spillTail int64) rawIntakeForm {
+	return rawFilePartsWithLastHeader(name, sizes, beforeLast, spillTail, "")
+}
+
+func rawFilePartsWithLastHeader(name string, sizes []int64, beforeLast []rawSegment, spillTail int64, lastHeader string) rawIntakeForm {
+	var segments []rawSegment
+	for i, size := range sizes {
+		header := rawFilePartHeader + "\r\n"
+		if i == len(sizes)-1 {
+			segments = append(segments, beforeLast...)
+			header += lastHeader
+		}
+		segments = append(segments, rawSegment{raw: rawPartOpening(len(segments) == 0) + header + "\r\n", zeros: size})
+	}
+	segments = append(segments, rawSegment{pause: true})
+	if spillTail > 0 {
+		segments = append(segments, rawSegment{zeros: spillTail})
+	}
+	segments = append(segments, rawSegment{raw: "\r\n--" + rawFormBoundary + "--\r\n"})
+	return rawIntakeForm{name: name, segments: segments}
+}
+
+func (f rawIntakeForm) write(w io.Writer, pause func()) error {
+	for _, s := range f.segments {
+		if s.pause {
+			pause()
+			continue
+		}
+		if _, err := io.WriteString(w, s.raw); err != nil {
+			return err
+		}
+		if err := copyZeros(w, s.zeros); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rawFormFileBytes(f rawIntakeForm) int64 {
+	var n int64
+	for _, s := range f.segments {
+		n += s.zeros
+	}
+	return n
+}
+
+func rawFormNonFileBytes(f rawIntakeForm) int64 {
+	var n int64
+	for _, s := range f.segments {
+		n += int64(len(s.raw))
+	}
+	return n
+}
+
+func rawFormParts(f rawIntakeForm) int {
+	var n int
+	for _, s := range f.segments {
+		n += strings.Count(s.raw, "--"+rawFormBoundary+"\r\n")
+	}
+	return n
+}
+
+func liveHeapOfRaw(t *testing.T, srv *Server, path, query string, header http.Header, form rawIntakeForm, settle time.Duration) intakeProbe {
+	t.Helper()
+	return liveHeapOf(t, srv, path, query, header, "multipart/form-data; boundary="+rawFormBoundary, form.write, settle)
+}
+
+type heapRange struct {
+	min  int64
+	max  int64
+	last intakeProbe
+}
+
+func heapOfThree(probe func() intakeProbe) heapRange {
+	var r heapRange
+	for i := range 3 {
+		p := probe()
+		m := int64(p.heap)
+		if i == 0 || m < r.min {
+			r.min = m
+		}
+		if i == 0 || m > r.max {
+			r.max = m
+		}
+		r.last = p
+	}
+	return r
+}
+
+func readWhole(p intakeProbe) bool {
+	return p.err == nil && p.status != http.StatusRequestEntityTooLarge && p.payload["error"] != "invalid multipart form" && p.payload["error"] != formFieldsTooLargeMessage
+}
+
+const shortIntakeQuery = "q=a"
+
+type heapLimit struct {
+	name  string
+	bytes int64
+}
+
+type rawHeapCase struct {
+	form   rawIntakeForm
+	query  string
+	header http.Header
+	settle time.Duration
+	upper  []heapLimit
+	floor  int64
+}
+
+func mib(n int64) float64 {
+	return float64(n) / (1 << 20)
+}
+
+func budgetHeapCases() []rawHeapCase {
+	b := int64(multipartInMemoryBudget)
+	x := lastDoubling(b) - (bytes.MinRead - 1)
+	content := []heapLimit{{"readFormContentBound + intakeFixedHeapBytes", readFormContentBound(b) + intakeFixedHeapBytes}}
+	spill := worstSplit(b, x)
+	spill[len(spill)-1]++
+	return []rawHeapCase{
+		{form: rawFileParts("worst pending", worstSplit(b, x), nil, 0), query: shortIntakeQuery, upper: content},
+		{form: rawFileParts("worst spill", spill, nil, 1<<20), query: shortIntakeQuery, upper: content},
+		{form: rawFileParts("worst spill settled", spill, nil, 1<<20), query: shortIntakeQuery, settle: 250 * time.Millisecond, upper: content, floor: 2*b - 1<<20},
+	}
 }
 
 func mainFilePart(mw *multipart.Writer, headerPad int64) (io.Writer, error) {
@@ -431,21 +651,75 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				}
 			})
 		}
+		for _, hc := range budgetHeapCases() {
+			t.Run(path+" "+hc.form.name, func(t *testing.T) {
+				checkRawHeapCase(t, configs, smallest, path, hc)
+			})
+		}
 	}
+}
+
+func checkRawHeapCase(t *testing.T, configs []intakeHeapConfig, smallest intakeHeapConfig, path string, hc rawHeapCase) heapRange {
+	t.Helper()
+	line := int64(maxFormNonFileBytes - multipartPeekBufferBytes)
+	model := intakeHeapModel(multipartInMemoryBudget)
+	srv := heapProbeServer()
+	r := heapOfThree(func() intakeProbe {
+		return liveHeapOfRaw(t, srv, path, hc.query, hc.header, hc.form, hc.settle)
+	})
+	nonFile := rawFormNonFileBytes(hc.form)
+	t.Logf("%s %s: %d parts, %d file bytes, %d non-file bytes (line %d), query %d bytes, settle %v; live heap min %d (%.2f MiB) max %d (%.2f MiB); model total %d (%.2f MiB); smallest share %d (%s); max × %d = %d; floor %d; upper %v; status %d %v; %d bytes sent",
+		path, hc.form.name, rawFormParts(hc.form), rawFormFileBytes(hc.form), nonFile, line, len(hc.query), hc.settle, r.min, mib(r.min), r.max, mib(r.max), model.total, mib(model.total), smallest.share, smallest.name, smallest.forms, r.max*smallest.forms, hc.floor, hc.upper, r.last.status, r.last.payload, r.last.sent)
+	if !readWhole(r.last) {
+		t.Fatalf("%s %s: an admissible form was not read whole (write error %v, status %d %v)", path, hc.form.name, r.last.err, r.last.status, r.last.payload)
+	}
+	if nonFile > line {
+		t.Errorf("%s %s: the form carries %d bytes of non-file data, above the admit line %d", path, hc.form.name, nonFile, line)
+	}
+	for _, c := range configs {
+		if r.max > c.share {
+			t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than the share %d of %s (limit %d / 2 / %d live forms)", path, hc.form.name, r.max, c.share, c.name, c.memory, c.forms)
+		}
+	}
+	if r.max > model.total {
+		t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than intakeHeapModel(multipartInMemoryBudget).total %d", path, hc.form.name, r.max, model.total)
+	}
+	for _, u := range hc.upper {
+		if r.max > u.bytes {
+			t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than %s %d", path, hc.form.name, r.max, u.name, u.bytes)
+		}
+	}
+	if r.min < hc.floor {
+		t.Errorf("%s %s: the form holds at least %d bytes of live heap, less than %d: the generator no longer builds the worst split", path, hc.form.name, r.min, hc.floor)
+	}
+	return r
 }
 
 func TestIntakeBudgetIsDerivedFromThePodShare(t *testing.T) {
 	configs := intakeHeapConfigs(t)
-	var want int64
-	for i, c := range configs {
-		w := ((c.share - maxFormNonFileBytes - http.DefaultMaxHeaderBytes) / 2) >> 20 << 20
-		t.Logf("%s: share %d = %d / 2 / (%d + %d + %d); share - non-file bound %d - request header %d = %d; / 2 = %d; whole MiB = %d (%d MiB)", c.name, c.share, c.memory, createIntakeMaxConcurrent, inspectIntakeMaxConcurrent, c.inspectMaxConcurrent, maxFormNonFileBytes, http.DefaultMaxHeaderBytes, c.share-maxFormNonFileBytes-http.DefaultMaxHeaderBytes, (c.share-maxFormNonFileBytes-http.DefaultMaxHeaderBytes)/2, w, w>>20)
-		if i == 0 || w < want {
-			want = w
+	smallest := configs[0]
+	for _, c := range configs {
+		t.Logf("%s: share %d = %d / 2 / (%d + %d + %d)", c.name, c.share, c.memory, createIntakeMaxConcurrent, inspectIntakeMaxConcurrent, c.inspectMaxConcurrent)
+		if c.share < smallest.share {
+			smallest = c
 		}
 	}
+	var want int64
+	for n := int64(1); n <= 64; n++ {
+		if intakeHeapModel(n<<20).total <= smallest.share {
+			want = n << 20
+		}
+	}
+	if want == 0 {
+		t.Fatalf("no whole MiB from 1 to 64 keeps intakeHeapModel within the smallest share %d of %s", smallest.share, smallest.name)
+	}
+	for _, b := range []int64{want, want + 1<<20} {
+		m := intakeHeapModel(b)
+		t.Logf("budget %d (%d MiB): lastDoubling %d; content %d = 2 × %d + %d + 2 × %d × (%d + 1); nonFile %d = %d × %d; request %d = %d × %d; fixed %d; total %d (%.2f MiB); smallest share %d (%s); fits %v",
+			b, b>>20, lastDoubling(b), m.content, b, lastDoubling(b), bytes.MinRead, readFormMaxParts, m.nonFile, nonFileHeapPerByte, maxFormNonFileBytes, m.request, requestLineCopies, http.DefaultMaxHeaderBytes, m.fixed, m.total, mib(m.total), smallest.share, smallest.name, m.total <= smallest.share)
+	}
 	if multipartInMemoryBudget != want {
-		t.Errorf("multipartInMemoryBudget = %d, want %d: the largest whole MiB with 2 × budget + %d + %d within the smallest share", multipartInMemoryBudget, want, maxFormNonFileBytes, http.DefaultMaxHeaderBytes)
+		t.Errorf("multipartInMemoryBudget = %d, want %d: the budget is derived from what ReadForm holds, the largest whole MiB with intakeHeapModel(budget).total within the smallest share %d of %s", multipartInMemoryBudget, want, smallest.share, smallest.name)
 	}
 }
 
