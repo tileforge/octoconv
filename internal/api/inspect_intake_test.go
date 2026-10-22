@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -74,10 +75,13 @@ type rawResult struct {
 	status  int
 	header  http.Header
 	payload map[string]string
+	raw     []byte
+	jsonErr error
 	elapsed time.Duration
+	closed  bool
 }
 
-func rawPost(t *testing.T, ts *httptest.Server, path string, extra http.Header, contentType string, contentLength int64, body io.Reader) rawResult {
+func rawRequest(t *testing.T, ts *httptest.Server, method, path string, header http.Header, contentType string, contentLength int64, body io.Reader, wait time.Duration, checkClose bool) (rawResult, bool) {
 	t.Helper()
 	addr := ts.Listener.Addr().String()
 	conn, err := net.Dial("tcp", addr)
@@ -85,46 +89,81 @@ func rawPost(t *testing.T, ts *httptest.Server, path string, extra http.Header, 
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
 	var head strings.Builder
-	fmt.Fprintf(&head, "POST %s HTTP/1.1\r\nHost: %s\r\nAuthorization: ApiKey %s\r\n", path, addr, testClientKey)
-	for k, vs := range extra {
+	fmt.Fprintf(&head, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, addr)
+	for k, vs := range header {
 		for _, v := range vs {
 			fmt.Fprintf(&head, "%s: %s\r\n", k, v)
 		}
 	}
-	fmt.Fprintf(&head, "Content-Type: %s\r\nContent-Length: %d\r\n\r\n", contentType, contentLength)
+	if contentType != "" {
+		fmt.Fprintf(&head, "Content-Type: %s\r\n", contentType)
+	}
+	if contentLength >= 0 {
+		fmt.Fprintf(&head, "Content-Length: %d\r\n", contentLength)
+	}
+	head.WriteString("\r\n")
 	if _, err := io.WriteString(conn, head.String()); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.Copy(conn, body)
+		if body != nil {
+			_, _ = io.Copy(conn, body)
+		}
 	}()
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	defer func() {
+		conn.Close()
+		<-done
+	}()
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
 	elapsed := time.Since(start)
 	if err != nil {
-		t.Fatalf("no response after %v: %v", elapsed, err)
+		t.Logf("%s %s: no response after %v: %v", method, path, elapsed, err)
+		return rawResult{elapsed: elapsed}, false
 	}
 	raw, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		t.Fatalf("read the response body after %v: %v", elapsed, err)
+		t.Logf("%s %s: read the response body after %v: %v", method, path, elapsed, err)
+		return rawResult{status: resp.StatusCode, header: resp.Header, elapsed: elapsed}, false
 	}
-	var payload map[string]string
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status %d after %v with a body that is not a JSON error: %v; body=%.300s", resp.StatusCode, elapsed, err, raw)
+	res := rawResult{status: resp.StatusCode, header: resp.Header, raw: raw, elapsed: elapsed}
+	if err := json.Unmarshal(raw, &res.payload); err != nil {
+		res.payload = nil
+		res.jsonErr = err
+	}
+	if checkClose {
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
 		}
-		payload = nil
+		_, err := br.ReadByte()
+		res.closed = errors.Is(err, io.EOF)
 	}
-	conn.Close()
-	<-done
-	return rawResult{status: resp.StatusCode, header: resp.Header, payload: payload, elapsed: elapsed}
+	return res, true
+}
+
+func rawPost(t *testing.T, ts *httptest.Server, path string, extra http.Header, contentType string, contentLength int64, body io.Reader) rawResult {
+	t.Helper()
+	header := extra.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	header.Set("Authorization", "ApiKey "+testClientKey)
+	res, ok := rawRequest(t, ts, http.MethodPost, path, header, contentType, contentLength, body, 15*time.Second, false)
+	if !ok {
+		t.Fatalf("no response after %v", res.elapsed)
+	}
+	if res.jsonErr != nil && res.status != http.StatusOK {
+		t.Fatalf("status %d after %v with a body that is not a JSON error: %v; body=%.300s", res.status, res.elapsed, res.jsonErr, res.raw)
+	}
+	return res
 }
 
 func intakeBody(t *testing.T, size int) (*bytes.Buffer, string) {
