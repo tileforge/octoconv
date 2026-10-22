@@ -5,12 +5,15 @@ import (
 	"encoding/binary"
 	"io"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/tileforge/octoconv/internal/convert"
 )
 
 const cfbClassifyHeapBytes = 1 << 20
+
+const texScanHeapBytes = convert.SniffWindowBytes + 64<<10
 
 const (
 	worstCFBFATSectors = 109
@@ -52,6 +55,24 @@ func worstCFB(sectorShift uint16) (data []byte, lastDirOffset int64) {
 		}
 	}
 	return buf, int64(1+int(firstDir)+worstCFBDirSectors-1) * int64(ss)
+}
+
+func worstTeXWindow(t *testing.T) (prefix []byte, name string, names int) {
+	t.Helper()
+	for _, c := range []string{"graphicx", "amsmath", "xcolor", "hyperref"} {
+		if convert.TeXPackageResolvable(c) {
+			name = c
+			break
+		}
+	}
+	if name == "" {
+		t.Fatal("none of graphicx, amsmath, xcolor, hyperref is resolvable: the worst window cannot be built from names the gate admits")
+	}
+	head := `\documentclass{article}\usepackage{`
+	n := (convert.SniffWindowBytes - len(head) - len(name) - 1) / (len(name) + 1)
+	src := head + strings.Repeat(name+",", n) + name + "}"
+	src += strings.Repeat(" ", convert.SniffWindowBytes-len(src))
+	return []byte(src), name, n + 1
 }
 
 type readAtProbe struct {
@@ -114,4 +135,34 @@ func TestCreateSniffersStayWithinTheirTerms(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("tex_window_worst", func(t *testing.T) {
+		prefix, name, want := worstTeXWindow(t)
+		var unsupported string
+		var visited int
+		var complete bool
+		allocated := allocatedBy(func() {
+			var packages []string
+			packages, complete = convert.ScanTeXPreamble(prefix)
+			for _, pkg := range packages {
+				visited++
+				if convert.TeXPackageResolvable(pkg) {
+					continue
+				}
+				unsupported = pkg
+				break
+			}
+		})
+		t.Logf("window %d B of \\usepackage{%s,...}: %d names visited of %d, unsupported %q, complete %v, allocated by the gate %d B (%.2f MiB), term %d B (%.2f MiB)",
+			len(prefix), name, visited, want, unsupported, complete, allocated, mib(allocated), texScanHeapBytes, mib(texScanHeapBytes))
+		if len(prefix) != convert.SniffWindowBytes {
+			t.Fatalf("window is %d B, want exactly convert.SniffWindowBytes %d", len(prefix), convert.SniffWindowBytes)
+		}
+		if unsupported != "" || visited != want || complete {
+			t.Errorf("the gate visited %d of %d names, unsupported %q, complete %v: want every name visited, none unsupported, complete false", visited, want, unsupported, complete)
+		}
+		if allocated > texScanHeapBytes {
+			t.Errorf("the TeX package gate allocated %d B on the worst window, more than texScanHeapBytes %d", allocated, texScanHeapBytes)
+		}
+	})
 }
