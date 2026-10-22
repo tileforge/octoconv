@@ -10,10 +10,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,9 +29,34 @@ import (
 
 const chartValues = "../../deploy/chart/octoconv/values.yaml"
 
-func chartAPIMemoryLimit(t *testing.T) int64 {
+const multipartPeekBufferBytes = 4096
+
+var intakeQueryRepeats = (http.DefaultMaxHeaderBytes - 8<<10) / 3
+
+var memoryQuantity = regexp.MustCompile(`^(\d+)(Gi|Mi|g|m)?$`)
+
+func parseMemoryLimit(t *testing.T, where, memory string) int64 {
 	t.Helper()
-	raw, err := os.ReadFile(chartValues)
+	m := memoryQuantity.FindStringSubmatch(memory)
+	if m == nil {
+		t.Fatalf("%s: memory limit %q is not <digits> followed by Gi, Mi, g, m or nothing", where, memory)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || n <= 0 {
+		t.Fatalf("%s: memory limit %q is not a positive int64", where, memory)
+	}
+	switch m[2] {
+	case "Gi", "g":
+		n <<= 30
+	case "Mi", "m":
+		n <<= 20
+	}
+	return n
+}
+
+func chartAPIMemory(t *testing.T, file string) (string, bool) {
+	t.Helper()
+	raw, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,30 +64,98 @@ func chartAPIMemoryLimit(t *testing.T) int64 {
 		API struct {
 			Resources struct {
 				Limits struct {
-					Memory string `yaml:"memory"`
+					Memory *string `yaml:"memory"`
 				} `yaml:"limits"`
 			} `yaml:"resources"`
 		} `yaml:"api"`
 	}
 	if err := yaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("decode %s: %v", chartValues, err)
+		t.Fatalf("decode %s: %v", file, err)
 	}
-	memory := values.API.Resources.Limits.Memory
-	m := regexp.MustCompile(`^(\d+)(Gi|Mi)?$`).FindStringSubmatch(memory)
-	if m == nil {
-		t.Fatalf("%s: api.resources.limits.memory = %q is not <digits>Gi, <digits>Mi or <digits>", chartValues, memory)
+	if values.API.Resources.Limits.Memory == nil {
+		return "", false
 	}
-	n, err := strconv.ParseInt(m[1], 10, 64)
-	if err != nil || n <= 0 {
-		t.Fatalf("%s: api.resources.limits.memory = %q is not a positive int64", chartValues, memory)
+	return *values.API.Resources.Limits.Memory, true
+}
+
+type intakeHeapConfig struct {
+	name                 string
+	memory               int64
+	inspectMaxConcurrent int64
+	forms                int64
+	share                int64
+}
+
+func newIntakeHeapConfig(name string, memory, inspectMaxConcurrent int64) intakeHeapConfig {
+	forms := int64(createIntakeMaxConcurrent+inspectIntakeMaxConcurrent) + inspectMaxConcurrent
+	return intakeHeapConfig{name: name, memory: memory, inspectMaxConcurrent: inspectMaxConcurrent, forms: forms, share: memory / 2 / forms}
+}
+
+func intakeHeapConfigs(t *testing.T) []intakeHeapConfig {
+	t.Helper()
+	baseMemory, ok := chartAPIMemory(t, chartValues)
+	if !ok {
+		t.Fatalf("%s sets no api.resources.limits.memory", chartValues)
 	}
-	switch m[2] {
-	case "Gi":
-		n <<= 30
-	case "Mi":
-		n <<= 20
+	base := readChartAPISpill(t, chartValues)
+	configs := []intakeHeapConfig{newIntakeHeapConfig("values.yaml", parseMemoryLimit(t, chartValues, baseMemory), spillCaps(t, "values.yaml", base.API.ExtraEnv)["INSPECT_MAX_CONCURRENT"])}
+	overlays, err := filepath.Glob(transportCapChartDir + "values-*.yaml")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return n
+	if len(overlays) == 0 {
+		t.Fatalf("no values-*.yaml overlay under %s", transportCapChartDir)
+	}
+	sort.Strings(overlays)
+	for _, f := range overlays {
+		name := filepath.Base(f)
+		memory := baseMemory
+		if m, ok := chartAPIMemory(t, f); ok {
+			memory = m
+		}
+		caps := spillCaps(t, name, base.API.ExtraEnv, readChartAPISpill(t, f).API.ExtraEnv)
+		configs = append(configs, newIntakeHeapConfig(name, parseMemoryLimit(t, f, memory), caps["INSPECT_MAX_CONCURRENT"]))
+	}
+
+	raw, err := os.ReadFile(transportCapCompose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Deploy struct {
+				Resources struct {
+					Limits struct {
+						Memory string `yaml:"memory"`
+					} `yaml:"limits"`
+				} `yaml:"resources"`
+			} `yaml:"deploy"`
+			Environment yaml.Node `yaml:"environment"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(raw, &compose); err != nil {
+		t.Fatalf("decode %s: %v", transportCapCompose, err)
+	}
+	api, ok := compose.Services["api"]
+	if !ok {
+		t.Fatalf("%s has no api service", transportCapCompose)
+	}
+	var env map[string]any
+	if err := api.Environment.Decode(&env); err != nil {
+		t.Fatalf("%s services.api.environment is not a map this test can read: %v", transportCapCompose, err)
+	}
+	inspect, ok := env["INSPECT_MAX_CONCURRENT"]
+	if !ok {
+		t.Fatalf("%s services.api.environment has no INSPECT_MAX_CONCURRENT", transportCapCompose)
+	}
+	configs = append(configs, newIntakeHeapConfig("docker-compose.yml api",
+		parseMemoryLimit(t, transportCapCompose+" services.api.deploy.resources.limits.memory", api.Deploy.Resources.Limits.Memory),
+		transportCapInt(t, transportCapCompose+" services.api.environment", "INSPECT_MAX_CONCURRENT", fmt.Sprint(inspect))))
+
+	if len(configs) < 3 {
+		t.Fatalf("%d configurations, want at least three", len(configs))
+	}
+	return configs
 }
 
 func liveHeap() uint64 {
@@ -144,7 +241,7 @@ func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		req := authed(httptest.NewRequest(http.MethodPost, path, pr))
+		req := authed(httptest.NewRequest(http.MethodPost, path+"?q="+strings.Repeat("%41", intakeQueryRepeats), pr))
 		req.Header.Set("Content-Type", contentType)
 		srv.Routes().ServeHTTP(rec, req)
 		_ = pr.Close()
@@ -180,11 +277,118 @@ func heapProbeServer() *Server {
 	})
 }
 
+func mainFilePart(mw *multipart.Writer, headerPad int64) (io.Writer, error) {
+	if headerPad == 0 {
+		return mw.CreateFormFile(formFieldFile, "intake")
+	}
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition", `form-data; name="file"; filename="intake"`)
+	h.Set("Content-Type", "application/octet-stream")
+	h.Set("X-Pad", strings.Repeat("p", int(headerPad)))
+	return mw.CreatePart(h)
+}
+
+func admissibleFileSize(mode string) int64 {
+	if mode == "memory" {
+		return multipartInMemoryBudget
+	}
+	return int64(multipartInMemoryBudget) + 16<<20
+}
+
+func admissibleForm(kind, mode string, a, b int64) intakeForm {
+	nonFile := func(mw *multipart.Writer) error {
+		switch kind {
+		case "value":
+			return writeZeroField(mw, "x_pad", a)
+		case "parts":
+			for i := int64(1); i <= a; i++ {
+				name := fmt.Sprintf("f%04d", i)
+				if i == a {
+					name += strings.Repeat("p", int(b))
+				}
+				if _, err := mw.CreateFormFile(name, "a"); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	var headerPad int64
+	if kind == "header" {
+		headerPad = a
+	}
+	size := admissibleFileSize(mode)
+	return intakeForm{kind + " " + mode, func(mw *multipart.Writer, pause func()) error {
+		if mode == "memory" {
+			fw, err := mainFilePart(mw, headerPad)
+			if err != nil {
+				return err
+			}
+			if err := copyZeros(fw, size); err != nil {
+				return err
+			}
+			if err := nonFile(mw); err != nil {
+				return err
+			}
+			pause()
+			return nil
+		}
+		if err := nonFile(mw); err != nil {
+			return err
+		}
+		fw, err := mainFilePart(mw, headerPad)
+		if err != nil {
+			return err
+		}
+		if err := copyZeros(fw, size-1<<20); err != nil {
+			return err
+		}
+		pause()
+		return copyZeros(fw, 1<<20)
+	}}
+}
+
+func nonFileBytesOf(t *testing.T, form intakeForm, fileContent int64) int64 {
+	t.Helper()
+	cw := &countingWriter{w: io.Discard}
+	mw := multipart.NewWriter(cw)
+	if err := form.write(mw, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return cw.n - fileContent
+}
+
+func admissibleFormOnTheLine(t *testing.T, kind, mode string) intakeForm {
+	t.Helper()
+	line := int64(maxFormNonFileBytes - multipartPeekBufferBytes)
+	size := admissibleFileSize(mode)
+	var form intakeForm
+	if kind == "parts" {
+		base := nonFileBytesOf(t, admissibleForm(kind, mode, 0, 0), size)
+		cost := nonFileBytesOf(t, admissibleForm(kind, mode, 1, 0), size) - base
+		form = admissibleForm(kind, mode, (line-base)/cost, (line-base)%cost)
+	} else {
+		one := nonFileBytesOf(t, admissibleForm(kind, mode, 1, 0), size)
+		form = admissibleForm(kind, mode, 1+line-one, 0)
+	}
+	if got := nonFileBytesOf(t, form, size); got != line {
+		t.Fatalf("%s: the form carries %d bytes of non-file data, want exactly %d", form.name, got, line)
+	}
+	return form
+}
+
 func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
-	limit := chartAPIMemoryLimit(t)
-	caps := spillCaps(t, "values.yaml", readChartAPISpill(t, chartValues).API.ExtraEnv)
-	forms := int64(createIntakeMaxConcurrent+inspectIntakeMaxConcurrent) + caps["INSPECT_MAX_CONCURRENT"]
-	share := limit / 2 / forms
+	configs := intakeHeapConfigs(t)
+	smallest := configs[0]
+	for _, c := range configs {
+		t.Logf("%s: api memory limit %d, INSPECT_MAX_CONCURRENT %d, %d live forms, share %d bytes (%.1f MiB)", c.name, c.memory, c.inspectMaxConcurrent, c.forms, c.share, float64(c.share)/(1<<20))
+		if c.share < smallest.share {
+			smallest = c
+		}
+	}
 	spillSize := int64(multipartInMemoryBudget) + 16<<20
 	probeField := int64(10<<20 - 64<<10)
 	fileOnly := intakeForm{"file only", func(mw *multipart.Writer, pause func()) error {
@@ -196,12 +400,18 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 		}
 		return writeFileWithPause(mw, spillSize, pause)
 	}}
+	forms := []intakeForm{fileOnly, verifierProbe}
+	for _, kind := range []string{"value", "parts", "header"} {
+		for _, mode := range []string{"memory", "spill"} {
+			forms = append(forms, admissibleFormOnTheLine(t, kind, mode))
+		}
+	}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
-		for _, form := range []intakeForm{fileOnly, verifierProbe} {
+		for _, form := range forms {
 			t.Run(path+" "+form.name, func(t *testing.T) {
 				p := minHeapOfThree(t, heapProbeServer(), path, form)
 				m := int64(p.heap)
-				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); share = %d bytes (pod limit %d / 2 / %d forms); m × %d = %d; status %d %v; %d bytes sent", path, form.name, m, float64(m)/(1<<20), share, limit, forms, forms, m*forms, p.status, p.payload, p.sent)
+				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); smallest share = %d bytes (%s: limit %d / 2 / %d forms); m × %d = %d; status %d %v; %d bytes sent", path, form.name, m, float64(m)/(1<<20), smallest.share, smallest.name, smallest.memory, smallest.forms, smallest.forms, m*smallest.forms, p.status, p.payload, p.sent)
 				if form.name == verifierProbe.name {
 					if p.status != http.StatusRequestEntityTooLarge || p.payload["code"] != "payload_too_large" || p.payload["error"] != formFieldsTooLargeMessage {
 						t.Errorf("%s: status %d payload %v, want 413 payload_too_large %q", path, p.status, p.payload, formFieldsTooLargeMessage)
@@ -211,14 +421,31 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 					}
 					return
 				}
-				if p.err != nil {
-					t.Fatalf("%s: the handler did not read the whole body: %v", path, p.err)
+				if p.err != nil || p.payload["error"] == formFieldsTooLargeMessage {
+					t.Fatalf("%s: an admissible form was not read whole (write error %v, status %d %v)", path, p.err, p.status, p.payload)
 				}
-				if m > share {
-					t.Errorf("%s: one form holds %d bytes of live heap, more than the share %d (pod limit %d / 2 / %d live forms)", path, m, share, limit, forms)
+				for _, c := range configs {
+					if m > c.share {
+						t.Errorf("%s %s: one form holds %d bytes of live heap, more than the share %d of %s (limit %d / 2 / %d live forms)", path, form.name, m, c.share, c.name, c.memory, c.forms)
+					}
 				}
 			})
 		}
+	}
+}
+
+func TestIntakeBudgetIsDerivedFromThePodShare(t *testing.T) {
+	configs := intakeHeapConfigs(t)
+	var want int64
+	for i, c := range configs {
+		w := ((c.share - maxFormNonFileBytes - http.DefaultMaxHeaderBytes) / 2) >> 20 << 20
+		t.Logf("%s: share %d = %d / 2 / (%d + %d + %d); share - non-file bound %d - request header %d = %d; / 2 = %d; whole MiB = %d (%d MiB)", c.name, c.share, c.memory, createIntakeMaxConcurrent, inspectIntakeMaxConcurrent, c.inspectMaxConcurrent, maxFormNonFileBytes, http.DefaultMaxHeaderBytes, c.share-maxFormNonFileBytes-http.DefaultMaxHeaderBytes, (c.share-maxFormNonFileBytes-http.DefaultMaxHeaderBytes)/2, w, w>>20)
+		if i == 0 || w < want {
+			want = w
+		}
+	}
+	if multipartInMemoryBudget != want {
+		t.Errorf("multipartInMemoryBudget = %d, want %d: the largest whole MiB with 2 × budget + %d + %d within the smallest share", multipartInMemoryBudget, want, maxFormNonFileBytes, http.DefaultMaxHeaderBytes)
 	}
 }
 

@@ -54,6 +54,16 @@ func formWithUnknownField(t *testing.T, pad int, filename, target string, data [
 	return &b, w.FormDataContentType()
 }
 
+func formWithNonFileBytes(t *testing.T, nonFile int, filename, target string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	probe, _ := formWithUnknownField(t, 1, filename, target, data)
+	body, ct := formWithUnknownField(t, 1+nonFile-(probe.Len()-len(data)), filename, target, data)
+	if got := body.Len() - len(data); got != nonFile {
+		t.Fatalf("the form carries %d bytes of non-file data, want exactly %d", got, nonFile)
+	}
+	return body, ct
+}
+
 type boundFormResult struct {
 	rec   *httptest.ResponseRecorder
 	read  int64
@@ -75,7 +85,24 @@ func postBoundForm(t *testing.T, path, contentType string, body io.Reader) bound
 
 func TestIntakeRefusesNonFileFormDataOverTheBound(t *testing.T) {
 	for _, c := range boundFormCases() {
-		t.Run(c.path, func(t *testing.T) {
+		t.Run(c.path+" at the acceptance line", func(t *testing.T) {
+			body, ct := formWithNonFileBytes(t, maxFormNonFileBytes-multipartPeekBufferBytes, c.filename, c.target, c.data())
+			res := postBoundForm(t, c.path, ct, body)
+			if res.rec.Code != c.accepted {
+				t.Errorf("%s: %d bytes of non-file data: status = %d body %s, want %d", c.path, maxFormNonFileBytes-multipartPeekBufferBytes, res.rec.Code, res.rec.Body.Bytes(), c.accepted)
+			}
+		})
+		t.Run(c.path+" one byte over the bound", func(t *testing.T) {
+			body, ct := formWithNonFileBytes(t, maxFormNonFileBytes+1, c.filename, c.target, c.data())
+			res := postBoundForm(t, c.path, ct, body)
+			if res.rec.Code != http.StatusRequestEntityTooLarge || errorMessage(t, res.rec.Body.Bytes()) != formFieldsTooLargeMessage {
+				t.Errorf("%s: %d bytes of non-file data: status = %d body %s, want 413 %q", c.path, maxFormNonFileBytes+1, res.rec.Code, res.rec.Body.Bytes(), formFieldsTooLargeMessage)
+			}
+			if res.store.uploaded || res.repo.preAdmitCalls != 0 {
+				t.Errorf("%s: uploaded %v, PreAdmit called %d times, want neither", c.path, res.store.uploaded, res.repo.preAdmitCalls)
+			}
+		})
+		t.Run(c.path+" verifier probe", func(t *testing.T) {
 			body, ct := formWithUnknownField(t, 10<<20-64<<10, c.filename, c.target, c.data())
 			res := postBoundForm(t, c.path, ct, body)
 			t.Logf("%s: status %d after %d bytes of the body were read; body %s", c.path, res.rec.Code, res.read, res.rec.Body.Bytes())
