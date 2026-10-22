@@ -90,6 +90,14 @@ const beginDocument = `\begin{document}`
 // already holding that window for LooksLikeLaTeXFromPrefix. A second read here
 // would be a second answer to one question about one file.
 func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
+	complete = VisitTeXPreamblePackages(prefix, func(pkg string) bool {
+		packages = append(packages, pkg)
+		return true
+	})
+	return packages, complete
+}
+
+func VisitTeXPreamblePackages(prefix []byte, visit func(pkg string) bool) (complete bool) {
 	src := string(prefix)
 
 	// Cut at \begin{document} first, so everything below scans the preamble
@@ -257,9 +265,13 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 				i += wordLen - 1
 				break
 			}
-			for _, name := range strings.Split(args, ",") {
+			for more := true; more; {
+				var name string
+				name, args, more = strings.Cut(args, ",")
 				if name = strings.TrimSpace(name); looksLikeTeXPackageName(name) {
-					packages = append(packages, name)
+					if !visit(name) {
+						return false
+					}
 				} else if name != "" {
 					// A name that cannot be a filename (\usepackage{#1} out of
 					// a macro body, or an unexpanded control sequence). Never
@@ -271,7 +283,7 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 			break
 		}
 	}
-	return packages, complete
+	return complete
 }
 
 // texControlWord returns the TeX control sequence at the start of src, which

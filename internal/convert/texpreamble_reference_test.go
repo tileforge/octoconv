@@ -312,7 +312,7 @@ func texDiffCorpus(t *testing.T) []string {
 
 func TestVisitTeXPreamblePackagesMatchesTheReference(t *testing.T) {
 	corpus := texDiffCorpus(t)
-	names, incomplete := 0, 0
+	names, incomplete, stops := 0, 0, 0
 	for i, src := range corpus {
 		want, wantComplete := referenceScanTeXPreamble([]byte(src))
 		names += len(want)
@@ -324,9 +324,33 @@ func TestVisitTeXPreamblePackagesMatchesTheReference(t *testing.T) {
 			t.Errorf("input %d (%d bytes, %.60q): ScanTeXPreamble = %d names, complete %v; the 805d49da implementation = %d names, complete %v",
 				i, len(src), src, len(got), gotComplete, len(want), wantComplete)
 		}
+		var visited []string
+		visitedComplete := VisitTeXPreamblePackages([]byte(src), func(pkg string) bool {
+			visited = append(visited, pkg)
+			return true
+		})
+		if !slices.Equal(visited, want) || visitedComplete != wantComplete {
+			t.Errorf("input %d (%d bytes, %.60q): VisitTeXPreamblePackages visited %d names, complete %v; the 805d49da implementation = %d names, complete %v",
+				i, len(src), src, len(visited), visitedComplete, len(want), wantComplete)
+		}
+		for _, k := range []int{1, (len(want) + 1) / 2} {
+			if k < 1 || k > len(want) {
+				continue
+			}
+			var first []string
+			stoppedComplete := VisitTeXPreamblePackages([]byte(src), func(pkg string) bool {
+				first = append(first, pkg)
+				return len(first) < k
+			})
+			stops++
+			if !slices.Equal(first, want[:k]) || stoppedComplete {
+				t.Errorf("input %d (%.60q): a visitor stopping at name %d received %d names, complete %v; want the reference's first %d, complete false",
+					i, src, k, len(first), stoppedComplete, k)
+			}
+		}
 	}
-	t.Logf("corpus: %d inputs, %d names reported by the reference, %d inputs incomplete", len(corpus), names, incomplete)
-	if names == 0 || incomplete == 0 || incomplete == len(corpus) {
-		t.Errorf("the corpus does not exercise the scanner: %d names, %d of %d inputs incomplete", names, incomplete, len(corpus))
+	t.Logf("corpus: %d inputs, %d names reported by the reference, %d inputs incomplete, %d early-stopping visits", len(corpus), names, incomplete, stops)
+	if names == 0 || incomplete == 0 || incomplete == len(corpus) || stops == 0 {
+		t.Errorf("the corpus does not exercise the scanner: %d names, %d of %d inputs incomplete, %d early stops", names, incomplete, len(corpus), stops)
 	}
 }

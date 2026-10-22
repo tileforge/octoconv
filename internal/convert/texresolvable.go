@@ -173,11 +173,13 @@ func TeXUnsupportedPackageMessage(pkg string) string {
 // set: this is a support boundary, not a safety one, and the fonts themselves
 // are not in the image.
 func TeXDeniedInSource(src []byte) string {
-	packages, _ := ScanTeXPreamble(src)
-	for _, pkg := range packages {
+	var found string
+	VisitTeXPreamblePackages(src, func(pkg string) bool {
 		if _, denied := texDenied[pkg]; denied {
-			return pkg
+			found = pkg
+			return false
 		}
-	}
-	return ""
+		return true
+	})
+	return found
 }

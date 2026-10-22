@@ -142,16 +142,14 @@ func TestCreateSniffersStayWithinTheirTerms(t *testing.T) {
 		var visited int
 		var complete bool
 		allocated := allocatedBy(func() {
-			var packages []string
-			packages, complete = convert.ScanTeXPreamble(prefix)
-			for _, pkg := range packages {
+			complete = convert.VisitTeXPreamblePackages(prefix, func(pkg string) bool {
 				visited++
 				if convert.TeXPackageResolvable(pkg) {
-					continue
+					return true
 				}
 				unsupported = pkg
-				break
-			}
+				return false
+			})
 		})
 		t.Logf("window %d B of \\usepackage{%s,...}: %d names visited of %d, unsupported %q, complete %v, allocated by the gate %d B (%.2f MiB), term %d B (%.2f MiB)",
 			len(prefix), name, visited, want, unsupported, complete, allocated, mib(allocated), texScanHeapBytes, mib(texScanHeapBytes))
