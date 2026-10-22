@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -268,5 +269,161 @@ func TestCreateUploadHeapStaysWithinItsTerm(t *testing.T) {
 				t.Errorf("%s: create held %d bytes (%.3f MiB) during the upload, above the share %d (%.3f MiB) of %s", cs.name, worst.heap, mib(worst.heap), c.share, mib(c.share), c.name)
 			}
 		}
+	}
+}
+
+func TestUploadTermIsMeasuredAlone(t *testing.T) {
+	createDuringUploadRun(t, "warm-up", nil, 100<<20)
+	for _, stl := range []int64{15 << 20, 20 << 20, 100 << 20} {
+		var worst uploadProbe
+		for run := 1; run <= 3; run++ {
+			p := createDuringUploadRun(t, fmt.Sprintf("STL %d MiB run %d", stl>>20, run), nil, stl)
+			t.Logf("STL %d MiB run %d: heap %d (%.3f MiB) with %d PUT in flight, %d per PUT", stl>>20, run, p.heap, mib(p.heap), p.inFlight, p.heap/int64(max(p.inFlight, 1)))
+			if p.inFlight != p.want {
+				t.Errorf("STL %d MiB run %d: %d PUT in flight, want %d", stl>>20, run, p.inFlight, p.want)
+			}
+			if run == 1 || p.heap > worst.heap {
+				worst = p
+			}
+		}
+		perPut := worst.heap / int64(max(worst.inFlight, 1))
+		t.Logf("STL %d MiB: max heap %d (%.3f MiB) with %d PUT in flight, %d per PUT; uploadWorkerHeapBytes %d", stl>>20, worst.heap, mib(worst.heap), worst.inFlight, perPut, uploadWorkerHeapBytes)
+		if stl == 100<<20 && perPut > uploadWorkerHeapBytes {
+			t.Errorf("STL %d MiB: %d bytes per PUT in flight, above uploadWorkerHeapBytes %d", stl>>20, perPut, uploadWorkerHeapBytes)
+		}
+	}
+}
+
+type capturedObject struct {
+	key string
+	sum [sha256.Size]byte
+	n   int64
+}
+
+type capturingStorage struct {
+	*fakeStorage
+	mu      sync.Mutex
+	objects []capturedObject
+}
+
+func (s *capturingStorage) Upload(_ context.Context, key string, r io.Reader, _ int64, _ string) error {
+	h := sha256.New()
+	n, err := io.Copy(h, r)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objects = append(s.objects, capturedObject{key: key, sum: [sha256.Size]byte(h.Sum(nil)), n: n})
+	return err
+}
+
+func (s *capturingStorage) uploaded() []capturedObject {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]capturedObject(nil), s.objects...)
+}
+
+type validatedPart struct {
+	name string
+	data func() io.Reader
+}
+
+func sumOf(t *testing.T, r io.Reader) capturedObject {
+	t.Helper()
+	h := sha256.New()
+	n, err := io.Copy(h, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capturedObject{sum: [sha256.Size]byte(h.Sum(nil)), n: n}
+}
+
+func bytesPart(name string, b []byte) validatedPart {
+	return validatedPart{name: name, data: func() io.Reader { return bytes.NewReader(b) }}
+}
+
+func TestCreateUploadsTheValidatedBytes(t *testing.T) {
+	stl := func() io.Reader { r, _ := largestAdmissibleSTL(); return r }
+	cases := []struct {
+		name    string
+		target  string
+		op      string
+		parts   []validatedPart
+		formats map[string]map[string]int64
+	}{
+		{"png Dimensions", "webp", "", []validatedPart{bytesPart("in.png", pngBytesFixture())}, nil},
+		{"mp4 Sniff", "mp3", "", []validatedPart{bytesPart("in.mp4", mp4BytesFixture())}, nil},
+		{"mkv SniffVideo", "mp4", "", []validatedPart{bytesPart("in.mkv", mkvBytesFixture())}, nil},
+		{"webm SniffVideo", "mp4", "", []validatedPart{bytesPart("in.webm", webmBytesFixture())}, nil},
+		{"mp3 SniffAudio", "txt", "", []validatedPart{bytesPart("in.mp3", audioMP3Fixture(t))}, nil},
+		{"docx container", "pdf", "", []validatedPart{bytesPart("in.docx", docxFixture(t))}, nil},
+		{"html", "pdf", "", []validatedPart{bytesPart("in.html", htmlFixture())}, nil},
+		{"latex", "pdf", "", []validatedPart{bytesPart("in.tex", latexFixture())}, nil},
+		{"pdf", "txt", "", []validatedPart{bytesPart("scan.pdf", pdfBytesFixture())}, nil},
+		{"markdown spilled above 16 MiB", "html", "", []validatedPart{bytesPart("in.md", paddedMarkdown(uploadPartBytes+1<<20))}, map[string]map[string]int64{convert.EnginePandoc: {"md": 64 << 20}}},
+		{"stl at the CAD cap", "png", convert.OperationRender, []validatedPart{{name: "model.stl", data: stl}}, nil},
+		{"tex with an attachment", "pdf", "", []validatedPart{bytesPart("paper.tex", []byte(texMain)), bytesPart("preamble.tex", []byte("\\newcommand{\\x}{y}\n"))}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &capturingStorage{fakeStorage: &fakeStorage{}}
+			_, ts := newIntakeServerWith(t, &fakeRepo{}, store, Config{
+				MaxUploadBytes:        uploadMaxBytes,
+				InspectMaxUploadBytes: uploadMaxBytes,
+				MaxFormatBytes:        tc.formats,
+			}, intakeReadDeadline, intakeMinBytesPerSecond)
+			pr, pw := io.Pipe()
+			mw := multipart.NewWriter(pw)
+			go func() {
+				for _, p := range tc.parts {
+					fw, err := mw.CreateFormFile(formFieldFile, p.name)
+					if err != nil {
+						pw.CloseWithError(err)
+						return
+					}
+					if _, err := io.Copy(fw, p.data()); err != nil {
+						pw.CloseWithError(err)
+						return
+					}
+				}
+				fields := [][2]string{{formFieldTarget, tc.target}}
+				if tc.op != "" {
+					fields = append(fields, [2]string{formFieldOperation, tc.op})
+				}
+				for _, f := range fields {
+					if err := mw.WriteField(f[0], f[1]); err != nil {
+						pw.CloseWithError(err)
+						return
+					}
+				}
+				pw.CloseWithError(mw.Close())
+			}()
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/jobs", pr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			resp, err := ts.Client().Do(authed(req))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("status %d, want 202: %.300s", resp.StatusCode, body)
+			}
+			got := store.uploaded()
+			if len(got) != len(tc.parts) {
+				t.Fatalf("%d objects uploaded, want %d", len(got), len(tc.parts))
+			}
+			for i, p := range tc.parts {
+				want := sumOf(t, p.data())
+				t.Logf("ordinal %d %s: object %q %d bytes sha256 %x, file part %d bytes sha256 %x", i, p.name, got[i].key, got[i].n, got[i].sum, want.n, want.sum)
+				if !strings.Contains(got[i].key, fmt.Sprintf("/%d-", i)) {
+					t.Errorf("upload %d went to key %q, want ordinal %d", i, got[i].key, i)
+				}
+				if got[i].n != want.n || got[i].sum != want.sum {
+					t.Errorf("ordinal %d %s: stored %d bytes sha256 %x, the validated file part is %d bytes sha256 %x", i, p.name, got[i].n, got[i].sum, want.n, want.sum)
+				}
+			}
+		})
 	}
 }
