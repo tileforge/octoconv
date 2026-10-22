@@ -499,6 +499,7 @@ func budgetHeapCases() []rawHeapCase {
 		{form: rawFileParts("worst pending", pending, nil, 0), query: shortIntakeQuery, upper: content},
 		{form: rawFileParts("worst spill", spill, nil, 1<<20), query: shortIntakeQuery, upper: content},
 		{form: rawFileParts("worst spill settled", spill, nil, 1<<20), query: shortIntakeQuery, settle: heapSettle, upper: content, floor: 2*b - 1<<20},
+		{form: rawFileParts("worst spill settled p8", spillLast(worstSplit(b, p/8-(bytes.MinRead-1))), nil, 1<<20), query: shortIntakeQuery, settle: heapSettle, upper: content, floor: 2*b - 1<<20},
 	}
 
 	gapPending := []int64{8 << 20, 4 << 20}
