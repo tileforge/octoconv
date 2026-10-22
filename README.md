@@ -255,6 +255,8 @@ really pings Postgres, Redis and S3.
 
 **Status semantics**
 
+- Request line and headers together above 64 KiB → `431` with a plain-text body, answered
+  before the key or the rate limit is checked; no `code`
 - No key, or an invalid/revoked one → `401`
 - A job belonging to another client, or one that doesn't exist → `404`; the API never
   confirms the existence of jobs you don't own

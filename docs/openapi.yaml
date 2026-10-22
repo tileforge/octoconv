@@ -972,6 +972,20 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    RequestHeaderFieldsTooLarge:
+      description: >-
+        The request line and headers together are longer than 64 KiB, the
+        MaxHeaderBytes of every HTTP listener of the API process (net/http
+        reads up to 64 KiB plus its own 4096-byte buffer slack, 69632 bytes,
+        and answers one byte more with 431). net/http writes this answer
+        itself, before routing, before the API key is checked and before any
+        rate limit. The body is plain text, "431 Request Header Fields Too
+        Large", and the server closes the connection. There is no error
+        envelope and no code field.
+      content:
+        text/plain:
+          schema:
+            type: string
 
 paths:
   /healthz:
@@ -1017,6 +1031,8 @@ paths:
                 redis: unreachable
                 s3: ok
                 status: degraded
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           description: >-
             A panic in the handler, answered by chi's Recoverer middleware.
@@ -1278,6 +1294,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1403,6 +1421,8 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1495,6 +1515,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1555,6 +1577,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1661,6 +1685,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1734,6 +1760,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1817,6 +1845,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1863,6 +1893,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -1890,6 +1922,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1919,6 +1953,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     put:
@@ -1968,6 +2004,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     delete:
@@ -2005,6 +2043,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2058,6 +2098,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -2092,6 +2134,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2126,6 +2170,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     put:
@@ -2170,6 +2216,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     delete:
@@ -2209,6 +2257,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2433,5 +2483,7 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"

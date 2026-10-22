@@ -31,6 +31,12 @@ Future extensibility (`retry_after`, `details`, etc.) is added as additional TOP
 on the same flat envelope, never by changing this shape. `429` responses already carry
 `retry_after` this way; that precedent is what any future addition should follow.
 
+One status never carries this envelope: `431`. The HTTP server writes it before routing, before
+the API key and before any rate limit, when the request line and headers together are longer
+than 64 KiB. The body is the plain text `431 Request Header Fields Too Large` with no envelope
+and no `code`, and the connection is closed. Treat it like any other non-JSON error response.
+It has no row in the tables below because it has no `code` on the wire.
+
 **Asynchronous job failures** do not use an HTTP error envelope at all — the job itself
 completes its HTTP request successfully at creation time, and the failure surfaces later as two
 plain string fields:

@@ -5,16 +5,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/convert"
 )
@@ -171,8 +177,8 @@ func headStatus(t *testing.T, addr, head string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-func padHead(target string, total int) string {
-	fixed := "GET " + target + " HTTP/1.1\r\nHost: a\r\n"
+func padHead(method, target string, total int) string {
+	fixed := method + " " + target + " HTTP/1.1\r\nHost: a\r\n"
 	return fixed + "X-Pad:" + strings.Repeat("p", total-len(fixed)-len("X-Pad:\r\n")-len("\r\n")) + "\r\n\r\n"
 }
 
@@ -203,7 +209,7 @@ func TestShippedServerAnswersHeadersAboveTheLineWith431(t *testing.T) {
 	ts := startShippedServer(t, heapProbeServer().Routes())
 	addr := ts.Listener.Addr().String()
 
-	on := padHead("/healthz", headerReadLimit)
+	on := padHead(http.MethodGet, "/healthz", headerReadLimit)
 	if len(on) != headerReadLimit {
 		t.Fatalf("head on the line is %d bytes, want %d", len(on), headerReadLimit)
 	}
@@ -213,7 +219,7 @@ func TestShippedServerAnswersHeadersAboveTheLineWith431(t *testing.T) {
 		t.Errorf("head of exactly headerReadLimit %d bytes answered 431, want it served", headerReadLimit)
 	}
 
-	above := padHead("/healthz", headerReadLimit+1)
+	above := padHead(http.MethodGet, "/healthz", headerReadLimit+1)
 	status, body = headStatus(t, addr, above)
 	t.Logf("head %d bytes (headerReadLimit + 1): %d %q", len(above), status, body)
 	if status != http.StatusRequestHeaderFieldsTooLarge || body != "431 Request Header Fields Too Large" {
@@ -460,6 +466,63 @@ func TestIntakeTestServersUseTheShippedConfig(t *testing.T) {
 		cfg := c.ts.Config
 		if cfg.MaxHeaderBytes != apiMaxHeaderBytes || cfg.IdleTimeout != apiIdleTimeout || cfg.ReadHeaderTimeout != apiReadHeaderTimeout {
 			t.Errorf("%s: MaxHeaderBytes %d, IdleTimeout %v, ReadHeaderTimeout %v; want the shipped %d, %v, %v", c.name, cfg.MaxHeaderBytes, cfg.IdleTimeout, cfg.ReadHeaderTimeout, apiMaxHeaderBytes, apiIdleTimeout, apiReadHeaderTimeout)
+		}
+	}
+}
+
+var routeParamPattern = regexp.MustCompile(`\{[^}]+\}`)
+
+func TestHeaderLimitAnswerIsDocumentedAndServed(t *testing.T) {
+	handlers := routerHandlers(t)
+	documented := documentedStatuses(t)
+	ops := make([]string, 0, len(handlers))
+	for op := range handlers {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+
+	srv := heapProbeServer()
+	apiAddr := startShippedServer(t, srv.Routes()).Listener.Addr().String()
+	healthAddr := startShippedServer(t, srv.HealthRoutes()).Listener.Addr().String()
+	for _, op := range ops {
+		if !documented[op][http.StatusRequestHeaderFieldsTooLarge] {
+			t.Errorf("%s: %s does not document 431", specPath, op)
+		}
+		method, route, _ := strings.Cut(op, " ")
+		target := routeParamPattern.ReplaceAllString(route, "x")
+		addrs := []string{apiAddr}
+		if route == "/healthz" {
+			addrs = append(addrs, healthAddr)
+		}
+		for _, addr := range addrs {
+			status, body := headStatus(t, addr, padHead(method, target, headerReadLimit+1))
+			if status != http.StatusRequestHeaderFieldsTooLarge {
+				t.Errorf("%s %s with a head of headerReadLimit + 1 = %d bytes on %s: %d %.120q, want 431", method, target, headerReadLimit+1, addr, status, body)
+			}
+		}
+	}
+	t.Logf("%d operations document 431 and answer it above the line of %d bytes", len(ops), headerReadLimit)
+
+	limit := fmt.Sprintf("%d KiB", apiMaxHeaderBytes>>10)
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
+	}
+	texts := map[string]string{specPath + " components.responses.RequestHeaderFieldsTooLarge": openAPIString(t, doc, "components", "responses", "RequestHeaderFieldsTooLarge", "description")}
+	for _, path := range []string{"../../docs/ERROR-CODES.md", "../../README.md"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		texts[path] = string(b)
+	}
+	for where, text := range texts {
+		if !strings.Contains(text, limit) || !strings.Contains(text, "431") {
+			t.Errorf("%s does not name 431 and the header limit %q", where, limit)
 		}
 	}
 }
