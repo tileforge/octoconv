@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"unicode/utf16"
 )
 
 // CFBClass is the outcome of classifying an OLE-CFB (Compound File Binary)
@@ -91,25 +90,51 @@ func ClassifyCFB(r io.ReaderAt, size int64) CFBClass {
 		return CFBUnknown
 	}
 
-	fat := buildCFBFAT(r, header, sectorSize, size)
-	if fat == nil {
-		return CFBUnknown
-	}
-
-	names, ok := cfbWalkDirectory(r, firstDirSector, sectorSize, size, fat)
+	buf := make([]byte, sectorSize)
+	fat, ok := buildCFBFAT(r, header, buf, size)
 	if !ok {
 		return CFBUnknown
 	}
-	return classifyCFBNames(names)
+
+	encrypted, legacy, ok := cfbWalkDirectory(r, firstDirSector, buf, size, &fat)
+	if !ok {
+		return CFBUnknown
+	}
+	switch {
+	case encrypted:
+		return CFBEncrypted
+	case legacy:
+		return CFBLegacy
+	default:
+		return CFBUnknown
+	}
 }
 
-// buildCFBFAT reads the FAT sectors named by the header's 109 DIFAT entries
-// and returns a sparse map from sector number to its FAT "next sector"
-// value. It returns nil on any bounds violation or short read (fail
-// closed) -- the caller treats a nil map identically to CFBUnknown.
-func buildCFBFAT(r io.ReaderAt, header []byte, sectorSize int, size int64) map[uint32]uint32 {
-	fat := make(map[uint32]uint32)
+type cfbFAT struct {
+	next      []uint32
+	read      [cfbNumHeaderDIFATSlots]bool
+	perSector uint32
+}
+
+func (f *cfbFAT) lookup(sector uint32) (uint32, bool) {
+	slot := sector / f.perSector
+	if slot >= cfbNumHeaderDIFATSlots || !f.read[slot] {
+		return 0, false
+	}
+	return f.next[sector], true
+}
+
+// buildCFBFAT reads the FAT sectors named by the header's 109 DIFAT entries,
+// one at a time through buf, into a slice indexed by sector number. It
+// returns false on any bounds violation or short read (fail closed) -- the
+// caller treats false identically to CFBUnknown.
+func buildCFBFAT(r io.ReaderAt, header, buf []byte, size int64) (cfbFAT, bool) {
+	sectorSize := len(buf)
 	entriesPerFATSector := sectorSize / 4
+	fat := cfbFAT{
+		next:      make([]uint32, cfbNumHeaderDIFATSlots*entriesPerFATSector),
+		perSector: uint32(entriesPerFATSector),
+	}
 
 	for i := 0; i < cfbNumHeaderDIFATSlots; i++ {
 		off := cfbDIFATOffset + i*4
@@ -120,60 +145,60 @@ func buildCFBFAT(r io.ReaderAt, header []byte, sectorSize int, size int64) map[u
 			continue
 		}
 		if !cfbSectorInBounds(fatSector, sectorSize, size) {
-			return nil
+			return cfbFAT{}, false
 		}
 
-		data := make([]byte, sectorSize)
-		if n, _ := r.ReadAt(data, cfbSectorOffset(fatSector, sectorSize)); n != sectorSize {
-			return nil
+		if n, _ := r.ReadAt(buf, cfbSectorOffset(fatSector, sectorSize)); n != sectorSize {
+			return cfbFAT{}, false
 		}
 
-		base := uint32(i) * uint32(entriesPerFATSector)
+		base := i * entriesPerFATSector
 		for j := 0; j < entriesPerFATSector; j++ {
-			fat[base+uint32(j)] = binary.LittleEndian.Uint32(data[j*4 : j*4+4])
+			fat.next[base+j] = binary.LittleEndian.Uint32(buf[j*4 : j*4+4])
 		}
+		fat.read[i] = true
 	}
-	return fat
+	return fat, true
 }
 
 // cfbWalkDirectory follows the directory-sector FAT chain starting at
-// start, collecting every decoded entry name from every allocated
+// start, classifying every decoded entry name of every allocated
 // (storage/stream/root-storage) 128-byte directory entry. It never walks
 // the red-black sibling/child tree -- a flat linear scan of all entries in
 // every visited sector is sufficient to enumerate every stream name and
 // avoids that tree-traversal bug surface (Pitfall 10).
 //
-// ok is false (names discarded) on any bounds violation, short read, cycle
+// ok is false (flags discarded) on any bounds violation, short read, cycle
 // (repeat visit to a sector), cap-exceeded (more than cfbMaxDirSectors
 // sectors), or undetermined chain continuation -- the caller must treat
 // that identically to CFBUnknown rather than classifying partial results.
-func cfbWalkDirectory(r io.ReaderAt, start uint32, sectorSize int, size int64, fat map[uint32]uint32) (names []string, ok bool) {
-	visited := make(map[uint32]bool)
+func cfbWalkDirectory(r io.ReaderAt, start uint32, buf []byte, size int64, fat *cfbFAT) (encrypted, legacy, ok bool) {
+	visited := make(map[uint32]struct{})
+	sectorSize := len(buf)
 	entriesPerSector := sectorSize / cfbEntrySize
 	sector := start
 	count := 0
 
 	for sector < cfbSentinelThreshold {
-		if visited[sector] {
-			return nil, false // cycle: repeat visit to an already-walked sector
+		if _, seen := visited[sector]; seen {
+			return false, false, false
 		}
 		if count >= cfbMaxDirSectors {
-			return nil, false // hard cap exceeded
+			return false, false, false
 		}
 		if !cfbSectorInBounds(sector, sectorSize, size) {
-			return nil, false
+			return false, false, false
 		}
-		visited[sector] = true
+		visited[sector] = struct{}{}
 		count++
 
-		data := make([]byte, sectorSize)
-		if n, _ := r.ReadAt(data, cfbSectorOffset(sector, sectorSize)); n != sectorSize {
-			return nil, false
+		if n, _ := r.ReadAt(buf, cfbSectorOffset(sector, sectorSize)); n != sectorSize {
+			return false, false, false
 		}
 
 		for e := 0; e < entriesPerSector; e++ {
 			off := e * cfbEntrySize
-			entry := data[off : off+cfbEntrySize]
+			entry := buf[off : off+cfbEntrySize]
 
 			objType := entry[66]
 			if objType == 0x00 {
@@ -187,50 +212,51 @@ func cfbWalkDirectory(r io.ReaderAt, start uint32, sectorSize int, size int64, f
 				continue
 			}
 
-			u16 := make([]uint16, nameLen/2)
-			for k := range u16 {
-				u16[k] = binary.LittleEndian.Uint16(entry[k*2 : k*2+2])
+			units := int(nameLen / 2)
+			if binary.LittleEndian.Uint16(entry[(units-1)*2:]) == 0 {
+				units--
 			}
-			if len(u16) > 0 && u16[len(u16)-1] == 0 {
-				u16 = u16[:len(u16)-1] // strip trailing UTF-16 NUL
-			}
-			names = append(names, string(utf16.Decode(u16)))
+			isEncrypted, isLegacy := classifyCFBName(entry[:units*2])
+			encrypted = encrypted || isEncrypted
+			legacy = legacy || isLegacy
 		}
 
-		next, known := fat[sector]
+		next, known := fat.lookup(sector)
 		if !known {
 			// Chain continuation undetermined (sector not covered by any
 			// header-DIFAT-referenced FAT range) -- fail closed rather
 			// than classify on a possibly-incomplete name set.
-			return nil, false
+			return false, false, false
 		}
 		sector = next
 	}
-	return names, true
+	return encrypted, legacy, true
 }
 
-// classifyCFBNames applies the D-03 allow-lists over the decoded entry name
-// set. Encrypted markers win if both an encrypted and a legacy marker are
-// present.
-func classifyCFBNames(names []string) CFBClass {
-	hasEncrypted := false
-	hasLegacy := false
-	for _, n := range names {
-		switch n {
-		case "EncryptionInfo", "EncryptedPackage":
-			hasEncrypted = true
-		case "WordDocument", "Workbook", "Book", "PowerPoint Document":
-			hasLegacy = true
+// classifyCFBName applies the D-03 allow-lists to one UTF-16LE entry name.
+// The caller lets encrypted markers win if both an encrypted and a legacy
+// marker are present.
+func classifyCFBName(name []byte) (encrypted, legacy bool) {
+	switch {
+	case cfbNameIs(name, "EncryptionInfo"), cfbNameIs(name, "EncryptedPackage"):
+		return true, false
+	case cfbNameIs(name, "WordDocument"), cfbNameIs(name, "Workbook"), cfbNameIs(name, "Book"), cfbNameIs(name, "PowerPoint Document"):
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func cfbNameIs(name []byte, want string) bool {
+	if len(name) != len(want)*2 {
+		return false
+	}
+	for k := 0; k < len(want); k++ {
+		if binary.LittleEndian.Uint16(name[k*2:k*2+2]) != uint16(want[k]) {
+			return false
 		}
 	}
-	switch {
-	case hasEncrypted:
-		return CFBEncrypted
-	case hasLegacy:
-		return CFBLegacy
-	default:
-		return CFBUnknown
-	}
+	return true
 }
 
 // cfbSectorOffset returns the byte offset of sector number sector. Sector 0
