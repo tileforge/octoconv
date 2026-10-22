@@ -68,73 +68,157 @@ func liveHeap() uint64 {
 	return m.HeapAlloc
 }
 
-func liveHeapMidIntake(t *testing.T, srv *Server, path string, size int64) uint64 {
+type intakeProbe struct {
+	heap    uint64
+	status  int
+	payload map[string]string
+	sent    int64
+	err     error
+}
+
+type intakeForm struct {
+	name  string
+	write func(mw *multipart.Writer, pause func()) error
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func copyZeros(w io.Writer, n int64) error {
+	_, err := io.Copy(w, io.LimitReader(transportCapZeros{}, n))
+	return err
+}
+
+func writeFileWithPause(mw *multipart.Writer, size int64, pause func()) error {
+	fw, err := mw.CreateFormFile(formFieldFile, "intake")
+	if err != nil {
+		return err
+	}
+	if err := copyZeros(fw, size-1<<20); err != nil {
+		return err
+	}
+	pause()
+	return copyZeros(fw, 1<<20)
+}
+
+func writeZeroField(mw *multipart.Writer, name string, size int64) error {
+	fw, err := mw.CreateFormField(name)
+	if err != nil {
+		return err
+	}
+	return copyZeros(fw, size)
+}
+
+func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
 	t.Helper()
 	base := liveHeap()
 	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
+	cw := &countingWriter{w: pw}
+	mw := multipart.NewWriter(cw)
+	contentType := mw.FormDataContentType()
 	paused, resume := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	signal := func() { once.Do(func() { close(paused) }) }
 	writeErr := make(chan error, 1)
 	go func() {
-		fw, err := mw.CreateFormFile(formFieldFile, "intake")
-		if err == nil {
-			_, err = io.Copy(fw, io.LimitReader(transportCapZeros{}, size-1<<20))
-		}
-		close(paused)
-		<-resume
-		if err == nil {
-			_, err = io.Copy(fw, io.LimitReader(transportCapZeros{}, 1<<20))
-		}
+		err := form.write(mw, func() {
+			signal()
+			<-resume
+		})
+		signal()
 		if err == nil {
 			err = mw.Close()
 		}
 		pw.CloseWithError(err)
 		writeErr <- err
 	}()
+	rec := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		req := authed(httptest.NewRequest(http.MethodPost, path, pr))
-		req.Header.Set("Content-Type", mw.FormDataContentType())
-		srv.Routes().ServeHTTP(httptest.NewRecorder(), req)
+		req.Header.Set("Content-Type", contentType)
+		srv.Routes().ServeHTTP(rec, req)
 		_ = pr.Close()
 	}()
 	<-paused
 	mid := liveHeap()
 	close(resume)
 	<-done
-	if err := <-writeErr; err != nil {
-		t.Fatalf("%s: write the request: %v", path, err)
+	probe := intakeProbe{status: rec.Code, err: <-writeErr, sent: cw.n}
+	_ = json.Unmarshal(rec.Body.Bytes(), &probe.payload)
+	if mid > base {
+		probe.heap = mid - base
 	}
-	if mid < base {
-		return 0
+	return probe
+}
+
+func minHeapOfThree(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
+	t.Helper()
+	var best intakeProbe
+	for i := range 3 {
+		p := liveHeapMidIntake(t, srv, path, form)
+		if i == 0 || p.heap < best.heap {
+			best = p
+		}
 	}
-	return mid - base
+	return best
+}
+
+func heapProbeServer() *Server {
+	return NewServer(&fakeRepo{}, &transportCapStorage{fakeStorage: &fakeStorage{}}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
+		MaxUploadBytes:        64 << 20,
+		InspectMaxUploadBytes: 64 << 20,
+	})
 }
 
 func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 	limit := chartAPIMemoryLimit(t)
-	slots := int64(createIntakeMaxConcurrent + inspectIntakeMaxConcurrent)
-	perIntake := limit / 2 / slots
+	caps := spillCaps(t, "values.yaml", readChartAPISpill(t, chartValues).API.ExtraEnv)
+	forms := int64(createIntakeMaxConcurrent+inspectIntakeMaxConcurrent) + caps["INSPECT_MAX_CONCURRENT"]
+	share := limit / 2 / forms
+	spillSize := int64(multipartInMemoryBudget) + 16<<20
+	probeField := int64(10<<20 - 64<<10)
+	fileOnly := intakeForm{"file only", func(mw *multipart.Writer, pause func()) error {
+		return writeFileWithPause(mw, spillSize, pause)
+	}}
+	verifierProbe := intakeForm{"verifier probe", func(mw *multipart.Writer, pause func()) error {
+		if err := writeZeroField(mw, "x_unknown", probeField); err != nil {
+			return err
+		}
+		return writeFileWithPause(mw, spillSize, pause)
+	}}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
-		t.Run(path, func(t *testing.T) {
-			srv := NewServer(&fakeRepo{}, &transportCapStorage{fakeStorage: &fakeStorage{}}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
-				MaxUploadBytes:        64 << 20,
-				InspectMaxUploadBytes: 64 << 20,
-			})
-			size := int64(multipartInMemoryBudget) + 16<<20
-			var m uint64
-			for i := range 3 {
-				h := liveHeapMidIntake(t, srv, path, size)
-				if i == 0 || h < m {
-					m = h
+		for _, form := range []intakeForm{fileOnly, verifierProbe} {
+			t.Run(path+" "+form.name, func(t *testing.T) {
+				p := minHeapOfThree(t, heapProbeServer(), path, form)
+				m := int64(p.heap)
+				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); share = %d bytes (pod limit %d / 2 / %d forms); m × %d = %d; status %d %v; %d bytes sent", path, form.name, m, float64(m)/(1<<20), share, limit, forms, forms, m*forms, p.status, p.payload, p.sent)
+				if form.name == verifierProbe.name {
+					if p.status != http.StatusRequestEntityTooLarge || p.payload["code"] != "payload_too_large" || p.payload["error"] != formFieldsTooLargeMessage {
+						t.Errorf("%s: status %d payload %v, want 413 payload_too_large %q", path, p.status, p.payload, formFieldsTooLargeMessage)
+					}
+					if p.sent > maxFormNonFileBytes+64<<10 {
+						t.Errorf("%s: the handler read %d bytes of the body, want at most %d", path, p.sent, maxFormNonFileBytes+64<<10)
+					}
+					return
 				}
-			}
-			t.Logf("%s: live heap of one %d-byte intake = %d bytes (%.1f MiB); share of the pod = %d bytes; %d intakes = %d bytes against a %d-byte limit", path, size, m, float64(m)/(1<<20), perIntake, slots, int64(m)*slots, limit)
-			if int64(m) > perIntake+1<<20 {
-				t.Errorf("%s: one intake holds %d bytes of live heap, more than %d (the pod limit %d / 2 / %d intake slots, plus 1 MiB of measurement slack)", path, m, perIntake+1<<20, limit, slots)
-			}
-		})
+				if p.err != nil {
+					t.Fatalf("%s: the handler did not read the whole body: %v", path, p.err)
+				}
+				if m > share {
+					t.Errorf("%s: one form holds %d bytes of live heap, more than the share %d (pod limit %d / 2 / %d live forms)", path, m, share, limit, forms)
+				}
+			})
+		}
 	}
 }
 

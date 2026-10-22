@@ -200,7 +200,10 @@ func TestFieldBoundsAreStatedInTheContracts(t *testing.T) {
 		}},
 		{"the 422", []string{"paths", "/v1/jobs", "post", "responses", "422", "description"}, []string{
 			fmt.Sprintf("A %s above %d bytes or a document file name above %d bytes is refused with payload_too_large before anything is stored", formFieldCallbackURL, maxCallbackURLBytes, maxInputFilenameBytes),
-			fmt.Sprintf("%s and any field this endpoint does not read are bounded only by the multipart parser's allowance", formFieldProgressWebhook),
+			fmt.Sprintf("%s and any field this endpoint does not read count toward the %d-byte bound on the form's non-file data", formFieldProgressWebhook, maxFormNonFileBytes),
+		}},
+		{"the 413", []string{"paths", "/v1/jobs", "post", "responses", "413", "description"}, []string{
+			fmt.Sprintf("every field value and every part's headers together, above %d bytes (%s)", maxFormNonFileBytes, formFieldsTooLargeMessage),
 		}},
 	} {
 		description := openAPIString(t, doc, c.keys...)
@@ -209,6 +212,13 @@ func TestFieldBoundsAreStatedInTheContracts(t *testing.T) {
 				t.Errorf("%s: %s of POST /v1/jobs does not state %q; it reads %q", specPath, c.where, want, description)
 			}
 		}
+	}
+	if d := openAPIString(t, doc, "paths", "/v1/jobs", "post", "responses", "422", "description"); strings.Contains(d, "multipart parser's allowance") {
+		t.Errorf("%s: the 422 of POST /v1/jobs still bounds fields only by the multipart parser's allowance; it reads %q", specPath, d)
+	}
+	inspect413 := fmt.Sprintf("every field value and every part's headers together, above %d bytes (%s)", maxFormNonFileBytes, formFieldsTooLargeMessage)
+	if d := openAPIString(t, doc, "paths", "/v1/inspect", "post", "responses", "413", "description"); !strings.Contains(d, inspect413) {
+		t.Errorf("%s: the 413 of POST /v1/inspect does not state %q; it reads %q", specPath, inspect413, d)
 	}
 
 	const errorCodesPath = "../../docs/ERROR-CODES.md"
@@ -229,6 +239,7 @@ func TestFieldBoundsAreStatedInTheContracts(t *testing.T) {
 		fmt.Sprintf("`%s` above %d bytes", formFieldOpts, maxOptsBytes),
 		fmt.Sprintf("`%s` above %d bytes", formFieldCallbackURL, maxCallbackURLBytes),
 		fmt.Sprintf("file name above %d bytes", maxInputFilenameBytes),
+		fmt.Sprintf("every field value and every part's headers together above %d bytes", maxFormNonFileBytes),
 	} {
 		if !strings.Contains(row, want) {
 			t.Errorf("%s: the payload_too_large row does not state %q; it reads %q", errorCodesPath, want, row)
