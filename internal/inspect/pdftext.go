@@ -250,6 +250,7 @@ const (
 	// Reporting the first as the second tells a client their file is corrupt
 	// when it is merely using a feature we did not implement.
 	pdfStreamMalformed
+	pdfStreamOverBudget
 )
 
 // pdfTextScanState accumulates what a whole-buffer scan learned.
@@ -286,6 +287,8 @@ type pdfTextScanState struct {
 	// through MarkCeilingHit -- the receptacle built for precisely this: a
 	// ceiling INSIDE an analyzer, not the shared byte budget.
 	remaining int64
+	zr        io.ReadCloser
+	out       []byte
 }
 
 // scanPDFTextLayer walks every stream body in buf and counts the
@@ -336,6 +339,10 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 			state.covered = false
 			state.malformed = true
 			continue
+		case pdfStreamOverBudget:
+			state.covered = false
+			state.parserLimit = true
+			return state
 		}
 		state.nonWhitespace += countTextOperatorArgBytes(data)
 	}
@@ -536,7 +543,13 @@ func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfText
 		return nil, pdfStreamSkipped
 	}
 
-	zr, err := zlib.NewReader(bytes.NewReader(body))
+	if state.remaining == 0 {
+		state.budgetHit = true
+		tr.MarkCeilingHit()
+		return nil, pdfStreamOverBudget
+	}
+
+	zr, err := state.inflater(body)
 	if err != nil {
 		// Not Flate. Two possibilities, and they are NOT the same answer
 		// (59-RESEARCH.md R1). A stream with no /Filter at all is a raw
@@ -548,33 +561,70 @@ func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfText
 			return nil, pdfStreamOpaque
 		}
 		if !chargeInflatedBytes(tr, len(body), state) {
-			return nil, pdfStreamOpaque
+			return nil, pdfStreamOverBudget
 		}
 		return body, pdfStreamScannable
 	}
-	defer zr.Close()
 
 	// LimitReader at ceiling+1 so an output that would EXCEED the ceiling is
 	// distinguishable from one that lands exactly on it -- reading exactly
 	// pdfMaxInflatedStreamBytes cannot tell those apart, and treating a
 	// legitimately ceiling-sized stream as truncated would cost coverage for
 	// nothing.
-	out, readErr := io.ReadAll(io.LimitReader(zr, pdfMaxInflatedStreamBytes+1))
-	if len(out) > pdfMaxInflatedStreamBytes {
+	limit := min(int64(pdfMaxInflatedStreamBytes), state.remaining)
+	out, readErr := state.inflate(zr, limit+1)
+	if int64(len(out)) > limit {
 		state.budgetHit = true
 		tr.MarkCeilingHit()
-		return nil, pdfStreamOpaque
+		return nil, pdfStreamOverBudget
 	}
-	if readErr != nil && readErr != io.EOF {
+	if readErr != nil {
 		// zlib accepted the header and then failed: the body really is corrupt
 		// or truncated. That IS a claim about the file, unlike everything else
 		// on this path, so it gets its own class.
 		return nil, pdfStreamMalformed
 	}
 	if !chargeInflatedBytes(tr, len(out), state) {
-		return nil, pdfStreamOpaque
+		return nil, pdfStreamOverBudget
 	}
 	return out, pdfStreamScannable
+}
+
+func (state *pdfTextScanState) inflater(body []byte) (io.Reader, error) {
+	if state.zr == nil {
+		zr, err := zlib.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		state.zr = zr
+		return zr, nil
+	}
+	if err := state.zr.(zlib.Resetter).Reset(bytes.NewReader(body), nil); err != nil {
+		return nil, err
+	}
+	return state.zr, nil
+}
+
+func (state *pdfTextScanState) inflate(zr io.Reader, limit int64) ([]byte, error) {
+	out := state.out[:0]
+	for int64(len(out)) < limit {
+		if len(out) == cap(out) {
+			grown := make([]byte, len(out), min(max(512, 2*int64(cap(out))), limit))
+			copy(grown, out)
+			out = grown
+		}
+		n, err := zr.Read(out[len(out):cap(out)])
+		out = out[:len(out)+n]
+		if err != nil {
+			state.out = out
+			if err == io.EOF {
+				return out, nil
+			}
+			return out, err
+		}
+	}
+	state.out = out
+	return out, nil
 }
 
 // chargeInflatedBytes spends n bytes of the scan's LOCAL allowance and reports
