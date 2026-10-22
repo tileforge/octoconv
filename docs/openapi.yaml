@@ -1220,7 +1220,11 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "413":
-          description: File exceeds the configured size limit.
+          description: >-
+            File exceeds the configured size limit (file exceeds size limit),
+            or the form's non-file data -- every field value and every part's
+            headers together, above 65536 bytes (form fields too large) -- is
+            refused while the body is read, before anything is stored.
           content:
             application/json:
               schema:
@@ -1249,8 +1253,9 @@ paths:
             bytes is refused with payload_too_large before anything is
             stored. Of the form fields only opts, callback_url and the
             document's file name have a length bound of their own;
-            progress_webhook and any field this endpoint does not read are
-            bounded only by the multipart parser's allowance.
+            progress_webhook and any field this endpoint does not read count
+            toward the 65536-byte bound on the form's non-file data (413
+            payload_too_large, form fields too large).
           content:
             application/json:
               schema:
@@ -1460,7 +1465,10 @@ paths:
             Body exceeds this endpoint's OWN upload ceiling
             (INSPECT_MAX_UPLOAD_BYTES) -- separate from, and never larger than,
             POST /v1/jobs' own MAX_UPLOAD_BYTES, since this endpoint never
-            writes the body to S3.
+            writes the body to S3. Also returned when the form's non-file
+            data -- every field value and every part's headers together,
+            above 65536 bytes (form fields too large) -- is refused while the
+            body is read.
           content:
             application/json:
               schema:

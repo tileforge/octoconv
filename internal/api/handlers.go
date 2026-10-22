@@ -67,7 +67,7 @@ const (
 	// upload ceiling (2 GiB since D-07) as the in-memory budget would let one
 	// large-video upload buffer up to 2 GiB in RAM -- linear in concurrent
 	// uploads, a real memory-exhaustion vector.
-	multipartInMemoryBudget = 16 << 20
+	multipartInMemoryBudget = 12 << 20
 	// maxPresetNameBytes bounds the client-supplied preset name before any DB
 	// lookup (T-18-09) -- an opaque-string DoS guard, request-independent of
 	// preset existence, so a 400 here leaks nothing about the presets table.
@@ -164,6 +164,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.maxUploadByte)
 	err := parseIntakeForm(r)
 	if err != nil {
+		if errors.Is(err, errFormFieldsTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, formFieldsTooLargeMessage)
+			return
+		}
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")

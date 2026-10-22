@@ -401,10 +401,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// success or failure -- not deferred to handler exit: the resource this
 	// slot bounds (heap bytes ParseMultipartForm is actively filling) is
 	// spent by the time this call returns, whatever ended up in memory from
-	// here on is already accounted for by multipartInMemoryBudget's own
-	// per-request ceiling, the same as it always was before this fix.
+	// here on is already accounted for by multipartInMemoryBudget and maxFormNonFileBytes
+	// per request, the same as it always was before this fix.
 	<-s.inspectIntakeSem
 	if parseErr != nil {
+		if errors.Is(parseErr, errFormFieldsTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, formFieldsTooLargeMessage)
+			return
+		}
 		var maxErr *http.MaxBytesError
 		if errors.As(parseErr, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")
