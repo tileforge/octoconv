@@ -1,14 +1,21 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 const bodyWindow = 400 * time.Millisecond
@@ -179,4 +186,141 @@ func TestBodyWindowAnswersMiddlewareRefusals(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEveryRouteAnswersAStalledBodyWithinTheWindow(t *testing.T) {
+	ops := routerOperations(t)
+	srv, mainTS := bodyWindowServer(t, nil, func(r chi.Router) {
+		r.Post("/zz-body-probe", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+	})
+	healthTS := serveBodyWindow(t, srv.HealthRoutes())
+
+	keys := make([]string, 0, len(ops)+1)
+	for op := range ops {
+		keys = append(keys, op)
+	}
+	sort.Strings(keys)
+	keys = append(keys, "POST /zz-body-probe")
+
+	walked := 0
+	for _, op := range keys {
+		method, route, ok := strings.Cut(op, " ")
+		if !ok {
+			t.Fatalf("malformed operation key %q", op)
+		}
+		targets := []struct {
+			name string
+			ts   *httptest.Server
+		}{{"main", mainTS}}
+		if route == "/healthz" {
+			targets = append(targets, struct {
+				name string
+				ts   *httptest.Server
+			}{"health", healthTS})
+		}
+		for _, target := range targets {
+			for _, auth := range []struct {
+				name   string
+				header http.Header
+			}{{"with key", keyHeader(testClientKey)}, {"without key", nil}} {
+				res, answered := rawRequest(t, target.ts, method, concreteURL(route), auth.header, bodyWindowMultipart, 1024, strings.NewReader(""), bodyWindow+5*time.Second, false)
+				t.Logf("%s router, %s %s %s: answered=%v status %d after %v", target.name, method, route, auth.name, answered, res.status, res.elapsed)
+				if !answered {
+					t.Errorf("%s router, %s %s %s with a stalled body: no answer within %v", target.name, method, route, auth.name, bodyWindow+5*time.Second)
+					continue
+				}
+				if res.elapsed > bodyWindow+2*time.Second {
+					t.Errorf("%s router, %s %s %s with a stalled body: answered after %v, want no later than %v", target.name, method, route, auth.name, res.elapsed, bodyWindow+2*time.Second)
+				}
+			}
+		}
+		walked++
+	}
+	t.Logf("walked %d operations (%d from the routers plus the probe route)", walked, len(ops))
+	if walked != len(ops)+1 || walked < 19 {
+		t.Fatalf("walked %d operations, want len(routerOperations)+1 = %d and at least 19", walked, len(ops)+1)
+	}
+}
+
+type slowPresetAdmin struct {
+	*fakePresetAdmin
+	delay  time.Duration
+	mu     sync.Mutex
+	called bool
+	ctxErr error
+}
+
+func (a *slowPresetAdmin) Create(ctx context.Context, p presets.CreateParams) (uuid.UUID, int, error) {
+	time.Sleep(a.delay)
+	a.mu.Lock()
+	a.called = true
+	a.ctxErr = ctx.Err()
+	a.mu.Unlock()
+	return a.fakePresetAdmin.Create(ctx, p)
+}
+
+func TestBodyWindowKeepsTheRequestContext(t *testing.T) {
+	ctxProbe := func(read bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if read {
+				if _, err := io.ReadAll(r.Body); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+			}
+			time.Sleep(3 * bodyWindow)
+			if r.Context().Err() != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}
+	extend := func(r chi.Router) {
+		r.Get("/zz-ctx-probe", ctxProbe(false))
+		r.Post("/zz-ctx-probe", ctxProbe(true))
+	}
+	wait := 3*bodyWindow + 5*time.Second
+
+	t.Run("bodyless GET", func(t *testing.T) {
+		_, ts := bodyWindowServer(t, nil, extend)
+		res, ok := rawRequest(t, ts, http.MethodGet, "/zz-ctx-probe", nil, "", -1, nil, wait, false)
+		t.Logf("GET without a body, handler sleeps %v: answered=%v status %d after %v", 3*bodyWindow, ok, res.status, res.elapsed)
+		if !ok || res.status != http.StatusOK {
+			t.Fatalf("answered=%v status %d, want 200: the request context was cancelled while the handler ran", ok, res.status)
+		}
+	})
+
+	t.Run("body read to EOF", func(t *testing.T) {
+		_, ts := bodyWindowServer(t, nil, extend)
+		body := bytes.Repeat([]byte{'a'}, 64)
+		res, ok := rawRequest(t, ts, http.MethodPost, "/zz-ctx-probe", nil, "application/octet-stream", int64(len(body)), bytes.NewReader(body), wait, false)
+		t.Logf("POST with a 64-byte body read to EOF, handler sleeps %v: answered=%v status %d after %v", 3*bodyWindow, ok, res.status, res.elapsed)
+		if !ok || res.status != http.StatusOK {
+			t.Fatalf("answered=%v status %d, want 200: the request context was cancelled after the body was read", ok, res.status)
+		}
+	})
+
+	t.Run("preset create slower than the window", func(t *testing.T) {
+		srv, ts := bodyWindowServer(t, nil, nil)
+		inner := defaultFakePresetAdmin()
+		inner.getForClientErr = nil
+		inner.getForClientResult = &presets.Preset{Name: "probe", Version: 1, Scope: presets.ScopeUser, TargetFormat: "png", IsActive: true}
+		admin := &slowPresetAdmin{fakePresetAdmin: inner, delay: 2 * bodyWindow}
+		srv.presetAdmin = admin
+		body := `{"name":"probe","target_format":"png"}`
+		res, ok := rawRequest(t, ts, http.MethodPost, "/v1/presets", keyHeader(testClientKey), "application/json", int64(len(body)), strings.NewReader(body), wait, false)
+		admin.mu.Lock()
+		called, ctxErr := admin.called, admin.ctxErr
+		admin.mu.Unlock()
+		t.Logf("POST /v1/presets, Create sleeps %v: answered=%v status %d after %v, Create called=%v ctx.Err()=%v", 2*bodyWindow, ok, res.status, res.elapsed, called, ctxErr)
+		if !ok || res.status != http.StatusCreated {
+			t.Fatalf("answered=%v status %d, want 201; body=%.300s", ok, res.status, res.raw)
+		}
+		if !called || ctxErr != nil {
+			t.Fatalf("Create called=%v with ctx.Err()=%v, want a live context", called, ctxErr)
+		}
+	})
 }
