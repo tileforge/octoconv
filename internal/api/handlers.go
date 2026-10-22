@@ -329,7 +329,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// disturbs Sniff's sequential cursor, so rest remains valid below.
 		var prefix [4]byte
 		if n, _ := file.ReadAt(prefix[:], 0); n == 4 && bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
-			cr, cerr := convert.SniffContainer(file, header.Size)
+			cr, _, cerr := sniffCreateContainer(file, header.Size)
 			if cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				// D-02/D-04: reject a zip-bomb-shaped declared uncompressed
@@ -1238,6 +1238,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		resp["opts"] = normalizedOpts
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+func sniffCreateContainer(file multipart.File, size int64) (cr convert.ContainerResult, outcome zipBoundOutcome, err error) {
+	cr, err = convert.SniffContainer(file, size)
+	return cr, zipBoundOK, err
 }
 
 // enqueueForEngine routes one created job to its engine-class queue. The
