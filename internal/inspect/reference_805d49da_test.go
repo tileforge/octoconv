@@ -363,7 +363,7 @@ func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape 
 		return nil, ReasonPDFNameEscape
 	}
 
-	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned)
+	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned, nil)
 	if ceilingHit {
 		tr.MarkCeilingHit()
 	}

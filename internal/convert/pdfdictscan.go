@@ -74,7 +74,7 @@ const pdfMaxIndexedObjects = 65536
 // a writer produces and refuses what only a generator produces.
 const maxPDFDictDepth = 64
 
-func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []int, ceilingHit bool) {
+func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int, stop func() bool) (values []int, ceilingHit bool) {
 	// INDIRECT LENGTHS ARE THE ORDINARY CASE, NOT AN EDGE ONE.
 	//
 	// Ghostscript writes "/Length 6 0 R" with object 6 defined AFTER the stream
@@ -113,8 +113,8 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	// PR. Reaching this one abstains rather than answering from a half-built
 	// index: an incomplete index resolves some references and silently misses
 	// others, which is a wrong answer rather than a missing one.
-	scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects)
-	if scan.objectsCapped {
+	scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects, stop)
+	if scan.objectsCapped || scan.stopped {
 		return nil, true
 	}
 	objects := scan.objects
@@ -184,7 +184,10 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	pendingLength, pendingRef, pendingHave := 0, false, false
 
 	i := 0
-	for i < len(b) {
+	for iter := 0; i < len(b); iter++ {
+		if stop != nil && iter%pdfStopCheckEvery == 0 && stop() {
+			return nil, true
+		}
 		c := b[i]
 
 		if isPDFSpace(c) {

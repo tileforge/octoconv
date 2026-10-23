@@ -66,6 +66,7 @@ type pdfScan struct {
 	// complete. Only scanPDFLimited's callers can see this, and they abstain
 	// on it.
 	objectsCapped bool
+	stopped       bool
 }
 
 // pdfLexInt is an integer token and where it started, so "N G obj" can be read
@@ -89,7 +90,7 @@ func scanPDF(b []byte) pdfScan { return scanPDFSeeded(b, nil) }
 // resolved on the second look. Seeding is the only thing that makes the retry
 // different from the first pass; everything else about the walk is identical,
 // which is why there is one implementation and not two.
-func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, seed, 0) }
+func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, seed, 0, nil) }
 
 // scanPDFLimited is scanPDFSeeded with a cap on how many object headers it will
 // index, after which it stops and sets objectsCapped.
@@ -100,11 +101,13 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, s
 // concurrency semaphore. maxObjects <= 0 means no cap, which is what the
 // sanitize worker passes -- it runs on one file it has already downloaded,
 // inside a cgroup, under a measured timeout.
-func scanPDFLimited(b []byte, seed map[int]int, maxObjects int) pdfScan {
-	return scanPDFImpl(b, seed, maxObjects)
+func scanPDFLimited(b []byte, seed map[int]int, maxObjects int, stop func() bool) pdfScan {
+	return scanPDFImpl(b, seed, maxObjects, stop)
 }
 
-func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
+const pdfStopCheckEvery = 1024
+
+func scanPDFImpl(b []byte, seed map[int]int, maxObjects int, stop func() bool) pdfScan {
 	res := pdfScan{objects: map[int]int{}}
 	for k, v := range seed {
 		res.objects[k] = v
@@ -142,7 +145,11 @@ func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
 	pendingValue, pendingRef, pendingOK := 0, false, false
 
 	i := 0
-	for i < len(b) {
+	for iter := 0; i < len(b); iter++ {
+		if stop != nil && iter%pdfStopCheckEvery == 0 && stop() {
+			res.stopped = true
+			return res
+		}
 		c := b[i]
 
 		// The four non-token contexts. None of them clears dictClosed:

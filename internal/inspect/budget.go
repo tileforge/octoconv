@@ -240,7 +240,7 @@ func (t *Tracker) ExhaustedReason() Reason {
 }
 
 func (t *Tracker) OutOfTime() bool {
-	if t == nil {
+	if t == nil || t.start.IsZero() {
 		return false
 	}
 	t.mu.Lock()

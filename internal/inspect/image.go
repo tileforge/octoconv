@@ -162,7 +162,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		// evidence the metadata does not exist past what was actually
 		// looked at. See scanImageMetadata's own doc comment for every
 		// source folded into this single signal.
-		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: tr.ceilingReason()})
 	case malformedHit:
 		// quick/260811-r5p task 4 (class sweep, PR9R5-SWEEP-CLASSES(б)): a
 		// scan that aborted on a STRUCTURAL problem -- a declared
@@ -438,7 +438,7 @@ func scanJPEGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	}
 	i := 2
 	for iter := 0; i+1 < len(b); iter++ {
-		if iter >= maxMetadataMarkerScanIterations {
+		if iter >= maxMetadataMarkerScanIterations || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return imageMetadataStatus{ceiling: true}
 		}
@@ -562,7 +562,7 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	// spec describes. Every exit below the loop is therefore a miss without
 	// a proven end.
 	for iter := 0; pos+8 <= len(b); iter++ {
-		if iter >= maxMetadataMarkerScanIterations {
+		if iter >= maxMetadataMarkerScanIterations || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return imageMetadataStatus{ceiling: true}
 		}
@@ -670,7 +670,7 @@ func scanRIFFChunkMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	}
 	pos := 12
 	for iter := 0; pos+8 <= len(b); iter++ {
-		if iter >= maxMetadataMarkerScanIterations {
+		if iter >= maxMetadataMarkerScanIterations || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return imageMetadataStatus{ceiling: true}
 		}

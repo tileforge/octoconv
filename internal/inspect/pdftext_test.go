@@ -296,7 +296,7 @@ func TestCountTextOperatorArgBytesRequiresARealOperatorToken(t *testing.T) {
 		{"dictionary open is not a hex string", "<< /Type /Page >> (hi) Tj", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countTextOperatorArgBytes([]byte(tc.in)); got != tc.want {
+			if got := countTextOperatorArgBytes([]byte(tc.in), nil); got != tc.want {
 				t.Fatalf("countTextOperatorArgBytes(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
@@ -482,7 +482,7 @@ func TestOctalEscapesAreDecodedNotCounted(t *testing.T) {
 		{"escaped backslash is one byte", `(a\\b) Tj`, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countTextOperatorArgBytes([]byte(tc.in)); got != tc.want {
+			if got := countTextOperatorArgBytes([]byte(tc.in), nil); got != tc.want {
 				t.Fatalf("countTextOperatorArgBytes(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})

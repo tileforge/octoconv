@@ -75,7 +75,7 @@ func TestTypedDictScanIsBoundedByNestingDepth(t *testing.T) {
 
 	var values []int
 	var ceiling bool
-	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(deep, "Pages", "Count", 1<<20) })
+	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(deep, "Pages", "Count", 1<<20, nil) })
 
 	if !ceiling {
 		t.Fatal("a file nesting a million dictionaries did not report a ceiling: a walk that answers " +
@@ -129,7 +129,7 @@ func TestNamesOutsideDictionariesAreNotDecoded(t *testing.T) {
 
 	var values []int
 	var ceiling bool
-	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(body, "Pages", "Count", 8192) })
+	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(body, "Pages", "Count", 8192, nil) })
 
 	if len(values) != 0 || ceiling {
 		t.Fatalf("a file of bare names answered (values=%v ceiling=%v); it declares no dictionary at all",
@@ -158,7 +158,7 @@ func TestUnrelatedDictionariesDoNotExhaustTheLookup(t *testing.T) {
 	}
 	buf.WriteString("1 0 obj\n<< /Type /Pages /Count 42 >>\nendobj\n")
 
-	values, ceiling := PDFTypedDictUints(buf.Bytes(), "Pages", "Count", 8192)
+	values, ceiling := PDFTypedDictUints(buf.Bytes(), "Pages", "Count", 8192, nil)
 	if ceiling {
 		t.Fatal("9 000 unrelated dictionaries exhausted the page lookup: the cap is counting " +
 			"dictionaries that have nothing to do with what was asked for")

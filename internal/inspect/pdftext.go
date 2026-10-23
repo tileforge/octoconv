@@ -324,6 +324,12 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 	}
 
 	for _, rng := range ranges {
+		if tr.OutOfTime() {
+			tr.MarkCeilingHit()
+			state.covered = false
+			state.budgetHit = true
+			return state
+		}
 		if rng.start < 0 || rng.end > len(buf) || rng.start >= rng.end {
 			continue
 		}
@@ -344,7 +350,12 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 			state.parserLimit = true
 			return state
 		}
-		state.nonWhitespace += countTextOperatorArgBytes(data)
+		state.nonWhitespace += countTextOperatorArgBytes(data, tr)
+	}
+	if tr.OutOfTime() {
+		tr.MarkCeilingHit()
+		state.covered = false
+		state.budgetHit = true
 	}
 
 	return state
@@ -396,7 +407,7 @@ func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange
 	complete = true
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			tr.MarkCeilingHit()
 			return ranges, true, complete
 		}
@@ -692,17 +703,17 @@ var pdfTextOperators = [][]byte{
 // The walk is capped by maxTokenScanIterations for the same reason every other
 // scanner in this package is: an adversarial stream can repeat "(" without
 // bound, and a CPU-bound loop is not interrupted by a context deadline.
-func countTextOperatorArgBytes(buf []byte) int {
+func countTextOperatorArgBytes(buf []byte, tr *Tracker) int {
 	total := 0
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			break
 		}
 		switch buf[i] {
 		case '(':
 			content, next := readPDFLiteralString(buf, i)
-			if operatorFollows(buf, next) {
+			if operatorFollows(buf, next, tr) {
 				total += countNonWhitespaceBytes(content)
 			}
 			i = next
@@ -713,7 +724,7 @@ func countTextOperatorArgBytes(buf []byte) int {
 				continue
 			}
 			content, next := readPDFHexString(buf, i)
-			if operatorFollows(buf, next) {
+			if operatorFollows(buf, next, tr) {
 				total += countNonWhitespaceBytes(content)
 			}
 			i = next
@@ -903,9 +914,9 @@ func hexDigitValue(c byte) (byte, bool) {
 // array, then requires an EXACT token match with a delimiter (or end of input)
 // on the right. isPDFNameByte (pdf.go) already encodes ISO 32000 §7.3.5's
 // delimiter set, so the boundary rule is shared rather than restated.
-func operatorFollows(buf []byte, i int) bool {
+func operatorFollows(buf []byte, i int, tr *Tracker) bool {
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && iter > 0 && tr.OutOfTime()) {
 			return false
 		}
 		c := buf[i]
