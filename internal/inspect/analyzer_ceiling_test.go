@@ -1,8 +1,10 @@
 package inspect
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -671,4 +673,305 @@ func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
 	}
 	fmt.Fprintf(&b, "worst ratio %.4f (limit 0.25) over %d inputs", worst, len(in))
 	t.Log(b.String())
+}
+
+const analyzerTimeSlack = 250 * time.Millisecond
+
+func (t *Tracker) uncheckedSince() (longest time.Duration, sinceLast time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	last := t.checkedAt
+	if last.IsZero() {
+		last = t.start
+	}
+	return t.longestGap, time.Since(last)
+}
+
+func relsDocx(t *testing.T, parts int, partBytes int, unit string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "[Content_Types].xml", "<Types/>")
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	head, tail := "<Relationships>", "</Relationships>"
+	body := head + strings.Repeat(unit, (partBytes-len(head)-len(tail))/len(unit)) + tail
+	for i := 0; i < parts; i++ {
+		mustWriteZipEntry(t, zw, fmt.Sprintf("word/_rels/p%02d.xml.rels", i), body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func denseODT(t *testing.T, partBytes int) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mw.Write([]byte("application/vnd.oasis.opendocument.text")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"content.xml", "styles.xml"} {
+		head, tail := `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">`, "</office:document-content>"
+		mustWriteZipEntry(t, zw, name, head+strings.Repeat("<a/>", (partBytes-len(head)-len(tail))/4)+tail)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func denseXLSX(t *testing.T, partBytes int) []byte {
+	t.Helper()
+	head, tail := `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>`, "</sheets></workbook>"
+	return xlsxFixtureWithWorkbook(t, head+strings.Repeat(`<sheet/>`, (partBytes-len(head)-len(tail))/8)+tail)
+}
+
+func manyBoxesMP4() []byte {
+	var b bytes.Buffer
+	b.Write(isobmffBox("ftyp", []byte("isom\x00\x00\x02\x00isomiso2mp41")))
+	for i := 0; i < maxISOBMFFBoxes+8; i++ {
+		b.Write(isobmffBox("free", nil))
+	}
+	b.Write(isobmffBox("moov", isobmffBox("mvhd", make([]byte, 100))))
+	return b.Bytes()
+}
+
+func manyElementsMKV() []byte {
+	var seg bytes.Buffer
+	for i := 0; i < maxEBMLElements+8; i++ {
+		seg.Write([]byte{0xEC, 0x80})
+	}
+	var b bytes.Buffer
+	b.Write([]byte{0x1A, 0x45, 0xDF, 0xA3, 0x84, 0x42, 0x82, 0x81, 0x00})
+	b.Write([]byte{0x18, 0x53, 0x80, 0x67, 0x01, 0, 0, 0, 0, 0, 0, 0})
+	binary.BigEndian.PutUint32(b.Bytes()[b.Len()-4:], uint32(seg.Len()))
+	b.Write(seg.Bytes())
+	return b.Bytes()
+}
+
+func manyChunksWAV() []byte {
+	var body bytes.Buffer
+	body.WriteString("WAVE")
+	for i := 0; i < maxRIFFChunks+8; i++ {
+		body.WriteString("junk\x00\x00\x00\x00")
+	}
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(body.Len()))
+	b.Write(body.Bytes())
+	return b.Bytes()
+}
+
+func manyMarkersJPEG() []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0xFF, 0xD8})
+	for i := 0; i < maxMetadataMarkerScanIterations+8; i++ {
+		b.Write([]byte{0xFF, 0xE2, 0x00, 0x04, 0x00, 0x00})
+	}
+	b.Write([]byte{0xFF, 0xD9})
+	return b.Bytes()
+}
+
+func textOperatorsPDF(n int) []byte {
+	return genPDF("", flate("", repeatTo("(a)", n)))
+}
+
+type ceilingFamily struct {
+	name, format string
+	data         []byte
+	analyze      func(data []byte, tr *Tracker) FamilyResult
+}
+
+func ceilingFamilies(t *testing.T) []ceilingFamily {
+	t.Helper()
+	const work = int64(8 << 20)
+	pdf := func(data []byte, tr *Tracker) FamilyResult {
+		return AnalyzePDF(bytes.NewReader(data), int64(len(data)), work, tr)
+	}
+	container := func(data []byte, tr *Tracker) FamilyResult {
+		return AnalyzeContainer(bytes.NewReader(data), int64(len(data)), work, 1<<40, tr)
+	}
+	media := func(format string) func([]byte, *Tracker) FamilyResult {
+		return func(data []byte, tr *Tracker) FamilyResult {
+			return AnalyzeMedia(format, bytes.NewReader(data), int64(len(data)), work, tr)
+		}
+	}
+	image := func(data []byte, tr *Tracker) FamilyResult {
+		return AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), work, 1<<40, tr)
+	}
+	flateWorst, _ := worstFlatePDF(work)
+	return []ceilingFamily{
+		{"pdf_flate_worst", "pdf", flateWorst, pdf},
+		{"pdf_ranges", "pdf", rangesPDF(int(work)), pdf},
+		{"pdf_dict_names", "pdf", dictNamesPDF(int(work)), pdf},
+		{"pdf_objects", "pdf", objectsPDF(int(work)), pdf},
+		{"pdf_text_operators", "pdf", textOperatorsPDF(48 << 10), pdf},
+		{"rels_dense_empty", "docx", relsDocx(t, 64, maxRelsPartBytes-1, "<a/>"), container},
+		{"odf_content_dense", "odt", denseODT(t, maxRelsPartBytes-1), container},
+		{"xlsx_workbook_dense", "xlsx", denseXLSX(t, maxRelsPartBytes-1), container},
+		{"isobmff_boxes", "mp4", manyBoxesMP4(), media("mp4")},
+		{"ebml_elements", "mkv", manyElementsMKV(), media("mkv")},
+		{"riff_chunks", "wav", manyChunksWAV(), media("wav")},
+		{"jpeg_markers", "jpg", manyMarkersJPEG(), image},
+	}
+}
+
+func characteristicOutcome(c Characteristics, key string) (any, any) {
+	return c[key], c[key+"_reason"]
+}
+
+func compareUnderTimeCeiling(ceiled, free FamilyResult) (problems []string, unknown []string, dropped []string) {
+	keys := map[string]bool{}
+	for k := range free.Characteristics {
+		keys[strings.TrimSuffix(k, "_reason")] = true
+	}
+	for k := range ceiled.Characteristics {
+		keys[strings.TrimSuffix(k, "_reason")] = true
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		fv, fr := characteristicOutcome(free.Characteristics, k)
+		cv, cr := characteristicOutcome(ceiled.Characteristics, k)
+		_, fHas := free.Characteristics[k]
+		_, cHas := ceiled.Characteristics[k]
+		switch {
+		case fHas == cHas && reflect.DeepEqual(fv, cv) && reflect.DeepEqual(fr, cr):
+		case cHas && cv == nil && cr == string(ReasonWorkCeilingTime):
+			unknown = append(unknown, k)
+		default:
+			problems = append(problems, fmt.Sprintf("characteristic %s = %v/%v, without the ceiling %v/%v", k, cv, cr, fv, fr))
+		}
+	}
+	freeChecks := map[Code]Check{}
+	freeFindings := map[Code]Finding{}
+	for _, c := range free.Checks {
+		freeChecks[c.Code] = c
+	}
+	for _, f := range free.Findings {
+		freeFindings[f.Code] = f
+	}
+	codes := map[Code]bool{}
+	for _, c := range ceiled.Checks {
+		codes[c.Code] = true
+		if fc, ok := freeChecks[c.Code]; ok && fc == c {
+			continue
+		}
+		if c.Status == StatusUnknown && c.Reason == ReasonWorkCeilingTime {
+			unknown = append(unknown, "check "+string(c.Code))
+			if _, wasFinding := freeFindings[c.Code]; wasFinding {
+				dropped = append(dropped, string(c.Code))
+			}
+			continue
+		}
+		problems = append(problems, fmt.Sprintf("check %+v, without the ceiling %+v", c, freeChecks[c.Code]))
+	}
+	for _, f := range ceiled.Findings {
+		codes[f.Code] = true
+		if ff, ok := freeFindings[f.Code]; !ok || ff != f {
+			problems = append(problems, fmt.Sprintf("finding %+v is not among the findings without the ceiling", f))
+		}
+	}
+	for code := range freeChecks {
+		if !codes[code] {
+			problems = append(problems, fmt.Sprintf("check %s vanished under the ceiling", code))
+		}
+	}
+	for code := range freeFindings {
+		if !codes[code] {
+			problems = append(problems, fmt.Sprintf("finding %s vanished without an unknown check", code))
+		}
+	}
+	return problems, unknown, dropped
+}
+
+func TestAnalysisHonoursTheTimeCeiling(t *testing.T) {
+	families := ceilingFamilies(t)
+	byName := map[string]ceilingFamily{}
+	for _, f := range families {
+		byName[f.name] = f
+	}
+	for _, name := range []string{"pdf_flate_worst", "pdf_ranges", "pdf_text_operators"} {
+		f := byName[name]
+		t.Run("shipped/"+name, func(t *testing.T) {
+			tr := NewTracker(Budget{MaxBytes: 8 << 20})
+			start := time.Now()
+			f.analyze(f.data, tr)
+			elapsed := time.Since(start)
+			t.Logf("%s at MaxDuration %s: %s, exhausted %q", name, defaultMaxDuration, elapsed, tr.ExhaustedReason())
+			if elapsed > defaultMaxDuration+analyzerTimeSlack {
+				t.Errorf("%s took %s, want at most MaxDuration %s + analyzerTimeSlack %s", name, elapsed, defaultMaxDuration, analyzerTimeSlack)
+			}
+		})
+	}
+	const ceiling = 5 * time.Millisecond
+	for _, f := range families {
+		t.Run("5ms/"+f.name, func(t *testing.T) {
+			freeTr := NewTracker(Budget{MaxBytes: 8 << 20, MaxDuration: analyzerDifferentialDuration})
+			free := f.analyze(f.data, freeTr)
+			freeReport := BuildReport(f.format, f.format, int64(len(f.data)), freeTr, free)
+
+			tr := NewTracker(Budget{MaxBytes: 8 << 20, MaxDuration: ceiling})
+			start := time.Now()
+			got := f.analyze(f.data, tr)
+			elapsed := time.Since(start)
+			report := BuildReport(f.format, f.format, int64(len(f.data)), tr, got)
+			reason := tr.ExhaustedReason()
+
+			if elapsed > ceiling+analyzerTimeSlack {
+				t.Errorf("%s took %s under MaxDuration %s, want at most %s", f.name, elapsed, ceiling, ceiling+analyzerTimeSlack)
+			}
+			if reason != ReasonWorkCeilingTime {
+				if !reflect.DeepEqual(got, free) || reason != freeTr.ExhaustedReason() {
+					t.Fatalf("%s finished before the ceiling (%s, exhausted %q) with a different outcome:\n got:  %+v\n free: %+v", f.name, elapsed, reason, got, free)
+				}
+				t.Logf("%s: %s, finished before the ceiling, outcome equal to the run without it", f.name, elapsed)
+				return
+			}
+			problems, unknown, dropped := compareUnderTimeCeiling(got, free)
+			for _, p := range problems {
+				t.Errorf("%s under the time ceiling: %s", f.name, p)
+			}
+			if report.Coverage.Complete {
+				t.Errorf("%s: coverage complete although the time ceiling fired", f.name)
+			}
+			if freeReport.Coverage.Complete && report.Coverage.Reason != ReasonWorkCeilingTime {
+				t.Errorf("%s: coverage reason %q, want %q: the run without the ceiling was complete", f.name, report.Coverage.Reason, ReasonWorkCeilingTime)
+			}
+			if !freeReport.Coverage.Complete && report.Coverage.Reason != ReasonWorkCeilingTime && report.Coverage.Reason != freeReport.Coverage.Reason {
+				t.Errorf("%s: coverage reason %q, want %q or the reason without the ceiling %q", f.name, report.Coverage.Reason, ReasonWorkCeilingTime, freeReport.Coverage.Reason)
+			}
+			t.Logf("%s: %s, exhausted %q, coverage %v/%q (without the ceiling %v/%q), unknown under the ceiling %v, findings dropped %v",
+				f.name, elapsed, reason, report.Coverage.Complete, report.Coverage.Reason, freeReport.Coverage.Complete, freeReport.Coverage.Reason, unknown, dropped)
+		})
+	}
+}
+
+func TestAnalyzerTimeSlackIsMeasured(t *testing.T) {
+	if analyzerTimeSlack > 500*time.Millisecond {
+		t.Fatalf("analyzerTimeSlack = %s, want at most 500ms", analyzerTimeSlack)
+	}
+	var worst time.Duration
+	for _, f := range ceilingFamilies(t) {
+		tr := NewTracker(Budget{MaxBytes: 8 << 20, MaxDuration: analyzerDifferentialDuration})
+		start := time.Now()
+		f.analyze(f.data, tr)
+		elapsed := time.Since(start)
+		longest, tail := tr.uncheckedSince()
+		step := max(longest, tail)
+		worst = max(worst, step)
+		t.Logf("%s: analysis %s, longest step without a time check %s (between checks %s, after the last %s)", f.name, elapsed, step, longest, tail)
+		if step > analyzerTimeSlack {
+			t.Errorf("%s: a step of %s ran without a time check, want at most analyzerTimeSlack %s", f.name, step, analyzerTimeSlack)
+		}
+	}
+	t.Logf("longest step without a time check over every family: %s (analyzerTimeSlack %s)", worst, analyzerTimeSlack)
 }
