@@ -4,8 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/zlib"
+	"encoding/binary"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -28,6 +33,11 @@ const inspectAnalyzerTimeSlack = 250 * time.Millisecond
 const liveHeapMinGCCycles = 3
 
 const liveHeapSampleEvery = 100 * time.Microsecond
+
+const (
+	liveHeapEnoughGCCycles = 64
+	liveHeapSampleFor      = 200 * time.Millisecond
+)
 
 var liveHeapMetricNames = []string{"/gc/heap/live:bytes", "/memory/classes/heap/objects:bytes", "/gc/cycles/total:gc-cycles"}
 
@@ -144,15 +154,16 @@ func liveHeapPeak(t *testing.T, call func()) livePeak {
 		}
 	}()
 	var p livePeak
+	began := time.Now()
 	for {
 		call()
 		p.calls++
 		_, _, cycles := readLiveHeap(s)
 		p.cycles = cycles - baseCycles
-		if liveHeapPeakSingleSample || p.cycles >= liveHeapMinGCCycles {
+		if liveHeapPeakSingleSample || p.calls >= 100000 {
 			break
 		}
-		if p.calls >= 1000 {
+		if p.cycles >= liveHeapMinGCCycles && (p.cycles >= liveHeapEnoughGCCycles || time.Since(began) >= liveHeapSampleFor) {
 			break
 		}
 	}
@@ -590,10 +601,160 @@ func commonAnalysisRows() []analysisRow {
 	}
 }
 
+const (
+	inspectMaxRelsPartBytes     = 256 << 10
+	inspectEBMLInfoWindow       = 256 * 1024
+	inspectMP4TailWindow        = 2 << 20
+	inspectZipBoundTailWindow   = 73728
+	xmlStackNodeBytes           = 64
+	xmlMinNestedElementSpan     = int64(len("<a>"))
+	xmlAttrBytes                = 48
+	xmlMinAttrSpan              = int64(len(` b=""`))
+	xmlDecoderFixedBytes        = 4 << 10
+	zipDirectoryStringsPerEntry = 3 * 16
+)
+
+func readAllPeak(n int64) int64 {
+	caps := []int64{512}
+	filled := int64(0)
+	next := int64(256)
+	cur := int64(512)
+	for filled+cur < n {
+		filled += cur
+		cur = roundAlloc(next, false)
+		caps = append(caps, cur)
+		next += next / 2
+	}
+	var sum int64
+	for _, c := range caps {
+		sum += c
+	}
+	if len(caps) == 1 {
+		return sum
+	}
+	return sum + roundAlloc(n, false)
+}
+
+func bufferGrowthPeak(n int64) int64 {
+	c := int64(64)
+	peak := c
+	for c < n {
+		next := roundAlloc(2*c, false)
+		peak = max(peak, c+next)
+		c = next
+	}
+	return peak
+}
+
+func bufferGrowthBreaks(n int64) []int64 {
+	out := allocBreaks(n)
+	for c := int64(64); c < n; c = roundAlloc(2*c, false) {
+		out = append(out, c+1)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func xmlTokenPeak(s int64) int64 {
+	if s <= 0 {
+		return 0
+	}
+	return bufferGrowthPeak(s) + roundAlloc(s, false)
+}
+
+func xmlPartDecodePeak(n int64) int64 {
+	attrs := appendGrowth(xmlAttrBytes, n/xmlMinAttrSpan+1, true)
+	attrsAt := func(s int64) int64 { return appendGrowth(xmlAttrBytes, s/xmlMinAttrSpan, true).peak }
+	nodesAt := func(s int64) int64 { return xmlStackNodeBytes * (s/xmlMinNestedElementSpan + 1) }
+	tokenAndNodes := func(x int64) int64 { return disjointSpans(x, bufferGrowthBreaks(x), xmlTokenPeak, nodesAt) }
+	return roundAlloc(n, false) + disjointSpans(n, attrs.breaks(xmlMinAttrSpan), attrsAt, tokenAndNodes) + xmlDecoderFixedBytes
+}
+
+func otherAnalysisRows() []analysisRow {
+	const handlers, container, media, image = "internal/api/inspect_handlers.go", "internal/inspect/container.go", "internal/inspect/media.go", "internal/inspect/image.go"
+	return []analysisRow{
+		{"response_after_release", "the inspect response (writeJSON of the report): written after file.Close, dropMultipartForm and release, so it never lives with the form and the analysis slot; not in the term",
+			[]analysisSource{{handlers, "dropMultipartForm(r)"}, {handlers, "release()"}, {handlers, "writeJSON(w, http.StatusOK, inspectResponse{Report: report, Operations: operations})"}},
+			nil, "nothing of the analysis slot",
+			func(int64) int64 { return 0 }},
+		{"detect_sniff_window", "detection window: readSniffWindow allocates min(size, SniffWindowBytes); ValidateSniffPrefix, LooksLikeLaTeXFromPrefix, LooksLikeTextFromPrefix and IsOLECFBFromPrefix read it in place (sniffWindowHeapBytes, 78-14); block-scoped, dead before SniffVideo",
+			[]analysisSource{{handlers, "window, windowErr := readSniffWindow(file, size)"}, {handlers, "buf := make([]byte, n)"}, {"internal/convert/markupsniff.go", "func ValidateSniffPrefix(raw []byte, size int64) ([]byte, bool) {"}},
+			[]string{"readSniffWindow", "convert.ValidateSniffPrefix", "convert.LooksLikeLaTeXFromPrefix", "convert.LooksLikeTextFromPrefix", "convert.IsOLECFBFromPrefix", "convert.IsCADDeclared"}, "the HTML lower-case copy or the CAD windows",
+			func(int64) int64 { return sniffWindowHeapBytes }},
+		{"detect_html_lower", "LooksLikeHTMLFromPrefix: bytes.ToLower over the whole window, 2-byte runes with 3-byte lower case grow it to 1.5x (htmlLowerGrowthBytes, 78-14)",
+			[]analysisSource{{"internal/convert/htmlsniff.go", "lower := bytes.ToLower(buf)"}},
+			[]string{"convert.LooksLikeHTMLFromPrefix"}, "the detection window",
+			func(int64) int64 { return htmlLowerGrowthBytes }},
+		{"detect_cad", "CAD: ReadCADTail CADTailBytes and SniffCADWindows' bytes.Split of the head (cadSniffHeapBytes, 78-14)",
+			[]analysisSource{{handlers, "tail, tailErr = convert.ReadCADTail(file, size)"}, {handlers, "res := convert.SniffCADWindows(head, tail, size, declaredFormat)"}},
+			[]string{"convert.ReadCADTail", "convert.SniffCADWindows"}, "the detection window",
+			func(int64) int64 { return cadSniffHeapBytes }},
+		{"detect_video_peek", "SniffVideo: avPeekLen 4096 B peek and its io.MultiReader (videoSniffHeapBytes, 78-14); rest is dropped",
+			[]analysisSource{{handlers, "videoDetected, _, verr := convert.SniffVideo(fresh())"}},
+			[]string{"convert.SniffVideo"}, "small objects only",
+			func(int64) int64 { return videoSniffHeapBytes }},
+		{"detect_audio_peek", "SniffAudio: mp3PeekLen 512 KiB peek and its io.MultiReader (audioSniffHeapBytes, 78-14); rest is dropped",
+			[]analysisSource{{handlers, "audioDetected, _, aerr := convert.SniffAudio(fresh())"}},
+			[]string{"convert.SniffAudio"}, "small objects only",
+			func(int64) int64 { return audioSniffHeapBytes }},
+		{"zip_bound_windows", "zipDirectoryExceedsStructuralBound: the EOCD tail window and the directory window inspectMaxZipDirBytes",
+			[]analysisSource{{handlers, "if outcome, _, _ := zipDirectoryExceedsStructuralBound(file, size); outcome.exceeds() {"}, {handlers, "buf := make([]byte, tailLen)"}, {handlers, "window := make([]byte, windowLen)"}},
+			[]string{"zipDirectoryExceedsStructuralBound"}, "small objects only",
+			func(int64) int64 { return inspectZipBoundTailWindow + inspectMaxZipDirBytes }},
+		{"zip_reader", "SniffContainerReader: zip.NewReader on at most inspectMaxZipDirEntries records (zipSniffHeapBytes, 78-14 D-27a, which also counts the bound windows); the zip.Reader is kept through AnalyzeContainerWith",
+			[]analysisSource{{handlers, "} else if cr, zr, cerr := convert.SniffContainerReader(file, size); cerr == nil && cr.Format != \"\" && !cr.DuplicateRootPart {"}, {"internal/convert/docsniff.go", "zr, err := zip.NewReader(rr, size)"}},
+			[]string{"convert.SniffContainerReader", "inspect.AnalyzeContainer", "inspect.AnalyzeContainerWith"}, "the whole container analysis",
+			func(int64) int64 { return zipSniffHeapBytes }},
+		{"zip_names", "zip directory strings: per record d (name, extra, comment) kept through f.Extra and the Name and Comment copies, within inspectMaxZipDirBytes of directory, three size classes of rounding per record",
+			[]analysisSource{{"$GOROOT/src/archive/zip/reader.go", "d := make([]byte, filenameLen+extraLen+commentLen)"}, {"$GOROOT/src/archive/zip/reader.go", "f.Name = string(d[:filenameLen])"}},
+			[]string{"convert.SniffContainerReader"}, "the whole container analysis",
+			func(int64) int64 {
+				return 2*inspectMaxZipDirBytes + (inspectMaxZipDirEntries+1)*zipDirectoryStringsPerEntry
+			}},
+		{"container_flate", "f.Open of a deflated part: a flate decompressor from archive/zip's flateReaderPool (the decompressor of pdf_zlib without the zlib reader) and the checksum reader",
+			[]analysisSource{{container, "rc, operr := f.Open()"}, {"$GOROOT/src/archive/zip/register.go", "fr, ok := flateReaderPool.Get().(io.ReadCloser)"}},
+			[]string{"inspect.AnalyzeContainerWith"}, "one part at a time",
+			func(int64) int64 { return roundUp64KiB(zlibStateBytes) }},
+		{"container_part_read", "one part read: io.ReadAll(io.LimitReader(rc, <= maxRelsPartBytes + 1)), go1.26.4 chunks growing 1.5x and the right-sized copy, all live at the copy",
+			[]analysisSource{{container, "data, readErr := io.ReadAll(io.LimitReader(rc, limit))"}, {container, "data, readErr := io.ReadAll(io.LimitReader(rc, partLimit+1))"}, {"$GOROOT/src/io/io.go", "final := append([]byte(nil), make([]byte, finalSize)...)[:0]"}},
+			[]string{"inspect.AnalyzeContainerWith"}, "the zip reader and the flate state",
+			func(int64) int64 { return readAllPeak(inspectMaxRelsPartBytes + 1) }},
+		{"container_part_decode", "one part decoded by encoding/xml Token (F4): the data, plus over disjoint spans of it a 64 B stack node per unclosed element (at least 3 B, no depth limit in Token), one element's Attr slice growth (48 B per at least 5 B) and the bytes.Buffer of the longest token with its string copy; decoder struct and ns map",
+			[]analysisSource{{container, "dec := xml.NewDecoder(bytes.NewReader(data))"}, {"$GOROOT/src/encoding/xml/xml.go", "s = new(stack)"}, {"$GOROOT/src/encoding/xml/xml.go", "d.pushElement(t1.Name)"}},
+			[]string{"inspect.AnalyzeContainerWith"}, "the zip reader and the flate state",
+			func(int64) int64 { return xmlPartDecodePeak(inspectMaxRelsPartBytes + 1) }},
+		{"media_isobmff_windows", "ISOBMFF findMoov: head window maxBytes - tailReserve (or size) and tail window tailReserve = min(maxBytes/4, mp4TailWindow), both live; box type strings are 4 B and dropped per box",
+			[]analysisSource{{media, "headWin, headOK := readWindow(r, 0, headLen, size)"}, {media, "tailWin, tailOK := readWindow(r, tailOff, tailLen, size)"}},
+			[]string{"inspect.AnalyzeMedia"}, "small objects only",
+			func(w int64) int64 { return roundAlloc(w, false) + roundAlloc(min(w/4, inspectMP4TailWindow), false) }},
+		{"media_ebml_window", "EBML: one window of at most ebmlInfoWindow",
+			[]analysisSource{{media, "buf, ok := readWindow(r, 0, winLen, size)"}},
+			[]string{"inspect.AnalyzeMedia"}, "small objects only",
+			func(w int64) int64 { return roundAlloc(min(w, inspectEBMLInfoWindow), false) }},
+		{"media_wav_window", "RIFF/WAV: one window of min(maxBytes, size), maxBytes = work minus the detection window",
+			[]analysisSource{{media, "winLen := maxBytes"}},
+			[]string{"inspect.AnalyzeMedia"}, "small objects only",
+			func(w int64) int64 { return roundAlloc(w, false) }},
+		{"image_window", "images: readImageWindow of min(maxBytes, size), maxBytes = work (Sniff consumes nothing); the metadata scans read it in place",
+			[]analysisSource{{image, "buf, ok := readWindow(r, 0, winLen, size)"}},
+			[]string{"inspect.AnalyzeImage"}, "convert.Dimensions",
+			func(w int64) int64 { return roundAlloc(w, false) }},
+		{"image_dimensions", "convert.Dimensions over the window: DimensionPeekBytes peek and HEIC box type strings (dimensionsHeapBytes, 78-14)",
+			[]analysisSource{{image, "width, height, _, err = convert.Dimensions(format, bytes.NewReader(buf))"}},
+			nil, "the image window",
+			func(int64) int64 { return dimensionsHeapBytes }},
+		{"cfb_classify", "ole_cfb: ClassifyCFB through NewBudgetedReaderAt(file, maxBytes) (cfbClassifyHeapBytes, 78-13)",
+			[]analysisSource{{handlers, "budgeted := inspect.NewBudgetedReaderAt(file, maxBytes)"}, {handlers, "class := convert.ClassifyCFB(budgeted, size)"}},
+			[]string{"convert.ClassifyCFB", "inspect.NewBudgetedReaderAt"}, "small objects only; the detection window is dead",
+			func(int64) int64 { return cfbClassifyHeapBytes }},
+	}
+}
+
 func inspectAnalysisRows() []analysisRow {
 	var rows []analysisRow
 	rows = append(rows, commonAnalysisRows()...)
 	rows = append(rows, pdfAnalysisRows()...)
+	rows = append(rows, otherAnalysisRows()...)
 	return rows
 }
 
@@ -607,6 +768,19 @@ func inspectAnalysisPaths() []analysisPath {
 		{"pdf", "pdf_page_count_scan", append(append([]string{}, pdfPage...), "pdf_scan_objects", "pdf_scan_streams_and_token")},
 		{"pdf", "pdf_page_count_merge", append(append([]string{}, pdfPage...), "pdf_merge_maps", "pdf_scan_streams_kept")},
 		{"pdf", "pdf_page_count_walk", append(append([]string{}, pdfPage...), "pdf_walk_map", "pdf_walk_tokens", "pdf_walk_values")},
+		{"detect", "detect_window", []string{"small_objects", "detect_sniff_window"}},
+		{"detect", "detect_html", []string{"small_objects", "detect_sniff_window", "detect_html_lower"}},
+		{"detect", "detect_cad", []string{"small_objects", "detect_sniff_window", "detect_cad"}},
+		{"detect", "detect_video", []string{"small_objects", "detect_video_peek"}},
+		{"detect", "detect_audio", []string{"small_objects", "detect_audio_peek"}},
+		{"zip", "zip_bound", []string{"small_objects", "zip_bound_windows"}},
+		{"container", "container_read", []string{"small_objects", "zip_reader", "zip_names", "container_flate", "container_part_read"}},
+		{"container", "container_decode", []string{"small_objects", "zip_reader", "zip_names", "container_flate", "container_part_decode"}},
+		{"media", "media_isobmff", []string{"small_objects", "media_isobmff_windows"}},
+		{"media", "media_ebml", []string{"small_objects", "media_ebml_window"}},
+		{"media", "media_wav", []string{"small_objects", "media_wav_window"}},
+		{"image", "image", []string{"small_objects", "image_window", "image_dimensions"}},
+		{"cfb", "cfb", []string{"small_objects", "cfb_classify"}},
 	}
 }
 
@@ -734,37 +908,18 @@ func analysisSourceAt(t *testing.T, s analysisSource) string {
 	return s.file + ":?"
 }
 
-func logAnalysisInventory(t *testing.T, work int64, family string) {
+func logAnalysisInventory(t *testing.T, work int64) {
 	t.Helper()
-	byName := analysisRowsByName(t)
-	used := map[string]bool{}
-	for _, p := range inspectAnalysisPaths() {
-		if family != "" && p.family != family {
-			continue
-		}
-		for _, name := range p.rows {
-			used[name] = true
-		}
-	}
-	names := make([]string, 0, len(used))
-	for name := range used {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		r := byName[name]
+	for _, r := range inspectAnalysisRows() {
 		at := make([]string, len(r.sources))
 		for i, s := range r.sources {
 			at[i] = analysisSourceAt(t, s)
 		}
-		t.Logf("row %-28s %10d B (%6.2f MiB)  %s; live with: %s; %s", name, r.bound(work), mib(r.bound(work)), r.what, r.with, strings.Join(at, ", "))
+		t.Logf("row %-28s %10d B (%6.2f MiB)  %s; live with: %s; %s", r.name, r.bound(work), mib(r.bound(work)), r.what, r.with, strings.Join(at, ", "))
 	}
 	for _, p := range inspectAnalysisPaths() {
-		if family != "" && p.family != family {
-			continue
-		}
 		s := analysisPathBytes(t, p, work)
-		t.Logf("path %-24s %10d B (%6.2f MiB) = %s", p.name, s, mib(s), strings.Join(p.rows, " + "))
+		t.Logf("path %-9s %-22s %10d B (%6.2f MiB) = %s", p.family, p.name, s, mib(s), strings.Join(p.rows, " + "))
 	}
 }
 
@@ -862,8 +1017,8 @@ type analysisCase struct {
 	name     string
 	declared string
 	want     string
-	path     string
-	data     []byte
+	paths    []string
+	gen      func() []byte
 	route    func(a inspectAnalysis) (string, error)
 }
 
@@ -892,17 +1047,17 @@ func characteristicRoute(want map[string]any) func(a inspectAnalysis) (string, e
 }
 
 func pdfAnalysisCases(work int64) []analysisCase {
-	flate, _ := pdfFlateWorst(work)
+	flate := func() []byte { d, _ := pdfFlateWorst(work); return d }
 	return []analysisCase{
-		{"pdf_flate_worst", "pdf", "pdf", "pdf_text_inflate", flate, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_ranges", "pdf", "pdf", "pdf_opaque_scan", pdfRepeated(work, "%PDF-1.4\n", "(%)\n", ""), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_dict_names", "pdf", "pdf", "pdf_page_count_walk", pdfDictNames(work), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_objects", "pdf", "pdf", "pdf_page_count_scan", pdfObjects(work), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "work_ceiling_bytes"})},
-		{"pdf_long_name", "pdf", "pdf", "pdf_page_count_walk", pdfLongName(work), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_validated_streams", "pdf", "pdf", "pdf_text_inflate", pdfRepeated(work, "%PDF-1.4\n", ">>streamendstream", ""), characteristicRoute(map[string]any{"text_layer": "absent", "page_count_reason": "malformed_input"})},
-		{"pdf_resolved_streams", "pdf", "pdf", "pdf_page_count_scan", pdfRepeated(work, "%PDF-1.4\n", "<</Length 0>>stream\nendstream\n", ""), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_raw_literal", "pdf", "pdf", "pdf_text_operators", pdfRawLiteral(work), characteristicRoute(map[string]any{"text_layer": "present"})},
-		{"pdf_xref_maps", "pdf", "pdf", "pdf_page_count_walk", pdfXrefMapsAndName(work), characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_flate_worst", "pdf", "pdf", []string{"pdf_text_inflate"}, flate, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_ranges", "pdf", "pdf", []string{"pdf_opaque_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "(%)\n", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_dict_names", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfDictNames(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_objects", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfObjects(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "work_ceiling_bytes"})},
+		{"pdf_long_name", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfLongName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_validated_streams", "pdf", "pdf", []string{"pdf_text_inflate"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", ">>streamendstream", "") }, characteristicRoute(map[string]any{"text_layer": "absent", "page_count_reason": "malformed_input"})},
+		{"pdf_resolved_streams", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "<</Length 0>>stream\nendstream\n", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_raw_literal", "pdf", "pdf", []string{"pdf_text_operators"}, func() []byte { return pdfRawLiteral(work) }, characteristicRoute(map[string]any{"text_layer": "present"})},
+		{"pdf_xref_maps", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfXrefMapsAndName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
 	}
 }
 
@@ -912,11 +1067,11 @@ type analysisMeasure struct {
 	peak    livePeak
 }
 
-func measureInspectAnalysis(t *testing.T, c analysisCase, work int64, duration time.Duration, half bool) (analysisMeasure, string, error) {
+func measureInspectAnalysis(t *testing.T, c analysisCase, data []byte, work int64, duration time.Duration, half bool) (analysisMeasure, string, error) {
 	t.Helper()
-	f := newHookedFile(c.data)
+	f := newHookedFile(data)
 	f.half = half
-	size := int64(len(c.data))
+	size := int64(len(data))
 	var m analysisMeasure
 	m.timed = inspectAnalysisHeap(f, size, c.declared, work, duration)
 	route, err := c.route(m.timed)
@@ -940,15 +1095,72 @@ func measureInspectAnalysis(t *testing.T, c analysisCase, work int64, duration t
 	return m, route, nil
 }
 
+const analysisChildEnv = "OCTOCONV_INSPECT_ANALYSIS_HEAP_CHILD"
+
+func analysisChildGODEBUG() string {
+	if g := os.Getenv("GODEBUG"); g != "" {
+		return g + ",gcstoptheworld=1"
+	}
+	return "gcstoptheworld=1"
+}
+
+func runAnalysisChild(t *testing.T) {
+	t.Helper()
+	levels := strings.Split(t.Name(), "/")
+	for i, l := range levels {
+		levels[i] = "^" + regexp.QuoteMeta(l) + "$"
+	}
+	cmd := exec.Command(os.Args[0], "-test.run="+strings.Join(levels, "/"), "-test.count=1", "-test.v", "-test.timeout=20m")
+	cmd.Env = append(os.Environ(), analysisChildEnv+"=1", "GODEBUG="+analysisChildGODEBUG())
+	out, err := cmd.CombinedOutput()
+	ran, inside := false, false
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- PASS: "+t.Name()+" ") {
+			ran = true
+		}
+		switch {
+		case trimmed == "=== RUN   "+t.Name():
+			inside = true
+		case strings.HasPrefix(trimmed, "--- "):
+			inside = false
+		case inside && trimmed != "":
+			t.Log("child: " + trimmed)
+		}
+		if strings.HasPrefix(trimmed, "--- FAIL") || strings.HasPrefix(trimmed, "--- SKIP") || strings.HasPrefix(trimmed, "panic:") {
+			t.Log("child: " + trimmed)
+		}
+	}
+	if err != nil {
+		t.Fatalf("the measurement process (GODEBUG=%s) failed: %v", analysisChildGODEBUG(), err)
+	}
+	if !ran {
+		t.Fatalf("the measurement process did not run %s", t.Name())
+	}
+}
+
 func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration time.Duration, term int64) {
 	t.Helper()
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			path := analysisPathByName(t, c.path)
-			bound := analysisPathBytes(t, path, work)
-			m, route, err := measureInspectAnalysis(t, c, work, duration, false)
-			t.Logf("%s: file %d B; live peak %d B (%.2f MiB), HeapAlloc peak %d B (%.2f MiB), %d GC cycles over %d calls; live at ReadAt %.2f MiB over %d reads; %s timed, %s sampled; detected %q, exhausted %q; route %s; path %s bound %d B (%.2f MiB); term %d B (%.2f MiB)",
-				c.name, len(c.data), m.peak.peak, mib(m.peak.peak), m.peak.heapAllocPeak, mib(m.peak.heapAllocPeak), m.peak.cycles, m.peak.calls, mib(m.sampled.liveReads), m.sampled.reads, m.timed.elapsed, m.sampled.elapsed, m.timed.detected, m.timed.exhausted, route, c.path, bound, mib(bound), term, mib(term))
+			if os.Getenv(analysisChildEnv) == "" {
+				runAnalysisChild(t)
+				return
+			}
+			if !strings.Contains(os.Getenv("GODEBUG"), "gcstoptheworld=1") {
+				t.Fatalf("the measurement process runs without GODEBUG gcstoptheworld=1: a concurrent mark counts objects allocated during it, live or not")
+			}
+			var bound int64
+			var by string
+			for _, name := range c.paths {
+				if b := analysisPathBytes(t, analysisPathByName(t, name), work); b > bound {
+					bound, by = b, name
+				}
+			}
+			data := c.gen()
+			m, route, err := measureInspectAnalysis(t, c, data, work, duration, false)
+			t.Logf("%s: file %d B; live peak %d B (%.2f MiB), HeapAlloc peak %d B (%.2f MiB), %d GC cycles over %d calls; live at ReadAt %.2f MiB over %d reads; %s timed, %s sampled; detected %q, exhausted %q; route %s; paths %s, bound %d B (%.2f MiB) by %s; term %d B (%.2f MiB)",
+				c.name, len(data), m.peak.peak, mib(m.peak.peak), m.peak.heapAllocPeak, mib(m.peak.heapAllocPeak), m.peak.cycles, m.peak.calls, mib(m.sampled.liveReads), m.sampled.reads, m.timed.elapsed, m.sampled.elapsed, m.timed.detected, m.timed.exhausted, route, strings.Join(c.paths, ","), bound, mib(bound), by, term, mib(term))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -956,10 +1168,10 @@ func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration t
 				t.Fatal(err)
 			}
 			if m.peak.peak > bound {
-				t.Errorf("live peak %d B is above its path %s, %d B", m.peak.peak, c.path, bound)
+				t.Errorf("live peak %d B is above its path %s, %d B", m.peak.peak, by, bound)
 			}
 			if bound > term {
-				t.Errorf("path %s, %d B, is above inspectAnalysisHeapBytes(work) %d B", c.path, bound, term)
+				t.Errorf("path %s, %d B, is above inspectAnalysisHeapBytes(work) %d B", by, bound, term)
 			}
 			if m.timed.elapsed > duration+inspectAnalyzerTimeSlack {
 				t.Errorf("the analysis took %s, above MaxDuration %s + analyzerTimeSlack %s", m.timed.elapsed, duration, inspectAnalyzerTimeSlack)
@@ -976,9 +1188,342 @@ func TestInspectAnalysisStaysWithinItsTerm(t *testing.T) {
 	if got := inspectAnalysisHeapBytes(work); got != term {
 		t.Fatalf("inspectAnalysisHeapBytes(%d) = %d, the inventory sums to %d", work, got, term)
 	}
-	logAnalysisInventory(t, work, "")
+	logAnalysisInventory(t, work)
 	t.Logf("inspectAnalysisHeapBytes(%d) = %d B (%.2f MiB), set by path %s (family %s)", work, term, mib(term), by.name, by.family)
+	configs := inspectConfigValues(t, "INSPECT_MAX_WORK_BYTES")
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		w := transportCapInt(t, name, "INSPECT_MAX_WORK_BYTES", configs[name])
+		got, p := inspectAnalysisHeapTerm(t, w)
+		t.Logf("configuration %s: work %d, inspectAnalysisHeapBytes = %d B (%.2f MiB), set by %s", name, w, got, mib(got), p.name)
+	}
+	for _, f := range []struct{ name, path string }{{"F4 encoding/xml Token over one rels/ODF/workbook part", "container_decode"}, {"F5 PDF names in PDFTypedDictUints", "pdf_page_count_walk"}} {
+		b := analysisPathBytes(t, analysisPathByName(t, f.path), work)
+		t.Logf("%s: path %s %d B (%.2f MiB), margin to the term %d B (%.2f MiB)", f.name, f.path, b, mib(b), term-b, mib(term-b))
+	}
 	var cases []analysisCase
 	cases = append(cases, pdfAnalysisCases(work)...)
+	cases = append(cases, otherAnalysisCases(t, work)...)
 	runAnalysisCases(t, cases, work, duration, term)
+}
+
+func analysisZip(t *testing.T, entries func(zw *zip.Writer)) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	entries(zw)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func relsDenseDocx(t *testing.T, parts, partBytes int, head, unit, tail string) []byte {
+	t.Helper()
+	body := head + strings.Repeat(unit, (partBytes-len(head)-len(tail))/len(unit)) + tail
+	return analysisZip(t, func(zw *zip.Writer) {
+		mustWriteZipEntry(t, zw, "[Content_Types].xml", "<Types/>")
+		mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+		for i := 0; i < parts; i++ {
+			mustWriteZipEntry(t, zw, fmt.Sprintf("word/_rels/p%02d.xml.rels", i), body)
+		}
+	})
+}
+
+func denseODFContent(t *testing.T, partBytes int) []byte {
+	t.Helper()
+	return analysisZip(t, func(zw *zip.Writer) {
+		mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mw.Write([]byte("application/vnd.oasis.opendocument.text")); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"content.xml", "styles.xml"} {
+			head, tail := `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0">`, "</office:document-content>"
+			mustWriteZipEntry(t, zw, name, head+strings.Repeat("<a/>", (partBytes-len(head)-len(tail))/4)+tail)
+		}
+	})
+}
+
+func denseWorkbookXLSX(t *testing.T, partBytes int) []byte {
+	t.Helper()
+	head, tail := `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets>`, "</sheets></workbook>"
+	return analysisZip(t, func(zw *zip.Writer) {
+		mustWriteZipEntry(t, zw, "[Content_Types].xml", "<Types/>")
+		mustWriteZipEntry(t, zw, "xl/workbook.xml", head+strings.Repeat(`<sheet/>`, (partBytes-len(head)-len(tail))/8)+tail)
+	})
+}
+
+func padTo(data []byte, size int64) []byte {
+	if int64(len(data)) >= size {
+		return data
+	}
+	out := make([]byte, size)
+	copy(out, data)
+	return out
+}
+
+func worstTailMoovMP4(work int64) []byte {
+	ftyp := isobmffTestBox("ftyp", []byte("isom\x00\x00\x02\x00isomiso2avc1mp41"))
+	mvhd := make([]byte, 20)
+	binary.BigEndian.PutUint32(mvhd[12:16], 1000)
+	binary.BigEndian.PutUint32(mvhd[16:20], 5000)
+	moov := isobmffTestBox("moov", isobmffTestBox("mvhd", mvhd))
+	var b bytes.Buffer
+	b.Write(ftyp)
+	for i := 0; i < inspectMaxISOBMFFBoxes-16; i++ {
+		b.Write(isobmffTestBox("free", nil))
+	}
+	size := work + work/8
+	mdatLen := size - int64(b.Len()) - int64(len(moov))
+	hdr := make([]byte, 8)
+	binary.BigEndian.PutUint32(hdr[0:4], uint32(mdatLen))
+	copy(hdr[4:8], "mdat")
+	b.Write(hdr)
+	b.Write(make([]byte, mdatLen-8))
+	b.Write(moov)
+	return b.Bytes()
+}
+
+const (
+	inspectMaxISOBMFFBoxes          = 4096
+	inspectMaxEBMLElements          = 512
+	inspectMaxRIFFChunks            = 256
+	inspectMaxMetadataMarkerScanned = 4096
+)
+
+func worstEBML(size int64) []byte {
+	var seg bytes.Buffer
+	for i := 0; i < inspectMaxEBMLElements+8; i++ {
+		seg.Write([]byte{0xEC, 0x80})
+	}
+	var b bytes.Buffer
+	b.Write(buildEBMLFixture("matroska"))
+	b.Write([]byte{0x18, 0x53, 0x80, 0x67, 0x01, 0, 0, 0, 0, 0, 0, 0})
+	binary.BigEndian.PutUint32(b.Bytes()[b.Len()-4:], uint32(seg.Len()))
+	b.Write(seg.Bytes())
+	return padTo(b.Bytes(), size)
+}
+
+func worstRIFF(size int64) []byte {
+	var body bytes.Buffer
+	body.WriteString("WAVE")
+	for i := 0; i < inspectMaxRIFFChunks+8; i++ {
+		body.WriteString("junk\x00\x00\x00\x00")
+	}
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(size-8))
+	b.Write(body.Bytes())
+	return padTo(b.Bytes(), size)
+}
+
+func worstPNG(size int64) []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], 0x7FFFFFFF)
+	binary.BigEndian.PutUint32(ihdr[4:8], 0x7FFFFFFF)
+	ihdr[8], ihdr[9] = 8, 6
+	writeChunk := func(typ string, payload []byte) {
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(payload)))
+		b.WriteString(typ)
+		b.Write(payload)
+		b.Write([]byte{0, 0, 0, 0})
+	}
+	writeChunk("IHDR", ihdr)
+	for i := 0; i < inspectMaxMetadataMarkerScanned+8; i++ {
+		writeChunk("abCd", nil)
+	}
+	return padTo(b.Bytes(), size)
+}
+
+func worstJPEG(size int64) []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0xFF, 0xD8})
+	b.Write([]byte{0xFF, 0xC0, 0x00, 0x11, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01})
+	for i := 0; i < inspectMaxMetadataMarkerScanned+8; i++ {
+		b.Write([]byte{0xFF, 0xE2, 0x00, 0x04, 0x00, 0x00})
+	}
+	return padTo(b.Bytes(), size)
+}
+
+func worstGIF(size int64) []byte {
+	return padTo([]byte("GIF89a\xff\xff\xff\xff\xf7\x00\x00"), size)
+}
+
+func worstWebP(size int64) []byte {
+	var body bytes.Buffer
+	body.WriteString("WEBP")
+	body.WriteString("VP8X")
+	_ = binary.Write(&body, binary.LittleEndian, uint32(10))
+	body.Write([]byte{0, 0, 0, 0, 0xFF, 0x3F, 0x00, 0xFF, 0x3F, 0x00})
+	for i := 0; i < inspectMaxMetadataMarkerScanned+8; i++ {
+		body.WriteString("abcd\x00\x00\x00\x00")
+	}
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	_ = binary.Write(&b, binary.LittleEndian, uint32(size-8))
+	b.Write(body.Bytes())
+	return padTo(b.Bytes(), size)
+}
+
+func worstHTMLWindow() []byte {
+	head := "<html>"
+	return []byte(head + strings.Repeat("Ⱥ", (2*convert.SniffWindowBytes-len(head))/2))
+}
+
+func worstLaTeXWindow(t *testing.T) []byte {
+	t.Helper()
+	prefix, _, _ := worstTeXWindow(t)
+	return append(append([]byte{}, prefix...), bytes.Repeat([]byte(" "), convert.SniffWindowBytes)...)
+}
+
+func worstMP3(t *testing.T) []byte {
+	t.Helper()
+	data := audioMP3Fixture(t)
+	return append(append([]byte{}, data...), make([]byte, 2*convert.SniffWindowBytes)...)
+}
+
+func detectedRoute(keys ...string) func(a inspectAnalysis) (string, error) {
+	return func(a inspectAnalysis) (string, error) {
+		var got []string
+		for _, k := range keys {
+			got = append(got, fmt.Sprintf("%s=%v", k, a.report.Characteristics[k]))
+		}
+		var checks []string
+		for _, c := range a.report.Checks {
+			checks = append(checks, fmt.Sprintf("%s:%s/%s", c.Code, c.Status, c.Reason))
+		}
+		sort.Strings(checks)
+		return strings.Join(got, " ") + " checks=" + strings.Join(checks, ",") + " coverage=" + string(a.report.Coverage.Reason) + fmt.Sprintf(" reads=%d", a.reads), nil
+	}
+}
+
+func otherAnalysisCases(t *testing.T, work int64) []analysisCase {
+	t.Helper()
+	detect := []string{"detect_window", "detect_video", "detect_audio"}
+	container := []string{"container_read", "container_decode"}
+	return []analysisCase{
+		{"container_docx_at_the_bound", "docx", "docx", container, func() []byte { return manyEntriesDocxFixture(t, zipEntriesAtTheBound(t)) }, detectedRoute("container_format")},
+		{"rels_dense_empty", "docx", "docx", container, func() []byte {
+			return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "<Relationships>", "<a/>", "</Relationships>")
+		}, detectedRoute("container_format")},
+		{"rels_dense_attr", "docx", "docx", container, func() []byte {
+			return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "<Relationships>", `<a b="c"/>`, "</Relationships>")
+		}, detectedRoute("container_format")},
+		{"rels_dense_attrs", "docx", "docx", container, func() []byte {
+			return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "<Relationships>", `<a b="" c="" d="" e="" f="" g="" h="" i=""/>`, "</Relationships>")
+		}, detectedRoute("container_format")},
+		{"rels_dense_ns", "docx", "docx", container, func() []byte {
+			return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "<Relationships>", `<a xmlns:x="y"/>`, "</Relationships>")
+		}, detectedRoute("container_format")},
+		{"rels_nested", "docx", "docx", container, func() []byte { return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "", "<a>", "") }, detectedRoute("container_format")},
+		{"rels_wide_attrs", "docx", "docx", container, func() []byte { return relsDenseDocx(t, 64, inspectMaxRelsPartBytes-1, "<a", ` b=""`, "/>") }, detectedRoute("container_format")},
+		{"container_odf_dense", "odt", "odt", container, func() []byte { return denseODFContent(t, inspectMaxRelsPartBytes-1) }, detectedRoute("container_format")},
+		{"container_xlsx_workbook_dense", "xlsx", "xlsx", container, func() []byte { return denseWorkbookXLSX(t, inspectMaxRelsPartBytes) }, detectedRoute("container_format", "sheet_count", "sheet_count_reason")},
+		{"media_isobmff_boxes", "mp4", "mp4", []string{"media_isobmff"}, func() []byte { return worstTailMoovMP4(work) }, detectedRoute("duration_seconds", "duration_seconds_reason")},
+		{"media_ebml", "mkv", "mkv", append([]string{"media_ebml"}, detect...), func() []byte { return worstEBML(2 * int64(convert.SniffWindowBytes)) }, detectedRoute("duration_seconds", "duration_seconds_reason")},
+		{"media_riff", "wav", "wav", append([]string{"media_wav"}, detect...), func() []byte { return worstRIFF(work) }, detectedRoute("duration_seconds", "duration_seconds_reason")},
+		{"media_mp3", "mp3", "mp3", detect, func() []byte { return worstMP3(t) }, detectedRoute("duration_seconds", "duration_seconds_reason")},
+		{"image_png", "png", "png", []string{"image"}, func() []byte { return worstPNG(work + 1) }, detectedRoute("pixels", "pixels_reason")},
+		{"image_jpeg_markers", "jpg", "jpg", []string{"image"}, func() []byte { return worstJPEG(work + 1) }, detectedRoute("pixels", "pixels_reason")},
+		{"image_gif", "gif", "", detect, func() []byte { return worstGIF(work + 1) }, detectedRoute()},
+		{"image_webp", "webp", "webp", []string{"image"}, func() []byte { return worstWebP(work + 1) }, detectedRoute("pixels", "pixels_reason")},
+		{"text_html_window", "html", "html", []string{"detect_html"}, func() []byte { return worstHTMLWindow() }, detectedRoute()},
+		{"text_latex_window", "latex", "latex", []string{"detect_window"}, func() []byte { return worstLaTeXWindow(t) }, detectedRoute()},
+		{"text_markdown_window", "md", "md", []string{"detect_window"}, func() []byte { return bytes.Repeat([]byte("text "), 2*convert.SniffWindowBytes/5) }, detectedRoute()},
+		{"cad_dxf_window", "dxf", "", append([]string{"detect_cad"}, detect...), func() []byte { return bytes.Repeat([]byte("\n"), 2*convert.SniffWindowBytes) }, detectedRoute()},
+		{"cfb_v4_worst", "doc", inspectOLECFBFormat, []string{"detect_window", "cfb"}, func() []byte { return func() []byte { d, _ := worstCFB(12); return d }() }, detectedRoute()},
+		{"zip_directory_too_large", "docx", inspectZipTooLargeFormat, []string{"zip_bound"}, func() []byte { return worstZipDirectory(worstZipDirectoryRecords) }, detectedRoute()},
+	}
+}
+
+var inspectAnalysisScannedFuncs = []string{"detectInspectFormat", "dispatchInspectFamilies"}
+
+func inspectAnalysisCalls(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "inspect_handlers.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	var calls []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		scanned := false
+		for _, name := range inspectAnalysisScannedFuncs {
+			if fn.Name.Name == name {
+				scanned = true
+			}
+		}
+		if !scanned {
+			continue
+		}
+		found[fn.Name.Name] = true
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			name := ""
+			switch fun := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				if id, ok := fun.X.(*ast.Ident); ok {
+					switch {
+					case id.Name == "convert":
+						name = "convert." + fun.Sel.Name
+					case id.Name == "inspect" && (strings.HasPrefix(fun.Sel.Name, "Analyze") || fun.Sel.Name == "NewBudgetedReaderAt"):
+						name = "inspect." + fun.Sel.Name
+					}
+				}
+			case *ast.Ident:
+				if fun.Name == "readSniffWindow" || fun.Name == "zipDirectoryExceedsStructuralBound" {
+					name = fun.Name
+				}
+			}
+			if name != "" {
+				calls = append(calls, fmt.Sprintf("%s in %s at %s", name, fn.Name.Name, fset.Position(call.Pos())))
+			}
+			return true
+		})
+	}
+	for _, name := range inspectAnalysisScannedFuncs {
+		if !found[name] {
+			t.Fatalf("inspect_handlers.go no longer declares %s: the scan would pass on nothing", name)
+		}
+	}
+	return calls
+}
+
+func TestInspectAnalysisInventoryCoversEveryCall(t *testing.T) {
+	covered := map[string]string{}
+	for _, r := range inspectAnalysisRows() {
+		for _, c := range r.calls {
+			covered[c] = r.name
+		}
+	}
+	calls := inspectAnalysisCalls(t)
+	if len(calls) < 20 {
+		t.Fatalf("the scan found %d calls in %v, want at least 20: it no longer reads what the handler calls", len(calls), inspectAnalysisScannedFuncs)
+	}
+	for _, c := range calls {
+		name := strings.SplitN(c, " ", 2)[0]
+		row, ok := covered[name]
+		if !ok {
+			t.Errorf("%s: no inventory row names it", c)
+			continue
+		}
+		t.Logf("%s: row %s", c, row)
+	}
 }
