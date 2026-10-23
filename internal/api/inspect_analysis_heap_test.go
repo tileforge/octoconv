@@ -1097,6 +1097,8 @@ func measureInspectAnalysis(t *testing.T, c analysisCase, data []byte, work int6
 
 const analysisChildEnv = "OCTOCONV_INSPECT_ANALYSIS_HEAP_CHILD"
 
+const analysisRaceMaxDuration = time.Hour
+
 func analysisChildGODEBUG() string {
 	if g := os.Getenv("GODEBUG"); g != "" {
 		return g + ",gcstoptheworld=1"
@@ -1157,8 +1159,12 @@ func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration t
 					bound, by = b, name
 				}
 			}
+			measured := duration
+			if raceInstrumentedBuild() {
+				measured = analysisRaceMaxDuration
+			}
 			data := c.gen()
-			m, route, err := measureInspectAnalysis(t, c, data, work, duration, false)
+			m, route, err := measureInspectAnalysis(t, c, data, work, measured, false)
 			t.Logf("%s: file %d B; live peak %d B (%.2f MiB), HeapAlloc peak %d B (%.2f MiB), %d GC cycles over %d calls; live at ReadAt %.2f MiB over %d reads; %s timed, %s sampled; detected %q, exhausted %q; route %s; paths %s, bound %d B (%.2f MiB) by %s; term %d B (%.2f MiB)",
 				c.name, len(data), m.peak.peak, mib(m.peak.peak), m.peak.heapAllocPeak, mib(m.peak.heapAllocPeak), m.peak.cycles, m.peak.calls, mib(m.sampled.liveReads), m.sampled.reads, m.timed.elapsed, m.sampled.elapsed, m.timed.detected, m.timed.exhausted, route, strings.Join(c.paths, ","), bound, mib(bound), by, term, mib(term))
 			if err != nil {
@@ -1173,7 +1179,12 @@ func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration t
 			if bound > term {
 				t.Errorf("path %s, %d B, is above inspectAnalysisHeapBytes(work) %d B", by, bound, term)
 			}
-			if m.timed.elapsed > duration+inspectAnalyzerTimeSlack {
+			if m.peak.peak > term {
+				t.Errorf("live peak %d B is above inspectAnalysisHeapBytes(work) %d B", m.peak.peak, term)
+			}
+			if measured != duration {
+				t.Logf("race-instrumented build: both runs under MaxDuration %s, the %s + %s time check runs on the shipped build", measured, duration, inspectAnalyzerTimeSlack)
+			} else if m.timed.elapsed > duration+inspectAnalyzerTimeSlack {
 				t.Errorf("the analysis took %s, above MaxDuration %s + analyzerTimeSlack %s", m.timed.elapsed, duration, inspectAnalyzerTimeSlack)
 			}
 		})
@@ -1184,9 +1195,10 @@ func TestInspectAnalysisStaysWithinItsTerm(t *testing.T) {
 	work := inspectWorkBytes(t)
 	duration := inspectWorkDuration(t)
 	checkAnalysisSources(t)
-	term, by := inspectAnalysisHeapTerm(t, work)
-	if got := inspectAnalysisHeapBytes(work); got != term {
-		t.Fatalf("inspectAnalysisHeapBytes(%d) = %d, the inventory sums to %d", work, got, term)
+	term := inspectAnalysisHeapBytes(work)
+	derived, by := inspectAnalysisHeapTerm(t, work)
+	if term != derived {
+		t.Errorf("inspectAnalysisHeapBytes(%d) = %d, the inventory's largest path rounds up to %d", work, term, derived)
 	}
 	logAnalysisInventory(t, work)
 	t.Logf("inspectAnalysisHeapBytes(%d) = %d B (%.2f MiB), set by path %s (family %s)", work, term, mib(term), by.name, by.family)
