@@ -445,10 +445,35 @@ func closedListOpaqueRow(run referenceRun) bool {
 	return run.headRanges > pdfMaxOpaqueRanges(run.headLen) || (run.tailLen > 0 && run.tailRanges > pdfMaxOpaqueRanges(run.tailLen))
 }
 
+func closedListMergedRow(run referenceRun) bool {
+	return run.merged > pdfref805d49da.MaxIndexedObjects
+}
+
+func pageVerdict(o pdfOutcome) string {
+	return fmt.Sprintf("page_count %v/%v", o.res.Characteristics["page_count"], o.res.Characteristics["page_count_reason"])
+}
+
+func withoutKeys(c Characteristics, keys ...string) Characteristics {
+	out := Characteristics{}
+	for k, v := range c {
+		out[k] = v
+	}
+	for _, k := range keys {
+		delete(out, k)
+	}
+	return out
+}
+
+func onlyKeysDiffer(a, b pdfOutcome, keys ...string) bool {
+	return reflect.DeepEqual(withoutKeys(a.res.Characteristics, keys...), withoutKeys(b.res.Characteristics, keys...)) &&
+		reflect.DeepEqual(a.res.Checks, b.res.Checks) && reflect.DeepEqual(a.res.Findings, b.res.Findings)
+}
+
 func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 	corpus := analyzerDifferentialCorpus(t)
 	fired := map[string]int{}
 	differed := map[string]int{}
+	knownThenUnknown := 0
 	var rows []closedListRow
 	for _, in := range corpus {
 		t.Run(in.name, func(t *testing.T) {
@@ -456,6 +481,7 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 			want := ref
 			textRow, k, _ := closedListTextStep(refRun.steps)
 			opaqueRow := closedListOpaqueRow(refRun)
+			mergedRow := closedListMergedRow(refRun)
 			got := newPDFOutcome(in)
 			var fire []string
 			if textRow != "" {
@@ -464,8 +490,11 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 			if opaqueRow {
 				fire = append(fire, "V4")
 			}
+			if mergedRow {
+				fire = append(fire, "V7")
+			}
 			if len(fire) > 0 {
-				o := referenceOracle{opaqueCap: opaqueRow}
+				o := referenceOracle{opaqueCap: opaqueRow, mergedCap: mergedRow}
 				if textRow != "" {
 					o.textLayer = closedListTextRow
 				}
@@ -480,15 +509,31 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 						differed[row]++
 					}
 					rows = append(rows, closedListRow{input: in.name, row: row, k: k, reference: textVerdict(ref), oracle: textVerdict(oracle), got: textVerdict(got)})
-					if row == "V4" {
+					switch row {
+					case "V4":
 						rows[len(rows)-1].k = -1
 						rows[len(rows)-1].reference = checksVerdict(ref)
 						rows[len(rows)-1].oracle = checksVerdict(oracle)
 						rows[len(rows)-1].got = checksVerdict(got)
+					case "V7":
+						rows[len(rows)-1].k = refRun.merged
+						rows[len(rows)-1].reference = pageVerdict(ref)
+						rows[len(rows)-1].oracle = pageVerdict(oracle)
+						rows[len(rows)-1].got = pageVerdict(got)
+						if ref.res.Characteristics["page_count"] != nil && got.res.Characteristics["page_count"] == nil {
+							knownThenUnknown++
+						}
 					}
 				}
-				if opaqueRow && textRow == "" && !reflect.DeepEqual(oracle.res.Characteristics, ref.res.Characteristics) {
+				if opaqueRow && textRow == "" && !mergedRow && !reflect.DeepEqual(oracle.res.Characteristics, ref.res.Characteristics) {
 					t.Fatalf("V4 oracle changed characteristics that do not use opaque ranges:\n oracle:    %v\n reference: %v", oracle.res.Characteristics, ref.res.Characteristics)
+				}
+				if mergedRow {
+					o.mergedCap = false
+					unchanged, _ := referencePDFOutcome(in, o)
+					if !onlyKeysDiffer(oracle, unchanged, "page_count", "page_count_reason") {
+						t.Fatalf("V7 oracle changed more than page_count and its reason:\n oracle:    %+v\n unchanged: %+v", oracle.res, unchanged.res)
+					}
 				}
 			}
 			if !reflect.DeepEqual(got.res, want.res) || got.exhausted != want.exhausted {
@@ -499,8 +544,9 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].row+rows[i].input < rows[j].row+rows[j].input })
 	var b strings.Builder
-	fmt.Fprintf(&b, "closed-list rows over %d inputs: fired %v, outcome differs from the reference %v\n", len(corpus), fired, differed)
+	fmt.Fprintf(&b, "closed-list rows over %d inputs: fired %v, outcome differs from the reference %v; V7 inputs where the reference knows page_count and the new outcome does not: %d\n", len(corpus), fired, differed, knownThenUnknown)
 	fmt.Fprintf(&b, "%-4s %-72s %3s  %-34s %-34s %s\n", "row", "input", "k", "reference", "oracle", "new")
+	fmt.Fprintf(&b, "(k: the stream of V1-V3; -1 for V4; the merged object index |scan objects u xref numbers| for V7)\n")
 	for _, r := range rows {
 		if strings.HasPrefix(r.input, "mutation/") && r.reference == r.oracle {
 			continue
@@ -508,13 +554,16 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 		fmt.Fprintf(&b, "%-4s %-72s %3d  %-34s %-34s %s\n", r.row, r.input, r.k, r.reference, r.oracle, r.got)
 	}
 	t.Log(b.String())
-	for _, row := range []string{"V1", "V2", "V3", "V4"} {
+	for _, row := range []string{"V1", "V2", "V3", "V4", "V7"} {
 		if fired[row] == 0 {
 			t.Errorf("closed-list row %s never fired on the corpus", row)
 		}
 		if differed[row] == 0 {
 			t.Errorf("closed-list row %s fired %d times and its oracle never differed from the reference", row, fired[row])
 		}
+	}
+	if knownThenUnknown == 0 {
+		t.Errorf("closed-list row V7 never fired on an input whose page_count the reference knows")
 	}
 }
 
@@ -683,7 +732,8 @@ func realisticPDFHeads() []analyzerInput {
 	return in
 }
 
-func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
+func repositoryPDFs(t *testing.T) []analyzerInput {
+	t.Helper()
 	var in []analyzerInput
 	var paths []string
 	for _, g := range []string{
@@ -692,6 +742,7 @@ func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
 		filepath.Join("..", "convert", "testdata", "*", "*.pdf"),
 		filepath.Join("..", "convert", "testdata", "*", "*", "*.pdf"),
 		filepath.Join("..", "e2e", "testdata", "*.pdf"),
+		filepath.Join("..", "..", "scripts", "fixtures", "*.pdf"),
 	} {
 		m, err := filepath.Glob(g)
 		if err != nil {
@@ -724,6 +775,33 @@ func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
 	if len(in) < 20 {
 		t.Fatalf("real PDF corpus has %d inputs, want the repository PDFs, the api fixture and the generated heads", len(in))
 	}
+	return in
+}
+
+func TestPDFObjectIndexCapLeavesRealFilesAlone(t *testing.T) {
+	in := repositoryPDFs(t)
+	worst := 0.0
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-62s %9s %8s %8s %7s\n", "input", "n (B)", "merged", "cap", "ratio")
+	for _, c := range in {
+		merged := pdfref805d49da.MergedObjects(c.data)
+		if merged < 0 {
+			t.Errorf("%s: the scan reached the object index cap %d before the merge", c.name, indexedObjectsCap)
+			continue
+		}
+		ratio := float64(merged) / float64(indexedObjectsCap)
+		worst = max(worst, ratio)
+		fmt.Fprintf(&b, "%-62s %9d %8d %8d %7.4f\n", c.name, len(c.data), merged, indexedObjectsCap, ratio)
+		if ratio > 0.25 {
+			t.Errorf("%s: merged object index %d against a cap of %d (ratio %.3f), want at most a quarter of the cap", c.name, merged, indexedObjectsCap, ratio)
+		}
+	}
+	fmt.Fprintf(&b, "worst ratio %.4f (limit 0.25) over %d inputs", worst, len(in))
+	t.Log(b.String())
+}
+
+func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
+	in := repositoryPDFs(t)
 
 	t.Logf("pdfMaxOpaqueRanges(n) = max(n/48, %d) (D-29a): a pdfOpaqueRange is %d B; ranges at the cap grown by doubling capped at the cap hold the old and new arrays at once, (1/2 + 1) x 16 = 24 B per range, so 24 x n/48 = n/2 above the floor and 24 x %d = %d B below it", pdfOpaqueRangeFloor, 16, pdfOpaqueRangeFloor, 24*pdfOpaqueRangeFloor)
 	for _, n := range []int{0, 15, 4096, 48 * pdfOpaqueRangeFloor, 1 << 20, 8 << 20} {

@@ -1057,7 +1057,7 @@ func pdfAnalysisCases(work int64) []analysisCase {
 		{"pdf_validated_streams", "pdf", "pdf", []string{"pdf_text_inflate"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", ">>streamendstream", "") }, characteristicRoute(map[string]any{"text_layer": "absent", "page_count_reason": "malformed_input"})},
 		{"pdf_resolved_streams", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "<</Length 0>>stream\nendstream\n", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
 		{"pdf_raw_literal", "pdf", "pdf", []string{"pdf_text_operators"}, func() []byte { return pdfRawLiteral(work) }, characteristicRoute(map[string]any{"text_layer": "present"})},
-		{"pdf_xref_maps", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfXrefMapsAndName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
+		{"pdf_xref_maps", "pdf", "pdf", []string{"pdf_page_count_scan", "pdf_page_count_merge"}, func() []byte { return pdfXrefMapsAndName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "work_ceiling_bytes"})},
 	}
 }
 

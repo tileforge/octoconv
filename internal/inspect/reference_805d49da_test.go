@@ -29,11 +29,13 @@ type referenceRun struct {
 	tailLen    int
 	truncated  bool
 	encrypted  bool
+	merged     int
 }
 
 type referenceOracle struct {
 	textLayer func(steps []referenceStreamStep) (row string, state pdfTextScanState)
 	opaqueCap bool
+	mergedCap bool
 }
 
 func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker, o referenceOracle) (FamilyResult, referenceRun) {
@@ -163,7 +165,11 @@ func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker,
 		res.Characteristics["text_layer_reason"] = string(textLayerReason)
 	}
 
-	count, reason := referenceExtractPDFPageCount(head, compressed, truncated, hexEscape, tr)
+	run.merged = -1
+	if !compressed && !hexEscape {
+		run.merged = pdfref805d49da.MergedObjects(head)
+	}
+	count, reason := referenceExtractPDFPageCount(head, compressed, truncated, hexEscape, o.mergedCap && run.merged > pdfref805d49da.MaxIndexedObjects, tr)
 	if count != nil {
 		res.Characteristics["page_count"] = *count
 	} else {
@@ -355,7 +361,7 @@ func referenceScanTokenOccurrences(buf []byte, tokens [][]byte, opaque []pdfOpaq
 	return 0, false, filtered, ceilingHit
 }
 
-func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr *Tracker) (*int, Reason) {
+func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape, mergedCapped bool, tr *Tracker) (*int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
 	}
@@ -364,6 +370,9 @@ func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape 
 	}
 
 	values, ceilingHit := pdfref805d49da.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned)
+	if mergedCapped {
+		values, ceilingHit = nil, true
+	}
 	if ceilingHit {
 		tr.MarkCeilingHit()
 	}
