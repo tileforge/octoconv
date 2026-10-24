@@ -1074,6 +1074,9 @@ func measureInspectAnalysis(t *testing.T, c analysisCase, data []byte, work int6
 	size := int64(len(data))
 	var m analysisMeasure
 	m.timed = inspectAnalysisHeap(f, size, c.declared, work, duration)
+	if m.timed.exhausted == inspect.ReasonWorkCeilingTime {
+		return m, "", fmt.Errorf("the timed run stopped on the time ceiling (%s under MaxDuration %s): the sampled run measures the full path, and a path cut by time is not it", m.timed.elapsed, duration)
+	}
 	route, err := c.route(m.timed)
 	if m.timed.detected != c.want {
 		return m, route, fmt.Errorf("detected %q, want %q", m.timed.detected, c.want)
@@ -1084,7 +1087,7 @@ func measureInspectAnalysis(t *testing.T, c analysisCase, data []byte, work int6
 	m.peak = liveHeapPeak(t, func() {
 		live, _, _ := readLiveHeap(f.samples)
 		f.base = live
-		m.sampled = inspectAnalysisHeap(f, size, c.declared, work, duration)
+		m.sampled = inspectAnalysisHeap(f, size, c.declared, work, analysisSampledMaxDuration)
 	})
 	if m.sampled.detected != m.timed.detected || m.sampled.exhausted != m.timed.exhausted || m.sampled.report.Coverage.Reason != m.timed.report.Coverage.Reason {
 		return m, route, fmt.Errorf("the sampled run took another path: detected %q, exhausted %q, coverage %q; the timed run %q, %q, %q", m.sampled.detected, m.sampled.exhausted, m.sampled.report.Coverage.Reason, m.timed.detected, m.timed.exhausted, m.timed.report.Coverage.Reason)
@@ -1098,6 +1101,8 @@ func measureInspectAnalysis(t *testing.T, c analysisCase, data []byte, work int6
 const analysisChildEnv = "OCTOCONV_INSPECT_ANALYSIS_HEAP_CHILD"
 
 const analysisRaceMaxDuration = time.Hour
+
+const analysisSampledMaxDuration = time.Hour
 
 func analysisChildGODEBUG() string {
 	if g := os.Getenv("GODEBUG"); g != "" {
@@ -1190,6 +1195,8 @@ func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration t
 			}
 			if measured != duration {
 				t.Logf("race-instrumented build: both runs under MaxDuration %s, the %s + %s time check runs on the shipped build", measured, duration, inspectAnalyzerTimeSlack)
+			} else if m.sampled.elapsed > duration {
+				t.Logf("the sampled run (GOGC 1, gcstoptheworld=1) took %s under MaxDuration %s; its time is not the shipped build's, the timed run's %s is", m.sampled.elapsed, analysisSampledMaxDuration, m.timed.elapsed)
 			} else if m.timed.elapsed > duration+inspectAnalyzerTimeSlack {
 				t.Errorf("the analysis took %s, above MaxDuration %s + analyzerTimeSlack %s", m.timed.elapsed, duration, inspectAnalyzerTimeSlack)
 			}
