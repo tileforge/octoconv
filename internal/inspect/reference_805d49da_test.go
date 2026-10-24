@@ -6,7 +6,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/convert/pdfref805d49da"
 )
 
 type referenceStreamStep struct {
@@ -363,7 +363,7 @@ func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape 
 		return nil, ReasonPDFNameEscape
 	}
 
-	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned, nil)
+	values, ceilingHit := pdfref805d49da.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned)
 	if ceilingHit {
 		tr.MarkCeilingHit()
 	}

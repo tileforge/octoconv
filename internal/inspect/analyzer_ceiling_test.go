@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tileforge/octoconv/internal/convert/pdfref805d49da"
 )
 
 const analyzerDifferentialDuration = time.Hour
@@ -250,7 +252,11 @@ var mutationTokens = []string{
 }
 
 func mutatedPDFs(bases []analyzerInput, n int) []analyzerInput {
-	rng := rand.New(rand.NewPCG(78, 15))
+	return mutatedPDFsFrom("mutation", 15, bases, n)
+}
+
+func mutatedPDFsFrom(label string, seed uint64, bases []analyzerInput, n int) []analyzerInput {
+	rng := rand.New(rand.NewPCG(78, seed))
 	out := make([]analyzerInput, 0, n)
 	for i := 0; i < n; i++ {
 		base := bases[rng.IntN(len(bases))]
@@ -286,10 +292,77 @@ func mutatedPDFs(bases []analyzerInput, n int) []analyzerInput {
 		if maxBytes <= 0 {
 			maxBytes = 1
 		}
-		label, _, _ := strings.Cut(base.name, "/max=")
-		out = append(out, analyzerInput{name: fmt.Sprintf("mutation/%04d/%s/max=%d", i, label, maxBytes), data: data, maxBytes: maxBytes})
+		from, _, _ := strings.Cut(base.name, "/max=")
+		out = append(out, analyzerInput{name: fmt.Sprintf("%s/%04d/%s/max=%d", label, i, from, maxBytes), data: data, maxBytes: maxBytes})
 	}
 	return out
+}
+
+func xrefPayloadPDF(scanned, inPayload int, pages string) []byte {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	b.WriteString(pages)
+	for n := 1; n <= scanned; n++ {
+		fmt.Fprintf(&b, "%d 0 obj\n", n)
+	}
+	var payload bytes.Buffer
+	offsets := make([]int, inPayload)
+	first := scanned + 1
+	for i := range offsets {
+		offsets[i] = payload.Len()
+		fmt.Fprintf(&payload, "%d 0 obj\n", first+i)
+	}
+	header := fmt.Sprintf("<</Length %d>>\nstream\n", payload.Len())
+	base := b.Len() + len(header)
+	b.WriteString(header)
+	b.Write(payload.Bytes())
+	b.WriteString("\nendstream\n")
+	xref := b.Len()
+	fmt.Fprintf(&b, "xref\n%d %d\n", first, len(offsets))
+	for _, off := range offsets {
+		fmt.Fprintf(&b, "%010d 00000 n \n", base+off)
+	}
+	fmt.Fprintf(&b, "trailer\n<<>>\nstartxref\n%d\n%%%%EOF\n", xref)
+	return b.Bytes()
+}
+
+const indexedObjectsCap = pdfref805d49da.MaxIndexedObjects
+
+func xrefPayloadPDFs() []analyzerInput {
+	var in []analyzerInput
+	for _, union := range []int{indexedObjectsCap - 1, indexedObjectsCap, indexedObjectsCap + 1} {
+		scanned := indexedObjectsCap / 2
+		for _, pages := range []struct{ name, dict string }{{"", ""}, {"_pages", "<</Type /Pages /Count 3>>\n"}} {
+			in = append(in, analyzerInput{name: fmt.Sprintf("xref_in_payload%s/union=%d", pages.name, union), data: xrefPayloadPDF(scanned, union-scanned, pages.dict), maxBytes: 8 << 20})
+		}
+	}
+	return in
+}
+
+func lexTokenPDFs() []analyzerInput {
+	const n = 1 << 20
+	long := strings.Repeat("a", n)
+	pages := "1 0 obj\n<</Type /Pages /Count 2>>\nendobj\n"
+	var in []analyzerInput
+	add := func(name, data string) {
+		in = append(in, analyzerInput{name: "lex_token/" + name, data: []byte(data), maxBytes: 8 << 20})
+	}
+	add("long_dict_name", "%PDF-1.4\n1 0 obj\n<</"+long+">>\nendobj\n"+pages)
+	add("long_keyword", "%PDF-1.4\n"+long)
+	add("long_keyword_then_pages", "%PDF-1.4\n"+long+"\n"+pages)
+	add("long_type_value", "%PDF-1.4\n1 0 obj\n<</Type /"+long+" /Count 4>>\nendobj\n"+pages)
+	add("long_pages_prefix_value", "%PDF-1.4\n1 0 obj\n<</Type /Pages"+long+" /Count 4>>\nendobj\n"+pages)
+	add("escaped_type", "%PDF-1.4\n1 0 obj\n<</T#79pe /Pages /Count 5>>\nendobj\n")
+	add("escaped_pages", "%PDF-1.4\n1 0 obj\n<</Type /P#61ges /Count 5>>\nendobj\n")
+	add("escaped_count", "%PDF-1.4\n1 0 obj\n<</Type /Pages /C#6funt 5>>\nendobj\n")
+	add("escaped_length", "%PDF-1.4\n1 0 obj\n<</Le#6egth 5>>\nstream\nabcde\nendstream\nendobj\n"+pages)
+	add("escaped_prev", "%PDF-1.4\n"+pages+"xref\n0 1\n0000000000 65535 f \ntrailer\n<</P#72ev 9>>\nstartxref\n9\n%%EOF\n")
+	add("escape_at_end_1", "%PDF-1.4\n"+pages+"<</Type /Pages /Count 2 /X#4")
+	add("escape_at_end_2", "%PDF-1.4\n"+pages+"<</Type /Pages /Count 2 /X#")
+	add("escape_at_end_3", "%PDF-1.4\n"+pages+"<</Type /Pages#")
+	add("resolved_streams_1MiB", string(repeatTo("<</Length 0>>stream\nendstream\n", n)))
+	add("resolved_streams_then_pages", string(repeatTo("<</Length 0>>stream\nendstream\n", n/4))+"\n"+pages)
+	return in
 }
 
 func analyzerDifferentialCorpus(t *testing.T) []analyzerInput {
@@ -299,6 +372,10 @@ func analyzerDifferentialCorpus(t *testing.T) []analyzerInput {
 	in = append(in, gen...)
 	in = append(in, stopPDFs()...)
 	in = append(in, mutatedPDFs(gen, 2000)...)
+	xref := xrefPayloadPDFs()
+	in = append(in, xref...)
+	in = append(in, mutatedPDFsFrom("xref_mutation", 17, xref, 50)...)
+	in = append(in, lexTokenPDFs()...)
 	return in
 }
 
