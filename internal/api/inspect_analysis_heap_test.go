@@ -468,6 +468,8 @@ const (
 	pdfMinValidatedStreamSpan = int64(len(">>streamendstream"))
 	pdfMinResolvedStreamSpan  = int64(len("<</Length 0>>stream\nendstream"))
 	pdfMaxIndexedObjects      = 65536
+	pdfMinScannedObjectSpan   = int64(len("1 0 obj") + 1)
+	pdfXrefEntryBytes         = 20
 	pdfMaxPagesDicts          = 8192
 	pdfMaxDictDepth           = 64
 	pdfDictFrameBytes         = 56
@@ -493,6 +495,18 @@ func pdfOpaqueGrowthPeak(work int64) int64 {
 func pdfOpaqueKept(work int64) int64 {
 	return doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfHeadBytes(work)), false).final +
 		doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfTailBytes(work)), false).final
+}
+
+func pdfScannedObjects(work int64) int64 {
+	return min(pdfMaxIndexedObjects, pdfHeadBytes(work)/pdfMinScannedObjectSpan)
+}
+
+func pdfXrefEntries(work int64) int64 {
+	return min(pdfMaxIndexedObjects, pdfHeadBytes(work)/pdfXrefEntryBytes)
+}
+
+func pdfMergedObjects(work int64) int64 {
+	return min(pdfMaxIndexedObjects, pdfScannedObjects(work)+pdfXrefEntries(work))
 }
 
 func pdfResolvedStreams(work int64) sliceGrowth {
@@ -559,26 +573,26 @@ func pdfAnalysisRows() []analysisRow {
 			[]analysisSource{{pdftext, "content, next := readPDFLiteralString(buf, i)"}, {pdftext, "_, next := readPDFLiteralString(buf, i)"}},
 			[]string{"inspect.AnalyzePDF"}, "the kept inflate buffer, the stream ranges",
 			func(w int64) int64 { return decodedStringsPeak(w / 4) }},
-		{"pdf_scan_objects", "page count, scanPDFImpl: objects map[int]int of at most pdfMaxIndexedObjects entries (swiss tables of 1024 slots, split ones at least 384 full)",
+		{"pdf_scan_objects", "page count, scanPDFImpl: objects map[int]int of at most min(pdfMaxIndexedObjects, head / 8) entries, a header \"1 0 obj\" and a separator per entry (swiss tables of 1024 slots, split ones at least 384 full)",
 			[]analysisSource{{pdflex, "res.objects[ints[0].value] = next"}, {dictscan, "scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects, stop)"}},
 			[]string{"inspect.AnalyzePDF"}, "the resolved streams and one token",
-			func(int64) int64 { return swissMapBytes(pdfMaxIndexedObjects) }},
+			func(w int64) int64 { return swissMapBytes(pdfScannedObjects(w)) }},
 		{"pdf_scan_streams_and_token", "page count, scanPDFImpl: resolved stream slice growth (16 B per at least 29 B of the head) and one decoded name (pdfReadName: append growth and the string copy) or keyword over disjoint spans of the head",
 			[]analysisSource{{pdflex, "res.streams = append(res.streams, [2]int{payload, payload + n})"}, {pdflex, "return string(out), i"}, {pdflex, "return string(b[start:i]), i"}},
 			[]string{"inspect.AnalyzePDF"}, "the objects map",
 			pdfScanStreamsAndToken},
-		{"pdf_merge_maps", "page count, the xref merge: objects grows to pdfMaxIndexedObjects scanned plus pdfMaxIndexedObjects from the xref (headers the scanner skipped inside stream payloads) while the xref map of up to pdfMaxIndexedObjects is ranged over",
-			[]analysisSource{{dictscan, "objects[num] = off"}, {pdflex, "out[num] = hdr"}},
+		{"pdf_merge_maps", "page count, the xref merge: objects grows to at most pdfMaxIndexedObjects distinct numbers, a new one past the cap answers (nil, true) (D-31 F8b), while the xref map of at most min(pdfMaxIndexedObjects, head / 20 B a table entry) is ranged over; objects at most min(cap, scanned + xref)",
+			[]analysisSource{{dictscan, "if _, known := objects[num]; !known && len(objects) >= pdfMaxIndexedObjects {"}, {dictscan, "objects[num] = off"}, {pdflex, "out[num] = hdr"}},
 			[]string{"inspect.AnalyzePDF"}, "the kept resolved stream slice",
-			func(int64) int64 { return swissMapBytes(2*pdfMaxIndexedObjects) + swissMapBytes(pdfMaxIndexedObjects) }},
+			func(w int64) int64 { return swissMapBytes(pdfMergedObjects(w)) + swissMapBytes(pdfXrefEntries(w)) }},
 		{"pdf_scan_streams_kept", "page count: the resolved stream slice at its final capacity, scan in scope until PDFTypedDictUints returns",
 			[]analysisSource{{dictscan, "objects := scan.objects"}},
 			[]string{"inspect.AnalyzePDF"}, "the merge",
 			func(w int64) int64 { return pdfResolvedStreams(w).final }},
-		{"pdf_walk_map", "page count, the dictionary walk: the merged objects map",
+		{"pdf_walk_map", "page count, the dictionary walk: the merged objects map, at most min(pdfMaxIndexedObjects, scanned + xref) entries (D-31 F8b)",
 			[]analysisSource{{dictscan, "if off, found := objects[pendingLength]; found {"}},
 			[]string{"inspect.AnalyzePDF"}, "the walk tokens",
-			func(int64) int64 { return swissMapBytes(2 * pdfMaxIndexedObjects) }},
+			func(w int64) int64 { return swissMapBytes(pdfMergedObjects(w)) }},
 		{"pdf_walk_tokens", "page count, the dictionary walk: up to maxPDFDictDepth key strings (one per frame), one name being decoded and the kept resolved stream slice, over disjoint spans of the head; plus a page of rounding per key",
 			[]analysisSource{{dictscan, "stack[n-1].key = name"}, {dictscan, "name, next := pdfReadName(b, i)"}},
 			[]string{"inspect.AnalyzePDF"}, "the merged map",

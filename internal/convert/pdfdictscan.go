@@ -119,6 +119,9 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int, stop func()
 	}
 	objects := scan.objects
 	for num, off := range pdfXrefObjectsLimited(b, pdfMaxIndexedObjects) {
+		if _, known := objects[num]; !known && len(objects) >= pdfMaxIndexedObjects {
+			return nil, true
+		}
 		objects[num] = off
 	}
 
