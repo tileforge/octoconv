@@ -697,7 +697,7 @@ func otherAnalysisRows() []analysisRow {
 			[]string{"readSniffWindow", "convert.ValidateSniffPrefix", "convert.LooksLikeLaTeXFromPrefix", "convert.LooksLikeTextFromPrefix", "convert.IsOLECFBFromPrefix", "convert.IsCADDeclared"}, "the HTML lower-case copy or the CAD windows",
 			func(int64) int64 { return sniffWindowHeapBytes }},
 		{"detect_html_lower", "LooksLikeHTMLFromPrefix: bytes.ToLower of at most 15 runes of the window, the markers' length plus one (htmlLowerPrefixBytes, 78-18)",
-			[]analysisSource{{"internal/convert/htmlsniff.go", "lower := bytes.ToLower(buf)"}},
+			[]analysisSource{{"internal/convert/htmlsniff.go", "lower := bytes.ToLower(buf[:n])"}},
 			[]string{"convert.LooksLikeHTMLFromPrefix"}, "the detection window",
 			func(int64) int64 { return htmlLowerPrefixBytes }},
 		{"detect_cad", "CAD: ReadCADTail CADTailBytes and SniffCADWindows' bytes.Split of the head (cadSniffHeapBytes, 78-14)",

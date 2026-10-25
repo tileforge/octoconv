@@ -3,6 +3,7 @@ package convert
 import (
 	"bytes"
 	"io"
+	"unicode/utf8"
 )
 
 // htmlSniffCap bounds how much of an uploaded file LooksLikeHTML reads into
@@ -70,7 +71,15 @@ func LooksLikeHTMLFromPrefix(prefix []byte) bool {
 	buf := bytes.TrimPrefix(prefix, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
 	buf = bytes.TrimLeft(buf, " \t\r\n\f\v")
 
-	lower := bytes.ToLower(buf)
+	n := 0
+	for range len(htmlDoctypeMarker) + 1 {
+		if n == len(buf) {
+			break
+		}
+		_, w := utf8.DecodeRune(buf[n:])
+		n += w
+	}
+	lower := bytes.ToLower(buf[:n])
 	if bytes.HasPrefix(lower, htmlDoctypeMarker) {
 		return true
 	}
