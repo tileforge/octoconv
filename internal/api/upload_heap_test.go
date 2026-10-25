@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -8,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -122,9 +125,46 @@ type uploadProbe struct {
 	status   int
 	parts    int
 	stl      int64
+	head     int
+}
+
+type uploadDoc struct {
+	size  int64
+	parts int
+	write func(mw *multipart.Writer) error
+}
+
+func stlDoc(stl int64) uploadDoc {
+	_, size := stlOfSize(stl)
+	return uploadDoc{size: size, parts: 5, write: func(mw *multipart.Writer) error {
+		file, _ := stlOfSize(stl)
+		return writeTransportCapForm(mw, convert.EngineCAD, convert.OperationRender, "png", "model.stl", file, -1)
+	}}
+}
+
+func latexDoc() uploadDoc {
+	data := latexFixture()
+	return uploadDoc{size: int64(len(data)), parts: 2, write: func(mw *multipart.Writer) error {
+		fw, err := mw.CreateFormFile(formFieldFile, "paper.tex")
+		if err != nil {
+			return err
+		}
+		if _, err := fw.Write(data); err != nil {
+			return err
+		}
+		if err := mw.WriteField(formFieldTarget, "pdf"); err != nil {
+			return err
+		}
+		return mw.Close()
+	}}
 }
 
 func createDuringUpload(t *testing.T, junk []int64, stl int64) uploadProbe {
+	t.Helper()
+	return createDuringUploadWith(t, junk, stlDoc(stl), "")
+}
+
+func createDuringUploadWith(t *testing.T, junk []int64, doc uploadDoc, blockKind string) uploadProbe {
 	t.Helper()
 	fake := newHoldingS3()
 	sc := newS3Storage(t, fake)
@@ -135,42 +175,60 @@ func createDuringUpload(t *testing.T, junk []int64, stl int64) uploadProbe {
 	})
 	ts := startShippedServer(t, srv.Routes())
 
-	file, size := stlOfSize(stl)
-	p := uploadProbe{want: min(storage.UploadPartThreads, uploadParts(size)), parts: len(junk) + 5, stl: size}
-	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	go func() {
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	body := func(w io.Writer, gap time.Duration) error {
+		mw := multipart.NewWriter(w)
+		if err := mw.SetBoundary(boundary); err != nil {
+			return err
+		}
 		for _, n := range junk {
 			fw, err := mw.CreateFormFile("junk", "a")
 			if err != nil {
-				pw.CloseWithError(err)
-				return
+				return err
 			}
 			if err := copyZeros(fw, n); err != nil {
-				pw.CloseWithError(err)
-				return
+				return err
 			}
-			time.Sleep(junkPartPause)
+			time.Sleep(gap)
 		}
-		pw.CloseWithError(writeTransportCapForm(mw, convert.EngineCAD, convert.OperationRender, "png", "model.stl", file, -1))
-	}()
-	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/jobs?q=a", pr)
-	if err != nil {
+		return doc.write(mw)
+	}
+	cw := &countingWriter{w: io.Discard}
+	if err := body(cw, 0); err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	authed(req)
-	client := ts.Client()
+	ct := "multipart/form-data; boundary=" + boundary
+	block := ""
+	if blockKind != "" {
+		block = headerBlockOnTheLine(blockKind, "/v1/jobs", shortIntakeQuery, ct, cw.n)
+	}
+	head := intakeHead("/v1/jobs", shortIntakeQuery, block, ct, cw.n)
+	if len(head) > headerReadLimit {
+		t.Fatalf("the head is %d bytes, above headerReadLimit %d", len(head), headerReadLimit)
+	}
+	p := uploadProbe{want: min(storage.UploadPartThreads, uploadParts(doc.size)), parts: len(junk) + doc.parts, stl: doc.size, head: len(head)}
 
 	type result struct {
 		status int
 		body   string
 		err    error
 	}
+	br := bufio.NewReaderSize(nil, 4096)
 	base := liveHeap()
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	go func() {
+		if _, err := io.WriteString(conn, head); err == nil {
+			_ = body(conn, junkPartPause)
+		}
+	}()
 	done := make(chan result, 1)
 	go func() {
-		resp, err := client.Do(req)
+		br.Reset(conn)
+		resp, err := http.ReadResponse(br, nil)
 		if err != nil {
 			done <- result{err: err}
 			return
@@ -196,6 +254,7 @@ func createDuringUpload(t *testing.T, junk []int64, stl int64) uploadProbe {
 	}
 	time.Sleep(200 * time.Millisecond)
 	mid := liveHeap()
+	runtime.KeepAlive(head)
 	p.inFlight, _, _ = fake.held()
 	p.heap = int64(mid) - int64(base)
 	fake.releaseAll()
@@ -216,9 +275,14 @@ func createDuringUpload(t *testing.T, junk []int64, stl int64) uploadProbe {
 
 func createDuringUploadRun(t *testing.T, name string, junk []int64, stl int64) uploadProbe {
 	t.Helper()
+	return createDuringUploadWithRun(t, name, junk, stlDoc(stl), "")
+}
+
+func createDuringUploadWithRun(t *testing.T, name string, junk []int64, doc uploadDoc, blockKind string) uploadProbe {
+	t.Helper()
 	var p uploadProbe
 	t.Run(name, func(t *testing.T) {
-		p = createDuringUpload(t, junk, stl)
+		p = createDuringUploadWith(t, junk, doc, blockKind)
 	})
 	return p
 }

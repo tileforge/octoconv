@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,8 +34,6 @@ import (
 const chartValues = "../../deploy/chart/octoconv/values.yaml"
 
 const multipartPeekBufferBytes = 4096
-
-var intakeQueryRepeats = (http.DefaultMaxHeaderBytes - 8<<10) / 3
 
 var memoryQuantity = regexp.MustCompile(`^(\d+)(Gi|Mi|g|m)?$`)
 
@@ -231,51 +230,6 @@ func writeZeroField(mw *multipart.Writer, name string, size int64) error {
 	return copyZeros(fw, size)
 }
 
-func liveHeapOf(t *testing.T, srv *Server, path, query string, header http.Header, contentType string, write func(w io.Writer, pause func()) error, settle time.Duration) intakeProbe {
-	t.Helper()
-	base := liveHeap()
-	pr, pw := io.Pipe()
-	cw := &countingWriter{w: pw}
-	paused, resume := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	signal := func() { once.Do(func() { close(paused) }) }
-	writeErr := make(chan error, 1)
-	go func() {
-		err := write(cw, func() {
-			signal()
-			<-resume
-		})
-		signal()
-		pw.CloseWithError(err)
-		writeErr <- err
-	}()
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		req := authed(httptest.NewRequest(http.MethodPost, path+"?"+query, pr))
-		req.Header.Set("Content-Type", contentType)
-		for k, v := range header {
-			req.Header[k] = v
-		}
-		srv.Routes().ServeHTTP(rec, req)
-		_ = pr.Close()
-	}()
-	<-paused
-	if settle > 0 {
-		time.Sleep(settle)
-	}
-	mid := liveHeap()
-	close(resume)
-	<-done
-	probe := intakeProbe{status: rec.Code, err: <-writeErr, sent: cw.n}
-	_ = json.Unmarshal(rec.Body.Bytes(), &probe.payload)
-	if mid > base {
-		probe.heap = mid - base
-	}
-	return probe
-}
-
 func intakeHead(path, query, headerBlock, contentType string, contentLength int64) string {
 	target := path
 	if query != "" {
@@ -397,10 +351,8 @@ func liveHeapOfRawOverTCP(t *testing.T, ts *httptest.Server, path, query, header
 	return liveHeapOverTCP(t, ts, path, query, headerBlock, "multipart/form-data; boundary="+rawFormBoundary, rawFormLength(form), form.write, settle)
 }
 
-func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
-	t.Helper()
-	boundary := multipart.NewWriter(io.Discard).Boundary()
-	return liveHeapOf(t, srv, path, "q="+strings.Repeat("%41", intakeQueryRepeats), nil, "multipart/form-data; boundary="+boundary, func(w io.Writer, pause func()) error {
+func mwFormWriter(form intakeForm, boundary string) func(io.Writer, func()) error {
+	return func(w io.Writer, pause func()) error {
 		mw := multipart.NewWriter(w)
 		if err := mw.SetBoundary(boundary); err != nil {
 			return err
@@ -409,19 +361,86 @@ func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) 
 			return err
 		}
 		return mw.Close()
-	}, 0)
+	}
 }
 
-func minHeapOfThree(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
+func liveHeapMidIntake(t *testing.T, ts *httptest.Server, path string, form intakeForm) intakeProbe {
+	t.Helper()
+	boundary := multipart.NewWriter(io.Discard).Boundary()
+	write := mwFormWriter(form, boundary)
+	cw := &countingWriter{w: io.Discard}
+	if err := write(cw, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	ct := "multipart/form-data; boundary=" + boundary
+	query, block := lineHead(path, ct, cw.n, headSpec{query: "%41"})
+	return liveHeapOverTCP(t, ts, path, query, block, ct, cw.n, write, 0)
+}
+
+func minHeapOfThree(t *testing.T, ts *httptest.Server, path string, form intakeForm) intakeProbe {
 	t.Helper()
 	var best intakeProbe
 	for i := range 3 {
-		p := liveHeapMidIntake(t, srv, path, form)
+		p := liveHeapMidIntake(t, ts, path, form)
 		if i == 0 || p.heap < best.heap {
 			best = p
 		}
 	}
 	return best
+}
+
+type headSpec struct {
+	query string
+	block string
+}
+
+func (h headSpec) String() string {
+	q := h.query
+	if q == "" {
+		q = "short"
+	}
+	if h.block == "" {
+		return "query " + q
+	}
+	return "query " + q + ", header block " + h.block
+}
+
+func queryOfKind(kind string, room int) string {
+	switch kind {
+	case "", "short":
+		return shortIntakeQuery
+	case "%41":
+		return percentIntakeQuery(room)
+	case "plus":
+		return plusIntakeQuery(room)
+	case "distinct":
+		return distinctParamsQuery("v", room)
+	case "distinct escaped":
+		return distinctParamsQuery("+", room)
+	}
+	panic("unknown query kind " + kind)
+}
+
+const lineHeadSlack = 16
+
+func lineHead(path, contentType string, contentLength int64, h headSpec) (query, block string) {
+	room := headerReadLimit - len(intakeHead(path, "", "", contentType, contentLength)) - len("?") - lineHeadSlack
+	if h.block != "" {
+		share := room
+		if h.query != "" && h.query != "short" {
+			share = room / 2
+		} else {
+			share = room - len(shortIntakeQuery)
+		}
+		block = headerBlock(h.block, share)
+		room -= len(block)
+	}
+	return queryOfKind(h.query, room), block
+}
+
+func shippedHeapServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return startShippedServer(t, heapProbeServer().Routes())
 }
 
 func heapProbeServer() *Server {
@@ -647,11 +666,6 @@ func rawFormParts(f rawIntakeForm) int {
 	return n
 }
 
-func liveHeapOfRaw(t *testing.T, srv *Server, path, query string, header http.Header, form rawIntakeForm, settle time.Duration) intakeProbe {
-	t.Helper()
-	return liveHeapOf(t, srv, path, query, header, "multipart/form-data; boundary="+rawFormBoundary, form.write, settle)
-}
-
 type heapRange struct {
 	min  int64
 	max  int64
@@ -689,8 +703,7 @@ type heapLimit struct {
 
 type rawHeapCase struct {
 	form   rawIntakeForm
-	query  string
-	header http.Header
+	head   headSpec
 	settle time.Duration
 	upper  []heapLimit
 	floor  int64
@@ -708,10 +721,10 @@ func budgetHeapCases() []rawHeapCase {
 	pending := worstSplit(b, x)
 	spill := spillLast(worstSplit(b, x))
 	cases := []rawHeapCase{
-		{form: rawFileParts("worst pending", pending, nil, 0), query: shortIntakeQuery, upper: content},
-		{form: rawFileParts("worst spill", spill, nil, 1<<20), query: shortIntakeQuery, upper: content},
-		{form: rawFileParts("worst spill settled", spill, nil, 1<<20), query: shortIntakeQuery, settle: heapSettle, upper: content, floor: 2*b - 1<<20},
-		{form: rawFileParts("worst spill settled p8", spillLast(worstSplit(b, p/8-(bytes.MinRead-1))), nil, 1<<20), query: shortIntakeQuery, settle: heapSettle, upper: content, floor: 2*b - 1<<20},
+		{form: rawFileParts("worst pending", pending, nil, 0), upper: content},
+		{form: rawFileParts("worst spill", spill, nil, 1<<20), upper: content},
+		{form: rawFileParts("worst spill settled", spill, nil, 1<<20), settle: heapSettle, upper: content, floor: 2*b - 1<<20},
+		{form: rawFileParts("worst spill settled p8", spillLast(worstSplit(b, p/8-(bytes.MinRead-1))), nil, 1<<20), settle: heapSettle, upper: content, floor: 2*b - 1<<20},
 	}
 
 	gapPending := []int64{8 << 20, 4 << 20}
@@ -719,28 +732,32 @@ func budgetHeapCases() []rawHeapCase {
 	gapPendingEmpty := append(append([]int64{}, gapPending...), make([]int64, emptyPartsToTheLine(rawFileParts("", gapPending, nil, 0)))...)
 	gapSpillEmpty := emptyFileParts(emptyPartsToTheLine(rawFileParts("", gapSpill, nil, 1<<20)))
 	cases = append(cases,
-		rawHeapCase{form: rawFileParts("gap 8MiB+4MiB", gapPending, nil, 0), query: percentIntakeQuery()},
-		rawHeapCase{form: rawFileParts("gap 8MiB+spill", gapSpill, nil, 1<<20), query: percentIntakeQuery()},
-		rawHeapCase{form: rawFileParts("gap 8MiB+4MiB+empty parts", gapPendingEmpty, nil, 0), query: percentIntakeQuery()},
-		rawHeapCase{form: rawFileParts("gap 8MiB+spill+empty parts", gapSpill, gapSpillEmpty, 1<<20), query: percentIntakeQuery()},
+		rawHeapCase{form: rawFileParts("gap 8MiB+4MiB", gapPending, nil, 0), head: headSpec{query: "%41"}},
+		rawHeapCase{form: rawFileParts("gap 8MiB+spill", gapSpill, nil, 1<<20), head: headSpec{query: "%41"}},
+		rawHeapCase{form: rawFileParts("gap 8MiB+4MiB+empty parts", gapPendingEmpty, nil, 0), head: headSpec{query: "%41"}},
+		rawHeapCase{form: rawFileParts("gap 8MiB+spill+empty parts", gapSpill, gapSpillEmpty, 1<<20), head: headSpec{query: "%41"}},
 	)
 
 	cases = append(cases,
-		rawHeapCase{form: rawFileParts("doubling+rest", []int64{p, b - p}, nil, 0), query: shortIntakeQuery, upper: content},
-		rawHeapCase{form: rawFileParts("doubling+spill", []int64{p, b - p + 1}, nil, 1<<20), query: shortIntakeQuery, upper: content},
+		rawHeapCase{form: rawFileParts("doubling+rest", []int64{p, b - p}, nil, 0), upper: content},
+		rawHeapCase{form: rawFileParts("doubling+spill", []int64{p, b - p + 1}, nil, 1<<20), upper: content},
 	)
 
-	plus := plusIntakeQuery()
+	plus := headSpec{query: "plus"}
+	escaped := headSpec{query: "distinct escaped"}
+	blockAndEscaped := headSpec{query: "distinct escaped", block: "distinct-lf"}
 	cases = append(cases,
-		rawHeapCase{form: rawFileParts("worst pending+empty parts+query", pending, emptyFileParts(emptyPartsToTheLine(rawFileParts("", pending, nil, 0))), 0), query: plus},
-		rawHeapCase{form: rawFileParts("worst spill+empty parts+query", spill, emptyFileParts(emptyPartsToTheLine(rawFileParts("", spill, nil, 1<<20))), 1<<20), query: plus},
-		rawHeapCase{form: rawFileParts("worst pending+header lines+query", pending, headerLineParts(20, headerLinePartsToTheLine(20, rawFileParts("", pending, nil, 0))), 0), query: plus},
-		rawHeapCase{form: rawFileParts("worst spill+header lines+query", spill, headerLineParts(20, headerLinePartsToTheLine(20, rawFileParts("", spill, nil, 1<<20))), 1<<20), query: plus},
-		rawHeapCase{form: rawFileParts("worst pending+empty parts+escaped params", pending, emptyFileParts(emptyPartsToTheLine(rawFileParts("", pending, nil, 0))), 0), query: distinctParamsQuery("+")},
-		rawHeapCase{form: rawFileParts("worst spill+empty parts+escaped params", spill, emptyFileParts(emptyPartsToTheLine(rawFileParts("", spill, nil, 1<<20))), 1<<20), query: distinctParamsQuery("+")},
+		rawHeapCase{form: rawFileParts("worst pending+empty parts+query", pending, emptyFileParts(emptyPartsToTheLine(rawFileParts("", pending, nil, 0))), 0), head: plus},
+		rawHeapCase{form: rawFileParts("worst spill+empty parts+query", spill, emptyFileParts(emptyPartsToTheLine(rawFileParts("", spill, nil, 1<<20))), 1<<20), head: plus},
+		rawHeapCase{form: rawFileParts("worst pending+header lines+query", pending, headerLineParts(20, headerLinePartsToTheLine(20, rawFileParts("", pending, nil, 0))), 0), head: plus},
+		rawHeapCase{form: rawFileParts("worst spill+header lines+query", spill, headerLineParts(20, headerLinePartsToTheLine(20, rawFileParts("", spill, nil, 1<<20))), 1<<20), head: plus},
+		rawHeapCase{form: rawFileParts("worst pending+empty parts+escaped params", pending, emptyFileParts(emptyPartsToTheLine(rawFileParts("", pending, nil, 0))), 0), head: escaped},
+		rawHeapCase{form: rawFileParts("worst spill+empty parts+escaped params", spill, emptyFileParts(emptyPartsToTheLine(rawFileParts("", spill, nil, 1<<20))), 1<<20), head: escaped},
+		rawHeapCase{form: rawFileParts("worst pending+empty parts+header block+escaped params", pending, emptyFileParts(emptyPartsToTheLine(rawFileParts("", pending, nil, 0))), 0), head: blockAndEscaped},
+		rawHeapCase{form: rawFileParts("worst spill+empty parts+header block+escaped params", spill, emptyFileParts(emptyPartsToTheLine(rawFileParts("", spill, nil, 1<<20))), 1<<20), head: blockAndEscaped},
 	)
 
-	cases = append(cases, rawHeapCase{form: rawFileParts("tiny", []int64{1}, nil, 0), query: shortIntakeQuery, upper: []heapLimit{{"intakeFixedHeapBytes", intakeFixedHeapBytes}}})
+	cases = append(cases, rawHeapCase{form: rawFileParts("tiny", []int64{1}, nil, 0), upper: []heapLimit{{"intakeFixedHeapBytes", intakeFixedHeapBytes}}})
 
 	for _, level := range []int64{p, p / 2, p / 4, p / 8} {
 		for _, d := range []int64{-513, -512, -511, 0, 1, 511} {
@@ -749,8 +766,8 @@ func budgetHeapCases() []rawHeapCase {
 				continue
 			}
 			cases = append(cases,
-				rawHeapCase{form: rawFileParts(fmt.Sprintf("sweep p=%d d=%d pending", level, d), worstSplit(b, last), nil, 0), query: shortIntakeQuery, upper: content},
-				rawHeapCase{form: rawFileParts(fmt.Sprintf("sweep p=%d d=%d spill", level, d), spillLast(worstSplit(b, last)), nil, 1<<20), query: shortIntakeQuery, upper: content},
+				rawHeapCase{form: rawFileParts(fmt.Sprintf("sweep p=%d d=%d pending", level, d), worstSplit(b, last), nil, 0), upper: content},
+				rawHeapCase{form: rawFileParts(fmt.Sprintf("sweep p=%d d=%d spill", level, d), spillLast(worstSplit(b, last)), nil, 1<<20), upper: content},
 			)
 		}
 	}
@@ -763,11 +780,11 @@ func spillLast(sizes []int64) []int64 {
 	return out
 }
 
-func distinctParamsQuery(char string) string {
+func distinctParamsQuery(char string, room int) string {
 	var sb strings.Builder
 	for i := 0; i < urlMaxQueryParams-1; i++ {
 		next := fmt.Sprintf("k%d=%s&", i, strings.Repeat(char, 90))
-		if sb.Len()+len(next) > http.DefaultMaxHeaderBytes-16<<10 {
+		if sb.Len()+len(next) > room {
 			break
 		}
 		sb.WriteString(next)
@@ -775,12 +792,12 @@ func distinctParamsQuery(char string) string {
 	return sb.String()
 }
 
-func percentIntakeQuery() string {
-	return "q=" + strings.Repeat("%41", intakeQueryRepeats)
+func percentIntakeQuery(room int) string {
+	return "q=" + strings.Repeat("%41", (room-len("q="))/3)
 }
 
-func plusIntakeQuery() string {
-	return "q=" + strings.Repeat("+", http.DefaultMaxHeaderBytes-8<<10)
+func plusIntakeQuery(room int) string {
+	return "q=" + strings.Repeat("+", room-len("q="))
 }
 
 func intakeAdmitLine() int64 {
@@ -901,33 +918,6 @@ func rfc2231ContinuationsForm() rawIntakeForm {
 	return worstPendingForm("rfc2231 continuations", rfc2231Parts(pending, 512, 2), "")
 }
 
-type tcpTermCase struct {
-	form        rawIntakeForm
-	query       string
-	headerBlock string
-}
-
-func termIncrementOverTCP(t *testing.T, path string, base, hc tcpTermCase) (heapRange, heapRange) {
-	t.Helper()
-	ts := startShippedServer(t, heapProbeServer().Routes())
-	measure := func(c tcpTermCase) heapRange {
-		return heapOfThree(func() intakeProbe {
-			return liveHeapOfRawOverTCP(t, ts, path, c.query, c.headerBlock, c.form, heapSettle)
-		})
-	}
-	b := measure(base)
-	r := measure(hc)
-	for _, p := range []intakeProbe{b.last, r.last} {
-		if p.status == http.StatusTooManyRequests {
-			t.Fatalf("%s %s: answered 429 %v: the measurement ran into a rate limit", path, hc.form.name, p.payload)
-		}
-	}
-	if !readWhole(b.last) || !readWhole(r.last) {
-		t.Fatalf("%s %s: a form was not read whole (base: write error %v, status %d %v; form: write error %v, status %d %v)", path, hc.form.name, b.last.err, b.last.status, b.last.payload, r.last.err, r.last.status, r.last.payload)
-	}
-	return b, r
-}
-
 func mainFilePart(mw *multipart.Writer, headerPad int64) (io.Writer, error) {
 	if headerPad == 0 {
 		return mw.CreateFormFile(formFieldFile, "intake")
@@ -1044,6 +1034,43 @@ func raceInstrumentedBuild() bool {
 	return false
 }
 
+type intakeClassPeak struct {
+	bytes int64
+	form  string
+}
+
+type intakeClassRegistry struct {
+	mu       sync.Mutex
+	create   intakeClassPeak
+	inspect  intakeClassPeak
+	analysis map[int64]intakeClassPeak
+}
+
+var intakeClassPeaks = &intakeClassRegistry{analysis: map[int64]intakeClassPeak{}}
+
+func (r *intakeClassRegistry) record(path, form string, heap int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch path {
+	case "/v1/jobs":
+		if heap > r.create.bytes {
+			r.create = intakeClassPeak{heap, path + " " + form}
+		}
+	case "/v1/inspect":
+		if heap > r.inspect.bytes {
+			r.inspect = intakeClassPeak{heap, path + " " + form}
+		}
+	}
+}
+
+func (r *intakeClassRegistry) recordAnalysis(work int64, form string, peak int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if peak > r.analysis[work].bytes {
+		r.analysis[work] = intakeClassPeak{peak, form}
+	}
+}
+
 func logIntakeClasses(t *testing.T, configs []intakeHeapConfig, budget int64) {
 	t.Helper()
 	for _, c := range configs {
@@ -1054,7 +1081,29 @@ func logIntakeClasses(t *testing.T, configs []intakeHeapConfig, budget int64) {
 }
 
 func headerBlockOnTheLine(kind, path, query, contentType string, contentLength int64) string {
-	return headerBlock(kind, headerReadLimit-len(intakeHead(path, query, "", contentType, contentLength))-16)
+	return headerBlock(kind, headerReadLimit-len(intakeHead(path, query, "", contentType, contentLength))-lineHeadSlack)
+}
+
+type bodyCounter struct {
+	r io.ReadCloser
+	n *atomic.Int64
+}
+
+func (b bodyCounter) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.n.Add(int64(n))
+	return n, err
+}
+
+func (b bodyCounter) Close() error { return b.r.Close() }
+
+func countingBodies(h http.Handler, n *atomic.Int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = bodyCounter{r: r.Body, n: n}
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
@@ -1081,49 +1130,78 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 		}
 	}
 	b := int64(multipartInMemoryBudget)
-	x := lastDoubling(b) - (bytes.MinRead - 1)
-	pendingForm := rawFileParts("worst pending", worstSplit(b, x), nil, 0)
-	spillForm := rawFileParts("worst spill", spillLast(worstSplit(b, x)), nil, 1<<20)
+	p := lastDoubling(b)
+	x := p - (bytes.MinRead - 1)
+	blockForms := []rawIntakeForm{
+		rawFileParts("worst pending", worstSplit(b, x), nil, 0),
+		rawFileParts("worst spill", spillLast(worstSplit(b, x)), nil, 1<<20),
+		rawFileParts("doubling+rest", []int64{p, b - p}, nil, 0),
+		rawFileParts("doubling+spill", []int64{p, b - p + 1}, nil, 1<<20),
+	}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
 		termName, term := intakeClassTermFor(path, b)
+		var worstName string
+		var worstMax, pendingMax int64
+		note := func(name string, heap int64) {
+			intakeClassPeaks.record(path, name, heap)
+			if heap > worstMax {
+				worstName, worstMax = name, heap
+			}
+		}
 		for _, form := range forms {
 			t.Run(path+" "+form.name, func(t *testing.T) {
-				p := minHeapOfThree(t, heapProbeServer(), path, form)
-				m := int64(p.heap)
-				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); %s(%d) = %d (%.2f MiB); status %d %v; %d bytes sent", path, form.name, m, mib(m), termName, b, term, mib(term), p.status, p.payload, p.sent)
+				var read atomic.Int64
+				var handler http.Handler = heapProbeServer().Routes()
 				if form.name == verifierProbe.name {
+					handler = countingBodies(handler, &read)
+				}
+				ts := startShippedServer(t, handler)
+				var p intakeProbe
+				var mostRead int64
+				for i := range 3 {
+					read.Store(0)
+					q := liveHeapMidIntake(t, ts, path, form)
+					mostRead = max(mostRead, read.Load())
+					if i == 0 || q.heap < p.heap {
+						p = q
+					}
+				}
+				m := int64(p.heap)
+				t.Logf("%s %s over TCP through the shipped server: live heap mid-intake m = %d bytes (%.2f MiB); %s(%d) = %d (%.2f MiB); status %d %v; %d bytes sent", path, form.name, m, mib(m), termName, b, term, mib(term), p.status, p.payload, p.sent)
+				if p.status == http.StatusTooManyRequests {
+					t.Fatalf("%s %s: answered 429 %v: the measurement ran into a rate limit", path, form.name, p.payload)
+				}
+				note(form.name, m)
+				if m > term {
+					t.Errorf("%s %s: one form holds %d bytes of live heap, more than %s(%d) = %d", path, form.name, m, termName, b, term)
+				}
+				if form.name == verifierProbe.name {
+					t.Logf("%s %s: the handler read at most %d bytes of the body in one request (write error %v)", path, form.name, mostRead, p.err)
 					if p.status != http.StatusRequestEntityTooLarge || p.payload["code"] != "payload_too_large" || p.payload["error"] != formFieldsTooLargeMessage {
 						t.Errorf("%s: status %d payload %v, want 413 payload_too_large %q", path, p.status, p.payload, formFieldsTooLargeMessage)
 					}
-					if p.sent > maxFormNonFileBytes+64<<10 {
-						t.Errorf("%s: the handler read %d bytes of the body, want at most %d", path, p.sent, maxFormNonFileBytes+64<<10)
+					if mostRead > maxFormNonFileBytes+64<<10 {
+						t.Errorf("%s: the handler read %d bytes of the body, want at most %d", path, mostRead, maxFormNonFileBytes+64<<10)
 					}
 					return
 				}
 				if p.err != nil || p.payload["error"] == formFieldsTooLargeMessage {
 					t.Fatalf("%s: an admissible form was not read whole (write error %v, status %d %v)", path, p.err, p.status, p.payload)
 				}
-				if m > term {
-					t.Errorf("%s %s: one form holds %d bytes of live heap, more than %s(%d) = %d", path, form.name, m, termName, b, term)
-				}
 			})
 		}
-		var worstName string
-		var worstMax, pendingMax int64
 		for _, hc := range budgetHeapCases() {
 			t.Run(path+" "+hc.form.name, func(t *testing.T) {
 				r := checkRawHeapCase(t, path, hc)
-				if r.max > worstMax {
-					worstName, worstMax = hc.form.name, r.max
-				}
+				note(hc.form.name, r.max)
 				if hc.form.name == "worst pending" {
 					pendingMax = r.max
 				}
 			})
 		}
-		for _, base := range []rawIntakeForm{pendingForm, spillForm} {
+		for _, base := range blockForms {
 			t.Run(path+" "+base.name+"+header block", func(t *testing.T) {
-				ts := startShippedServer(t, heapProbeServer().Routes())
+				ts := shippedHeapServer(t)
 				ct := "multipart/form-data; boundary=" + rawFormBoundary
 				block := headerBlockOnTheLine("distinct-lf", path, shortIntakeQuery, ct, rawFormLength(base))
 				without := heapOfThree(func() intakeProbe { return liveHeapOfRawOverTCP(t, ts, path, shortIntakeQuery, "", base, 0) })
@@ -1133,6 +1211,7 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				if !readWhole(without.last) || !readWhole(with.last) {
 					t.Fatalf("%s %s: a form was not read whole (without: %v %d %v; with: %v %d %v)", path, base.name, without.last.err, without.last.status, without.last.payload, with.last.err, with.last.status, with.last.payload)
 				}
+				note(base.name+"+header block", with.max)
 				if with.max > term {
 					t.Errorf("%s %s+header block: one form holds up to %d bytes of live heap, more than %s(%d) = %d", path, base.name, with.max, termName, b, term)
 				}
@@ -1141,8 +1220,8 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				}
 			})
 		}
-		t.Logf("%s summary: largest max %d (%.2f MiB) on %q; %s(%d) = %d (%.2f MiB); worst pending max / readFormContentBound(%d) = %d / %d = %.3f",
-			path, worstMax, mib(worstMax), worstName, termName, b, term, mib(term), b, pendingMax, readFormContentBound(b), float64(pendingMax)/float64(readFormContentBound(b)))
+		t.Logf("%s summary: largest max %d (%.2f MiB) on %q; %s(%d) = %d (%.2f MiB); largest / term = %.3f; worst pending max / readFormContentBound(%d) = %d / %d = %.3f",
+			path, worstMax, mib(worstMax), worstName, termName, b, term, mib(term), float64(worstMax)/float64(term), b, pendingMax, readFormContentBound(b), float64(pendingMax)/float64(readFormContentBound(b)))
 	}
 }
 
@@ -1151,13 +1230,19 @@ func checkRawHeapCase(t *testing.T, path string, hc rawHeapCase) heapRange {
 	line := int64(maxFormNonFileBytes - multipartPeekBufferBytes)
 	b := int64(multipartInMemoryBudget)
 	termName, term := intakeClassTermFor(path, b)
-	srv := heapProbeServer()
+	ts := shippedHeapServer(t)
+	ct := "multipart/form-data; boundary=" + rawFormBoundary
+	query, block := lineHead(path, ct, rawFormLength(hc.form), hc.head)
+	head := len(intakeHead(path, query, block, ct, rawFormLength(hc.form)))
 	r := heapOfThree(func() intakeProbe {
-		return liveHeapOfRaw(t, srv, path, hc.query, hc.header, hc.form, hc.settle)
+		return liveHeapOfRawOverTCP(t, ts, path, query, block, hc.form, hc.settle)
 	})
 	nonFile := rawFormNonFileBytes(hc.form)
-	t.Logf("%s %s: %d parts, %d file bytes, %d non-file bytes (line %d), query %d bytes, settle %v; live heap min %d (%.2f MiB) max %d (%.2f MiB); %s(%d) = %d (%.2f MiB); floor %d; upper %v; status %d %v; %d bytes sent",
-		path, hc.form.name, rawFormParts(hc.form), rawFormFileBytes(hc.form), nonFile, line, len(hc.query), hc.settle, r.min, mib(r.min), r.max, mib(r.max), termName, b, term, mib(term), hc.floor, hc.upper, r.last.status, r.last.payload, r.last.sent)
+	t.Logf("%s %s over TCP through the shipped server: %d parts, %d file bytes, %d non-file bytes (line %d), %s, head %d bytes (headerReadLimit %d), settle %v; live heap min %d (%.2f MiB) max %d (%.2f MiB); %s(%d) = %d (%.2f MiB); floor %d; upper %v; status %d %v; %d bytes sent",
+		path, hc.form.name, rawFormParts(hc.form), rawFormFileBytes(hc.form), nonFile, line, hc.head, head, headerReadLimit, hc.settle, r.min, mib(r.min), r.max, mib(r.max), termName, b, term, mib(term), hc.floor, hc.upper, r.last.status, r.last.payload, r.last.sent)
+	if r.last.status == http.StatusTooManyRequests {
+		t.Fatalf("%s %s: answered 429 %v: the measurement ran into a rate limit", path, hc.form.name, r.last.payload)
+	}
 	if !readWhole(r.last) {
 		t.Fatalf("%s %s: an admissible form was not read whole (write error %v, status %d %v)", path, hc.form.name, r.last.err, r.last.status, r.last.payload)
 	}
@@ -1397,31 +1482,40 @@ func TestDropMultipartFormLeavesNothingReachable(t *testing.T) {
 }
 
 type termHeapCase struct {
-	form   rawIntakeForm
-	query  string
-	header http.Header
+	form rawIntakeForm
+	head headSpec
 }
 
-func termIncrement(t *testing.T, path string, base, hc termHeapCase) (heapRange, heapRange) {
+func termIncrement(t *testing.T, path string, base, hc termHeapCase) (heapRange, heapRange, int) {
 	t.Helper()
-	srv := heapProbeServer()
-	measure := func(c termHeapCase) heapRange {
+	ts := shippedHeapServer(t)
+	ct := "multipart/form-data; boundary=" + rawFormBoundary
+	measure := func(c termHeapCase) (heapRange, int) {
+		query, block := lineHead(path, ct, rawFormLength(c.form), c.head)
+		head := len(intakeHead(path, query, block, ct, rawFormLength(c.form)))
 		return heapOfThree(func() intakeProbe {
-			return liveHeapOfRaw(t, srv, path, c.query, c.header, c.form, heapSettle)
-		})
+			return liveHeapOfRawOverTCP(t, ts, path, query, block, c.form, heapSettle)
+		}), head
 	}
-	b := measure(base)
-	r := measure(hc)
+	b, _ := measure(base)
+	r, head := measure(hc)
+	for _, p := range []intakeProbe{b.last, r.last} {
+		if p.status == http.StatusTooManyRequests {
+			t.Fatalf("%s %s: answered 429 %v: the measurement ran into a rate limit", path, hc.form.name, p.payload)
+		}
+	}
 	if !readWhole(b.last) || !readWhole(r.last) {
 		t.Fatalf("%s %s: a form was not read whole (base: write error %v, status %d %v; form: write error %v, status %d %v)", path, hc.form.name, b.last.err, b.last.status, b.last.payload, r.last.err, r.last.status, r.last.payload)
 	}
-	return b, r
+	intakeClassPeaks.record(path, base.form.name, b.max)
+	intakeClassPeaks.record(path, hc.form.name+" ("+hc.head.String()+")", r.max)
+	return b, r, head
 }
 
 func TestIntakeHeapModelCoversNonFileData(t *testing.T) {
 	line := intakeAdmitLine()
 	bound := int64(nonFileHeapPerByte * maxFormNonFileBytes)
-	base := termHeapCase{form: worstPendingForm("base", nil, ""), query: shortIntakeQuery}
+	base := termHeapCase{form: worstPendingForm("base", nil, "")}
 	pending := base.form
 	forms := []rawIntakeForm{worstPendingForm("empty file parts", emptyFileParts(emptyPartsToTheLine(pending)), "")}
 	for _, h := range []int{1, 10, 20, 100, 500} {
@@ -1431,39 +1525,25 @@ func TestIntakeHeapModelCoversNonFileData(t *testing.T) {
 		worstPendingForm("distinct header keys", distinctHeaderParts(20, pending), ""),
 		worstPendingForm("named values", namedValueParts(pending), ""),
 		worstPendingForm("file header pad", nil, "X-Pad:"+strings.Repeat("p", int(line-rawFormNonFileBytes(pending)-int64(len("X-Pad:\r\n"))))+"\r\n"),
+		rfc2231ContinuationsForm(),
+		rfc2231OneHeaderForm(),
 	)
-	rfc := []rawIntakeForm{rfc2231ContinuationsForm(), rfc2231OneHeaderForm()}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
-		for _, form := range rfc {
+		for _, form := range forms {
 			t.Run(path+" "+form.name, func(t *testing.T) {
 				nonFile := rawFormNonFileBytes(form)
-				b, r := termIncrementOverTCP(t, path, tcpTermCase{form: base.form, query: shortIntakeQuery}, tcpTermCase{form: form, query: shortIntakeQuery})
+				b, r, _ := termIncrement(t, path, base, termHeapCase{form: form})
 				inc := r.max - b.min
 				t.Logf("%s %s over TCP through the shipped server: %d parts, %d non-file bytes (base %d, line %d), %d RFC 2231 parameters; settled live heap base min %d max %d, form min %d (%.3f MiB) max %d; increment max-min %d (%.3f MiB); nonFile = nonFileHeapPerByte %d x maxFormNonFileBytes %d = %d (%.3f MiB); status %d %v",
 					path, form.name, rawFormParts(form), nonFile, rawFormNonFileBytes(pending), line, rfc2231Params(form), b.min, b.max, r.min, mib(r.min), r.max, inc, mib(inc), nonFileHeapPerByte, maxFormNonFileBytes, bound, mib(bound), r.last.status, r.last.payload)
 				if nonFile > line {
 					t.Errorf("%s %s: the form carries %d bytes of non-file data, above the admit line %d", path, form.name, nonFile, line)
 				}
-				if rfc2231Params(form) < 1000 {
+				if strings.HasPrefix(form.name, "rfc2231") && rfc2231Params(form) < 1000 {
 					t.Errorf("%s %s: the form carries %d RFC 2231 parameters, the generator no longer fills the line", path, form.name, rfc2231Params(form))
 				}
 				if inc > bound {
-					t.Errorf("%s %s: RFC 2231 parameters add %d bytes of live heap, more than nonFileHeapPerByte x maxFormNonFileBytes = %d", path, form.name, inc, bound)
-				}
-			})
-		}
-		for _, form := range forms {
-			t.Run(path+" "+form.name, func(t *testing.T) {
-				nonFile := rawFormNonFileBytes(form)
-				b, r := termIncrement(t, path, base, termHeapCase{form: form, query: shortIntakeQuery})
-				inc := r.max - b.min
-				t.Logf("%s %s: %d parts, %d non-file bytes (base %d, line %d); settled live heap base min %d max %d, form min %d (%.3f MiB) max %d; increment max-min %d (%.3f MiB); nonFileHeapPerByte × maxFormNonFileBytes = %d (%.3f MiB); status %d %v",
-					path, form.name, rawFormParts(form), nonFile, rawFormNonFileBytes(pending), line, b.min, b.max, r.min, mib(r.min), r.max, inc, mib(inc), bound, mib(bound), r.last.status, r.last.payload)
-				if nonFile > line {
-					t.Errorf("%s %s: the form carries %d bytes of non-file data, above the admit line %d", path, form.name, nonFile, line)
-				}
-				if inc > bound {
-					t.Errorf("%s %s: non-file data adds %d bytes of live heap, more than nonFileHeapPerByte × maxFormNonFileBytes = %d", path, form.name, inc, bound)
+					t.Errorf("%s %s: non-file data adds %d bytes of live heap, more than nonFileHeapPerByte x maxFormNonFileBytes = %d", path, form.name, inc, bound)
 				}
 			})
 		}
@@ -1471,35 +1551,243 @@ func TestIntakeHeapModelCoversNonFileData(t *testing.T) {
 }
 
 func TestIntakeHeapModelCoversTheRequestLine(t *testing.T) {
-	bound := int64(requestLineCopies*http.DefaultMaxHeaderBytes + urlMaxQueryParams*queryParamHeapBytes)
-	base := termHeapCase{form: worstPendingForm("base", nil, ""), query: shortIntakeQuery}
-	forms := []termHeapCase{
-		{form: worstPendingForm("%41 query", nil, ""), query: percentIntakeQuery()},
-		{form: worstPendingForm("plus query", nil, ""), query: plusIntakeQuery()},
-		{form: worstPendingForm("distinct params", nil, ""), query: distinctParamsQuery("v")},
-		{form: worstPendingForm("distinct escaped params", nil, ""), query: distinctParamsQuery("+")},
-		{form: worstPendingForm("header pad", nil, ""), query: shortIntakeQuery, header: http.Header{"X-Pad": {strings.Repeat("p", http.DefaultMaxHeaderBytes-8<<10)}}},
+	bound := intakeHeapModel(multipartInMemoryBudget, postParseHeapBytes(t)).request
+	base := termHeapCase{form: worstPendingForm("base", nil, "")}
+	shapes := []struct {
+		name string
+		head headSpec
+	}{
+		{"%41 query", headSpec{query: "%41"}},
+		{"plus query", headSpec{query: "plus"}},
+		{"distinct params", headSpec{query: "distinct"}},
+		{"distinct escaped params", headSpec{query: "distinct escaped"}},
+		{"header distinct-lf", headSpec{block: "distinct-lf"}},
+		{"header distinct-crlf", headSpec{block: "distinct-crlf"}},
+		{"header repeated", headSpec{block: "repeated"}},
+		{"header pad", headSpec{block: "pad"}},
+		{"header half+escaped params half", headSpec{query: "distinct escaped", block: "distinct-lf"}},
 	}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
-		for _, hc := range forms {
-			t.Run(path+" "+hc.form.name, func(t *testing.T) {
-				size := len(path) + 1 + len(hc.query)
-				for k, vs := range hc.header {
-					for _, v := range vs {
-						size += len(k) + len(v)
-					}
-				}
-				b, r := termIncrement(t, path, base, hc)
+		for _, sh := range shapes {
+			t.Run(path+" "+sh.name, func(t *testing.T) {
+				form := worstPendingForm(sh.name, nil, "")
+				ct := "multipart/form-data; boundary=" + rawFormBoundary
+				query, block := lineHead(path, ct, rawFormLength(form), sh.head)
+				params := strings.Count(query, "&")
+				b, r, head := termIncrement(t, path, base, termHeapCase{form: form, head: sh.head})
 				inc := r.max - b.min
-				t.Logf("%s %s: request line and header %d bytes (http.DefaultMaxHeaderBytes %d); settled live heap base min %d max %d, form min %d (%.3f MiB) max %d; increment max-min %d (%.3f MiB); requestLineCopies × http.DefaultMaxHeaderBytes + urlMaxQueryParams × queryParamHeapBytes = %d (%.3f MiB); status %d %v",
-					path, hc.form.name, size, http.DefaultMaxHeaderBytes, b.min, b.max, r.min, mib(r.min), r.max, inc, mib(inc), bound, mib(bound), r.last.status, r.last.payload)
-				if size > http.DefaultMaxHeaderBytes {
-					t.Errorf("%s %s: request line and header take %d bytes, above http.DefaultMaxHeaderBytes %d", path, hc.form.name, size, http.DefaultMaxHeaderBytes)
+				t.Logf("%s %s over TCP through the shipped server: head %d bytes (headerReadLimit %d), query %d bytes with %d params, header block %d bytes with %d lines; settled live heap base min %d max %d, form min %d (%.3f MiB) max %d; increment max-min %d (%.3f MiB); request = (requestLineCopies %d + headerHeapPerByte %d) x headerReadLimit %d + urlMaxQueryParams %d x queryParamHeapBytes %d = %d (%.3f MiB); status %d %v",
+					path, sh.name, head, headerReadLimit, len(query), params, len(block), strings.Count(block, "\n"), b.min, b.max, r.min, mib(r.min), r.max, inc, mib(inc), requestLineCopies, headerHeapPerByte, headerReadLimit, urlMaxQueryParams, queryParamHeapBytes, bound, mib(bound), r.last.status, r.last.payload)
+				if head > headerReadLimit || head < headerReadLimit-256 {
+					t.Errorf("%s %s: the head is %d bytes, want on the line, within [headerReadLimit - 256, headerReadLimit] = [%d, %d]", path, sh.name, head, headerReadLimit-256, headerReadLimit)
 				}
-				if inc > bound {
-					t.Errorf("%s %s: the request line adds %d bytes of live heap, more than requestLineCopies × http.DefaultMaxHeaderBytes + urlMaxQueryParams × queryParamHeapBytes = %d", path, hc.form.name, inc, bound)
+				if params > urlMaxQueryParams-1 {
+					t.Errorf("%s %s: %d query params, above urlMaxQueryParams - 1 = %d", path, sh.name, params, urlMaxQueryParams-1)
+				}
+				limitName, limit := "request", bound
+				switch {
+				case sh.head.block != "" && sh.head.query == "":
+					limitName, limit = "(requestLineCopies + headerHeapPerByte) x headerReadLimit", int64((requestLineCopies+headerHeapPerByte)*headerReadLimit)
+				case sh.head.block == "":
+					limitName, limit = "requestLineCopies x headerReadLimit + urlMaxQueryParams x queryParamHeapBytes", int64(requestLineCopies*headerReadLimit+urlMaxQueryParams*queryParamHeapBytes)
+				}
+				t.Logf("%s %s: increment %d against %s = %d (%.3f MiB), within the request term %d", path, sh.name, inc, limitName, limit, mib(limit), bound)
+				if inc > limit {
+					t.Errorf("%s %s: the request line and headers add %d bytes of live heap, more than %s = %d", path, sh.name, inc, limitName, limit)
+				}
+				if limit > bound {
+					t.Errorf("%s %s: the sub-term %s = %d is above the request term %d", path, sh.name, limitName, limit, bound)
+				}
+				if sh.name == "header distinct-lf" && r.min-b.min < 512<<10 {
+					t.Errorf("%s %s: the parsed header block holds %d bytes (min - min), less than 512 KiB: the measurement does not reach the server's header parse", path, sh.name, r.min-b.min)
 				}
 			})
+		}
+	}
+}
+
+func TestPostParseHeapFitsTheModel(t *testing.T) {
+	b := int64(multipartInMemoryBudget)
+	junk := worstSplit(b, lastDoubling(b)-(bytes.MinRead-1))
+	m := intakeHeapModel(b, createPostParseHeapBytes())
+	term := createFormHeapBytes(b)
+	createDuringUploadWithRun(t, "warm-up", junk, stlDoc(100<<20), "distinct-lf")
+	for _, cs := range []struct {
+		name string
+		doc  uploadDoc
+	}{
+		{"worst split under junk + STL 100 MiB + header block", stlDoc(100 << 20)},
+		{"worst split under junk + LaTeX + header block", latexDoc()},
+	} {
+		var worst uploadProbe
+		for run := 1; run <= 3; run++ {
+			p := createDuringUploadWithRun(t, fmt.Sprintf("%s run %d", cs.name, run), junk, cs.doc, "distinct-lf")
+			t.Logf("%s run %d over TCP through the shipped server and the real storage client: head %d bytes, heap %d (%.3f MiB), PUT in flight %d of %d, form parts %d, document %d B, status %d", cs.name, run, p.head, p.heap, mib(p.heap), p.inFlight, p.want, p.parts, p.stl, p.status)
+			if p.inFlight != p.want {
+				t.Errorf("%s run %d: %d PUT in flight at the measurement, want %d", cs.name, run, p.inFlight, p.want)
+			}
+			if run == 1 || p.heap > worst.heap {
+				worst = p
+			}
+		}
+		intakeClassPeaks.record("/v1/jobs", cs.name, worst.heap)
+		t.Logf("%s: max heap while the PUTs are held %d (%.3f MiB); settled %d + createPostParseHeapBytes %d = %d; createFormHeapBytes(%d) = %d (%.3f MiB) = max(content %d, settled + createPostParse) + nonFile %d + request %d + fixed %d; ratio %.3f",
+			cs.name, worst.heap, mib(worst.heap), m.settled, m.postParse, m.settled+m.postParse, b, term, mib(term), m.content, m.nonFile, m.request, m.fixed, float64(worst.heap)/float64(term))
+		if worst.heap > term {
+			t.Errorf("%s: create held %d bytes (%.3f MiB) while its PUTs were held, above createFormHeapBytes(%d) = %d", cs.name, worst.heap, mib(worst.heap), b, term)
+		}
+	}
+}
+
+func analysisSlotForm(budget int64, data []byte) rawIntakeForm {
+	var segments []rawSegment
+	for i, size := range worstSplit(budget, lastDoubling(budget)-(bytes.MinRead-1)) {
+		segments = append(segments, rawSegment{raw: rawPartOpening(i == 0) + "Content-Disposition:form-data;name=junk;filename=a\r\n\r\n", zeros: size})
+	}
+	segments = append(segments,
+		rawSegment{raw: rawPartOpening(false) + "Content-Disposition:form-data;name=" + formFieldFile + ";filename=in.pdf\r\n\r\n" + string(data)},
+		rawSegment{raw: "\r\n--" + rawFormBoundary + "--\r\n"},
+	)
+	return rawIntakeForm{name: "worst split under junk + pdf", segments: segments}
+}
+
+func postRawOverTCP(addr, head string, form rawIntakeForm) (int, map[string]any, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(conn, head)
+		if err == nil {
+			err = form.write(conn, func() {})
+		}
+		writeErr <- err
+	}()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	raw, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	var payload map[string]any
+	_ = json.Unmarshal(raw, &payload)
+	if werr := <-writeErr; werr != nil && err == nil {
+		err = werr
+	}
+	return resp.StatusCode, payload, err
+}
+
+func analysisSlotWorks(configs []intakeHeapConfig) []int64 {
+	seen := map[int64]bool{}
+	var works []int64
+	for _, c := range configs {
+		if !seen[c.inspectWorkBytes] {
+			seen[c.inspectWorkBytes] = true
+			works = append(works, c.inspectWorkBytes)
+		}
+	}
+	sort.Slice(works, func(i, j int) bool { return works[i] > works[j] })
+	return works
+}
+
+var analysisSlotPeakLine = regexp.MustCompile(`analysis slot live peak (\d+) B`)
+
+func TestAnalysisSlotFormFitsItsTerm(t *testing.T) {
+	configs := intakeHeapConfigs(t)
+	b := int64(multipartInMemoryBudget)
+	for _, work := range analysisSlotWorks(configs) {
+		term := analysisFormHeapBytes(b, work)
+		var top intakeClassPeak
+		for _, c := range pdfAnalysisCases(work) {
+			name := fmt.Sprintf("%s@%dMiB", c.name, work>>20)
+			t.Run(name, func(t *testing.T) {
+				if os.Getenv(analysisChildEnv) == "" {
+					var peak int64 = -1
+					for _, l := range runAnalysisChild(t) {
+						if m := analysisSlotPeakLine.FindStringSubmatch(l); m != nil {
+							peak, _ = strconv.ParseInt(m[1], 10, 64)
+						}
+					}
+					if peak < 0 {
+						t.Fatalf("%s: the measurement process printed no analysis slot live peak", name)
+					}
+					intakeClassPeaks.recordAnalysis(work, name, peak)
+					if peak > top.bytes {
+						top = intakeClassPeak{peak, name}
+					}
+					return
+				}
+				if !strings.Contains(os.Getenv("GODEBUG"), "gcstoptheworld=1") {
+					t.Fatalf("the measurement process runs without GODEBUG gcstoptheworld=1: a concurrent mark counts objects allocated during it, live or not")
+				}
+				data := c.gen()
+				srv := NewServer(&fakeRepo{}, &transportCapStorage{fakeStorage: &fakeStorage{}}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
+					MaxUploadBytes:         64 << 20,
+					InspectMaxUploadBytes:  64 << 20,
+					InspectMaxWorkBytes:    work,
+					InspectMaxWorkDuration: analysisSampledMaxDuration,
+				})
+				ts := startShippedServer(t, srv.Routes())
+				form := analysisSlotForm(b, data)
+				ct := "multipart/form-data; boundary=" + rawFormBoundary
+				block := headerBlockOnTheLine("distinct-lf", "/v1/inspect", shortIntakeQuery, ct, rawFormLength(form))
+				head := intakeHead("/v1/inspect", shortIntakeQuery, block, ct, rawFormLength(form))
+				var status int
+				var payload map[string]any
+				var reqErr error
+				pk := liveHeapPeak(t, func() {
+					status, payload, reqErr = postRawOverTCP(ts.Listener.Addr().String(), head, form)
+				})
+				runtime.KeepAlive(head)
+				runtime.KeepAlive(form)
+				t.Logf("%s over TCP through the shipped server: pdf %d B, %d junk bytes in memory under a field the handler does not read, head %d bytes with %d header lines; live peak %d B (%.2f MiB), HeapAlloc peak %d B (%.2f MiB), %d GC cycles over %d calls; status %d, format %v, coverage %v; analysisFormHeapBytes(%d, %d) = %d (%.2f MiB); ratio %.3f",
+					name, len(data), b, len(head), strings.Count(block, "\n"), pk.peak, mib(pk.peak), pk.heapAllocPeak, mib(pk.heapAllocPeak), pk.cycles, pk.calls, status, payload["format"], payload["coverage"], b, work, term, mib(term), float64(pk.peak)/float64(term))
+				t.Logf("analysis slot live peak %d B", pk.peak)
+				if reqErr != nil || status != http.StatusOK || payload["format"] != "pdf" {
+					t.Fatalf("%s: status %d, format %v, error %v: want 200 and a pdf report", name, status, payload["format"], reqErr)
+				}
+				if err := liveHeapPeakValid(pk); err != nil {
+					t.Fatal(err)
+				}
+				if pk.peak > term {
+					t.Errorf("%s: one inspect request under the analysis slot holds a live peak of %d B, above analysisFormHeapBytes(%d, %d) = %d", name, pk.peak, b, work, term)
+				}
+			})
+		}
+		if os.Getenv(analysisChildEnv) == "" {
+			t.Logf("work %d: the largest analysis slot live peak %d B (%.2f MiB) on %s; analysisFormHeapBytes(%d, %d) = %d (%.2f MiB)", work, top.bytes, mib(top.bytes), top.form, b, work, term, mib(term))
+		}
+	}
+}
+
+func TestIntakeClassSumFitsHalfThePod(t *testing.T) {
+	configs := intakeHeapConfigs(t)
+	b := int64(multipartInMemoryBudget)
+	r := intakeClassPeaks
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.create.bytes == 0 || r.inspect.bytes == 0 {
+		t.Fatalf("no measurement of the create class (%d B) or the inspect intake class (%d B) in this process: run TestIntakeHeapModelCoversNonFileData, TestIntakeHeapModelCoversTheRequestLine, TestPostParseHeapFitsTheModel and, without -race, TestIntakeHeapFitsThePodMemoryLimit in the same go test run", r.create.bytes, r.inspect.bytes)
+	}
+	t.Logf("largest measurements: create class %d B (%.2f MiB) on %s; inspect intake class %d B (%.2f MiB) on %s", r.create.bytes, mib(r.create.bytes), r.create.form, r.inspect.bytes, mib(r.inspect.bytes), r.inspect.form)
+	for _, c := range configs {
+		a, ok := r.analysis[c.inspectWorkBytes]
+		if !ok {
+			t.Fatalf("%s: no measurement of the analysis class at work %d in this process: run TestAnalysisSlotFormFitsItsTerm in the same go test run", c.name, c.inspectWorkBytes)
+		}
+		k := intakeHeapClasses(b, c)
+		measured := createIntakeMaxConcurrent*r.create.bytes + inspectIntakeMaxConcurrent*r.inspect.bytes + c.inspectMaxConcurrent*a.bytes
+		t.Logf("%s: half %d (%.2f MiB); model %d x %d + %d x %d + %d x %d = %d (%.2f MiB); measured %d x %d + %d x %d + %d x %d (%s) = %d (%.2f MiB)",
+			c.name, k.half, mib(k.half), createIntakeMaxConcurrent, k.createForm, inspectIntakeMaxConcurrent, k.inspectIntakeForm, c.inspectMaxConcurrent, k.analysisForm, k.sum, mib(k.sum),
+			createIntakeMaxConcurrent, r.create.bytes, inspectIntakeMaxConcurrent, r.inspect.bytes, c.inspectMaxConcurrent, a.bytes, a.form, measured, mib(measured))
+		if k.sum > k.half {
+			t.Errorf("%s: the model's slot-class sum %d is above half the pod memory limit %d", c.name, k.sum, k.half)
+		}
+		if measured > k.half {
+			t.Errorf("%s: the measured slot-class sum %d is above half the pod memory limit %d", c.name, measured, k.half)
 		}
 	}
 }

@@ -1186,7 +1186,7 @@ func analysisChildGODEBUG() string {
 	return "gcstoptheworld=1"
 }
 
-func runAnalysisChild(t *testing.T) {
+func runAnalysisChild(t *testing.T) []string {
 	t.Helper()
 	levels := strings.Split(t.Name(), "/")
 	for i, l := range levels {
@@ -1196,6 +1196,7 @@ func runAnalysisChild(t *testing.T) {
 	cmd.Env = append(os.Environ(), analysisChildEnv+"=1", "GODEBUG="+analysisChildGODEBUG())
 	out, err := cmd.CombinedOutput()
 	ran, failed, inside := false, false, false
+	var logged []string
 	for _, line := range strings.Split(string(out), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--- PASS: "+t.Name()+" ") {
@@ -1211,6 +1212,7 @@ func runAnalysisChild(t *testing.T) {
 			inside = false
 		case inside && trimmed != "":
 			t.Log("child: " + trimmed)
+			logged = append(logged, trimmed)
 		}
 		if strings.HasPrefix(trimmed, "--- FAIL") || strings.HasPrefix(trimmed, "--- SKIP") || strings.HasPrefix(trimmed, "panic:") {
 			t.Log("child: " + trimmed)
@@ -1225,6 +1227,7 @@ func runAnalysisChild(t *testing.T) {
 	if err != nil {
 		t.Logf("the measurement process exited with %v outside %s; the parent test reports its own checks", err, t.Name())
 	}
+	return logged
 }
 
 type analysisRowCheck struct {
