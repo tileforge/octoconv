@@ -172,6 +172,9 @@ func TestRefusalBeforeTheBodyLeavesTheServerRequestAlone(t *testing.T) {
 	if s.after != s.before {
 		t.Errorf("armBodyWindow replaced the Body of the server's request: %T %p before, %T %p after; net/http reads its own *body there for the discard, the early close and closeWriteAndWait", s.before, s.before, s.after, s.after)
 	}
+	if s.inner == s.before {
+		t.Errorf("the handler behind armBodyWindow read the server's own Body %T %p, want the counted body on a copy of the request", s.inner, s.inner)
+	}
 }
 
 func TestMidBodyRefusalsKeepTheirHeadBehaviour(t *testing.T) {

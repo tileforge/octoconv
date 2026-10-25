@@ -3,6 +3,7 @@ package api
 import (
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,12 +46,60 @@ func (s *Server) armIntakeDeadline(w http.ResponseWriter) (*http.ResponseControl
 	return rc, start
 }
 
+type bodyReadCounter struct {
+	io.ReadCloser
+	read atomic.Bool
+}
+
+func (b *bodyReadCounter) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if n > 0 {
+		b.read.Store(true)
+	}
+	return n, err
+}
+
+type refusalWriter struct {
+	http.ResponseWriter
+	body     *bodyReadCounter
+	answered bool
+}
+
+func (w *refusalWriter) WriteHeader(code int) {
+	if !w.answered && code >= http.StatusBadRequest && !w.body.read.Load() {
+		w.Header().Set("Connection", "close")
+		_ = http.NewResponseController(w.ResponseWriter).SetReadDeadline(time.Now().Add(refusalDrainGrace))
+	}
+	if code >= http.StatusOK {
+		w.answered = true
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *refusalWriter) Write(p []byte) (int, error) {
+	w.answered = true
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *refusalWriter) Flush() {
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *refusalWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (s *Server) armBodyWindow(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body != nil && r.Body != http.NoBody {
-			s.armIntakeDeadline(w)
+		if r.Body == nil || r.Body == http.NoBody {
+			next.ServeHTTP(w, r)
+			return
 		}
-		next.ServeHTTP(w, r)
+		s.armIntakeDeadline(w)
+		body := &bodyReadCounter{ReadCloser: r.Body}
+		counted := r.WithContext(r.Context())
+		counted.Body = body
+		next.ServeHTTP(&refusalWriter{ResponseWriter: w, body: body}, counted)
 	})
 }
 

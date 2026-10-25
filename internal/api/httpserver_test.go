@@ -125,6 +125,11 @@ func liveHeapAndStack() int64 {
 	return int64(h) + int64(m.StackInuse)
 }
 
+func settledHeapAndStack() int64 {
+	runtime.GC()
+	return liveHeapAndStack()
+}
+
 func preAuthHeapOverTCP(t *testing.T, addr, head string, n int, settle time.Duration) (int64, []net.Conn) {
 	t.Helper()
 	conns := make([]net.Conn, 0, n)
@@ -354,7 +359,7 @@ func preAuthRefusals(t *testing.T, addr, head string, n int, interval, spread ti
 	var written, read sync.WaitGroup
 	stop := make(chan struct{})
 	sampled := make(chan struct{})
-	base := liveHeapAndStack()
+	base := settledHeapAndStack()
 	go func() {
 		defer close(sampled)
 		if sample <= 0 {
@@ -367,7 +372,7 @@ func preAuthRefusals(t *testing.T, addr, head string, n int, interval, spread ti
 			case <-stop:
 				return
 			case <-tick.C:
-				burst.peak = max(burst.peak, liveHeapAndStack()-base)
+				burst.peak = max(burst.peak, settledHeapAndStack()-base)
 				burst.samples++
 			}
 		}
@@ -428,7 +433,7 @@ func preAuthRefusals(t *testing.T, addr, head string, n int, interval, spread ti
 		}
 	}
 	time.Sleep(time.Until(burst.lastHead.Add(tail)))
-	burst.tail = liveHeapAndStack() - base
+	burst.tail = settledHeapAndStack() - base
 	close(stop)
 	<-sampled
 	runtime.KeepAlive(head)
