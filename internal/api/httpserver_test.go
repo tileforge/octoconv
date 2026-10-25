@@ -26,12 +26,14 @@ import (
 )
 
 const (
-	netHTTPHeaderSlack = 4096
-	headerReadLimit    = apiMaxHeaderBytes + netHTTPHeaderSlack
-	headerHeapPerByte  = 32
-	preAuthConnBytes   = 64 << 10
-	headerKeyAlphabet  = "abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+.^_`|~"
-	preAuthTarget      = "/v1/jobs"
+	netHTTPHeaderSlack       = 4096
+	headerReadLimit          = apiMaxHeaderBytes + netHTTPHeaderSlack
+	headerHeapPerByte        = 32
+	preAuthConnBytes         = 64 << 10
+	headerKeyAlphabet        = "abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+.^_`|~"
+	preAuthTarget            = "/v1/jobs"
+	headerPhaseFloor         = 512 << 10
+	netHTTPRSTAvoidanceDelay = 500 * time.Millisecond
 )
 
 func preAuthRequestHeapBytes() int64 {
@@ -125,6 +127,10 @@ func liveHeapAndStack() int64 {
 	return int64(h) + int64(m.StackInuse)
 }
 
+func headerPhase(head string) string {
+	return strings.TrimSuffix(head, "\r\n")
+}
+
 func settledHeapAndStack() int64 {
 	runtime.GC()
 	return liveHeapAndStack()
@@ -138,6 +144,7 @@ func preAuthHeapOverTCP(t *testing.T, addr, head string, n int, settle time.Dura
 			_ = c.Close()
 		}
 	})
+	phase := headerPhase(head)
 	base := liveHeapAndStack()
 	for range n {
 		c, err := net.Dial("tcp", addr)
@@ -145,11 +152,11 @@ func preAuthHeapOverTCP(t *testing.T, addr, head string, n int, settle time.Dura
 			t.Fatalf("dial %s: %v", addr, err)
 		}
 		conns = append(conns, c)
-		go func() { _, _ = io.WriteString(c, head) }()
+		go func() { _, _ = io.WriteString(c, phase) }()
 	}
 	time.Sleep(settle)
 	grown := liveHeapAndStack() - base
-	runtime.KeepAlive(head)
+	runtime.KeepAlive(phase)
 	return grown, conns
 }
 
@@ -254,6 +261,9 @@ func TestShippedServerHoldsAtMostThePreAuthTermPerRequest(t *testing.T) {
 			lines := strings.Count(h.block, "\n")
 			t.Logf("%s: head %d bytes, %d header lines; heap+stack grown %d (%.3f MiB) = %.2f B per head byte; bound preAuthRequestHeapBytes %d (%.3f MiB) = (headerHeapPerByte %d + requestLineCopies %d) x headerReadLimit %d + preAuthConnBytes %d", h.name, len(h.head), lines, grown, mib(grown), float64(grown)/float64(len(h.head)), bound, mib(bound), headerHeapPerByte, requestLineCopies, headerReadLimit, preAuthConnBytes)
 			releasePreAuth(conns)
+			if strings.HasPrefix(h.name, "distinct LF") && grown < headerPhaseFloor {
+				t.Errorf("%s: the head in the header phase holds %d bytes, below %d: the measurement did not reach the parsed headers", h.name, grown, headerPhaseFloor)
+			}
 			if grown > bound {
 				t.Errorf("%s: one keyless request with a stalled body holds %d bytes (%.3f MiB) of heap and stack, above preAuthRequestHeapBytes %d (%.3f MiB)", h.name, grown, mib(grown), bound, mib(bound))
 			}
@@ -309,6 +319,9 @@ func TestShippedServerHeaderTermPerShape(t *testing.T) {
 			lo, hi := measure(t, sh.head)
 			grown := hi - baseLo
 			t.Logf("%s: head %d bytes, %d lines; heap+stack grown min %d max %d; term max(form) - min(base) = %d (%.3f MiB) = %.2f B per head byte; bound (headerHeapPerByte %d + requestLineCopies %d) x headerReadLimit %d = %d (%.3f MiB)", sh.name, len(sh.head), strings.Count(sh.head, "\n"), lo, hi, grown, mib(grown), float64(grown)/float64(len(sh.head)), headerHeapPerByte, requestLineCopies, headerReadLimit, bound, mib(bound))
+			if sh.name == "distinct-lf" && grown < headerPhaseFloor {
+				t.Errorf("%s: the head in the header phase holds %d bytes, below %d: the measurement did not reach the parsed headers", sh.name, grown, headerPhaseFloor)
+			}
 			if grown > bound {
 				t.Errorf("%s: a head on the line holds %d bytes (%.3f MiB) before auth, above (headerHeapPerByte + requestLineCopies) x headerReadLimit = %d (%.3f MiB)", sh.name, grown, mib(grown), bound, mib(bound))
 			}
@@ -453,8 +466,8 @@ func (b preAuthBurst) check(t *testing.T, name string) (map[int]int, time.Durati
 		statuses[o.status]++
 		answer = max(answer, o.answered.Sub(o.headSent))
 		closed = max(closed, o.closed.Sub(o.answered))
-		if d := o.answered.Sub(o.headSent); d > time.Second {
-			t.Errorf("%s request %d: answered %v after its head was sent, want no later than 1 s", name, i, d)
+		if d := o.answered.Sub(o.headSent); d > time.Second || d >= refusalDrainGrace {
+			t.Errorf("%s request %d: answered %v after its head was sent, want before refusalDrainGrace %v and no later than 1 s: the answer waited for the body", name, i, d, refusalDrainGrace)
 		}
 		if !o.close {
 			t.Errorf("%s request %d: the %d refusal before the body carries no Connection: close", name, i, o.status)
@@ -479,6 +492,47 @@ func TestMassPreAuthRequestsStayWithinTheirTerm(t *testing.T) {
 	}
 	if statuses[http.StatusUnauthorized] != 60 || statuses[http.StatusTooManyRequests] != 20 || len(statuses) != 2 {
 		t.Errorf("statuses %v, want 60 x 401 and 20 x 429", statuses)
+	}
+}
+
+func TestPreAuthHeapFollowsTheHeaderIntakeRate(t *testing.T) {
+	if refusalDrainGrace != netHTTPRSTAvoidanceDelay {
+		t.Errorf("refusalDrainGrace %v, want net/http's rstAvoidanceDelay %v: the bound below holds a refused request for the time net/http gives a client to take its last answer", refusalDrainGrace, netHTTPRSTAvoidanceDelay)
+	}
+	const answer = time.Second
+	per := preAuthRequestHeapBytes()
+	head := preAuthHeadOnTheLine("distinct-lf")
+	for _, form := range []struct {
+		name     string
+		n        int
+		interval time.Duration
+		spread   time.Duration
+		pieces   int
+	}{
+		{"b 200 fast heads at 50 per second", 200, 20 * time.Millisecond, 0, 1},
+		{"c 40 heads at 20 per second, each sent over 2 s", 40, 50 * time.Millisecond, 2 * time.Second, 21},
+	} {
+		t.Run(form.name, func(t *testing.T) {
+			ts := startShippedServer(t, heapProbeServer().Routes())
+			burst := preAuthRefusals(t, ts.Listener.Addr().String(), head, form.n, form.interval, form.spread, form.pieces, 100*time.Millisecond, 2*time.Second)
+			statuses, slowest, latest := burst.check(t, form.name)
+			rate := float64(time.Second) / float64(form.interval)
+			life := form.spread + answer + refusalDrainGrace
+			bound := int64(rate * life.Seconds() * float64(per))
+			held := int64(rate * intakeReadDeadline.Seconds() * float64(per))
+			t.Logf("%s: H <= lambda_hdr x (T_hdr + t_answer + refusalDrainGrace) x preAuthRequestHeapBytes = %.0f/s x (%v + %v + %v) x %d = %d B (%.1f MiB); measured peak of %d samples every 100 ms %d B (%.1f MiB), 2 s after the last head %d B (%.3f MiB); statuses %v; slowest answer %v after its head, latest server close %v after the answer; before D-28 a refusal was held for the body window: lambda x intakeReadDeadline x preAuthRequestHeapBytes = %.0f/s x %v x %d = %d B (%.1f MiB)", form.name, rate, form.spread, answer, refusalDrainGrace, per, bound, mib(bound), burst.samples, burst.peak, mib(burst.peak), burst.tail, mib(burst.tail), statuses, slowest.Round(time.Millisecond), latest.Round(time.Millisecond), rate, intakeReadDeadline, per, held, mib(held))
+			if burst.samples < int(form.interval*time.Duration(form.n)/(100*time.Millisecond)) {
+				t.Errorf("%d heap samples, want one every 100 ms over the burst", burst.samples)
+			}
+			if burst.peak > bound {
+				t.Errorf("%s: the pre-auth heap peaked at %d B (%.1f MiB), above the header-intake bound %d B (%.1f MiB)", form.name, burst.peak, mib(burst.peak), bound, mib(bound))
+			}
+			for st := range statuses {
+				if st != http.StatusUnauthorized && st != http.StatusTooManyRequests {
+					t.Errorf("status %d among the keyless refusals %v, want only 401 and 429", st, statuses)
+				}
+			}
+		})
 	}
 }
 

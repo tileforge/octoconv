@@ -258,6 +258,9 @@ really pings Postgres, Redis and S3.
 - Request line and headers together above 64 KiB → `431` with a plain-text body, answered
   before the key or the rate limit is checked; no `code`
 - No key, or an invalid/revoked one → `401`
+- A refusal sent before the request body is read (`401`, `429` and the other early answers)
+  comes with `Connection: close`: the server reads no more of the body, so send the retry on a
+  new connection
 - A job belonging to another client, or one that doesn't exist → `404`; the API never
   confirms the existence of jobs you don't own
 - Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`

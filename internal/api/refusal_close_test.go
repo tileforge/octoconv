@@ -9,14 +9,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/tileforge/octoconv/internal/errcode"
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 const refusalBoundary = "r19"
@@ -261,5 +265,339 @@ func TestWindowCutAnswerReachesTheClient(t *testing.T) {
 				t.Errorf("after the cut the server did not close the connection: %v", cerr)
 			}
 		})
+	}
+}
+
+type preBodyCase struct {
+	name        string
+	health      bool
+	server      func() *Server
+	mutate      func(*Config)
+	prep        func(*testing.T, *Server, *httptest.Server)
+	method      string
+	path        string
+	header      http.Header
+	contentType string
+	status      int
+}
+
+func preBodyRouter(srv *Server, health bool) http.Handler {
+	if health {
+		return srv.HealthRoutes()
+	}
+	r := srv.Routes()
+	r.Post("/zz-refuse/{code}", func(w http.ResponseWriter, r *http.Request) {
+		var code int
+		_, _ = fmt.Sscan(chi.URLParam(r, "code"), &code)
+		writeError(w, code, errcode.InvalidRequest, "synthetic refusal")
+	})
+	r.Post("/zz-panic", func(http.ResponseWriter, *http.Request) {
+		panic("synthetic panic before the body")
+	})
+	return r
+}
+
+func walkedOperations(t *testing.T) []string {
+	t.Helper()
+	srv := refusalProbe(nil)
+	seen := map[string]bool{}
+	for _, router := range []chi.Router{srv.Routes(), srv.HealthRoutes()} {
+		if err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+			if route != "/" {
+				route = strings.TrimSuffix(route, "/")
+			}
+			seen[method+" "+route] = true
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ops := make([]string, 0, len(seen))
+	for op := range seen {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+	return ops
+}
+
+func spendOn(method, path, contentType string, length int64, status int) func(*testing.T, *Server, *httptest.Server) {
+	return func(t *testing.T, _ *Server, ts *httptest.Server) {
+		spendToken(t, ts, method, path, contentType, length, status)
+	}
+}
+
+func preBodyCases(t *testing.T) []preBodyCase {
+	t.Helper()
+	keyed := keyHeader(testClientKey)
+	var cases []preBodyCase
+	middleware := 0
+	for _, op := range walkedOperations(t) {
+		method, route, _ := strings.Cut(op, " ")
+		if !strings.HasPrefix(route, "/v1/") {
+			continue
+		}
+		path := concreteURL(route)
+		cases = append(cases,
+			preBodyCase{name: op + " without a key", method: method, path: path, status: http.StatusUnauthorized},
+			preBodyCase{name: op + " with a wrong key", method: method, path: path, header: keyHeader("wrong"), status: http.StatusUnauthorized},
+			preBodyCase{name: op + " past the IP rate", mutate: func(c *Config) { c.IPRateLimitRPM = 1 }, prep: spendOn(http.MethodGet, "/v1/formats", "", -1, http.StatusOK), method: method, path: path, header: keyed, status: http.StatusTooManyRequests},
+			preBodyCase{name: op + " past the client rate", mutate: func(c *Config) { c.ClientRateLimitRPM = 1 }, prep: spendOn(http.MethodGet, "/v1/formats", "", -1, http.StatusOK), method: method, path: path, header: keyed, status: http.StatusTooManyRequests},
+		)
+		middleware += 4
+		if strings.HasPrefix(route, "/v1/system/") {
+			cases = append(cases, preBodyCase{name: op + " for a non-operator", mutate: func(c *Config) { c.OperatorClientIDs = map[uuid.UUID]struct{}{} }, method: method, path: path, header: keyed, status: http.StatusNotFound})
+			middleware++
+		}
+		if route == "/v1/inspect" {
+			cases = append(cases, preBodyCase{name: op + " past the inspect rate", mutate: func(c *Config) { c.InspectRateLimitRPM = 1 }, prep: spendOn(http.MethodPost, "/v1/inspect", bodyWindowMultipart, 0, http.StatusBadRequest), method: method, path: path, header: keyed, status: http.StatusTooManyRequests})
+			middleware++
+		}
+	}
+	if middleware < 70 {
+		t.Fatalf("%d route x middleware scenarios from chi.Walk, want at least 70", middleware)
+	}
+	long := strings.Repeat("n", maxPresetNameBytes+1)
+	fill := func(sem func(*Server) chan struct{}) func(*testing.T, *Server, *httptest.Server) {
+		return func(_ *testing.T, srv *Server, _ *httptest.Server) {
+			ch := sem(srv)
+			for range cap(ch) {
+				ch <- struct{}{}
+			}
+		}
+	}
+	withHeader := func(k, v string) http.Header {
+		h := keyed.Clone()
+		h.Set(k, v)
+		return h
+	}
+	cases = append(cases,
+		preBodyCase{name: "router: unknown path outside /v1", method: http.MethodPost, path: "/nope", status: http.StatusNotFound},
+		preBodyCase{name: "router: unknown path under /v1", method: http.MethodPost, path: "/v1/nope", header: keyed, status: http.StatusNotFound},
+		preBodyCase{name: "router: method not allowed", method: http.MethodPut, path: "/v1/formats", header: keyed, status: http.StatusMethodNotAllowed},
+		preBodyCase{name: "health router: unknown path", health: true, method: http.MethodPost, path: "/nope", status: http.StatusNotFound},
+		preBodyCase{name: "health router: method not allowed", health: true, method: http.MethodPost, path: "/healthz", status: http.StatusMethodNotAllowed},
+		preBodyCase{name: "auth: resolver failure", server: func() *Server { return probeServer(failingResolver{}, nil) }, method: http.MethodPost, path: "/v1/jobs", header: keyed, status: http.StatusInternalServerError},
+		preBodyCase{name: "recoverer: panic before the body", method: http.MethodPost, path: "/zz-panic", status: http.StatusInternalServerError},
+		preBodyCase{name: "handler create: Correlation-Id", method: http.MethodPost, path: "/v1/jobs", header: withHeader(CorrelationHeader, strings.Repeat("c", 129)), status: http.StatusUnprocessableEntity},
+		preBodyCase{name: "handler create: intake_busy", prep: fill(func(s *Server) chan struct{} { return s.createIntakeSem }), method: http.MethodPost, path: "/v1/jobs", header: keyed, status: http.StatusTooManyRequests},
+		preBodyCase{name: "handler create: not multipart", method: http.MethodPost, path: "/v1/jobs", header: keyed, contentType: "application/json", status: http.StatusBadRequest},
+		preBodyCase{name: "handler inspect: intake busy", prep: fill(func(s *Server) chan struct{} { return s.inspectIntakeSem }), method: http.MethodPost, path: "/v1/inspect", header: keyed, status: http.StatusTooManyRequests},
+		preBodyCase{name: "handler inspect: not multipart", method: http.MethodPost, path: "/v1/inspect", header: keyed, contentType: "application/json", status: http.StatusBadRequest},
+		preBodyCase{name: "handler cancel: invalid job id", method: http.MethodPost, path: "/v1/jobs/x/cancel", header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler cancel: foreign job", method: http.MethodPost, path: "/v1/jobs/" + uuid.NewString() + "/cancel", header: keyed, status: http.StatusNotFound},
+		preBodyCase{name: "handler list jobs: status filter", method: http.MethodGet, path: "/v1/jobs?status=x", header: keyed, status: http.StatusUnprocessableEntity},
+		preBodyCase{name: "handler list jobs: engine filter", method: http.MethodGet, path: "/v1/jobs?engine=x", header: keyed, status: http.StatusUnprocessableEntity},
+		preBodyCase{name: "handler get job: invalid id", method: http.MethodGet, path: "/v1/jobs/x", header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler get job: foreign job", method: http.MethodGet, path: "/v1/jobs/" + uuid.NewString(), header: keyed, status: http.StatusNotFound},
+		preBodyCase{name: "handler events: invalid id", method: http.MethodGet, path: "/v1/jobs/x/events", header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler events: foreign job", method: http.MethodGet, path: "/v1/jobs/" + uuid.NewString() + "/events", header: keyed, status: http.StatusNotFound},
+		preBodyCase{name: "handler show preset: name", method: http.MethodGet, path: "/v1/presets/" + long, header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler show preset: unknown", method: http.MethodGet, path: "/v1/presets/probe", header: keyed, status: http.StatusNotFound},
+		preBodyCase{name: "handler update preset: name", method: http.MethodPut, path: "/v1/presets/" + long, header: keyed, contentType: "application/json", status: http.StatusBadRequest},
+		preBodyCase{name: "handler deactivate preset: name", method: http.MethodDelete, path: "/v1/presets/" + long, header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler show system preset: name", method: http.MethodGet, path: "/v1/system/presets/" + long, header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler update system preset: name", method: http.MethodPut, path: "/v1/system/presets/" + long, header: keyed, contentType: "application/json", status: http.StatusBadRequest},
+		preBodyCase{name: "handler deactivate system preset: name", method: http.MethodDelete, path: "/v1/system/presets/" + long, header: keyed, status: http.StatusBadRequest},
+		preBodyCase{name: "handler system usage: period", method: http.MethodGet, path: "/v1/system/usage?period=x", header: keyed, status: http.StatusUnprocessableEntity},
+		preBodyCase{name: "handler system usage: client_id", method: http.MethodGet, path: "/v1/system/usage?client_id=x", header: keyed, status: http.StatusBadRequest},
+	)
+	for _, code := range []int{400, 404, 413, 422, 429, 500, 503} {
+		cases = append(cases, preBodyCase{name: fmt.Sprintf("synthetic %d without reading the body", code), method: http.MethodPost, path: fmt.Sprintf("/zz-refuse/%d", code), status: code})
+	}
+	return cases
+}
+
+func TestEveryPreBodyRefusalClosesTheConnection(t *testing.T) {
+	cases := preBodyCases(t)
+	t.Logf("pre-body refusals found by reading every handler bound to a route: create (Correlation-Id 422, intake_busy 429, not multipart 400), inspect (intake busy 429, not multipart 400), cancel (invalid id 400, foreign job 404), list jobs (status and engine filters 422), get job and events (invalid id 400, foreign job 404), show, update and deactivate preset and system preset (name 400; show also unknown 404), system usage (period 422, client_id 400); handlers that read the body first: POST /v1/presets and POST /v1/system/presets (JSON decode before any check), PUT presets after the name check, create and inspect after the checks above, GET /healthz and GET /v1/formats (no refusal)")
+	var slowestAnswer, latestClose time.Duration
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			build := tc.server
+			if build == nil {
+				build = func() *Server { return refusalProbe(tc.mutate) }
+			}
+			srv := build()
+			ts := startShippedServer(t, preBodyRouter(srv, tc.health))
+			if tc.prep != nil {
+				tc.prep(t, srv, ts)
+			}
+			contentType := tc.contentType
+			if contentType == "" {
+				contentType = bodyWindowMultipart
+			}
+			k := dialKept(t, ts)
+			reply := k.exchange(requestHead(tc.method, tc.path, tc.header, contentType, 100_000), strings.NewReader(strings.Repeat("s", 1024)), 10*time.Second)
+			closedAfter, cerr := k.serverClosed(intakeReadDeadline + 5*time.Second)
+			t.Logf("%s %s, Content-Length 100000, 1 KiB sent: status %d after %v, Connection: close %v; the server closed %v after the answer (%v)", tc.method, tc.path, reply.status, reply.elapsed, reply.close, closedAfter, cerr)
+			if reply.err != nil {
+				t.Fatalf("no whole answer: %v", reply.err)
+			}
+			if reply.status != tc.status {
+				t.Errorf("status %d, want %d; body=%.200s", reply.status, tc.status, reply.raw)
+			}
+			if reply.elapsed > time.Second || reply.elapsed >= refusalDrainGrace {
+				t.Errorf("answered after %v, want before refusalDrainGrace %v and no later than 1 s: the answer waited for the body", reply.elapsed, refusalDrainGrace)
+			}
+			if !reply.close {
+				t.Errorf("the %d refusal before the body carries no Connection: close", reply.status)
+			}
+			if !errors.Is(cerr, io.EOF) || closedAfter > refusalDrainGrace+time.Second {
+				t.Errorf("the server closed the connection %v after the answer (%v), want EOF no later than refusalDrainGrace + 1 s = %v", closedAfter, cerr, refusalDrainGrace+time.Second)
+			}
+			slowestAnswer = max(slowestAnswer, reply.elapsed)
+			latestClose = max(latestClose, closedAfter)
+		})
+	}
+	t.Logf("%d pre-body refusals: slowest answer %v, latest server close %v after the answer (refusalDrainGrace %v)", len(cases), slowestAnswer, latestClose, refusalDrainGrace)
+}
+
+func TestRefusalAfterTheBodyKeepsTheConnection(t *testing.T) {
+	srv := refusalProbe(nil)
+	r := srv.Routes()
+	r.Post("/zz-read-all", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "synthetic refusal after the body")
+	})
+	r.Post("/zz-read-one", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = r.Body.Read(make([]byte, 1))
+		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "synthetic refusal after one byte")
+	})
+	ts := startShippedServer(t, r)
+	for _, tc := range []struct {
+		path   string
+		status int
+	}{{"/zz-read-all", http.StatusUnprocessableEntity}, {"/zz-read-one", http.StatusRequestEntityTooLarge}} {
+		t.Run(strings.TrimPrefix(tc.path, "/"), func(t *testing.T) {
+			k := dialKept(t, ts)
+			reply := k.exchange(requestHead(http.MethodPost, tc.path, nil, "application/octet-stream", 1024), strings.NewReader(strings.Repeat("b", 1024)), 5*time.Second)
+			t.Logf("POST %s with a whole 1 KiB body: status %d after %v, Connection: close %v, err %v", tc.path, reply.status, reply.elapsed, reply.close, reply.err)
+			if reply.err != nil || reply.status != tc.status {
+				t.Fatalf("status %d err %v, want %d", reply.status, reply.err, tc.status)
+			}
+			if reply.close {
+				t.Errorf("a refusal after the handler read the body carries Connection: close")
+			}
+			if !k.reusable(t) {
+				t.Errorf("the connection was not reused after a refusal written after the body was read")
+			}
+		})
+	}
+}
+
+func TestHonestKeyedClientKeepsItsConnection(t *testing.T) {
+	srv := refusalProbe(nil)
+	admin := defaultFakePresetAdmin()
+	admin.getForClientErr = nil
+	admin.getForClientResult = &presets.Preset{Name: "probe", Version: 1, Scope: presets.ScopeUser, TargetFormat: "png", IsActive: true}
+	srv.presetAdmin = admin
+	var mu sync.Mutex
+	opened := 0
+	ts := startShippedServer(t, srv.Routes(), func(s *http.Server) {
+		s.ConnState = func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				mu.Lock()
+				opened++
+				mu.Unlock()
+			}
+		}
+	})
+	client := ts.Client()
+	for i, step := range []struct {
+		method, path, body string
+		status             int
+	}{
+		{http.MethodPost, "/v1/presets", `{"name":"probe","target_format":"png"}`, http.StatusCreated},
+		{http.MethodGet, "/v1/formats", "", http.StatusOK},
+		{http.MethodPost, "/v1/presets", `{"name":"","target_format":"png"}`, http.StatusBadRequest},
+		{http.MethodGet, "/v1/formats", "", http.StatusOK},
+	} {
+		var body io.Reader
+		if step.body != "" {
+			body = strings.NewReader(step.body)
+		}
+		req, err := http.NewRequest(step.method, ts.URL+step.path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if step.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(authed(req))
+		if err != nil {
+			t.Fatalf("step %d %s %s: %v", i+1, step.method, step.path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		t.Logf("step %d %s %s: status %d, Connection: close %v", i+1, step.method, step.path, resp.StatusCode, resp.Close)
+		if resp.StatusCode != step.status {
+			t.Errorf("step %d %s %s: status %d, want %d", i+1, step.method, step.path, resp.StatusCode, step.status)
+		}
+		if resp.Close {
+			t.Errorf("step %d %s %s: the answer to an honest keyed client carries Connection: close", i+1, step.method, step.path)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("four requests of one keyed client: %d connection(s) opened", opened)
+	if opened != 1 {
+		t.Errorf("the honest keyed client needed %d connections for four requests, want 1", opened)
+	}
+}
+
+func TestHonestRefusedClientGetsItsAnswer(t *testing.T) {
+	ts := startShippedServer(t, refusalProbe(nil).Routes())
+	client := ts.Client()
+	for _, tc := range []struct {
+		size, repeats int
+	}{{100_000, 50}, {1 << 20, 20}} {
+		form := rawFieldPart(formFieldTarget, "png") + rawFilePart(tc.size) + refusalCloser
+		closes := 0
+		var slowest time.Duration
+		for i := range tc.repeats {
+			req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/jobs", strings.NewReader(form))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", refusalMultipart())
+			start := time.Now()
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Errorf("%d-byte file, request %d: no answer: %v", tc.size, i+1, err)
+				continue
+			}
+			raw, rerr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			slowest = max(slowest, time.Since(start))
+			if resp.Close {
+				closes++
+			}
+			if rerr != nil || resp.StatusCode != http.StatusUnauthorized || !json.Valid(raw) {
+				t.Errorf("%d-byte file, request %d: status %d, body %.200q, read error %v; want the whole 401 envelope", tc.size, i+1, resp.StatusCode, raw, rerr)
+			}
+			if !resp.Close {
+				t.Errorf("%d-byte file, request %d: the keyless 401 carries no Connection: close", tc.size, i+1)
+			}
+		}
+		t.Logf("keyless http.Client, %d-byte form with a %d-byte file, %d repeats: every 401 received whole; Connection: close on %d; slowest %v", len(form), tc.size, tc.repeats, closes, slowest)
+	}
+}
+
+func TestPreBodyRefusalIsStatedInTheReadme(t *testing.T) {
+	raw, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	_, section, ok := strings.Cut(text, "**Status semantics**")
+	if !ok {
+		t.Fatal("README.md has no Status semantics section")
+	}
+	section, _, _ = strings.Cut(section, "\n**")
+	const want = "A refusal sent before the request body is read"
+	for _, phrase := range []string{want, "`Connection: close`", "reads no more of the body", "new connection"} {
+		if !strings.Contains(strings.Join(strings.Fields(section), " "), phrase) {
+			t.Errorf("README.md Status semantics does not say %q", phrase)
+		}
 	}
 }
