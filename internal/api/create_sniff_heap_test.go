@@ -594,8 +594,8 @@ func TestSniffCreateContainerNeverReportsOKForUnexaminedInput(t *testing.T) {
 
 const (
 	sniffMagicHeapBytes          = 64 << 10
-	htmlLowerGrowthBytes         = 1048576 + 1318912 + 1654784
-	htmlSniffHeapBytes           = (convert.SniffWindowBytes + htmlLowerGrowthBytes + 64<<10 - 1) &^ (64<<10 - 1)
+	htmlLowerPrefixBytes         = 1024
+	htmlSniffHeapBytes           = (convert.SniffWindowBytes + htmlLowerPrefixBytes + 64<<10 - 1) &^ (64<<10 - 1)
 	sniffWindowHeapBytes         = (convert.SniffWindowBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
 	cadSplitBytes                = 106496
 	cadSniffHeapBytes            = (convert.CADHeadBytes + convert.CADTailBytes + cadSplitBytes + 1024 + 64<<10 - 1) &^ (64<<10 - 1)
@@ -665,7 +665,7 @@ func createSniffInventory() []sniffRow {
 				return allocatedBy(func() { _, _, _ = sniffCreateContainer(f, int64(len(data))) })
 			}},
 		{"html", []string{"convert.LooksLikeHTML"}, "convert.LooksLikeHTML(file, header.Size)", htmlSniffHeapBytes,
-			"readSniffPrefix window SniffWindowBytes (markupsniff.go:98) and bytes.ToLower over it (htmlsniff.go:73): bytes.Map starts at len and grows 1.25x to 1.5x len for 2-byte runes whose lower case is 3 bytes (U+023A -> U+2C65): 1048576 + 1318912 + 1654784",
+			"readSniffPrefix window SniffWindowBytes (markupsniff.go:98) and bytes.ToLower of at most len(\"<!doctype html\") + 1 = 15 runes of it, at most 15 x utf8.UTFMax = 60 B in and 90 B out through bytes.Map: under htmlLowerPrefixBytes 1 KiB with the small objects",
 			func(t *testing.T) int64 {
 				data := []byte(strings.Repeat("Ⱥ", convert.SniffWindowBytes/2))
 				f := readerFile(data)
