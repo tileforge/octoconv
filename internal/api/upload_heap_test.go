@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"mime/multipart"
 	"net"
@@ -394,6 +396,39 @@ func bytesPart(name string, b []byte) validatedPart {
 	return validatedPart{name: name, data: func() io.Reader { return bytes.NewReader(b) }}
 }
 
+func jfifJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 24, 16))
+	for i := range img.Pix {
+		img.Pix[i] = byte(i * 7)
+	}
+	var enc bytes.Buffer
+	if err := jpeg.Encode(&enc, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw := enc.Bytes()
+	app0 := []byte{0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00}
+	out := append(append(append([]byte{}, raw[:2]...), app0...), raw[2:]...)
+	var markers []byte
+	for i := 2; i+4 <= len(out) && out[i] == 0xFF; i += 2 + int(binary.BigEndian.Uint16(out[i+2:])) {
+		markers = append(markers, out[i+1])
+		if out[i+1] == 0xDA {
+			break
+		}
+	}
+	if !bytes.HasPrefix(out, []byte{0xFF, 0xD8}) || !bytes.HasSuffix(out, []byte{0xFF, 0xD9}) || !bytes.Equal(markers, []byte{0xE0, 0xDB, 0xC0, 0xC4, 0xDA}) {
+		t.Fatalf("the JPEG is not SOI, APP0, DQT, SOF0, DHT, SOS, EOI: segments % X, %d bytes", markers, len(out))
+	}
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(out))
+	if err != nil || cfg.Width != 24 || cfg.Height != 16 {
+		t.Fatalf("the JPEG decodes to %dx%d (%v), want 24x16", cfg.Width, cfg.Height, err)
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(out)); err != nil {
+		t.Fatalf("the JPEG does not decode: %v", err)
+	}
+	return out
+}
+
 func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 	stl := func() io.Reader { r, _ := largestAdmissibleSTL(); return r }
 	cases := []struct {
@@ -404,6 +439,7 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 		formats map[string]map[string]int64
 	}{
 		{"png Dimensions", "webp", "", []validatedPart{bytesPart("in.png", pngBytesFixture())}, nil},
+		{"jpeg Dimensions", "webp", "", []validatedPart{bytesPart("in.jpg", jfifJPEG(t))}, nil},
 		{"mp4 Sniff", "mp3", "", []validatedPart{bytesPart("in.mp4", mp4BytesFixture())}, nil},
 		{"mkv SniffVideo", "mp4", "", []validatedPart{bytesPart("in.mkv", mkvBytesFixture())}, nil},
 		{"webm SniffVideo", "mp4", "", []validatedPart{bytesPart("in.webm", webmBytesFixture())}, nil},
