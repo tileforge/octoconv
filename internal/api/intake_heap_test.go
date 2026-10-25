@@ -579,12 +579,16 @@ func rawFileParts(name string, sizes []int64, beforeLast []rawSegment, spillTail
 }
 
 func rawFilePartsWithLastHeader(name string, sizes []int64, beforeLast []rawSegment, spillTail int64, lastHeader string) rawIntakeForm {
+	return rawFilePartsWithLast(name, sizes, beforeLast, spillTail, rawFilePartHeader, lastHeader)
+}
+
+func rawFilePartsWithLast(name string, sizes []int64, beforeLast []rawSegment, spillTail int64, lastDisposition, lastHeader string) rawIntakeForm {
 	var segments []rawSegment
 	for i, size := range sizes {
 		header := rawFilePartHeader + "\r\n"
 		if i == len(sizes)-1 {
 			segments = append(segments, beforeLast...)
-			header += lastHeader
+			header = lastDisposition + "\r\n" + lastHeader
 		}
 		segments = append(segments, rawSegment{raw: rawPartOpening(len(segments) == 0) + header + "\r\n", zeros: size})
 	}
@@ -848,6 +852,80 @@ func namedValueParts(form rawIntakeForm) []rawSegment {
 func worstPendingForm(name string, beforeLast []rawSegment, lastHeader string) rawIntakeForm {
 	b := int64(multipartInMemoryBudget)
 	return rawFilePartsWithLastHeader(name, worstSplit(b, lastDoubling(b)-(bytes.MinRead-1)), beforeLast, 0, lastHeader)
+}
+
+func rfc2231Disposition(budget, pieces int) string {
+	d := "Content-Disposition:form-data;name=" + formFieldFile + ";filename=a"
+	for i := 0; ; i++ {
+		var p strings.Builder
+		for j := range pieces {
+			fmt.Fprintf(&p, ";k%x*%d=v", i, j)
+		}
+		if len(d)+p.Len() > budget {
+			return d
+		}
+		d += p.String()
+	}
+}
+
+func rfc2231Params(form rawIntakeForm) int {
+	var n int
+	for _, seg := range form.segments {
+		n += strings.Count(seg.raw, "*")
+	}
+	return n
+}
+
+func rfc2231Part(budget, pieces int) string {
+	return rawPartOpening(false) + rfc2231Disposition(budget, pieces) + "\r\n\r\n"
+}
+
+func rfc2231Parts(form rawIntakeForm, budget, pieces int) []rawSegment {
+	part := rfc2231Part(budget, pieces)
+	n := partsToTheLine(form, int64(len(part)), readFormMaxParts)
+	return []rawSegment{{raw: strings.Repeat(part, n)}}
+}
+
+func worstPendingFormWithDisposition(name string, beforeLast []rawSegment, lastDisposition string) rawIntakeForm {
+	b := int64(multipartInMemoryBudget)
+	return rawFilePartsWithLast(name, worstSplit(b, lastDoubling(b)-(bytes.MinRead-1)), beforeLast, 0, lastDisposition, "")
+}
+
+func rfc2231OneHeaderForm() rawIntakeForm {
+	room := intakeAdmitLine() - rawFormNonFileBytes(worstPendingForm("", nil, "")) + int64(len(rawFilePartHeader))
+	return worstPendingFormWithDisposition("rfc2231 one header", nil, rfc2231Disposition(int(room), 1))
+}
+
+func rfc2231ContinuationsForm() rawIntakeForm {
+	pending := worstPendingForm("", nil, "")
+	return worstPendingForm("rfc2231 continuations", rfc2231Parts(pending, 512, 2), "")
+}
+
+type tcpTermCase struct {
+	form        rawIntakeForm
+	query       string
+	headerBlock string
+}
+
+func termIncrementOverTCP(t *testing.T, path string, base, hc tcpTermCase) (heapRange, heapRange) {
+	t.Helper()
+	ts := startShippedServer(t, heapProbeServer().Routes())
+	measure := func(c tcpTermCase) heapRange {
+		return heapOfThree(func() intakeProbe {
+			return liveHeapOfRawOverTCP(t, ts, path, c.query, c.headerBlock, c.form, heapSettle)
+		})
+	}
+	b := measure(base)
+	r := measure(hc)
+	for _, p := range []intakeProbe{b.last, r.last} {
+		if p.status == http.StatusTooManyRequests {
+			t.Fatalf("%s %s: answered 429 %v: the measurement ran into a rate limit", path, hc.form.name, p.payload)
+		}
+	}
+	if !readWhole(b.last) || !readWhole(r.last) {
+		t.Fatalf("%s %s: a form was not read whole (base: write error %v, status %d %v; form: write error %v, status %d %v)", path, hc.form.name, b.last.err, b.last.status, b.last.payload, r.last.err, r.last.status, r.last.payload)
+	}
+	return b, r
 }
 
 func mainFilePart(mw *multipart.Writer, headerPad int64) (io.Writer, error) {
@@ -1354,7 +1432,26 @@ func TestIntakeHeapModelCoversNonFileData(t *testing.T) {
 		worstPendingForm("named values", namedValueParts(pending), ""),
 		worstPendingForm("file header pad", nil, "X-Pad:"+strings.Repeat("p", int(line-rawFormNonFileBytes(pending)-int64(len("X-Pad:\r\n"))))+"\r\n"),
 	)
+	rfc := []rawIntakeForm{rfc2231ContinuationsForm(), rfc2231OneHeaderForm()}
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
+		for _, form := range rfc {
+			t.Run(path+" "+form.name, func(t *testing.T) {
+				nonFile := rawFormNonFileBytes(form)
+				b, r := termIncrementOverTCP(t, path, tcpTermCase{form: base.form, query: shortIntakeQuery}, tcpTermCase{form: form, query: shortIntakeQuery})
+				inc := r.max - b.min
+				t.Logf("%s %s over TCP through the shipped server: %d parts, %d non-file bytes (base %d, line %d), %d RFC 2231 parameters; settled live heap base min %d max %d, form min %d (%.3f MiB) max %d; increment max-min %d (%.3f MiB); nonFile = nonFileHeapPerByte %d x maxFormNonFileBytes %d = %d (%.3f MiB); status %d %v",
+					path, form.name, rawFormParts(form), nonFile, rawFormNonFileBytes(pending), line, rfc2231Params(form), b.min, b.max, r.min, mib(r.min), r.max, inc, mib(inc), nonFileHeapPerByte, maxFormNonFileBytes, bound, mib(bound), r.last.status, r.last.payload)
+				if nonFile > line {
+					t.Errorf("%s %s: the form carries %d bytes of non-file data, above the admit line %d", path, form.name, nonFile, line)
+				}
+				if rfc2231Params(form) < 1000 {
+					t.Errorf("%s %s: the form carries %d RFC 2231 parameters, the generator no longer fills the line", path, form.name, rfc2231Params(form))
+				}
+				if inc > bound {
+					t.Errorf("%s %s: RFC 2231 parameters add %d bytes of live heap, more than nonFileHeapPerByte x maxFormNonFileBytes = %d", path, form.name, inc, bound)
+				}
+			})
+		}
 		for _, form := range forms {
 			t.Run(path+" "+form.name, func(t *testing.T) {
 				nonFile := rawFormNonFileBytes(form)

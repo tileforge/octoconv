@@ -906,7 +906,7 @@ func createSniffPaths() []sniffPath {
 	return []sniffPath{
 		{"document_filename", []string{"document_filename"}, "the file name bound runs right after the form, before any sniffer"},
 		{"zip", []string{"sniff_magic", "zip_directory"}, "rest keeps Sniff's prefix; the zip.Reader is dropped when sniffCreateContainer returns"},
-		{"html", []string{"sniff_magic", "html"}, "the window and its lower-case copy die with LooksLikeHTML"},
+		{"html", []string{"sniff_magic", "html"}, "the window and the lower case of its first runes die with LooksLikeHTML"},
 		{"latex_gate", []string{"sniff_magic", "latex_window", "tex_gate"}, "latexPrefix is held from its read to the end; the gate copies it"},
 		{"latex_attachments", []string{"sniff_magic", "latex_window", "attachment_names"}, "only tectonic takes attachments, so latexPrefix is held; the gate's copy is dead by then"},
 		{"latex_accepted", []string{"sniff_magic", "latex_window", "opts", "accepted_response"}, "latexPrefix held to the 202"},
