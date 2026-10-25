@@ -670,11 +670,23 @@ func appendOpaqueRange(ranges []pdfOpaqueRange, r pdfOpaqueRange, limit int, tr 
 		return ranges, false
 	}
 	if len(ranges) == cap(ranges) {
-		grown := make([]pdfOpaqueRange, len(ranges), min(max(64, 2*cap(ranges)), limit))
+		grown := make([]pdfOpaqueRange, len(ranges), nextOpaqueRangeCap(cap(ranges), limit))
 		copy(grown, ranges)
 		ranges = grown
 	}
 	return append(ranges, r), true
+}
+
+func nextOpaqueRangeCap(c, limit int) int {
+	half := limit/2 + limit%2
+	next := max(64, 2*c)
+	if next > half {
+		next = half
+		if c >= half {
+			next = limit
+		}
+	}
+	return min(next, limit)
 }
 
 // scanPDFStreamRanges finds every "stream"..."endstream" body in buf,

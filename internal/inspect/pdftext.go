@@ -404,6 +404,8 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 // iteration cap, not the buffer's content, decided when the walk stopped, and
 // it marks the shared receptacle at that point.
 func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool, complete bool) {
+	limit := pdfMaxOpaqueRanges(len(buf))
+	var ok bool
 	complete = true
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
@@ -444,11 +446,14 @@ func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange
 				// The body runs past the end of this window. Report what is
 				// there; the caller charges it and the truncation is already
 				// visible through its own window accounting.
-				ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)})
-				return ranges, false, complete
+				ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)}, limit, tr)
+				return ranges, !ok, complete
 			}
 			bodyEnd := bodyStart + endIdx
-			ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})
+			ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd}, limit, tr)
+			if !ok {
+				return ranges, true, complete
+			}
 			// Resume AFTER the body, so its binary content is never lexed.
 			i = bodyEnd + len("endstream")
 			continue
