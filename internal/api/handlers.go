@@ -306,10 +306,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		presetVer = p.Version
 	}
 
-	// Detect the actual content format by magic bytes BEFORE anything else
-	// touches storage or Postgres (D-01/D-02/D-05). rest re-stitches the
-	// peeked prefix onto the remaining stream for the stream sniffers below;
-	// s3.Upload reads the file itself by offset, not rest.
 	// latexPrefix holds the validated sniff window for a declared-latex upload,
 	// read ONCE below and used twice: for the content check that sets
 	// detected == "latex", and for the tex-package admission gate after the
@@ -513,23 +509,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// SniffAudio's mp3PeekLen=512KiB peek is the single most expensive
 		// buffer in this chain -- ordering video first keeps that cost paid
 		// only when video detection has already declined.
-		//
-		// CRITICAL deviation from SniffAudio's exact reassignment shape
-		// (auto-fixed, Rule 1): SniffAudio only reassigns `rest` when it gets
-		// a non-empty match because it is the LAST detector in this chain --
-		// on a miss, `detected` stays "" and the handler returns the
-		// unrecognized-content 422 immediately after, so a stale `rest` is
-		// never read again. SniffVideo is NOT last (SniffAudio still runs
-		// after it): SniffVideo's io.ReadFull(rest, ...) call ALWAYS drains
-		// up to avPeekLen bytes from the underlying stream `rest` refers to,
-		// whether or not it finds a match. If `rest` were only reassigned on
-		// a match, a miss would silently leave `rest` pointing at a reader
-		// that has already lost its first bytes to this drain, and
-		// SniffAudio's subsequent read (or any later stream sniffer that
-		// reads rest, such as Dimensions) would receive a
-		// truncated stream (the exact T-31-02 class of bug). `rest` is
-		// therefore ALWAYS rebound to SniffVideo's returned reader on
-		// verr == nil, regardless of match; only `detected` is conditional.
 		if videoDetected, videoRest, verr := convert.SniffVideo(rest); verr == nil {
 			rest = videoRest
 			if videoDetected != "" {
@@ -538,18 +517,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if detected == "" {
-		// AUD-05: mp3/wav/m4a/ogg content detection, placed LAST (after the
-		// OLE-CFB check, before the final fail-closed 422 below) because
-		// mp3PeekLen=512KiB is the most expensive buffer of the whole chain --
-		// ordering it last means a non-audio upload never pays for it.
-		// CRITICAL: chained off `rest` (Sniff's re-stitched full-file-from-
-		// byte-0 reader), NOT `file` -- file's sequential cursor has already
-		// advanced past Sniff's first sniffLen=12 bytes, and SniffAudio
-		// re-stitches its OWN rest from whatever reader it's given. Passing
-		// `file` here instead would hide the first 12 bytes of every audio
-		// upload from SniffAudio's magic-byte match (T-31-02). No source gate --
-		// SniffAudio self-identifies from magic bytes, matching the
-		// unconditional ZIP/OLE-CFB detection shape above.
 		if audioDetected, audioRest, aerr := convert.SniffAudio(rest); aerr == nil && audioDetected != "" {
 			detected = audioDetected
 			rest = audioRest
@@ -624,15 +591,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// of them in the paper this phase ran end to end. A gate is only worth
 	// having if what it refuses genuinely cannot succeed; 63-02 removed a whole
 	// admission gate for exactly this defect.
-	//
-	// IT MAY ABSTAIN, AND SAYS SO. VisitTeXPreamblePackages reads a bounded window and
-	// does not expand macros or follow \input, so a package can be invisible
-	// to it. complete == false means the preamble ran past the window, and then
-	// the absence of a violation means nothing at all -- the document is
-	// ADMITTED and cmd/tectonic-worker refuses it instead, with the SAME error
-	// code (one code space, D-03). This is 63-02's shape, reused knowingly: a
-	// cheap gate that is allowed to give up, plus an authoritative one that is
-	// not.
 	if engine == convert.EngineTectonic && len(latexPrefix) > 0 {
 		var unsupported string
 		complete := convert.VisitTeXPreamblePackages(latexPrefix, func(pkg string) bool {
@@ -784,14 +742,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		log.Printf("quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s", client.ID, engine)
 	}
 
-	// VALID-03: reject a decompression-bomb-shaped upload (declared pixel
-	// dimensions exceeding the configured limit) before any storage write.
-	// convert.Dimensions reads only a bounded peek of rest; s.storage.Upload
-	// below reads the file by offset, so the peeked stream is not reused.
-	// HasDimensionLimit scopes this to image formats only — pixel dimensions
-	// are not a document concept, so documents skip the block entirely
-	// (fixes the confirmed regression where Dimensions() unconditionally
-	// 422'd every document upload, RESEARCH.md Pitfall 5).
 	if convert.HasDimensionLimit(detected) {
 		width, height, _, err := convert.Dimensions(detected, rest)
 		if err != nil {

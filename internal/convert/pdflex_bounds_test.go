@@ -115,17 +115,6 @@ func TestRealFilesStillResolveAfterTheBounds(t *testing.T) {
 	}
 }
 
-// TestNamesOutsideDictionariesAreNotDecoded is PR #18's P1, and it is about
-// allocation rather than about an answer.
-//
-// A file of bare names -- "/a/a/a..." -- never opens a dictionary, so no
-// dictionary-shaped bound applies to it, and both walks decoded a name into
-// an allocated string on every token anyway. Measured on the window POST
-// /v1/inspect actually accepts:
-//
-//	8 388 608 bytes  ->  8 388 629 allocations, 64.0 MB, 213ms
-//
-// No name is decoded into a string now: 2 allocations, 0.0 MB.
 func TestNamesOutsideDictionariesAreNotDecoded(t *testing.T) {
 	body := bytes.Repeat([]byte("/a"), (8<<20)/2)
 
@@ -193,13 +182,6 @@ func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
 	}
 }
 
-// TestSkipNameAgreesWithReadName is the invariant pdfSkipName's own comment
-// claims: it must advance EXACTLY as the 805d49da name reader does, or the two
-// walks disagree about where the next token starts -- and a disagreement about
-// token boundaries in a security walk is not a small thing.
-//
-// Asserted over the shapes that make the two implementations differ if either
-// drifts: escapes that decode, escapes that do not, delimiters, EOF.
 func TestSkipNameAgreesWithReadName(t *testing.T) {
 	for _, src := range []string{
 		"/Length", "/Length1", "/Count300", "/a", "/",

@@ -297,17 +297,11 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int, stop func()
 		}
 
 		if c == '/' {
-			// A name is COMPARED only where it can be a key: inside a
-			// dictionary and outside any array. Everywhere else the walk needs
-			// its end position and nothing more (PR #18 review, P1).
 			if len(stack) == 0 || arrayDepth != 0 {
 				i = pdfSkipName(b, i)
 				dictClosed = false
 				continue
 			}
-			// A decoded comparison, not a prefix compare: "/Count300" is the
-			// name "Count300", which is not "Count". That distinction is the
-			// round-3 finding, and it is already this tokenizer's job.
 			start := i
 			i = pdfSkipName(b, i)
 			dictClosed = false
@@ -335,10 +329,6 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int, stop func()
 				// reported a work ceiling for a file with nothing wrong with
 				// it (PR #18 review). Refusing valid work to bound work is the
 				// trade this project has paid for most.
-				//
-				// Total work needs no separate cap: the walk is linear in the
-				// input, the caller's window is what bounds the input, and
-				// no token allocates.
 				if matched++; matched > maxDicts {
 					return nil, true
 				}

@@ -92,15 +92,6 @@ func scanPDF(b []byte) pdfScan { return scanPDFSeeded(b, nil) }
 // which is why there is one implementation and not two.
 func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, seed, 0, nil, true) }
 
-// scanPDFLimited is scanPDFSeeded without the stream list and with a cap on how
-// many object headers it will index, after which it stops and sets objectsCapped.
-//
-// The cap exists for callers that run on an UNBOUNDED, attacker-supplied window
-// in a process with a memory limit: an 8 MiB body of unique "N 0 obj" records
-// made the unbounded index allocate 40 MB, and POST /v1/jobs holds no
-// concurrency semaphore. maxObjects <= 0 means no cap, which is what the
-// sanitize worker passes -- it runs on one file it has already downloaded,
-// inside a cgroup, under a measured timeout.
 func scanPDFLimited(b []byte, seed map[int]int, maxObjects int, stop func() bool) pdfScan {
 	return scanPDFImpl(b, seed, maxObjects, stop, false)
 }
@@ -380,12 +371,6 @@ func pdfSkipHexString(b []byte, i int) int {
 	return i
 }
 
-// pdfNameEquals reports whether the "/Name" token at i DECODES to s, without
-// building the decoded name.
-//
-// PDF names escape bytes as "#xx" (ISO 32000-1 7.3.5), so "/Len#67th" IS
-// "/Length" and a dictionary may spell it that way. Comparing the raw bytes
-// left such a stream unresolved (PR #14, round 5).
 func pdfNameEquals(b []byte, i int, s string) bool {
 	i++
 	n := 0
@@ -408,12 +393,6 @@ func pdfNameEquals(b []byte, i int, s string) bool {
 	return n == len(s)
 }
 
-// pdfSkipName advances past a name token without decoding it. Building the
-// decoded name allocated per token: 8 MiB of "/a" produced 8 388 629
-// allocations totalling 64.0 MB (PR #18 review, P1).
-//
-// It must advance EXACTLY as pdfNameEquals decodes, including over "#XX"
-// escapes, or the walk and the comparison disagree about where a name ends.
 func pdfSkipName(b []byte, i int) int {
 	i++ // past '/'
 	for i < len(b) && !isPDFSpace(b[i]) && !isPDFDelimiter(b[i]) {
@@ -442,9 +421,6 @@ func pdfHexDigit(c byte) (byte, bool) {
 	return 0, false
 }
 
-// pdfKeywordAt returns a run of regular characters as a slice of b. A single
-// delimiter that is not part of any token is consumed on its own, as an empty
-// keyword, so the scan always advances.
 func pdfKeywordAt(b []byte, i int) ([]byte, int) {
 	if isPDFDelimiter(b[i]) {
 		return b[i:i], i + 1
@@ -824,9 +800,6 @@ func pdfTrailerPrev(b []byte, i int) (int, bool) {
 			continue
 		case c == '/':
 			next := pdfSkipName(b, i)
-			// A KEY of the trailer itself: depth 1, outside any array. The
-			// name is compared decoded, so "/P#72ev" is the same key and
-			// "/PrevPage" is not.
 			await = depth == 1 && arrayDepth == 0 && pdfNameEquals(b, i, "Prev")
 			i = next
 			continue

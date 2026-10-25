@@ -124,10 +124,6 @@ func (f *cfbFAT) lookup(sector uint32) (uint32, bool) {
 	return f.next[sector], true
 }
 
-// buildCFBFAT reads the FAT sectors named by the header's 109 DIFAT entries,
-// one at a time through buf, into a slice indexed by sector number. It
-// returns false on any bounds violation or short read (fail closed) -- the
-// caller treats false identically to CFBUnknown.
 func buildCFBFAT(r io.ReaderAt, header, buf []byte, size int64) (cfbFAT, bool) {
 	sectorSize := len(buf)
 	entriesPerFATSector := sectorSize / 4
@@ -161,17 +157,6 @@ func buildCFBFAT(r io.ReaderAt, header, buf []byte, size int64) (cfbFAT, bool) {
 	return fat, true
 }
 
-// cfbWalkDirectory follows the directory-sector FAT chain starting at
-// start, classifying every decoded entry name of every allocated
-// (storage/stream/root-storage) 128-byte directory entry. It never walks
-// the red-black sibling/child tree -- a flat linear scan of all entries in
-// every visited sector is sufficient to enumerate every stream name and
-// avoids that tree-traversal bug surface (Pitfall 10).
-//
-// ok is false (flags discarded) on any bounds violation, short read, cycle
-// (repeat visit to a sector), cap-exceeded (more than cfbMaxDirSectors
-// sectors), or undetermined chain continuation -- the caller must treat
-// that identically to CFBUnknown rather than classifying partial results.
 func cfbWalkDirectory(r io.ReaderAt, start uint32, buf []byte, size int64, fat *cfbFAT) (encrypted, legacy, ok bool) {
 	visited := make(map[uint32]struct{})
 	sectorSize := len(buf)
@@ -233,9 +218,6 @@ func cfbWalkDirectory(r io.ReaderAt, start uint32, buf []byte, size int64, fat *
 	return encrypted, legacy, true
 }
 
-// classifyCFBName applies the D-03 allow-lists to one UTF-16LE entry name.
-// The caller lets encrypted markers win if both an encrypted and a legacy
-// marker are present.
 func classifyCFBName(name []byte) (encrypted, legacy bool) {
 	switch {
 	case cfbNameIs(name, "EncryptionInfo"), cfbNameIs(name, "EncryptedPackage"):
