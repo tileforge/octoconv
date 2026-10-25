@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const refusalDrainGrace = 500 * time.Millisecond
+
 type intakeReader struct {
 	body        io.ReadCloser
 	setDeadline func(time.Time) error

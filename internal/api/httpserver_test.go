@@ -324,57 +324,156 @@ func TestPreAuthConnectionTermIsMeasured(t *testing.T) {
 	}
 }
 
+type preAuthOutcome struct {
+	headSent time.Time
+	answered time.Time
+	closed   time.Time
+	status   int
+	close    bool
+	writeErr error
+	err      error
+}
+
+type preAuthBurst struct {
+	outcomes []preAuthOutcome
+	lastHead time.Time
+	tail     int64
+	peak     int64
+	samples  int
+}
+
+func preAuthRefusals(t *testing.T, addr, head string, n int, interval, spread time.Duration, pieces int, sample, tail time.Duration) preAuthBurst {
+	t.Helper()
+	burst := preAuthBurst{outcomes: make([]preAuthOutcome, n)}
+	conns := make([]net.Conn, 0, n)
+	t.Cleanup(func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	var written, read sync.WaitGroup
+	stop := make(chan struct{})
+	sampled := make(chan struct{})
+	base := liveHeapAndStack()
+	go func() {
+		defer close(sampled)
+		if sample <= 0 {
+			return
+		}
+		tick := time.NewTicker(sample)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				burst.peak = max(burst.peak, liveHeapAndStack()-base)
+				burst.samples++
+			}
+		}
+	}()
+	first := time.Now()
+	for i := range n {
+		time.Sleep(time.Until(first.Add(time.Duration(i) * interval)))
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial %s: %v", addr, err)
+		}
+		conns = append(conns, c)
+		o := &burst.outcomes[i]
+		written.Add(1)
+		read.Add(1)
+		go func() {
+			defer written.Done()
+			step := len(head) / pieces
+			for p := range pieces {
+				lo, hi := p*step, (p+1)*step
+				if p == pieces-1 {
+					hi = len(head)
+				}
+				if p > 0 {
+					time.Sleep(spread / time.Duration(pieces-1))
+				}
+				if _, err := io.WriteString(c, head[lo:hi]); err != nil {
+					o.writeErr = fmt.Errorf("write the head: %w", err)
+					break
+				}
+			}
+			o.headSent = time.Now()
+		}()
+		go func() {
+			defer read.Done()
+			_ = c.SetReadDeadline(time.Now().Add(spread + intakeReadDeadline + 10*time.Second))
+			br := bufio.NewReader(c)
+			resp, err := http.ReadResponse(br, nil)
+			o.answered = time.Now()
+			if err != nil {
+				o.err = fmt.Errorf("read the answer: %w", err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			o.status, o.close = resp.StatusCode, resp.Close
+			_, err = br.ReadByte()
+			o.closed = time.Now()
+			if !errors.Is(err, io.EOF) {
+				o.err = fmt.Errorf("after the answer the read returned %v, want EOF from the server", err)
+			}
+		}()
+	}
+	written.Wait()
+	for _, o := range burst.outcomes {
+		if o.headSent.After(burst.lastHead) {
+			burst.lastHead = o.headSent
+		}
+	}
+	time.Sleep(time.Until(burst.lastHead.Add(tail)))
+	burst.tail = liveHeapAndStack() - base
+	close(stop)
+	<-sampled
+	runtime.KeepAlive(head)
+	read.Wait()
+	return burst
+}
+
+func (b preAuthBurst) check(t *testing.T, name string) (map[int]int, time.Duration, time.Duration) {
+	t.Helper()
+	statuses := map[int]int{}
+	var answer, closed time.Duration
+	for i, o := range b.outcomes {
+		if err := errors.Join(o.writeErr, o.err); err != nil {
+			t.Errorf("%s request %d: %v", name, i, err)
+			continue
+		}
+		statuses[o.status]++
+		answer = max(answer, o.answered.Sub(o.headSent))
+		closed = max(closed, o.closed.Sub(o.answered))
+		if d := o.answered.Sub(o.headSent); d > time.Second {
+			t.Errorf("%s request %d: answered %v after its head was sent, want no later than 1 s", name, i, d)
+		}
+		if !o.close {
+			t.Errorf("%s request %d: the %d refusal before the body carries no Connection: close", name, i, o.status)
+		}
+		if d := o.closed.Sub(o.answered); d > refusalDrainGrace+time.Second {
+			t.Errorf("%s request %d: the server closed the connection %v after the answer, want no later than refusalDrainGrace + 1 s = %v", name, i, d, refusalDrainGrace+time.Second)
+		}
+	}
+	return statuses, answer, closed
+}
+
 func TestMassPreAuthRequestsStayWithinTheirTerm(t *testing.T) {
 	const n = 80
 	ts := startShippedServer(t, heapProbeServer().Routes())
 	head := preAuthHeadOnTheLine("distinct-lf")
-	start := time.Now()
-	grown, conns := preAuthHeapOverTCP(t, ts.Listener.Addr().String(), head, n, 2*time.Second)
-	bound := n * preAuthRequestHeapBytes()
-
-	type answer struct {
-		status int
-		at     time.Duration
-		err    error
-	}
-	answers := make([]answer, n)
-	var wg sync.WaitGroup
-	for i, c := range conns {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = c.SetReadDeadline(time.Now().Add(intakeReadDeadline + 10*time.Second))
-			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
-			answers[i].at = time.Since(start)
-			if err != nil {
-				answers[i].err = err
-				return
-			}
-			_ = resp.Body.Close()
-			answers[i].status = resp.StatusCode
-		}()
-	}
-	wg.Wait()
-
-	statuses := map[int]int{}
-	var last time.Duration
-	for i, a := range answers {
-		if a.err != nil {
-			t.Errorf("request %d: no answer after %v: %v", i, a.at, a.err)
-			continue
-		}
-		statuses[a.status]++
-		last = max(last, a.at)
-	}
-	t.Logf("MASS %d keyless POST %s from one IP, Content-Length 100000, no body bytes, distinct-lf head %d bytes on the line %d: heap+stack 2 s later grown %d (%.1f MiB) = %.3f MiB per request; preAuthRequestHeapBytes %d (%.3f MiB), bound %d x preAuthRequestHeapBytes = %d (%.1f MiB); statuses %v; last answer %v after the first dial (limit intakeReadDeadline + 2 s = %v)", n, preAuthTarget, len(head), headerReadLimit, grown, mib(grown), mib(grown)/n, preAuthRequestHeapBytes(), mib(preAuthRequestHeapBytes()), n, bound, mib(bound), statuses, last.Round(time.Millisecond), intakeReadDeadline+2*time.Second)
-	if grown > bound {
-		t.Errorf("%d keyless requests hold %d bytes (%.1f MiB) of heap and stack, above %d x preAuthRequestHeapBytes = %d (%.1f MiB)", n, grown, mib(grown), n, bound, mib(bound))
+	burst := preAuthRefusals(t, ts.Listener.Addr().String(), head, n, 0, 0, 1, 0, 2*time.Second)
+	statuses, answer, closed := burst.check(t, "mass")
+	bound := preAuthRequestHeapBytes()
+	t.Logf("MASS %d keyless POST %s from one IP, Content-Length 100000, no body bytes, distinct-lf head %d bytes on the line %d: heap+stack 2 s after the last head grown %d (%.3f MiB); bound preAuthRequestHeapBytes %d (%.3f MiB), less than one held request; statuses %v; slowest answer %v after its head (limit 1 s); latest server close %v after the answer (limit refusalDrainGrace %v + 1 s)", n, preAuthTarget, len(head), headerReadLimit, burst.tail, mib(burst.tail), bound, mib(bound), statuses, answer.Round(time.Millisecond), closed.Round(time.Millisecond), refusalDrainGrace)
+	if burst.tail > bound {
+		t.Errorf("%d keyless refused requests still hold %d bytes (%.1f MiB) of heap and stack 2 s after the last head, above preAuthRequestHeapBytes = %d (%.3f MiB): the refusals were not released", n, burst.tail, mib(burst.tail), bound, mib(bound))
 	}
 	if statuses[http.StatusUnauthorized] != 60 || statuses[http.StatusTooManyRequests] != 20 || len(statuses) != 2 {
 		t.Errorf("statuses %v, want 60 x 401 and 20 x 429", statuses)
-	}
-	if last > intakeReadDeadline+2*time.Second {
-		t.Errorf("the last answer came %v after the first dial, later than intakeReadDeadline + 2 s = %v", last, intakeReadDeadline+2*time.Second)
 	}
 }
 
