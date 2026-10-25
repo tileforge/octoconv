@@ -440,9 +440,9 @@ func preAuthRefusals(t *testing.T, addr, head string, n int, interval, spread ti
 		}()
 	}
 	written.Wait()
-	for _, o := range burst.outcomes {
-		if o.headSent.After(burst.lastHead) {
-			burst.lastHead = o.headSent
+	for i := range burst.outcomes {
+		if sent := burst.outcomes[i].headSent; sent.After(burst.lastHead) {
+			burst.lastHead = sent
 		}
 	}
 	time.Sleep(time.Until(burst.lastHead.Add(tail)))
