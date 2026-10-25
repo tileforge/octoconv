@@ -374,3 +374,108 @@ func TestPDFPageCountScanKeepsNoStreamList(t *testing.T) {
 		t.Errorf("scanPDF found %d streams, 805d49da %d: the sanitizer's scan must keep every stream", len(got.streams), len(want.Streams))
 	}
 }
+
+var lexerNameConstants = []string{"Length", "Prev", "Type", "Pages", "Count", "Page", "Rotate", "Catalog", "Version", lexLongP, lexLongC, ""}
+
+var lexerKeywordConstants = []string{"obj", "stream", "endstream", "endobj", "R", ""}
+
+func changedByOneByte(s string) []string {
+	if s == "" {
+		return []string{"a"}
+	}
+	b := []byte(s)
+	b[len(b)/2] ^= 1
+	return []string{string(b), s[:len(s)-1], s + "a", s + "#"}
+}
+
+func randomNameBuffers(n int) [][]byte {
+	rng := rand.New(rand.NewPCG(78, 171))
+	alphabet := "aAzZ#0146efF \n/()<>[]%"
+	var out [][]byte
+	for i := 0; i < n; i++ {
+		var b bytes.Buffer
+		b.WriteByte('/')
+		if rng.IntN(2) == 0 {
+			c := lexerNameConstants[rng.IntN(len(lexerNameConstants))]
+			for j := 0; j < len(c); j++ {
+				if rng.IntN(3) == 0 {
+					hex := fmt.Sprintf("#%02x", c[j])
+					if rng.IntN(2) == 0 {
+						hex = strings.ToUpper(hex)
+					}
+					b.WriteString(hex)
+				} else {
+					b.WriteByte(c[j])
+				}
+			}
+		}
+		for j := rng.IntN(8); j > 0; j-- {
+			b.WriteByte(alphabet[rng.IntN(len(alphabet))])
+		}
+		data := b.Bytes()
+		if rng.IntN(3) == 0 && len(data) > 1 {
+			data = data[:1+rng.IntN(len(data)-1)]
+		}
+		out = append(out, data)
+	}
+	return out
+}
+
+func tokenStarts(b []byte, limit int) []int {
+	var out []int
+	for i := 0; i < len(b) && len(out) < limit; i++ {
+		if isPDFSpace(b[i]) {
+			continue
+		}
+		if i == 0 || isPDFSpace(b[i-1]) || isPDFDelimiter(b[i-1]) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func TestPDFNameAndKeywordComparisonsMatchTheReference(t *testing.T) {
+	var buffers [][]byte
+	for _, c := range lexerReferenceCorpus(t) {
+		buffers = append(buffers, c.data)
+	}
+	buffers = append(buffers, randomNameBuffers(5000)...)
+	names, keywords, compared := 0, 0, 0
+	for _, b := range buffers {
+		slashes := 0
+		for i := 0; i < len(b) && slashes < 4096; i++ {
+			if b[i] != '/' {
+				continue
+			}
+			slashes++
+			names++
+			ref, refNext := pdfref805d49da.ReadName(b, i)
+			if got := pdfSkipName(b, i); got != refNext {
+				t.Fatalf("name at %d of %.40q: pdfSkipName ends at %d, the 805d49da ReadName at %d", i, b[i:], got, refNext)
+			}
+			candidates := append(append([]string{ref}, changedByOneByte(ref)...), lexerNameConstants...)
+			for _, s := range candidates {
+				compared++
+				if got, want := pdfNameEquals(b, i, s), ref == s; got != want {
+					t.Fatalf("name at %d of %.40q decodes to %.40q: pdfNameEquals(%.40q) = %v, want %v", i, b[i:], ref, s, got, want)
+				}
+			}
+		}
+		for _, i := range tokenStarts(b, 4096) {
+			keywords++
+			ref, refNext := pdfref805d49da.ReadKeyword(b, i)
+			word, next := pdfKeywordAt(b, i)
+			if string(word) != ref || next != refNext {
+				t.Fatalf("keyword at %d of %.40q: pdfKeywordAt = %.40q ending at %d, the 805d49da ReadKeyword %.40q ending at %d", i, b[i:], word, next, ref, refNext)
+			}
+			candidates := append(append([]string{ref}, changedByOneByte(ref)...), lexerKeywordConstants...)
+			for _, s := range candidates {
+				compared++
+				if got, want := pdfKeywordIs(word, s), ref == s; got != want {
+					t.Fatalf("keyword at %d of %.40q is %.40q: pdfKeywordIs(%.40q) = %v, want %v", i, b[i:], ref, s, got, want)
+				}
+			}
+		}
+	}
+	t.Logf("%d names and %d keywords over %d buffers, %d comparisons equal to the decoded 805d49da token", names, keywords, len(buffers), compared)
+}

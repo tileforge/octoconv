@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"runtime"
 	"testing"
+
+	"github.com/tileforge/octoconv/internal/convert/pdfref805d49da"
 )
 
 // Two allocation bounds, both measured before they existed and both on paths
@@ -117,13 +119,13 @@ func TestRealFilesStillResolveAfterTheBounds(t *testing.T) {
 // allocation rather than about an answer.
 //
 // A file of bare names -- "/a/a/a..." -- never opens a dictionary, so no
-// dictionary-shaped bound applies to it, and both walks called the ALLOCATING
-// pdfReadName on every token anyway. Measured on the window POST /v1/inspect
-// actually accepts:
+// dictionary-shaped bound applies to it, and both walks decoded a name into
+// an allocated string on every token anyway. Measured on the window POST
+// /v1/inspect actually accepts:
 //
 //	8 388 608 bytes  ->  8 388 629 allocations, 64.0 MB, 213ms
 //
-// A name is decoded only where it can be a key now: 2 allocations, 0.0 MB.
+// No name is decoded into a string now: 2 allocations, 0.0 MB.
 func TestNamesOutsideDictionariesAreNotDecoded(t *testing.T) {
 	body := bytes.Repeat([]byte("/a"), (8<<20)/2)
 
@@ -192,9 +194,9 @@ func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
 }
 
 // TestSkipNameAgreesWithReadName is the invariant pdfSkipName's own comment
-// claims: it must advance EXACTLY as pdfReadName does, or the two walks
-// disagree about where the next token starts -- and a disagreement about token
-// boundaries in a security walk is not a small thing.
+// claims: it must advance EXACTLY as the 805d49da name reader does, or the two
+// walks disagree about where the next token starts -- and a disagreement about
+// token boundaries in a security walk is not a small thing.
 //
 // Asserted over the shapes that make the two implementations differ if either
 // drifts: escapes that decode, escapes that do not, delimiters, EOF.
@@ -207,10 +209,10 @@ func TestSkipNameAgreesWithReadName(t *testing.T) {
 	} {
 		t.Run(src, func(t *testing.T) {
 			b := []byte(src)
-			_, want := pdfReadName(b, 0)
+			_, want := pdfref805d49da.ReadName(b, 0)
 			got := pdfSkipName(b, 0)
 			if got != want {
-				t.Fatalf("pdfSkipName ended at %d, pdfReadName at %d, for %q: the two walks would "+
+				t.Fatalf("pdfSkipName ended at %d, the 805d49da ReadName at %d, for %q: the two walks would "+
 					"read the next token from different places", got, want, src)
 			}
 		})
