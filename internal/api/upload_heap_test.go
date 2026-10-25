@@ -227,14 +227,14 @@ func TestCreateUploadHeapStaysWithinItsTerm(t *testing.T) {
 	b := int64(multipartInMemoryBudget)
 	junk := worstSplit(b, lastDoubling(b)-(bytes.MinRead-1))
 	settled := readFormSettledBound(b)
-	configs := intakeHeapConfigs(t)
+	classTerm := createFormHeapBytes(b)
 	createDuringUploadRun(t, "warm-up", junk, 100<<20)
 	for _, cs := range []struct {
 		name    string
 		junk    []int64
 		stl     int64
 		settled int64
-		share   bool
+		class   bool
 	}{
 		{"a STL 100 MiB alone", nil, 100 << 20, 0, false},
 		{"b worst split + STL 100 MiB", junk, 100 << 20, settled, true},
@@ -252,22 +252,12 @@ func TestCreateUploadHeapStaysWithinItsTerm(t *testing.T) {
 				worst = p
 			}
 		}
-		t.Logf("%s: max heap %d (%.3f MiB); bound %d (%.3f MiB) = settled form %d + uploadHeapBytes %d + intakeFixedHeapBytes %d", cs.name, worst.heap, mib(worst.heap), bound, mib(bound), cs.settled, uploadHeapBytes, intakeFixedHeapBytes)
-		if cs.share {
-			for _, c := range configs {
-				t.Logf("%s: share of %s = %d (%.3f MiB)", cs.name, c.name, c.share, mib(c.share))
-			}
-		}
+		t.Logf("%s: max heap %d (%.3f MiB); bound %d (%.3f MiB) = settled form %d + uploadHeapBytes %d + intakeFixedHeapBytes %d; createFormHeapBytes(%d) = %d (%.3f MiB)", cs.name, worst.heap, mib(worst.heap), bound, mib(bound), cs.settled, uploadHeapBytes, intakeFixedHeapBytes, b, classTerm, mib(classTerm))
 		if worst.heap > bound {
 			t.Errorf("%s: create held %d bytes (%.3f MiB) during the upload, above its bound %d (%.3f MiB)", cs.name, worst.heap, mib(worst.heap), bound, mib(bound))
 		}
-		if !cs.share {
-			continue
-		}
-		for _, c := range configs {
-			if worst.heap > c.share {
-				t.Errorf("%s: create held %d bytes (%.3f MiB) during the upload, above the share %d (%.3f MiB) of %s", cs.name, worst.heap, mib(worst.heap), c.share, mib(c.share), c.name)
-			}
+		if cs.class && worst.heap > classTerm {
+			t.Errorf("%s: create held %d bytes (%.3f MiB) during the upload, above createFormHeapBytes(%d) = %d (%.3f MiB)", cs.name, worst.heap, mib(worst.heap), b, classTerm, mib(classTerm))
 		}
 	}
 }

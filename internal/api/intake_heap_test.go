@@ -27,6 +27,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 const chartValues = "../../deploy/chart/octoconv/values.yaml"
@@ -84,13 +85,22 @@ type intakeHeapConfig struct {
 	name                 string
 	memory               int64
 	inspectMaxConcurrent int64
-	forms                int64
-	share                int64
+	inspectWorkBytes     int64
 }
 
-func newIntakeHeapConfig(name string, memory, inspectMaxConcurrent int64) intakeHeapConfig {
-	forms := int64(createIntakeMaxConcurrent+inspectIntakeMaxConcurrent) + inspectMaxConcurrent
-	return intakeHeapConfig{name: name, memory: memory, inspectMaxConcurrent: inspectMaxConcurrent, forms: forms, share: memory / 2 / forms}
+func newIntakeHeapConfig(name string, memory, inspectMaxConcurrent, inspectWorkBytes int64) intakeHeapConfig {
+	return intakeHeapConfig{name: name, memory: memory, inspectMaxConcurrent: inspectMaxConcurrent, inspectWorkBytes: inspectWorkBytes}
+}
+
+func chartInspectWorkBytes(t *testing.T, where string, extraEnvs ...map[string]any) int64 {
+	t.Helper()
+	work := chartLiteral(t, "INSPECT_MAX_WORK_BYTES")
+	for _, env := range extraEnvs {
+		if v, ok := env["INSPECT_MAX_WORK_BYTES"]; ok {
+			work = transportCapInt(t, where+" api.extraEnv", "INSPECT_MAX_WORK_BYTES", fmt.Sprint(v))
+		}
+	}
+	return work
 }
 
 func intakeHeapConfigs(t *testing.T) []intakeHeapConfig {
@@ -100,7 +110,7 @@ func intakeHeapConfigs(t *testing.T) []intakeHeapConfig {
 		t.Fatalf("%s sets no api.resources.limits.memory", chartValues)
 	}
 	base := readChartAPISpill(t, chartValues)
-	configs := []intakeHeapConfig{newIntakeHeapConfig("values.yaml", parseMemoryLimit(t, chartValues, baseMemory), spillCaps(t, "values.yaml", base.API.ExtraEnv)["INSPECT_MAX_CONCURRENT"])}
+	configs := []intakeHeapConfig{newIntakeHeapConfig("values.yaml", parseMemoryLimit(t, chartValues, baseMemory), spillCaps(t, "values.yaml", base.API.ExtraEnv)["INSPECT_MAX_CONCURRENT"], chartInspectWorkBytes(t, "values.yaml", base.API.ExtraEnv))}
 	overlays, err := filepath.Glob(transportCapChartDir + "values-*.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -115,8 +125,9 @@ func intakeHeapConfigs(t *testing.T) []intakeHeapConfig {
 		if m, ok := chartAPIMemory(t, f); ok {
 			memory = m
 		}
-		caps := spillCaps(t, name, base.API.ExtraEnv, readChartAPISpill(t, f).API.ExtraEnv)
-		configs = append(configs, newIntakeHeapConfig(name, parseMemoryLimit(t, f, memory), caps["INSPECT_MAX_CONCURRENT"]))
+		overlay := readChartAPISpill(t, f).API.ExtraEnv
+		caps := spillCaps(t, name, base.API.ExtraEnv, overlay)
+		configs = append(configs, newIntakeHeapConfig(name, parseMemoryLimit(t, f, memory), caps["INSPECT_MAX_CONCURRENT"], chartInspectWorkBytes(t, name, base.API.ExtraEnv, overlay)))
 	}
 
 	raw, err := os.ReadFile(transportCapCompose)
@@ -150,9 +161,13 @@ func intakeHeapConfigs(t *testing.T) []intakeHeapConfig {
 	if !ok {
 		t.Fatalf("%s services.api.environment has no INSPECT_MAX_CONCURRENT", transportCapCompose)
 	}
+	work := heapProbeServer().inspectMaxWorkBytes
+	if w, ok := env["INSPECT_MAX_WORK_BYTES"]; ok {
+		work = transportCapInt(t, transportCapCompose+" services.api.environment", "INSPECT_MAX_WORK_BYTES", fmt.Sprint(w))
+	}
 	configs = append(configs, newIntakeHeapConfig("docker-compose.yml api",
 		parseMemoryLimit(t, transportCapCompose+" services.api.deploy.resources.limits.memory", api.Deploy.Resources.Limits.Memory),
-		transportCapInt(t, transportCapCompose+" services.api.environment", "INSPECT_MAX_CONCURRENT", fmt.Sprint(inspect))))
+		transportCapInt(t, transportCapCompose+" services.api.environment", "INSPECT_MAX_CONCURRENT", fmt.Sprint(inspect)), work))
 
 	if len(configs) < 3 {
 		t.Fatalf("%d configurations, want at least three", len(configs))
@@ -261,6 +276,127 @@ func liveHeapOf(t *testing.T, srv *Server, path, query string, header http.Heade
 	return probe
 }
 
+func intakeHead(path, query, headerBlock, contentType string, contentLength int64) string {
+	target := path
+	if query != "" {
+		target += "?" + query
+	}
+	return "POST " + target + " HTTP/1.1\r\nHost: x\r\nAuthorization: ApiKey " + testClientKey + "\r\nContent-Type: " + contentType + "\r\nContent-Length: " + strconv.FormatInt(contentLength, 10) + "\r\n" + headerBlock + "\r\n"
+}
+
+type tcpAnswer struct {
+	status  int
+	payload map[string]string
+	err     error
+}
+
+const tcpSettleFloor = 100 * time.Millisecond
+
+func liveHeapOverTCP(t *testing.T, ts *httptest.Server, path, query, headerBlock, contentType string, contentLength int64, write func(io.Writer, func()) error, settle time.Duration) intakeProbe {
+	t.Helper()
+	head := intakeHead(path, query, headerBlock, contentType, contentLength)
+	if len(head) > headerReadLimit {
+		t.Fatalf("%s: the head is %d bytes, above headerReadLimit %d: the shipped server answers it 431 before any handler", path, len(head), headerReadLimit)
+	}
+	br := bufio.NewReaderSize(nil, 4096)
+	paused, resume := make(chan struct{}), make(chan struct{})
+	writeErr := make(chan error, 1)
+	answered := make(chan tcpAnswer, 1)
+	base := liveHeap()
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	cw := &countingWriter{w: conn}
+	var once sync.Once
+	signal := func() { once.Do(func() { close(paused) }) }
+	go func() {
+		_, err := io.WriteString(conn, head)
+		if err == nil {
+			err = write(cw, func() {
+				signal()
+				<-resume
+			})
+		}
+		signal()
+		writeErr <- err
+	}()
+	go func() {
+		br.Reset(conn)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			answered <- tcpAnswer{err: err}
+			return
+		}
+		raw, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		a := tcpAnswer{status: resp.StatusCode, err: err}
+		_ = json.Unmarshal(raw, &a.payload)
+		answered <- a
+	}()
+	var early *tcpAnswer
+	select {
+	case <-paused:
+	case a := <-answered:
+		early = &a
+		select {
+		case <-paused:
+		case <-time.After(10 * time.Second):
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("%s: the writer did not reach its pause within 2 minutes", path)
+	}
+	if early == nil {
+		select {
+		case a := <-answered:
+			early = &a
+		default:
+		}
+	}
+	time.Sleep(max(settle, tcpSettleFloor))
+	mid := liveHeap()
+	runtime.KeepAlive(head)
+	close(resume)
+	probe := intakeProbe{sent: cw.n}
+	a := early
+	if a == nil {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
+		select {
+		case got := <-answered:
+			a = &got
+		case <-time.After(2*time.Minute + 5*time.Second):
+			t.Fatalf("%s: no answer within 2 minutes of the resume", path)
+		}
+	}
+	_ = conn.Close()
+	select {
+	case probe.err = <-writeErr:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s: the writer did not return within 30 s of the answer", path)
+	}
+	probe.status, probe.payload = a.status, a.payload
+	if probe.err == nil && a.err != nil {
+		probe.err = a.err
+	}
+	if probe.err == nil && early != nil {
+		probe.err = fmt.Errorf("the answer %d %v came before the writer paused", a.status, a.payload)
+	}
+	if mid > base {
+		probe.heap = mid - base
+	}
+	return probe
+}
+
+func rawFormLength(f rawIntakeForm) int64 {
+	return rawFormFileBytes(f) + rawFormNonFileBytes(f)
+}
+
+func liveHeapOfRawOverTCP(t *testing.T, ts *httptest.Server, path, query, headerBlock string, form rawIntakeForm, settle time.Duration) intakeProbe {
+	t.Helper()
+	return liveHeapOverTCP(t, ts, path, query, headerBlock, "multipart/form-data; boundary="+rawFormBoundary, rawFormLength(form), form.write, settle)
+}
+
 func liveHeapMidIntake(t *testing.T, srv *Server, path string, form intakeForm) intakeProbe {
 	t.Helper()
 	boundary := multipart.NewWriter(io.Discard).Boundary()
@@ -324,22 +460,82 @@ func readFormSettledBound(budget int64) int64 {
 }
 
 type intakeHeapTerms struct {
-	content int64
-	nonFile int64
-	request int64
-	fixed   int64
-	total   int64
+	content   int64
+	settled   int64
+	nonFile   int64
+	request   int64
+	fixed     int64
+	postParse int64
+	total     int64
 }
 
-func intakeHeapModel(budget int64) intakeHeapTerms {
+func intakeHeapModel(budget, postParse int64) intakeHeapTerms {
 	m := intakeHeapTerms{
-		content: readFormContentBound(budget),
-		nonFile: nonFileHeapPerByte * maxFormNonFileBytes,
-		request: requestLineCopies*http.DefaultMaxHeaderBytes + urlMaxQueryParams*queryParamHeapBytes,
-		fixed:   intakeFixedHeapBytes,
+		content:   readFormContentBound(budget),
+		settled:   readFormSettledBound(budget),
+		nonFile:   nonFileHeapPerByte * maxFormNonFileBytes,
+		request:   (requestLineCopies+headerHeapPerByte)*headerReadLimit + urlMaxQueryParams*queryParamHeapBytes,
+		fixed:     intakeFixedHeapBytes,
+		postParse: postParse,
 	}
-	m.total = m.content + m.nonFile + m.request + m.fixed
+	m.total = max(m.content, m.settled+m.postParse) + m.nonFile + m.request + m.fixed
 	return m
+}
+
+const createRetainedPath = "latex_falls_through"
+
+func createRetainedHeapBytes() int64 {
+	_, sums := createSniffHeapTerm()
+	return sums[createRetainedPath]
+}
+
+func createPostParseHeapBytes() int64 {
+	return max(createSniffHeapBytes, uploadHeapBytes+createRetainedHeapBytes())
+}
+
+func postParseHeapBytes(t *testing.T) int64 {
+	t.Helper()
+	return max(createPostParseHeapBytes(), inspectAnalysisHeapBytes(inspectWorkBytes(t)))
+}
+
+func createFormHeapBytes(budget int64) int64 {
+	return intakeHeapModel(budget, createPostParseHeapBytes()).total
+}
+
+func inspectIntakeFormHeapBytes(budget int64) int64 {
+	m := intakeHeapModel(budget, 0)
+	return m.content + m.nonFile + m.request + m.fixed
+}
+
+func analysisFormHeapBytes(budget, work int64) int64 {
+	m := intakeHeapModel(budget, inspectAnalysisHeapBytes(work))
+	return m.settled + m.postParse + m.nonFile + m.request + m.fixed
+}
+
+type intakeHeapClassTerms struct {
+	createForm        int64
+	inspectIntakeForm int64
+	analysisForm      int64
+	sum               int64
+	half              int64
+}
+
+func intakeHeapClasses(budget int64, c intakeHeapConfig) intakeHeapClassTerms {
+	k := intakeHeapClassTerms{
+		createForm:        createFormHeapBytes(budget),
+		inspectIntakeForm: inspectIntakeFormHeapBytes(budget),
+		analysisForm:      analysisFormHeapBytes(budget, c.inspectWorkBytes),
+		half:              c.memory / 2,
+	}
+	k.sum = createIntakeMaxConcurrent*k.createForm + inspectIntakeMaxConcurrent*k.inspectIntakeForm + c.inspectMaxConcurrent*k.analysisForm
+	return k
+}
+
+func intakeClassTermFor(path string, budget int64) (string, int64) {
+	if path == "/v1/jobs" {
+		return "createFormHeapBytes", createFormHeapBytes(budget)
+	}
+	return "inspectIntakeFormHeapBytes", inspectIntakeFormHeapBytes(budget)
 }
 
 func leadPieces(d int64) []int64 {
@@ -401,7 +597,7 @@ func rawFilePartsWithLastHeader(name string, sizes []int64, beforeLast []rawSegm
 }
 
 func (f rawIntakeForm) write(w io.Writer, pause func()) error {
-	for _, s := range f.segments {
+	for i, s := range f.segments {
 		if s.pause {
 			pause()
 			continue
@@ -412,8 +608,15 @@ func (f rawIntakeForm) write(w io.Writer, pause func()) error {
 		if err := copyZeros(w, s.zeros); err != nil {
 			return err
 		}
+		if s.zeros > 0 && (i+1 == len(f.segments) || !f.segments[i+1].pause) {
+			time.Sleep(rawSegmentGap(s.zeros))
+		}
 	}
 	return nil
+}
+
+func rawSegmentGap(zeros int64) time.Duration {
+	return 5*time.Millisecond + time.Duration(zeros)*20*time.Millisecond/(1<<20)
 }
 
 func rawFormFileBytes(f rawIntakeForm) int64 {
@@ -763,18 +966,25 @@ func raceInstrumentedBuild() bool {
 	return false
 }
 
+func logIntakeClasses(t *testing.T, configs []intakeHeapConfig, budget int64) {
+	t.Helper()
+	for _, c := range configs {
+		k := intakeHeapClasses(budget, c)
+		t.Logf("%s: api memory limit %d, half %d; at budget %d: %d x createFormHeapBytes %d + %d x inspectIntakeFormHeapBytes %d + INSPECT_MAX_CONCURRENT %d x analysisFormHeapBytes(work %d) %d = %d (%.2f MiB); fits %v",
+			c.name, c.memory, k.half, budget, createIntakeMaxConcurrent, k.createForm, inspectIntakeMaxConcurrent, k.inspectIntakeForm, c.inspectMaxConcurrent, c.inspectWorkBytes, k.analysisForm, k.sum, mib(k.sum), k.sum <= k.half)
+	}
+}
+
+func headerBlockOnTheLine(kind, path, query, contentType string, contentLength int64) string {
+	return headerBlock(kind, headerReadLimit-len(intakeHead(path, query, "", contentType, contentLength))-16)
+}
+
 func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 	if raceInstrumentedBuild() {
 		t.Skip("built with -race: go1.26.4 cmd/compile disables isAppendOfMake under instrumentation, so bytes.growSlice holds an extra temporary buffer; this test measures the shipped, uninstrumented build (D-24), proven by the runs without -race")
 	}
 	configs := intakeHeapConfigs(t)
-	smallest := configs[0]
-	for _, c := range configs {
-		t.Logf("%s: api memory limit %d, INSPECT_MAX_CONCURRENT %d, %d live forms, share %d bytes (%.1f MiB)", c.name, c.memory, c.inspectMaxConcurrent, c.forms, c.share, float64(c.share)/(1<<20))
-		if c.share < smallest.share {
-			smallest = c
-		}
-	}
+	logIntakeClasses(t, configs, multipartInMemoryBudget)
 	spillSize := int64(multipartInMemoryBudget) + 16<<20
 	probeField := int64(10<<20 - 64<<10)
 	fileOnly := intakeForm{"file only", func(mw *multipart.Writer, pause func()) error {
@@ -792,12 +1002,17 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 			forms = append(forms, admissibleFormOnTheLine(t, kind, mode))
 		}
 	}
+	b := int64(multipartInMemoryBudget)
+	x := lastDoubling(b) - (bytes.MinRead - 1)
+	pendingForm := rawFileParts("worst pending", worstSplit(b, x), nil, 0)
+	spillForm := rawFileParts("worst spill", spillLast(worstSplit(b, x)), nil, 1<<20)
 	for _, path := range []string{"/v1/jobs", "/v1/inspect"} {
+		termName, term := intakeClassTermFor(path, b)
 		for _, form := range forms {
 			t.Run(path+" "+form.name, func(t *testing.T) {
 				p := minHeapOfThree(t, heapProbeServer(), path, form)
 				m := int64(p.heap)
-				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); smallest share = %d bytes (%s: limit %d / 2 / %d forms); m × %d = %d; status %d %v; %d bytes sent", path, form.name, m, float64(m)/(1<<20), smallest.share, smallest.name, smallest.memory, smallest.forms, smallest.forms, m*smallest.forms, p.status, p.payload, p.sent)
+				t.Logf("%s %s: live heap mid-intake m = %d bytes (%.1f MiB); %s(%d) = %d (%.2f MiB); status %d %v; %d bytes sent", path, form.name, m, mib(m), termName, b, term, mib(term), p.status, p.payload, p.sent)
 				if form.name == verifierProbe.name {
 					if p.status != http.StatusRequestEntityTooLarge || p.payload["code"] != "payload_too_large" || p.payload["error"] != formFieldsTooLargeMessage {
 						t.Errorf("%s: status %d payload %v, want 413 payload_too_large %q", path, p.status, p.payload, formFieldsTooLargeMessage)
@@ -810,10 +1025,8 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				if p.err != nil || p.payload["error"] == formFieldsTooLargeMessage {
 					t.Fatalf("%s: an admissible form was not read whole (write error %v, status %d %v)", path, p.err, p.status, p.payload)
 				}
-				for _, c := range configs {
-					if m > c.share {
-						t.Errorf("%s %s: one form holds %d bytes of live heap, more than the share %d of %s (limit %d / 2 / %d live forms)", path, form.name, m, c.share, c.name, c.memory, c.forms)
-					}
+				if m > term {
+					t.Errorf("%s %s: one form holds %d bytes of live heap, more than %s(%d) = %d", path, form.name, m, termName, b, term)
 				}
 			})
 		}
@@ -821,7 +1034,7 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 		var worstMax, pendingMax int64
 		for _, hc := range budgetHeapCases() {
 			t.Run(path+" "+hc.form.name, func(t *testing.T) {
-				r := checkRawHeapCase(t, configs, smallest, path, hc)
+				r := checkRawHeapCase(t, path, hc)
 				if r.max > worstMax {
 					worstName, worstMax = hc.form.name, r.max
 				}
@@ -830,36 +1043,51 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				}
 			})
 		}
-		b := int64(multipartInMemoryBudget)
-		t.Logf("%s summary: largest max %d (%.2f MiB) on %q; model total %d (%.2f MiB); smallest share %d (%.2f MiB, %s); worst pending max / readFormContentBound(%d) = %d / %d = %.3f",
-			path, worstMax, mib(worstMax), worstName, intakeHeapModel(b).total, mib(intakeHeapModel(b).total), smallest.share, mib(smallest.share), smallest.name, b, pendingMax, readFormContentBound(b), float64(pendingMax)/float64(readFormContentBound(b)))
+		for _, base := range []rawIntakeForm{pendingForm, spillForm} {
+			t.Run(path+" "+base.name+"+header block", func(t *testing.T) {
+				ts := startShippedServer(t, heapProbeServer().Routes())
+				ct := "multipart/form-data; boundary=" + rawFormBoundary
+				block := headerBlockOnTheLine("distinct-lf", path, shortIntakeQuery, ct, rawFormLength(base))
+				without := heapOfThree(func() intakeProbe { return liveHeapOfRawOverTCP(t, ts, path, shortIntakeQuery, "", base, 0) })
+				with := heapOfThree(func() intakeProbe { return liveHeapOfRawOverTCP(t, ts, path, shortIntakeQuery, block, base, 0) })
+				head := len(intakeHead(path, shortIntakeQuery, block, ct, rawFormLength(base)))
+				t.Logf("%s %s+header block over TCP through the shipped server: head %d bytes (headerReadLimit %d), %d header lines; without the block min %d max %d; with it min %d max %d (%.2f MiB); block holds min-min %d (%.3f MiB); %s(%d) = %d (%.2f MiB); status %d %v", path, base.name, head, headerReadLimit, strings.Count(block, "\n"), without.min, without.max, with.min, with.max, mib(with.max), with.min-without.min, mib(with.min-without.min), termName, b, term, mib(term), with.last.status, with.last.payload)
+				if !readWhole(without.last) || !readWhole(with.last) {
+					t.Fatalf("%s %s: a form was not read whole (without: %v %d %v; with: %v %d %v)", path, base.name, without.last.err, without.last.status, without.last.payload, with.last.err, with.last.status, with.last.payload)
+				}
+				if with.max > term {
+					t.Errorf("%s %s+header block: one form holds up to %d bytes of live heap, more than %s(%d) = %d", path, base.name, with.max, termName, b, term)
+				}
+				if with.min-without.min < 512<<10 {
+					t.Errorf("%s %s+header block: the parsed header block holds %d bytes, less than 512 KiB: the measurement does not reach the server's header parse", path, base.name, with.min-without.min)
+				}
+			})
+		}
+		t.Logf("%s summary: largest max %d (%.2f MiB) on %q; %s(%d) = %d (%.2f MiB); worst pending max / readFormContentBound(%d) = %d / %d = %.3f",
+			path, worstMax, mib(worstMax), worstName, termName, b, term, mib(term), b, pendingMax, readFormContentBound(b), float64(pendingMax)/float64(readFormContentBound(b)))
 	}
 }
 
-func checkRawHeapCase(t *testing.T, configs []intakeHeapConfig, smallest intakeHeapConfig, path string, hc rawHeapCase) heapRange {
+func checkRawHeapCase(t *testing.T, path string, hc rawHeapCase) heapRange {
 	t.Helper()
 	line := int64(maxFormNonFileBytes - multipartPeekBufferBytes)
-	model := intakeHeapModel(multipartInMemoryBudget)
+	b := int64(multipartInMemoryBudget)
+	termName, term := intakeClassTermFor(path, b)
 	srv := heapProbeServer()
 	r := heapOfThree(func() intakeProbe {
 		return liveHeapOfRaw(t, srv, path, hc.query, hc.header, hc.form, hc.settle)
 	})
 	nonFile := rawFormNonFileBytes(hc.form)
-	t.Logf("%s %s: %d parts, %d file bytes, %d non-file bytes (line %d), query %d bytes, settle %v; live heap min %d (%.2f MiB) max %d (%.2f MiB); model total %d (%.2f MiB); smallest share %d (%s); max × %d = %d; floor %d; upper %v; status %d %v; %d bytes sent",
-		path, hc.form.name, rawFormParts(hc.form), rawFormFileBytes(hc.form), nonFile, line, len(hc.query), hc.settle, r.min, mib(r.min), r.max, mib(r.max), model.total, mib(model.total), smallest.share, smallest.name, smallest.forms, r.max*smallest.forms, hc.floor, hc.upper, r.last.status, r.last.payload, r.last.sent)
+	t.Logf("%s %s: %d parts, %d file bytes, %d non-file bytes (line %d), query %d bytes, settle %v; live heap min %d (%.2f MiB) max %d (%.2f MiB); %s(%d) = %d (%.2f MiB); floor %d; upper %v; status %d %v; %d bytes sent",
+		path, hc.form.name, rawFormParts(hc.form), rawFormFileBytes(hc.form), nonFile, line, len(hc.query), hc.settle, r.min, mib(r.min), r.max, mib(r.max), termName, b, term, mib(term), hc.floor, hc.upper, r.last.status, r.last.payload, r.last.sent)
 	if !readWhole(r.last) {
 		t.Fatalf("%s %s: an admissible form was not read whole (write error %v, status %d %v)", path, hc.form.name, r.last.err, r.last.status, r.last.payload)
 	}
 	if nonFile > line {
 		t.Errorf("%s %s: the form carries %d bytes of non-file data, above the admit line %d", path, hc.form.name, nonFile, line)
 	}
-	for _, c := range configs {
-		if r.max > c.share {
-			t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than the share %d of %s (limit %d / 2 / %d live forms)", path, hc.form.name, r.max, c.share, c.name, c.memory, c.forms)
-		}
-	}
-	if r.max > model.total {
-		t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than intakeHeapModel(multipartInMemoryBudget).total %d", path, hc.form.name, r.max, model.total)
+	if r.max > term {
+		t.Errorf("%s %s: one form holds up to %d bytes of live heap, more than %s(%d) = %d", path, hc.form.name, r.max, termName, b, term)
 	}
 	for _, u := range hc.upper {
 		if r.max > u.bytes {
@@ -872,31 +1100,66 @@ func checkRawHeapCase(t *testing.T, configs []intakeHeapConfig, smallest intakeH
 	return r
 }
 
-func TestIntakeBudgetIsDerivedFromThePodShare(t *testing.T) {
-	configs := intakeHeapConfigs(t)
-	smallest := configs[0]
-	for _, c := range configs {
-		t.Logf("%s: share %d = %d / 2 / (%d + %d + %d)", c.name, c.share, c.memory, createIntakeMaxConcurrent, inspectIntakeMaxConcurrent, c.inspectMaxConcurrent)
-		if c.share < smallest.share {
-			smallest = c
-		}
-	}
+func intakeBudgetFor(configs []intakeHeapConfig, fits func(budget int64, c intakeHeapConfig) bool) int64 {
 	var want int64
 	for n := int64(1); n <= 64; n++ {
-		if intakeHeapModel(n<<20).total <= smallest.share {
+		ok := true
+		for _, c := range configs {
+			if !fits(n<<20, c) {
+				ok = false
+			}
+		}
+		if ok {
 			want = n << 20
 		}
 	}
+	return want
+}
+
+func TestIntakeBudgetIsDerivedFromTheSlotClassSum(t *testing.T) {
+	configs := intakeHeapConfigs(t)
+	want := intakeBudgetFor(configs, func(budget int64, c intakeHeapConfig) bool {
+		k := intakeHeapClasses(budget, c)
+		return k.sum <= k.half
+	})
 	if want == 0 {
-		t.Fatalf("no whole MiB from 1 to 64 keeps intakeHeapModel within the smallest share %d of %s", smallest.share, smallest.name)
+		t.Fatalf("no whole MiB from 1 to 64 keeps the slot-class sum within half the pod memory limit in every shipped configuration")
 	}
+	retained := createRetainedHeapBytes()
+	_, sums := createSniffHeapTerm()
+	t.Logf("inputs: lastDoubling, readFormMaxParts %d, bytes.MinRead %d; nonFileHeapPerByte %d x maxFormNonFileBytes %d; requestLineCopies %d, headerHeapPerByte %d, headerReadLimit %d (apiMaxHeaderBytes %d + %d), urlMaxQueryParams %d x queryParamHeapBytes %d; intakeFixedHeapBytes %d; createSniffHeapBytes %d; uploadHeapBytes %d = %d x %d; createRetainedHeapBytes %d (path %s of the create sniffer inventory: %d); createPostParseHeapBytes %d = max(createSniffHeapBytes, uploadHeapBytes + createRetainedHeapBytes)",
+		readFormMaxParts, bytes.MinRead, nonFileHeapPerByte, maxFormNonFileBytes, requestLineCopies, headerHeapPerByte, headerReadLimit, apiMaxHeaderBytes, netHTTPHeaderSlack, urlMaxQueryParams, queryParamHeapBytes, intakeFixedHeapBytes, createSniffHeapBytes, uploadHeapBytes, storage.UploadPartThreads, uploadWorkerHeapBytes, retained, createRetainedPath, sums[createRetainedPath], createPostParseHeapBytes())
 	for _, b := range []int64{want, want + 1<<20} {
-		m := intakeHeapModel(b)
-		t.Logf("budget %d (%d MiB): lastDoubling %d; content %d = 2 × %d + %d + 2 × %d × (%d + 1); nonFile %d = %d × %d; request %d = %d × %d + %d × %d; fixed %d; total %d (%.2f MiB); smallest share %d (%s); fits %v",
-			b, b>>20, lastDoubling(b), m.content, b, lastDoubling(b), bytes.MinRead, readFormMaxParts, m.nonFile, nonFileHeapPerByte, maxFormNonFileBytes, m.request, requestLineCopies, http.DefaultMaxHeaderBytes, urlMaxQueryParams, queryParamHeapBytes, m.fixed, m.total, mib(m.total), smallest.share, smallest.name, m.total <= smallest.share)
+		for _, c := range configs {
+			analysis := inspectAnalysisHeapBytes(c.inspectWorkBytes)
+			m := intakeHeapModel(b, analysis)
+			k := intakeHeapClasses(b, c)
+			t.Logf("budget %d (%d MiB), %s (memory %d, INSPECT_MAX_CONCURRENT %d, INSPECT_MAX_WORK_BYTES %d): lastDoubling %d; content %d = 2 x %d + %d + 2 x %d x (%d + 1); settled %d = 2 x %d + 2 x %d x (%d + 1); nonFile %d; request %d = (%d + %d) x %d + %d x %d; fixed %d; createForm %d = max(content %d, settled %d + createPostParse %d) + nonFile + request + fixed; inspectIntakeForm %d = content + nonFile + request + fixed; analysisForm %d = settled + inspectAnalysisHeapBytes(%d) %d + nonFile + request + fixed; sum %d x %d + %d x %d + %d x %d = %d (%.2f MiB); half %d (%.2f MiB); fits %v",
+				b, b>>20, c.name, c.memory, c.inspectMaxConcurrent, c.inspectWorkBytes, lastDoubling(b), m.content, b, lastDoubling(b), bytes.MinRead, readFormMaxParts, m.settled, b, bytes.MinRead, readFormMaxParts, m.nonFile, m.request, requestLineCopies, headerHeapPerByte, headerReadLimit, urlMaxQueryParams, queryParamHeapBytes, m.fixed,
+				k.createForm, m.content, m.settled, createPostParseHeapBytes(), k.inspectIntakeForm, k.analysisForm, c.inspectWorkBytes, analysis,
+				createIntakeMaxConcurrent, k.createForm, inspectIntakeMaxConcurrent, k.inspectIntakeForm, c.inspectMaxConcurrent, k.analysisForm, k.sum, mib(k.sum), k.half, mib(k.half), k.sum <= k.half)
+		}
+	}
+	postParse := postParseHeapBytes(t)
+	share := intakeBudgetFor(configs, func(budget int64, c intakeHeapConfig) bool {
+		return intakeHeapModel(budget, postParse).total <= c.memory/2/(createIntakeMaxConcurrent+inspectIntakeMaxConcurrent+c.inspectMaxConcurrent)
+	})
+	for _, c := range configs {
+		forms := createIntakeMaxConcurrent + inspectIntakeMaxConcurrent + c.inspectMaxConcurrent
+		t.Logf("for comparison, the equal share (no longer the rule, D-30): %s share %d = %d / 2 / %d forms; intakeHeapModel(1 MiB, postParse %d).total = %d", c.name, c.memory/2/forms, c.memory, forms, postParse, intakeHeapModel(1<<20, postParse).total)
+	}
+	if share == 0 {
+		t.Logf("for comparison, the equal share derives no budget: no whole MiB from 1 to 64 keeps intakeHeapModel(budget, postParseHeapBytes %d).total within memory / 2 / forms of every configuration", postParse)
+	} else {
+		t.Logf("for comparison, the equal share derives %d (%d MiB)", share, share>>20)
+	}
+	t.Logf("the slot-class sum derives %d (%d MiB); multipartInMemoryBudget = %d", want, want>>20, multipartInMemoryBudget)
+	for _, c := range configs {
+		k := intakeHeapClasses(multipartInMemoryBudget, c)
+		t.Logf("intakeHeapClasses(multipartInMemoryBudget, %s): sum %d, half %d, fits %v", c.name, k.sum, k.half, k.sum <= k.half)
 	}
 	if multipartInMemoryBudget != want {
-		t.Errorf("multipartInMemoryBudget = %d, want %d: the budget is derived from what ReadForm holds, the largest whole MiB with intakeHeapModel(budget).total within the smallest share %d of %s", multipartInMemoryBudget, want, smallest.share, smallest.name)
+		t.Errorf("multipartInMemoryBudget = %d, want %d: the budget is derived from the slot-class sum (D-30), the largest whole MiB whose sum of createIntakeMaxConcurrent create forms, inspectIntakeMaxConcurrent inspect intake forms and INSPECT_MAX_CONCURRENT analysis forms stays within half the pod memory limit of every shipped configuration", multipartInMemoryBudget, want)
 	}
 }
 
