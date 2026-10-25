@@ -1218,6 +1218,40 @@ func runAnalysisChild(t *testing.T) {
 	}
 }
 
+type analysisRowCheck struct {
+	what string
+	call func(data []byte)
+	rows []string
+}
+
+var analysisRowChecks = map[string]analysisRowCheck{
+	"pdf_xref_maps": {"convert.PDFTypedDictUints alone: the scan objects map and the xref map live together in the merge", func(data []byte) {
+		_, _ = convert.PDFTypedDictUints(data, "Pages", "Count", pdfMaxPagesDicts, nil)
+	}, []string{"pdf_merge_maps"}},
+}
+
+func checkAnalysisRows(t *testing.T, c analysisCase, data []byte, work int64) {
+	t.Helper()
+	base, _, _ := strings.Cut(c.name, "@")
+	rc, ok := analysisRowChecks[base]
+	if !ok {
+		return
+	}
+	byName := analysisRowsByName(t)
+	var bound int64
+	for _, name := range rc.rows {
+		bound += byName[name].bound(work)
+	}
+	p := liveHeapPeak(t, func() { rc.call(data) })
+	t.Logf("%s, rows %s: live peak %d B (%.2f MiB), %d GC cycles over %d calls, rows bound %d B (%.2f MiB)", rc.what, strings.Join(rc.rows, " + "), p.peak, mib(p.peak), p.cycles, p.calls, bound, mib(bound))
+	if err := liveHeapPeakValid(p); err != nil {
+		t.Fatal(err)
+	}
+	if p.peak > bound {
+		t.Errorf("%s: live peak %d B is above rows %s, %d B", rc.what, p.peak, strings.Join(rc.rows, " + "), bound)
+	}
+}
+
 func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration time.Duration, term int64) {
 	t.Helper()
 	for _, c := range cases {
@@ -1259,6 +1293,7 @@ func runAnalysisCases(t *testing.T, cases []analysisCase, work int64, duration t
 			if m.peak.peak > term {
 				t.Errorf("live peak %d B is above inspectAnalysisHeapBytes(work) %d B", m.peak.peak, term)
 			}
+			checkAnalysisRows(t, c, data, work)
 			if measured != duration {
 				t.Logf("race-instrumented build: both runs under MaxDuration %s, the %s + %s time check runs on the shipped build", measured, duration, inspectAnalyzerTimeSlack)
 			} else if m.sampled.elapsed > duration {
