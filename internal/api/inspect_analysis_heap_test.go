@@ -125,6 +125,9 @@ func liveHeapPeakValid(p livePeak) error {
 	if p.cycles < liveHeapMinGCCycles {
 		return fmt.Errorf("%d GC cycles over %d calls, want at least %d: a peak sampled before the collector marked the call's heap is not a measurement", p.cycles, p.calls, liveHeapMinGCCycles)
 	}
+	if p.peak <= 0 {
+		return fmt.Errorf("live peak %d B over %d GC cycles and %d calls: no cycle marked the call's heap above the base, so the peak is not a measurement", p.peak, p.cycles, p.calls)
+	}
 	return nil
 }
 
@@ -132,6 +135,7 @@ func liveHeapPeak(t *testing.T, call func()) livePeak {
 	t.Helper()
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
+	runtime.GC()
 	runtime.GC()
 	s := newLiveHeapSamples()
 	baseLive, baseAlloc, baseCycles := readLiveHeap(s)
@@ -197,6 +201,11 @@ func TestLiveHeapPeakRejectsAPeakWithoutGCCycles(t *testing.T) {
 	}
 	if err := liveHeapPeakValid(livePeak{peak: 1 << 20, cycles: liveHeapMinGCCycles, calls: 1}); err != nil {
 		t.Error(err)
+	}
+	for _, peak := range []int64{0, -1, -1 << 20} {
+		if err := liveHeapPeakValid(livePeak{peak: peak, cycles: liveHeapEnoughGCCycles, calls: 55}); err == nil {
+			t.Errorf("a live peak of %d B over %d GC cycles was accepted", peak, liveHeapEnoughGCCycles)
+		}
 	}
 	var held []byte
 	p := liveHeapPeak(t, func() { held = make([]byte, 4<<20); runtime.KeepAlive(held) })
