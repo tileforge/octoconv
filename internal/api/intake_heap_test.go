@@ -256,6 +256,7 @@ func liveHeapOverTCP(t *testing.T, ts *httptest.Server, path, query, headerBlock
 	paused, resume := make(chan struct{}), make(chan struct{})
 	writeErr := make(chan error, 1)
 	answered := make(chan tcpAnswer, 1)
+	awaitShippedServerQuiet(t, ts)
 	base := liveHeap()
 	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,9 +48,49 @@ func startShippedServer(t *testing.T, handler http.Handler, scale ...func(*http.
 	for _, f := range scale {
 		f(ts.Config)
 	}
+	conns := &shippedConns{}
+	hook := ts.Config.ConnState
+	ts.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			conns.open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			conns.open.Add(-1)
+		}
+		if hook != nil {
+			hook(c, state)
+		}
+	}
 	ts.Start()
-	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
+	addr := ts.Listener.Addr().String()
+	shippedServerConns.Store(addr, conns)
+	t.Cleanup(func() {
+		closeWithin(t, ts, 10*time.Second)
+		shippedServerConns.Delete(addr)
+	})
 	return ts
+}
+
+type shippedConns struct {
+	open atomic.Int64
+}
+
+var shippedServerConns sync.Map
+
+func awaitShippedServerQuiet(t *testing.T, ts *httptest.Server) {
+	t.Helper()
+	v, ok := shippedServerConns.Load(ts.Listener.Addr().String())
+	if !ok {
+		t.Fatalf("%s was not started by startShippedServer", ts.Listener.Addr())
+	}
+	conns := v.(*shippedConns)
+	deadline := time.Now().Add(30 * time.Second)
+	for n := conns.open.Load(); n > 0; n = conns.open.Load() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the server still holds %d connections 30 s after the last answer: a heap base read now counts a request the server has not released", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func distinctHeaderKey(i int) string {
