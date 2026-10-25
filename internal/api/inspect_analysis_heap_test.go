@@ -478,15 +478,49 @@ func pdfMaxOpaqueRanges(n int64) int64 { return max(n/48, pdfOpaqueRangeFloor) }
 
 func pdfInflateLimit(work int64) int64 { return min(pdfMaxInflatedStreamBytes, work/4) + 1 }
 
+func pdfNextOpaqueRangeCap(c, limit int64) int64 {
+	half := limit/2 + limit%2
+	next := max(64, 2*c)
+	if next > half {
+		next = half
+		if c >= half {
+			next = limit
+		}
+	}
+	return min(next, limit)
+}
+
+func pdfOpaqueRangeGrowth(limit, n int64) sliceGrowth {
+	var g sliceGrowth
+	var c int64
+	for c < n {
+		next := pdfNextOpaqueRangeCap(c, limit)
+		g.peak = max(g.peak, roundAlloc(c*pdfOpaqueRangeBytes, false)+roundAlloc(next*pdfOpaqueRangeBytes, false))
+		g.caps = append(g.caps, c)
+		c = next
+	}
+	g.final = roundAlloc(c*pdfOpaqueRangeBytes, false)
+	return g
+}
+
+func pdfOpaqueRangesOf(n int64) sliceGrowth {
+	return pdfOpaqueRangeGrowth(pdfMaxOpaqueRanges(n), pdfMaxOpaqueRanges(n))
+}
+
 func pdfOpaqueGrowthPeak(work int64) int64 {
-	head := doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfHeadBytes(work)), false)
-	tail := doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfTailBytes(work)), false)
+	head := pdfOpaqueRangesOf(pdfHeadBytes(work))
+	tail := pdfOpaqueRangesOf(pdfTailBytes(work))
 	return max(head.peak, head.final+tail.peak)
 }
 
 func pdfOpaqueKept(work int64) int64 {
-	return doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfHeadBytes(work)), false).final +
-		doublingGrowth(pdfOpaqueRangeBytes, 64, pdfMaxOpaqueRanges(pdfTailBytes(work)), false).final
+	return pdfOpaqueRangesOf(pdfHeadBytes(work)).final + pdfOpaqueRangesOf(pdfTailBytes(work)).final
+}
+
+func pdfValidatedStreams(work int64) sliceGrowth {
+	h := pdfHeadBytes(work)
+	n := min(pdfMaxOpaqueRanges(h), pdfMaxTokenScanIterations, h/pdfMinValidatedStreamSpan+1)
+	return pdfOpaqueRangeGrowth(pdfMaxOpaqueRanges(h), n)
 }
 
 func pdfScannedObjects(work int64) int64 {
@@ -512,20 +546,18 @@ func pdfAnalysisRows() []analysisRow {
 			[]analysisSource{{pdf, "tail, tailOK = readWindow(r, tailOff, tailReserve, size)"}},
 			[]string{"inspect.AnalyzePDF"}, "the whole of AnalyzePDF",
 			func(w int64) int64 { return roundAlloc(pdfTailBytes(w), false) }},
-		{"pdf_opaque_growth", "opaque ranges while they grow: appendOpaqueRange doubles from 64 to pdfMaxOpaqueRanges(len) = max(len/48, 4096) ranges of 16 B, old and new arrays live at each step (up to 32 B a range of the limit at the last step, not 24); the head's kept array with the tail's growth",
-			[]analysisSource{{pdf, "grown := make([]pdfOpaqueRange, len(ranges), min(max(64, 2*cap(ranges)), limit))"}, {pdf, "return max(n/48, pdfOpaqueRangeFloor)"}},
+		{"pdf_opaque_growth", "opaque ranges while they grow: appendOpaqueRange doubles from 64 while the double is at most half of pdfMaxOpaqueRanges(len) = max(len/48, 4096), then takes half, then the limit (D-31, D-29a); 16 B ranges, old and new arrays live at each step, at most 24 B a range of the limit plus rounding; the head's kept array with the tail's growth",
+			[]analysisSource{{pdf, "grown := make([]pdfOpaqueRange, len(ranges), nextOpaqueRangeCap(cap(ranges), limit))"}, {pdf, "half := limit/2 + limit%2"}, {pdf, "return max(n/48, pdfOpaqueRangeFloor)"}},
 			[]string{"inspect.AnalyzePDF"}, "head and tail, inside scanPDFOpaqueRanges",
 			pdfOpaqueGrowthPeak},
 		{"pdf_opaque_kept", "opaque ranges kept: headOpaque and tailOpaque at their final capacity, in scope until AnalyzePDF returns",
 			[]analysisSource{{pdf, "headOpaque, headOpaqueCeilingHit := scanPDFOpaqueRanges(head, tr)"}},
 			[]string{"inspect.AnalyzePDF"}, "the text layer and the page count",
 			pdfOpaqueKept},
-		{"pdf_validated_streams", "text layer stream ranges: scanValidatedStreamRanges appends with no cap of its own, one range per at least 17 B of the head (\">>streamendstream\") and at most maxTokenScanIterations; append growth (old and new array) of 16 B elements",
-			[]analysisSource{{pdftext, "ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})"}},
+		{"pdf_validated_streams", "text layer stream ranges: scanValidatedStreamRanges appends through appendOpaqueRange under pdfMaxOpaqueRanges(len) (D-31 F7), at most min(limit, one per 17 B of the head, maxTokenScanIterations); growth by the opaque range schedule, its peak counted through the stream loop",
+			[]analysisSource{{pdftext, "ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd}, limit, tr)"}, {pdftext, "limit := pdfMaxOpaqueRanges(len(buf))"}},
 			[]string{"inspect.AnalyzePDF"}, "the whole stream loop of scanPDFTextLayer",
-			func(w int64) int64 {
-				return appendGrowth(16, min(pdfMaxTokenScanIterations, pdfHeadBytes(w)/pdfMinValidatedStreamSpan)+1, false).peak
-			}},
+			func(w int64) int64 { return pdfValidatedStreams(w).peak }},
 		{"pdf_inflate_growth", "inflate buffer while it grows: state.inflate doubles from 512 B to limit = min(pdfMaxInflatedStreamBytes, remaining) + 1, remaining <= work/4; old and new live at each step",
 			[]analysisSource{{pdftext, "grown := make([]byte, len(out), min(max(512, 2*int64(cap(out))), limit))"}, {pdftext, "limit := min(int64(pdfMaxInflatedStreamBytes), state.remaining)"}},
 			[]string{"inspect.AnalyzePDF"}, "the stream ranges, the zlib state",
@@ -993,18 +1025,25 @@ func pdfRawLiteral(work int64) []byte {
 	return []byte(pdf + strings.Repeat("x", int(work)-len(pdf)))
 }
 
-func pdfXrefMapsAndName(work int64) []byte {
+func pdfXrefMaps(work int64) []byte {
 	var b bytes.Buffer
 	b.WriteString("%PDF-1.4\n")
 	for n := 1; n <= pdfMaxIndexedObjects; n++ {
 		fmt.Fprintf(&b, "%d 0 obj\n", n)
 	}
-	var payload bytes.Buffer
-	offsets := make([]int, pdfMaxIndexedObjects)
 	first := pdfMaxIndexedObjects + 1
-	for i := range offsets {
-		offsets[i] = payload.Len()
-		fmt.Fprintf(&payload, "%d 0 obj\n", first+i)
+	const fixed = 256
+	room := int(work) - b.Len() - fixed
+	var payload bytes.Buffer
+	var offsets []int
+	for i := 0; i < pdfMaxIndexedObjects; i++ {
+		header := fmt.Sprintf("%d 0 obj\n", first+i)
+		if room < len(header)+int(pdfXrefEntryBytes) {
+			break
+		}
+		room -= len(header) + int(pdfXrefEntryBytes)
+		offsets = append(offsets, payload.Len())
+		payload.WriteString(header)
 	}
 	header := fmt.Sprintf("<</Length %d>>\nstream\n", payload.Len())
 	base := b.Len() + len(header)
@@ -1017,9 +1056,8 @@ func pdfXrefMapsAndName(work int64) []byte {
 		fmt.Fprintf(&b, "%010d 00000 n \n", base+off)
 	}
 	fmt.Fprintf(&b, "trailer\n<<>>\nstartxref\n%d\n%%%%EOF\n", xref)
-	head, tail := "<</", ">>\n"
-	if rest := int(work) - b.Len() - len(head) - len(tail); rest > 0 {
-		b.WriteString(head + strings.Repeat("a", rest) + tail)
+	if rest := int(work) - b.Len(); rest > 1 {
+		b.WriteString(strings.Repeat("%\n", rest/2))
 	}
 	return b.Bytes()
 }
@@ -1059,17 +1097,33 @@ func characteristicRoute(want map[string]any) func(a inspectAnalysis) (string, e
 
 func pdfAnalysisCases(work int64) []analysisCase {
 	flate := func() []byte { d, _ := pdfFlateWorst(work); return d }
+	scanText := map[string]any{"text_layer": "absent"}
+	if work > pdfMaxTokenScanIterations {
+		scanText = map[string]any{"text_layer_reason": "work_ceiling_bytes"}
+	}
+	with := func(base map[string]any, kv ...any) map[string]any {
+		out := map[string]any{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			out[kv[i].(string)] = kv[i+1]
+		}
+		return out
+	}
+	objects := func() []byte { return pdfObjects(work) }
+	keyword := func() []byte { return pdfLongKeyword(work) }
 	return []analysisCase{
 		{"pdf_flate_worst", "pdf", "pdf", []string{"pdf_text_inflate"}, flate, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_ranges", "pdf", "pdf", []string{"pdf_opaque_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "(%)\n", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_dict_names", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfDictNames(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_objects", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfObjects(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "work_ceiling_bytes"})},
-		{"pdf_long_name", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfLongName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
-		{"pdf_validated_streams", "pdf", "pdf", []string{"pdf_text_inflate"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", ">>streamendstream", "") }, characteristicRoute(map[string]any{"text_layer": "absent", "page_count_reason": "malformed_input"})},
+		{"pdf_ranges", "pdf", "pdf", []string{"pdf_opaque_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "(%)\n", "") }, characteristicRoute(with(scanText, "page_count_reason", "malformed_input"))},
+		{"pdf_dict_names", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfDictNames(work) }, characteristicRoute(with(scanText, "page_count_reason", "malformed_input"))},
+		{"pdf_objects", "pdf", "pdf", []string{"pdf_page_count_scan"}, objects, referencePageCountRoute(objects, scanText)},
+		{"pdf_long_name", "pdf", "pdf", []string{"pdf_page_count_walk"}, func() []byte { return pdfLongName(work) }, characteristicRoute(with(scanText, "page_count_reason", "malformed_input"))},
+		{"pdf_validated_streams", "pdf", "pdf", []string{"pdf_text_inflate"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", ">>streamendstream", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
 		{"pdf_resolved_streams", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfRepeated(work, "%PDF-1.4\n", "<</Length 0>>stream\nendstream\n", "") }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "malformed_input"})},
 		{"pdf_raw_literal", "pdf", "pdf", []string{"pdf_text_operators"}, func() []byte { return pdfRawLiteral(work) }, characteristicRoute(map[string]any{"text_layer": "present"})},
-		{"pdf_xref_maps", "pdf", "pdf", []string{"pdf_page_count_scan", "pdf_page_count_merge"}, func() []byte { return pdfXrefMapsAndName(work) }, characteristicRoute(map[string]any{"text_layer_reason": "work_ceiling_bytes", "page_count_reason": "work_ceiling_bytes"})},
-		{"pdf_long_keyword", "pdf", "pdf", []string{"pdf_page_count_scan"}, func() []byte { return pdfLongKeyword(work) }, referencePageCountRoute(func() []byte { return pdfLongKeyword(work) }, map[string]any{"text_layer_reason": "work_ceiling_bytes"})},
+		{"pdf_xref_maps", "pdf", "pdf", []string{"pdf_page_count_scan", "pdf_page_count_merge"}, func() []byte { return pdfXrefMaps(work) }, characteristicRoute(with(scanText, "page_count_reason", "work_ceiling_bytes"))},
+		{"pdf_long_keyword", "pdf", "pdf", []string{"pdf_page_count_scan"}, keyword, referencePageCountRoute(keyword, scanText)},
 	}
 }
 
@@ -1238,7 +1292,7 @@ func TestInspectAnalysisStaysWithinItsTerm(t *testing.T) {
 		got, p := inspectAnalysisHeapTerm(t, w)
 		t.Logf("configuration %s: work %d, inspectAnalysisHeapBytes = %d B (%.2f MiB), set by %s", name, w, got, mib(got), p.name)
 	}
-	for _, f := range []struct{ name, path string }{{"F4 encoding/xml Token over one rels/ODF/workbook part", "container_decode"}, {"F5 PDF names in PDFTypedDictUints", "pdf_page_count_walk"}} {
+	for _, f := range []struct{ name, path string }{{"F4 encoding/xml Token over one rels/ODF/workbook part", "container_decode"}} {
 		b := analysisPathBytes(t, analysisPathByName(t, f.path), work)
 		t.Logf("%s: path %s %d B (%.2f MiB), margin to the term %d B (%.2f MiB)", f.name, f.path, b, mib(b), term-b, mib(term-b))
 	}
@@ -1246,6 +1300,32 @@ func TestInspectAnalysisStaysWithinItsTerm(t *testing.T) {
 	cases = append(cases, pdfAnalysisCases(work)...)
 	cases = append(cases, otherAnalysisCases(t, work)...)
 	runAnalysisCases(t, cases, work, duration, term)
+	for _, w := range shippedSmallerWorks(t, configs, work) {
+		var smaller []analysisCase
+		for _, c := range pdfAnalysisCases(w) {
+			c.name += fmt.Sprintf("@%dMiB", w>>20)
+			smaller = append(smaller, c)
+		}
+		runAnalysisCases(t, smaller, w, duration, inspectAnalysisHeapBytes(w))
+	}
+}
+
+func shippedSmallerWorks(t *testing.T, configs map[string]string, work int64) []int64 {
+	t.Helper()
+	seen := map[int64]bool{}
+	var out []int64
+	for name, v := range configs {
+		w := transportCapInt(t, name, "INSPECT_MAX_WORK_BYTES", v)
+		if w < work && !seen[w] {
+			seen[w] = true
+			out = append(out, w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] > out[j] })
+	if len(out) == 0 {
+		t.Fatalf("no shipped configuration sets INSPECT_MAX_WORK_BYTES below %d: the smaller-work subtests would run on nothing", work)
+	}
+	return out
 }
 
 func analysisZip(t *testing.T, entries func(zw *zip.Writer)) []byte {

@@ -365,6 +365,19 @@ func lexTokenPDFs() []analyzerInput {
 	return in
 }
 
+func validatedStreamPDFs() []analyzerInput {
+	const n = 256 << 10
+	head := "%PDF-1.4\n"
+	text := ">>stream\n" + strings.Repeat(corpusText, 10) + "endstream\n"
+	return []analyzerInput{
+		{name: "validated_streams/256KiB", data: []byte(head + string(repeatTo(">>streamendstream", n-len(head)))), maxBytes: 8 << 20},
+		{name: "validated_streams_text_first/256KiB", data: []byte(head + text + string(repeatTo(">>streamendstream", n-len(head)-len(text)))), maxBytes: 8 << 20},
+		{name: "validated_streams_at_cap", data: []byte(head + strings.Repeat(">>streamendstream", pdfMaxOpaqueRanges(len(head)+17*pdfOpaqueRangeFloor))), maxBytes: 8 << 20},
+		{name: "validated_streams_over_cap", data: []byte(head + strings.Repeat(">>streamendstream", pdfMaxOpaqueRanges(len(head)+17*pdfOpaqueRangeFloor)+1)), maxBytes: 8 << 20},
+		{name: "validated_streams_unterminated_over_cap", data: []byte(head + strings.Repeat(">>streamendstream", pdfOpaqueRangeFloor) + ">>stream (never ends"), maxBytes: 8 << 20},
+	}
+}
+
 func analyzerDifferentialCorpus(t *testing.T) []analyzerInput {
 	t.Helper()
 	gen := generatedPDFs()
@@ -376,6 +389,7 @@ func analyzerDifferentialCorpus(t *testing.T) []analyzerInput {
 	in = append(in, xref...)
 	in = append(in, mutatedPDFsFrom("xref_mutation", 17, xref, 50)...)
 	in = append(in, lexTokenPDFs()...)
+	in = append(in, validatedStreamPDFs()...)
 	return in
 }
 
@@ -445,6 +459,10 @@ func closedListOpaqueRow(run referenceRun) bool {
 	return run.headRanges > pdfMaxOpaqueRanges(run.headLen) || (run.tailLen > 0 && run.tailRanges > pdfMaxOpaqueRanges(run.tailLen))
 }
 
+func closedListValidatedRow(run referenceRun) bool {
+	return run.validated > pdfMaxOpaqueRanges(run.headLen)
+}
+
 func closedListMergedRow(run referenceRun) bool {
 	return run.merged > pdfref805d49da.MaxIndexedObjects
 }
@@ -474,6 +492,7 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 	fired := map[string]int{}
 	differed := map[string]int{}
 	knownThenUnknown := 0
+	validatedChanged, validatedPresent := 0, 0
 	var rows []closedListRow
 	for _, in := range corpus {
 		t.Run(in.name, func(t *testing.T) {
@@ -482,6 +501,7 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 			textRow, k, _ := closedListTextStep(refRun.steps)
 			opaqueRow := closedListOpaqueRow(refRun)
 			mergedRow := closedListMergedRow(refRun)
+			validatedRow := closedListValidatedRow(refRun)
 			got := newPDFOutcome(in)
 			var fire []string
 			if textRow != "" {
@@ -490,16 +510,19 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 			if opaqueRow {
 				fire = append(fire, "V4")
 			}
+			if validatedRow {
+				fire = append(fire, "V6")
+			}
 			if mergedRow {
 				fire = append(fire, "V7")
 			}
 			if len(fire) > 0 {
-				o := referenceOracle{opaqueCap: opaqueRow, mergedCap: mergedRow}
+				o := referenceOracle{opaqueCap: opaqueRow, mergedCap: mergedRow, validatedCap: validatedRow}
 				if textRow != "" {
 					o.textLayer = closedListTextRow
 				}
 				oracle, oracleRun := referencePDFOutcome(in, o)
-				if oracleRun.textRow != textRow {
+				if !validatedRow && oracleRun.textRow != textRow {
 					t.Fatalf("oracle run fired %q, reference trace %q", oracleRun.textRow, textRow)
 				}
 				want = oracle
@@ -515,6 +538,8 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 						rows[len(rows)-1].reference = checksVerdict(ref)
 						rows[len(rows)-1].oracle = checksVerdict(oracle)
 						rows[len(rows)-1].got = checksVerdict(got)
+					case "V6":
+						rows[len(rows)-1].k = refRun.validated
 					case "V7":
 						rows[len(rows)-1].k = refRun.merged
 						rows[len(rows)-1].reference = pageVerdict(ref)
@@ -525,14 +550,29 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 						}
 					}
 				}
-				if opaqueRow && textRow == "" && !mergedRow && !reflect.DeepEqual(oracle.res.Characteristics, ref.res.Characteristics) {
+				if opaqueRow && textRow == "" && !mergedRow && !validatedRow && !reflect.DeepEqual(oracle.res.Characteristics, ref.res.Characteristics) {
 					t.Fatalf("V4 oracle changed characteristics that do not use opaque ranges:\n oracle:    %v\n reference: %v", oracle.res.Characteristics, ref.res.Characteristics)
 				}
 				if mergedRow {
-					o.mergedCap = false
-					unchanged, _ := referencePDFOutcome(in, o)
+					without := o
+					without.mergedCap = false
+					unchanged, _ := referencePDFOutcome(in, without)
 					if !onlyKeysDiffer(oracle, unchanged, "page_count", "page_count_reason") {
 						t.Fatalf("V7 oracle changed more than page_count and its reason:\n oracle:    %+v\n unchanged: %+v", oracle.res, unchanged.res)
+					}
+				}
+				if validatedRow {
+					without := o
+					without.validatedCap = false
+					unchanged, _ := referencePDFOutcome(in, without)
+					if !onlyKeysDiffer(oracle, unchanged, "text_layer", "text_layer_reason") {
+						t.Fatalf("V6 oracle changed more than text_layer and its reason:\n oracle:    %+v\n unchanged: %+v", oracle.res, unchanged.res)
+					}
+					if textVerdict(oracle) != textVerdict(ref) {
+						validatedChanged++
+					}
+					if oracle.res.Characteristics["text_layer"] == "present" {
+						validatedPresent++
 					}
 				}
 			}
@@ -544,9 +584,9 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].row+rows[i].input < rows[j].row+rows[j].input })
 	var b strings.Builder
-	fmt.Fprintf(&b, "closed-list rows over %d inputs: fired %v, outcome differs from the reference %v; V7 inputs where the reference knows page_count and the new outcome does not: %d\n", len(corpus), fired, differed, knownThenUnknown)
+	fmt.Fprintf(&b, "closed-list rows over %d inputs: fired %v, outcome differs from the reference %v; V7 inputs where the reference knows page_count and the new outcome does not: %d; V6 inputs whose text layer verdict changes: %d, where it stays present: %d\n", len(corpus), fired, differed, knownThenUnknown, validatedChanged, validatedPresent)
 	fmt.Fprintf(&b, "%-4s %-72s %3s  %-34s %-34s %s\n", "row", "input", "k", "reference", "oracle", "new")
-	fmt.Fprintf(&b, "(k: the stream of V1-V3; -1 for V4; the merged object index |scan objects u xref numbers| for V7)\n")
+	fmt.Fprintf(&b, "(k: the stream of V1-V3; -1 for V4; the validated stream ranges of the reference for V6; the merged object index |scan objects u xref numbers| for V7)\n")
 	for _, r := range rows {
 		if strings.HasPrefix(r.input, "mutation/") && r.reference == r.oracle {
 			continue
@@ -554,7 +594,7 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 		fmt.Fprintf(&b, "%-4s %-72s %3d  %-34s %-34s %s\n", r.row, r.input, r.k, r.reference, r.oracle, r.got)
 	}
 	t.Log(b.String())
-	for _, row := range []string{"V1", "V2", "V3", "V4", "V7"} {
+	for _, row := range []string{"V1", "V2", "V3", "V4", "V6", "V7"} {
 		if fired[row] == 0 {
 			t.Errorf("closed-list row %s never fired on the corpus", row)
 		}
@@ -564,6 +604,9 @@ func TestAnalyzerVerdictsMatchTheReferenceOutsideTheClosedList(t *testing.T) {
 	}
 	if knownThenUnknown == 0 {
 		t.Errorf("closed-list row V7 never fired on an input whose page_count the reference knows")
+	}
+	if validatedPresent == 0 {
+		t.Errorf("closed-list row V6 never fired on an input whose text layer stays present")
 	}
 }
 
@@ -704,6 +747,96 @@ func TestPDFOpaqueRangesStayUnderTheirCap(t *testing.T) {
 	}
 }
 
+var goSizeClasses = []int{0, 8, 16, 24, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 576, 640, 704, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304, 2688, 3072, 3200, 3456, 4096, 4864, 5376, 6144, 6528, 6784, 6912, 8192, 9472, 9728, 10240, 10880, 12288, 13568, 14336, 16384, 18432, 19072, 20480, 21760, 24576, 27264, 28672, 32768}
+
+func roundNoScanAlloc(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n <= 32768 {
+		return goSizeClasses[sort.SearchInts(goSizeClasses, n)]
+	}
+	return (n + 8191) &^ 8191
+}
+
+type capTransition struct{ old, new int }
+
+func opaqueGrowthSchedule(limit int, tr *Tracker) (transitions []capTransition, final []pdfOpaqueRange, refused bool) {
+	var ranges []pdfOpaqueRange
+	for i := 0; i < limit; i++ {
+		before := cap(ranges)
+		var ok bool
+		ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: i, end: i + 1}, limit, tr)
+		if !ok {
+			return transitions, ranges, true
+		}
+		if cap(ranges) != before {
+			transitions = append(transitions, capTransition{before, cap(ranges)})
+		}
+	}
+	_, ok := appendOpaqueRange(ranges, pdfOpaqueRange{start: limit, end: limit + 1}, limit, tr)
+	return transitions, ranges, !ok
+}
+
+func opaqueGrowthBound(n int) int {
+	return max(n/2, 24*pdfOpaqueRangeFloor) + 2*8192
+}
+
+func TestOpaqueRangeGrowthStaysUnderHalfTheHead(t *testing.T) {
+	for _, n := range []int{15, 65536, 196608, 1 << 20, 8<<20 - 64<<10, 8 << 20} {
+		limit := pdfMaxOpaqueRanges(n)
+		tr := NewTracker(Budget{MaxDuration: analyzerDifferentialDuration})
+		transitions, final, refused := opaqueGrowthSchedule(limit, tr)
+		bound := opaqueGrowthBound(n)
+		var steps []string
+		worst, worstStep := 0, capTransition{}
+		for _, s := range transitions {
+			live := roundNoScanAlloc(16*s.old) + roundNoScanAlloc(16*s.new)
+			steps = append(steps, fmt.Sprintf("%d->%d", s.old, s.new))
+			if live > worst {
+				worst, worstStep = live, s
+			}
+			if live > bound {
+				t.Errorf("n = %d: growth step %d -> %d holds alloc(16 x %d) + alloc(16 x %d) = %d + %d = %d B, want at most max(n/2, 24 x %d) + 2 x 8192 = %d B", n, s.old, s.new, s.old, s.new, roundNoScanAlloc(16*s.old), roundNoScanAlloc(16*s.new), live, pdfOpaqueRangeFloor, bound)
+			}
+		}
+		t.Logf("n = %d: limit %d, %d transitions [%s]; worst step %d -> %d holds %d + %d = %d B, bound %d B", n, limit, len(transitions), strings.Join(steps, " "), worstStep.old, worstStep.new, roundNoScanAlloc(16*worstStep.old), roundNoScanAlloc(16*worstStep.new), worst, bound)
+		if cap(final) != limit || len(final) != limit {
+			t.Errorf("n = %d: final ranges %d of capacity %d, want %d of capacity %d", n, len(final), cap(final), limit, limit)
+		}
+		if !refused {
+			t.Errorf("n = %d: appendOpaqueRange accepted range %d over the limit %d", n, limit+1, limit)
+		}
+		if tr.ExhaustedReason() != ReasonWorkCeilingBytes {
+			t.Errorf("n = %d: the refused append left the tracker at %q, want %q", n, tr.ExhaustedReason(), ReasonWorkCeilingBytes)
+		}
+	}
+}
+
+func TestPDFValidatedStreamRangesStayUnderTheirCap(t *testing.T) {
+	head := append([]byte("%PDF-1.4\n"), repeatTo(">>streamendstream", 8<<20-len("%PDF-1.4\n"))...)
+	limit := pdfMaxOpaqueRanges(len(head))
+	tr := NewTracker(Budget{MaxDuration: analyzerDifferentialDuration})
+	var ranges []pdfOpaqueRange
+	var ceilingHit, complete bool
+	allocated := allocatedBy(func() { ranges, ceilingHit, complete = scanValidatedStreamRanges(head, tr) })
+	transitions, _, _ := opaqueGrowthSchedule(limit, nil)
+	scheduled := 0
+	for _, s := range transitions {
+		scheduled += roundNoScanAlloc(16 * s.new)
+	}
+	t.Logf("pdf_validated_streams head %d B: %d ranges of capacity %d (limit %d), ceilingHit=%v complete=%v exhausted %q; allocated %d B, the growth schedule allocates %d B over %d transitions", len(head), len(ranges), cap(ranges), limit, ceilingHit, complete, tr.ExhaustedReason(), allocated, scheduled, len(transitions))
+	if !ceilingHit || len(ranges) != limit || cap(ranges) != limit {
+		t.Errorf("scanValidatedStreamRanges returned %d ranges of capacity %d with ceilingHit=%v, want exactly %d ranges, capacity %d and the ceiling", len(ranges), cap(ranges), ceilingHit, limit, limit)
+	}
+	if tr.ExhaustedReason() != ReasonWorkCeilingBytes {
+		t.Errorf("scanValidatedStreamRanges left the tracker at %q, want %q", tr.ExhaustedReason(), ReasonWorkCeilingBytes)
+	}
+	if allocated > uint64(scheduled)+64<<10 {
+		t.Errorf("scanValidatedStreamRanges allocated %d B, want at most the growth schedule's %d B + 64 KiB: the ranges grow outside appendOpaqueRange", allocated, scheduled)
+	}
+}
+
 func realisticPDFHeads() []analyzerInput {
 	rng := rand.New(rand.NewPCG(78, 152))
 	var in []analyzerInput
@@ -803,7 +936,7 @@ func TestPDFObjectIndexCapLeavesRealFilesAlone(t *testing.T) {
 func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
 	in := repositoryPDFs(t)
 
-	t.Logf("pdfMaxOpaqueRanges(n) = max(n/48, %d) (D-29a): a pdfOpaqueRange is %d B; ranges at the cap grown by doubling capped at the cap hold the old and new arrays at once, (1/2 + 1) x 16 = 24 B per range, so 24 x n/48 = n/2 above the floor and 24 x %d = %d B below it", pdfOpaqueRangeFloor, 16, pdfOpaqueRangeFloor, 24*pdfOpaqueRangeFloor)
+	t.Logf("pdfMaxOpaqueRanges(n) = max(n/48, %d) (D-29a): a pdfOpaqueRange is %d B; ranges grown by doubling to half the cap and then to the cap hold the old and new arrays at once at the last step, (1/2 + 1) x 16 = 24 B per range plus the rounding of two allocations, so 24 x n/48 = n/2 above the floor and 24 x %d = %d B below it", pdfOpaqueRangeFloor, 16, pdfOpaqueRangeFloor, 24*pdfOpaqueRangeFloor)
 	for _, n := range []int{0, 15, 4096, 48 * pdfOpaqueRangeFloor, 1 << 20, 8 << 20} {
 		limit := pdfMaxOpaqueRanges(n)
 		if 24*limit > max(n/2, 24*pdfOpaqueRangeFloor) {
@@ -812,21 +945,28 @@ func TestPDFOpaqueRangeCapLeavesRealFilesAlone(t *testing.T) {
 	}
 	worst := 0.0
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-62s %9s %7s %8s %7s\n", "input", "n (B)", "ranges", "cap", "ratio")
+	worstValidated := 0.0
+	fmt.Fprintf(&b, "%-62s %9s %7s %8s %7s %9s %7s\n", "input", "n (B)", "ranges", "cap", "ratio", "validated", "ratio")
 	for _, c := range in {
 		s, _ := referenceScanPDFStreamRanges(c.data, nil)
 		cm, _ := referenceScanPDFCommentRanges(c.data, nil)
 		l, _ := referenceScanPDFLiteralAndHexStringRanges(c.data, nil)
+		_, _, _, validated := referenceScanValidatedStreamRanges(c.data, nil, 0)
 		total := len(s) + len(cm) + len(l)
 		limit := pdfMaxOpaqueRanges(len(c.data))
 		ratio := float64(total) / float64(limit)
+		validatedRatio := float64(validated) / float64(limit)
 		worst = max(worst, ratio)
-		fmt.Fprintf(&b, "%-62s %9d %7d %8d %7.4f\n", c.name, len(c.data), total, limit, ratio)
+		worstValidated = max(worstValidated, validatedRatio)
+		fmt.Fprintf(&b, "%-62s %9d %7d %8d %7.4f %9d %7.4f\n", c.name, len(c.data), total, limit, ratio, validated, validatedRatio)
 		if ratio > 0.25 {
 			t.Errorf("%s: %d opaque ranges against a cap of %d (ratio %.3f), want at most a quarter of the cap", c.name, total, limit, ratio)
 		}
+		if validatedRatio > 0.25 {
+			t.Errorf("%s: %d validated stream ranges against a cap of %d (ratio %.3f), want at most a quarter of the cap", c.name, validated, limit, validatedRatio)
+		}
 	}
-	fmt.Fprintf(&b, "worst ratio %.4f (limit 0.25) over %d inputs", worst, len(in))
+	fmt.Fprintf(&b, "worst ratio %.4f, validated stream ranges %.4f (limit 0.25) over %d inputs", worst, worstValidated, len(in))
 	t.Log(b.String())
 }
 

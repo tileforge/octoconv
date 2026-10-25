@@ -30,12 +30,14 @@ type referenceRun struct {
 	truncated  bool
 	encrypted  bool
 	merged     int
+	validated  int
 }
 
 type referenceOracle struct {
-	textLayer func(steps []referenceStreamStep) (row string, state pdfTextScanState)
-	opaqueCap bool
-	mergedCap bool
+	textLayer    func(steps []referenceStreamStep) (row string, state pdfTextScanState)
+	opaqueCap    bool
+	mergedCap    bool
+	validatedCap bool
 }
 
 func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker, o referenceOracle) (FamilyResult, referenceRun) {
@@ -148,7 +150,8 @@ func referenceAnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker,
 		})
 	}
 
-	state := referenceScanPDFTextLayer(head, inflateAllowance, tr, &run.steps)
+	state, validated := referenceScanPDFTextLayer(head, inflateAllowance, tr, &run.steps, o.validatedCap)
+	run.validated = validated
 	if o.textLayer != nil {
 		if row, expected := o.textLayer(run.steps); row != "" {
 			run.textRow = row
@@ -391,10 +394,14 @@ func referenceExtractPDFPageCount(head []byte, compressed, truncated, hexEscape,
 	return nil, ReasonMalformedInput
 }
 
-func referenceScanPDFTextLayer(buf []byte, allowance int64, tr *Tracker, steps *[]referenceStreamStep) pdfTextScanState {
+func referenceScanPDFTextLayer(buf []byte, allowance int64, tr *Tracker, steps *[]referenceStreamStep, validatedCap bool) (pdfTextScanState, int) {
 	state := pdfTextScanState{covered: true, remaining: allowance}
 
-	ranges, ceilingHit, lexComplete := referenceScanValidatedStreamRanges(buf, tr)
+	limit := 0
+	if validatedCap {
+		limit = pdfMaxOpaqueRanges(len(buf))
+	}
+	ranges, ceilingHit, lexComplete, validated := referenceScanValidatedStreamRanges(buf, tr, limit)
 	if !lexComplete {
 		state.covered = false
 		state.parserLimit = true
@@ -434,16 +441,25 @@ func referenceScanPDFTextLayer(buf []byte, allowance int64, tr *Tracker, steps *
 		*steps = append(*steps, step)
 	}
 
-	return state
+	return state, validated
 }
 
-func referenceScanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool, complete bool) {
+func referenceScanValidatedStreamRanges(buf []byte, tr *Tracker, limit int) (ranges []pdfOpaqueRange, ceilingHit bool, complete bool, total int) {
+	add := func(r pdfOpaqueRange) bool {
+		total++
+		if limit > 0 && len(ranges) >= limit {
+			tr.MarkCeilingHit()
+			return false
+		}
+		ranges = append(ranges, r)
+		return true
+	}
 	complete = true
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
 		if iter >= maxTokenScanIterations {
 			tr.MarkCeilingHit()
-			return ranges, true, complete
+			return ranges, true, complete, total
 		}
 
 		switch buf[i] {
@@ -470,18 +486,22 @@ func referenceScanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOp
 			bodyStart := k + len("stream")
 			endIdx := bytes.Index(buf[bodyStart:], []byte("endstream"))
 			if endIdx < 0 {
-				ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)})
-				return ranges, false, complete
+				if !add(pdfOpaqueRange{start: bodyStart, end: len(buf)}) {
+					return ranges, true, complete, total
+				}
+				return ranges, false, complete, total
 			}
 			bodyEnd := bodyStart + endIdx
-			ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})
+			if !add(pdfOpaqueRange{start: bodyStart, end: bodyEnd}) {
+				return ranges, true, complete, total
+			}
 			i = bodyEnd + len("endstream")
 			continue
 		default:
 			i++
 		}
 	}
-	return ranges, false, complete
+	return ranges, false, complete, total
 }
 
 func referenceDecodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfTextScanState, step *referenceStreamStep) ([]byte, pdfStreamClass) {
