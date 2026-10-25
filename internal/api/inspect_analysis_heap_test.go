@@ -1301,6 +1301,11 @@ func TestInspectAnalysisStaysWithinItsTerm(t *testing.T) {
 	cases = append(cases, otherAnalysisCases(t, work)...)
 	runAnalysisCases(t, cases, work, duration, term)
 	for _, w := range shippedSmallerWorks(t, configs, work) {
+		if os.Getenv(analysisChildEnv) == "" {
+			smallerTerm, smallerBy := inspectAnalysisHeapTerm(t, w)
+			t.Logf("inventory at work %d: inspectAnalysisHeapBytes(%d) = %d B (%.2f MiB), set by path %s (family %s)", w, w, smallerTerm, mib(smallerTerm), smallerBy.name, smallerBy.family)
+			logAnalysisInventory(t, w)
+		}
 		var smaller []analysisCase
 		for _, c := range pdfAnalysisCases(w) {
 			c.name += fmt.Sprintf("@%dMiB", w>>20)
