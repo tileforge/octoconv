@@ -555,16 +555,20 @@ func earlyOperations(t *testing.T) []earlyOperation {
 }
 
 type earlyRow struct {
-	op       earlyOperation
-	keyed    bool
-	statuses map[int]int
-	readers  int64
+	op        earlyOperation
+	keyed     bool
+	statuses  map[int]int
+	readers   int64
+	late      int64
+	slotsPeak int64
 }
 
 func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 	const n = 80
 	ops := earlyOperations(t)
 	early := refusalDrainGrace + time.Second
+	small := smallBodyWindow(smallBodyMaxBytes) + time.Second
+	settle := max(2*time.Second, small)
 	lateLimit := intakeReadDeadline + 2*time.Second
 	per := preAuthRequestHeapBytes()
 	var rows []earlyRow
@@ -584,10 +588,28 @@ func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 				}
 				target := concreteURL(strings.ReplaceAll(op.route, "{id}", job.String()))
 				head := headOnTheLine(strings.TrimSuffix(requestHead(op.method, target, header, bodyWindowMultipart, 100_000), "\r\n"))
-				burst := preAuthRefusals(t, ts.Listener.Addr().String(), head, n, 0, 0, 1, 0, 2*time.Second)
+				var slotsPeak int64
+				stop := make(chan struct{})
+				sampled := make(chan struct{})
+				go func() {
+					defer close(sampled)
+					tick := time.NewTicker(5 * time.Millisecond)
+					defer tick.Stop()
+					for {
+						slotsPeak = max(slotsPeak, int64(len(srv.createIntakeSem)+len(srv.inspectIntakeSem)))
+						select {
+						case <-stop:
+							return
+						case <-tick.C:
+						}
+					}
+				}()
+				burst := preAuthRefusals(t, ts.Listener.Addr().String(), head, n, 0, 0, 1, 0, settle)
+				close(stop)
+				<-sampled
 				readers := marks.readers.Load()
 				statuses := map[int]int{}
-				var earlyN, lateN int64
+				var earlyN, smallN, lateN int64
 				var answer, closed time.Duration
 				for i, o := range burst.outcomes {
 					if err := errors.Join(o.writeErr, o.err); err != nil {
@@ -596,44 +618,50 @@ func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 					}
 					statuses[o.status]++
 					took := o.answered.Sub(o.headSent)
-					if took <= early {
+					switch {
+					case took <= early:
 						earlyN++
 						answer = max(answer, took)
 						closed = max(closed, o.closed.Sub(o.answered))
 						if d := o.closed.Sub(o.answered); d > early {
 							t.Errorf("request %d: answered %d before the body, the server closed the connection %v after the answer, want no later than refusalDrainGrace + 1 s = %v", i, o.status, d, early)
 						}
-						continue
-					}
-					lateN++
-					if took > lateLimit {
-						t.Errorf("request %d: answered %d %v after its head, want no later than intakeReadDeadline + 2 s = %v", i, o.status, took, lateLimit)
+					case readers == 0:
+						t.Errorf("request %d: answered %d %v after its head, later than refusalDrainGrace + 1 s = %v, but no request read the body: an answer before the body held its request", i, o.status, took, early)
+					case took <= small:
+						smallN++
+					default:
+						lateN++
+						if took > lateLimit {
+							t.Errorf("request %d: answered %d %v after its head, want no later than intakeReadDeadline + 2 s = %v", i, o.status, took, lateLimit)
+						}
 					}
 				}
-				if lateN != readers {
-					t.Errorf("%d answers came later than refusalDrainGrace + 1 s = %v, but %d requests read the body: an answer before the body held its request", lateN, early, readers)
+				if lateN > slotsPeak {
+					t.Errorf("%d answers came later than smallBodyWindow(smallBodyMaxBytes) + 1 s = %v, above the peak %d of create and inspect intake slots taken: a request was held past the short window without an intake slot", lateN, small, slotsPeak)
 				}
 				if most := int64(min(n, srv.ipRateRPM, srv.clientRateRPM)); readers > most {
 					t.Errorf("%d requests read the body, above min(%d, ipRateRPM %d, clientRateRPM %d) = %d", readers, n, srv.ipRateRPM, srv.clientRateRPM, most)
 				}
-				bound := max(1, readers) * per
+				bound := max(1, lateN) * per
 				if burst.tail > bound {
-					t.Errorf("2 s after the last head the mass holds %d bytes (%.1f MiB), above max(1, readers %d) x preAuthRequestHeapBytes = %d (%.1f MiB)", burst.tail, mib(burst.tail), readers, bound, mib(bound))
+					t.Errorf("%v after the last head the mass holds %d bytes (%.1f MiB), above max(1, late %d) x preAuthRequestHeapBytes = %d (%.1f MiB)", settle, burst.tail, mib(burst.tail), lateN, bound, mib(bound))
 				}
-				if floor := readers * headerPhaseFloor; readers > 0 && burst.tail < floor {
-					t.Errorf("2 s after the last head the mass holds %d bytes, below readers %d x headerPhaseFloor = %d: the measurement does not see the held heads", burst.tail, readers, floor)
+				if floor := lateN * headerPhaseFloor; lateN > 0 && burst.tail < floor {
+					t.Errorf("%v after the last head the mass holds %d bytes, below late %d x headerPhaseFloor = %d: the measurement does not see the held heads", settle, burst.tail, lateN, floor)
 				}
 				verdict := "PASS"
 				if t.Failed() {
 					verdict = "FAIL"
 				}
-				t.Logf("EARLY | %s | %s %s | %s | statuses %v | readers %d | early %d | late %d | answer %v | close %v | tail %d | bound %d | %s", op.listener, op.method, op.route, scenario, statuses, readers, earlyN, lateN, answer.Round(time.Millisecond), closed.Round(time.Millisecond), burst.tail, bound, verdict)
-				rows = append(rows, earlyRow{op: op, keyed: keyed, statuses: statuses, readers: readers})
+				t.Logf("EARLY | %s | %s %s | %s | statuses %v | readers %d | early %d | small %d | late %d | slots peak %d | answer %v | close %v | tail %d | bound %d | %s", op.listener, op.method, op.route, scenario, statuses, readers, earlyN, smallN, lateN, slotsPeak, answer.Round(time.Millisecond), closed.Round(time.Millisecond), burst.tail, bound, verdict)
+				rows = append(rows, earlyRow{op: op, keyed: keyed, statuses: statuses, readers: readers, late: lateN, slotsPeak: slotsPeak})
 			})
 		}
 	}
 	answeredBelow400 := map[string]bool{}
 	readRows := 0
+	smallBodyRows, slotRows := 0, 0
 	keyedSeen := map[string]earlyRow{}
 	healthz := map[string]bool{}
 	for _, row := range rows {
@@ -645,6 +673,12 @@ func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 			}
 		} else {
 			readRows++
+			if row.late == 0 && row.slotsPeak == 0 {
+				smallBodyRows++
+			}
+		}
+		if row.late > 0 && row.late <= row.slotsPeak {
+			slotRows++
 		}
 		if row.keyed {
 			keyedSeen[row.op.method+" "+row.op.route] = row
@@ -664,16 +698,22 @@ func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 	if readRows == 0 {
 		t.Errorf("no row read the body: the positive control is missing")
 	}
+	if smallBodyRows == 0 {
+		t.Errorf("no row read the body with no late answer and no intake slot taken: the small-body control is missing")
+	}
+	if slotRows == 0 {
+		t.Errorf("no row answered late within the peak of intake slots taken: the slot control is missing")
+	}
 	for _, op := range []string{"GET /v1/formats", "POST /v1/jobs/{id}/cancel"} {
 		row, ok := keyedSeen[op]
 		if !ok || row.readers != 0 || row.statuses[http.StatusOK] == 0 {
 			t.Errorf("keyed %s: row found %v, readers %d, statuses %v; want 200 answers before the body and no reader", op, ok, row.readers, row.statuses)
 		}
 	}
-	if row, ok := keyedSeen["POST /v1/presets"]; !ok || row.readers == 0 {
-		t.Errorf("keyed POST /v1/presets: row found %v, readers %d; want a row whose requests read the body", ok, row.readers)
+	if row, ok := keyedSeen["POST /v1/presets"]; !ok || row.readers == 0 || row.late != 0 {
+		t.Errorf("keyed POST /v1/presets: row found %v, readers %d, late %d; want a row whose requests read the body and none answered past the short window", ok, row.readers, row.late)
 	}
-	t.Logf("%d rows over %d operations; %d rows read the body", len(rows), len(ops), readRows)
+	t.Logf("%d rows over %d operations; %d rows read the body, %d of them small bodies, %d rows answered late within the intake slots", len(rows), len(ops), readRows, smallBodyRows, slotRows)
 }
 
 func answerClassRouter(srv *Server, listener string) chi.Router {
