@@ -212,17 +212,6 @@ const (
 	// request that reaches this handler runs ParseMultipartForm
 	// unconditionally, however many are already running it right now.
 	//
-	// inspectIntakeSem (api.go) holds this slot for exactly the duration of
-	// ONE ParseMultipartForm call, released the instant it returns
-	// (success or failure) -- NOT for the rest of the handler. This is
-	// deliberately unlike the T-SLF-02 mistake, not a repeat of it: the
-	// resource this slot protects (heap bytes ParseMultipartForm is
-	// actively buffering) really is occupied for exactly as long as the
-	// client's own network transfer takes, so holding the slot for that
-	// long is correct, not wasteful -- unlike s.inspectSem's CPU/DB-pool
-	// slot, which was never actually consumed while waiting on the network
-	// and therefore should never be held for it.
-	//
 	// Deliberately a fixed Go constant, not a new env-configurable
 	// Config field: this bound protects a deployment-topology fact
 	// already hard-coded in the Helm chart (the pod's own memory
@@ -394,16 +383,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	releaseIntake := sync.OnceFunc(func() { <-s.inspectIntakeSem })
+	defer releaseIntake()
 	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.inspectMaxUploadBytes)
 	parseErr := parseIntakeForm(r)
 	defer dropMultipartForm(r)
-	// Released HERE, immediately after the buffering call returns --
-	// success or failure -- not deferred to handler exit: the resource this
-	// slot bounds (heap bytes ParseMultipartForm is actively filling) is
-	// spent by the time this call returns, whatever ended up in memory from
-	// here on is already accounted for by multipartInMemoryBudget and maxFormNonFileBytes
-	// per request, the same as it always was before this fix.
-	<-s.inspectIntakeSem
 	if parseErr != nil {
 		if errors.Is(parseErr, errFormFieldsTooLarge) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, formFieldsTooLargeMessage)
@@ -444,6 +428,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	releaseIntake()
 	release = sync.OnceFunc(release)
 	defer release()
 
