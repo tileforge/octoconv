@@ -48,6 +48,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	spillDir := os.TempDir()
+	if removed, err := sweepMultipartSpill(spillDir); err != nil {
+		log.Printf("⚠️  multipart spill sweep of %s removed %d files: %v", spillDir, removed, err)
+	} else {
+		log.Printf("🧹 removed %d orphaned multipart spill files from %s", removed, spillDir)
+	}
+
 	pool, err := db.Connect(ctx)
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
