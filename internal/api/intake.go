@@ -65,23 +65,34 @@ type refusalWriter struct {
 	answered bool
 }
 
-func (w *refusalWriter) WriteHeader(code int) {
-	if !w.answered && code >= http.StatusBadRequest && !w.body.read.Load() {
-		w.Header().Set("Connection", "close")
-		_ = http.NewResponseController(w.ResponseWriter).SetReadDeadline(time.Now().Add(refusalDrainGrace))
+func (w *refusalWriter) arm(code int) {
+	if w.answered {
+		return
 	}
-	if code >= http.StatusOK {
-		w.answered = true
+	w.answered = true
+	if w.body.read.Load() {
+		return
+	}
+	if code >= http.StatusBadRequest {
+		w.Header().Set("Connection", "close")
+	}
+	_ = http.NewResponseController(w.ResponseWriter).SetReadDeadline(time.Now().Add(refusalDrainGrace))
+}
+
+func (w *refusalWriter) WriteHeader(code int) {
+	if code >= http.StatusOK || code == http.StatusSwitchingProtocols {
+		w.arm(code)
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *refusalWriter) Write(p []byte) (int, error) {
-	w.answered = true
+	w.arm(http.StatusOK)
 	return w.ResponseWriter.Write(p)
 }
 
 func (w *refusalWriter) Flush() {
+	w.arm(http.StatusOK)
 	_ = http.NewResponseController(w.ResponseWriter).Flush()
 }
 
@@ -99,7 +110,9 @@ func (s *Server) armBodyWindow(next http.Handler) http.Handler {
 		body := &bodyReadCounter{ReadCloser: r.Body}
 		counted := r.WithContext(r.Context())
 		counted.Body = body
-		next.ServeHTTP(&refusalWriter{ResponseWriter: w, body: body}, counted)
+		rw := &refusalWriter{ResponseWriter: w, body: body}
+		next.ServeHTTP(rw, counted)
+		rw.arm(http.StatusOK)
 	})
 }
 
