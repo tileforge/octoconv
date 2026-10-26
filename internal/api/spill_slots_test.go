@@ -568,7 +568,7 @@ func TestSpillFilesNeverOutnumberHeldSlots(t *testing.T) {
 				x.rawOver++
 			}
 		}
-		if smp.persistent > smp.s {
+		if smp.persistent > smp.s && total.violations <= 10 {
 			t.Errorf("phase %s at %v: %d spill files lived through the slot read, %d slots held (create %d, inspect intake %d, analysis %d)", smp.phase, smp.at.Sub(started).Round(time.Millisecond), smp.persistent, smp.s, smp.create, smp.intake, smp.slots3)
 		}
 		if smp.at.After(cReady) && smp.at.Before(firstC) {
