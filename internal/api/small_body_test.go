@@ -34,6 +34,9 @@ func TestKeyedSmallBodyMassIsReleasedAtTheShortWindow(t *testing.T) {
 	answerLimit := window + time.Second
 	closeLimit := refusalDrainGrace + time.Second
 	settle := max(2*time.Second, smallBodyWindow(smallBodyMaxBytes)+time.Second)
+	if answerLimit >= intakeReadDeadline || settle >= intakeReadDeadline {
+		t.Fatalf("smallBodyWindow(maxPresetBodyBytes) + 1 s = %v and the settle %v are not shorter than intakeReadDeadline %v: the mass cannot tell a body cut at the short window from one held for the body window", answerLimit, settle, intakeReadDeadline)
+	}
 	marks := &readMarks{}
 	ts := startShippedServer(t, marks.wrap(heapProbeServer().Routes()))
 	head := headOnTheLine(strings.TrimSuffix(requestHead(http.MethodPost, "/v1/presets", keyHeader(testClientKey), "application/json", 4000), "\r\n"))

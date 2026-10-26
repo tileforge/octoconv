@@ -569,6 +569,9 @@ func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
 	early := refusalDrainGrace + time.Second
 	small := smallBodyWindow(smallBodyMaxBytes) + time.Second
 	settle := max(2*time.Second, small)
+	if settle >= intakeReadDeadline {
+		t.Fatalf("smallBodyWindow(smallBodyMaxBytes) + 1 s = %v is not shorter than intakeReadDeadline %v: the walk cannot tell a small body from a request held for the body window", small, intakeReadDeadline)
+	}
 	lateLimit := intakeReadDeadline + 2*time.Second
 	per := preAuthRequestHeapBytes()
 	var rows []earlyRow
