@@ -265,6 +265,10 @@ really pings Postgres, Redis and S3.
   `GET /healthz` with a body), waits at most 500 ms for the rest of a body the route does not
   read: a body that has not arrived by then is dropped and the connection closes after the
   answer; one that arrives in time keeps the connection
+- A JSON request body (`POST` and `PUT` on `/v1/presets` and `/v1/system/presets`) has to
+  arrive in full within 1250 ms of the moment the server starts reading it: a body still
+  incomplete then is answered with `400` and `code: "invalid_request"`, and the connection
+  closes after the answer
 - A job belonging to another client, or one that doesn't exist → `404`; the API never
   confirms the existence of jobs you don't own
 - Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`
