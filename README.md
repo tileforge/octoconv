@@ -261,6 +261,10 @@ really pings Postgres, Redis and S3.
 - A refusal sent before the request body is read (`401`, `429` and the other early answers)
   comes with `Connection: close`: the server reads no more of the body, so send the retry on a
   new connection
+- Any other answer sent before the request body is read, `2xx` included (for example
+  `GET /healthz` with a body), waits at most 500 ms for the rest of a body the route does not
+  read: a body that has not arrived by then is dropped and the connection closes after the
+  answer; one that arrives in time keeps the connection
 - A job belonging to another client, or one that doesn't exist → `404`; the API never
   confirms the existence of jobs you don't own
 - Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`

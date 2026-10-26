@@ -1,23 +1,34 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
+	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/presets"
 )
 
 func headOnTheLine(prefix string) string {
 	return prefix + headerBlock("distinct-lf", headerReadLimit-len(prefix+"\r\n")-16) + "\r\n"
 }
 
-func listenerRouter(srv *Server, listener string) http.Handler {
+func listenerRouter(srv *Server, listener string) chi.Router {
 	if listener == "HealthRoutes" {
 		return srv.HealthRoutes()
 	}
@@ -356,5 +367,406 @@ func TestEveryFinalHeaderBeforeTheBodyArmsTheGrace(t *testing.T) {
 				t.Errorf("%s: journal %q, want %q", row.name, got, row.want)
 			}
 		})
+	}
+}
+
+type serialRepo struct {
+	*fakeRepo
+	mu *sync.Mutex
+}
+
+func (l serialRepo) Create(ctx context.Context, p jobs.CreateParams) (uuid.UUID, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.Create(ctx, p)
+}
+
+func (l serialRepo) PreAdmit(ctx context.Context, clientID uuid.UUID, engine string, inputBytes int64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.PreAdmit(ctx, clientID, engine, inputBytes)
+}
+
+func (l serialRepo) Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.Get(ctx, id)
+}
+
+func (l serialRepo) Outputs(ctx context.Context, id uuid.UUID) ([]jobs.Output, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.Outputs(ctx, id)
+}
+
+func (l serialRepo) Cancel(ctx context.Context, id uuid.UUID) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.Cancel(ctx, id)
+}
+
+func (l serialRepo) List(ctx context.Context, clientID uuid.UUID, f jobs.ListFilter, cursor *jobs.Cursor, limit int) ([]jobs.JobSummary, *jobs.Cursor, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeRepo.List(ctx, clientID, f, cursor, limit)
+}
+
+type serialStorage struct {
+	*fakeStorage
+	mu *sync.Mutex
+}
+
+func (l serialStorage) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeStorage.Upload(ctx, key, r, size, contentType)
+}
+
+func (l serialStorage) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeStorage.PresignGet(ctx, key, ttl)
+}
+
+type serialPresetRepo struct {
+	*fakePresetRepo
+	mu *sync.Mutex
+}
+
+func (l serialPresetRepo) Resolve(ctx context.Context, clientID uuid.UUID, name string) (*presets.Preset, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakePresetRepo.Resolve(ctx, clientID, name)
+}
+
+type serialPresetAdmin struct {
+	*fakePresetAdmin
+	mu *sync.Mutex
+}
+
+func (l serialPresetAdmin) Create(ctx context.Context, p presets.CreateParams) (uuid.UUID, int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakePresetAdmin.Create(ctx, p)
+}
+
+type serialUsageRepo struct {
+	*fakeUsageRepo
+	mu *sync.Mutex
+}
+
+func (l serialUsageRepo) UsageSummary(ctx context.Context, clientID *uuid.UUID, dayFrom, dayTo time.Time) ([]jobs.UsageRow, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeUsageRepo.UsageSummary(ctx, clientID, dayFrom, dayTo)
+}
+
+func (l serialUsageRepo) UTCToday(ctx context.Context) (time.Time, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeUsageRepo.UTCToday(ctx)
+}
+
+type serialLimitsRepo struct {
+	*fakeLimitsRepo
+	mu *sync.Mutex
+}
+
+func (l serialLimitsRepo) ListAllLimits(ctx context.Context, clientID *uuid.UUID) ([]clients.LimitWithMeta, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeLimitsRepo.ListAllLimits(ctx, clientID)
+}
+
+func earlyAnswerProbe() (*Server, uuid.UUID) {
+	mu := &sync.Mutex{}
+	resolver := newFakeResolver()
+	job := &jobs.Job{ID: uuid.New(), ClientID: resolver.client.ID, Status: jobs.StatusDone}
+	srv := NewServer(serialRepo{fakeRepo: &fakeRepo{getJob: job}, mu: mu}, serialStorage{fakeStorage: &fakeStorage{}, mu: mu}, &fakeQueue{}, serialPresetRepo{fakePresetRepo: defaultFakePresetRepo(), mu: mu}, serialPresetAdmin{fakePresetAdmin: defaultFakePresetAdmin(), mu: mu}, serialUsageRepo{fakeUsageRepo: &fakeUsageRepo{}, mu: mu}, serialLimitsRepo{fakeLimitsRepo: &fakeLimitsRepo{}, mu: mu}, resolver, healthyDeps(), Config{
+		MaxUploadBytes:        64 << 20,
+		InspectMaxUploadBytes: 64 << 20,
+		OperatorClientIDs:     map[uuid.UUID]struct{}{resolver.client.ID: {}},
+	})
+	return srv, job.ID
+}
+
+type readMarks struct {
+	readers atomic.Int64
+}
+
+type readMark struct {
+	io.ReadCloser
+	marks *readMarks
+	seen  atomic.Bool
+}
+
+func (b *readMark) Read(p []byte) (int, error) {
+	if b.seen.CompareAndSwap(false, true) {
+		b.marks.readers.Add(1)
+	}
+	return b.ReadCloser.Read(p)
+}
+
+func (m *readMarks) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil || r.Body == http.NoBody {
+			next.ServeHTTP(w, r)
+			return
+		}
+		marked := r.WithContext(r.Context())
+		marked.Body = &readMark{ReadCloser: r.Body, marks: m}
+		next.ServeHTTP(w, marked)
+	})
+}
+
+type earlyOperation struct {
+	listener, method, route string
+}
+
+func earlyOperations(t *testing.T) []earlyOperation {
+	t.Helper()
+	srv, _ := earlyAnswerProbe()
+	var ops []earlyOperation
+	for _, listener := range []string{"Routes", "HealthRoutes"} {
+		var found []earlyOperation
+		if err := chi.Walk(listenerRouter(srv, listener), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+			if route != "/" {
+				route = strings.TrimSuffix(route, "/")
+			}
+			found = append(found, earlyOperation{listener: listener, method: method, route: route})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		sort.Slice(found, func(i, j int) bool {
+			return found[i].route+" "+found[i].method < found[j].route+" "+found[j].method
+		})
+		t.Logf("chi.Walk over %s(): %d operations", listener, len(found))
+		want := 19
+		if listener == "HealthRoutes" {
+			want = 1
+		}
+		if len(found) < want {
+			t.Fatalf("chi.Walk over %s() found %d operations, want at least %d", listener, len(found), want)
+		}
+		ops = append(ops, found...)
+	}
+	return ops
+}
+
+type earlyRow struct {
+	op       earlyOperation
+	keyed    bool
+	statuses map[int]int
+	readers  int64
+}
+
+func TestEveryEarlyAnswerReleasesAStalledBodyMass(t *testing.T) {
+	const n = 80
+	ops := earlyOperations(t)
+	early := refusalDrainGrace + time.Second
+	lateLimit := intakeReadDeadline + 2*time.Second
+	per := preAuthRequestHeapBytes()
+	var rows []earlyRow
+	for _, op := range ops {
+		for _, keyed := range []bool{false, true} {
+			scenario := "keyless"
+			if keyed {
+				scenario = "keyed"
+			}
+			t.Run(fmt.Sprintf("%s %s %s %s", op.listener, op.method, op.route, scenario), func(t *testing.T) {
+				srv, job := earlyAnswerProbe()
+				marks := &readMarks{}
+				ts := startShippedServer(t, marks.wrap(listenerRouter(srv, op.listener)))
+				var header http.Header
+				if keyed {
+					header = keyHeader(testClientKey)
+				}
+				target := concreteURL(strings.ReplaceAll(op.route, "{id}", job.String()))
+				head := headOnTheLine(strings.TrimSuffix(requestHead(op.method, target, header, bodyWindowMultipart, 100_000), "\r\n"))
+				burst := preAuthRefusals(t, ts.Listener.Addr().String(), head, n, 0, 0, 1, 0, 2*time.Second)
+				readers := marks.readers.Load()
+				statuses := map[int]int{}
+				var earlyN, lateN int64
+				var answer, closed time.Duration
+				for i, o := range burst.outcomes {
+					if err := errors.Join(o.writeErr, o.err); err != nil {
+						t.Errorf("request %d: %v", i, err)
+						continue
+					}
+					statuses[o.status]++
+					took := o.answered.Sub(o.headSent)
+					if took <= early {
+						earlyN++
+						answer = max(answer, took)
+						closed = max(closed, o.closed.Sub(o.answered))
+						if d := o.closed.Sub(o.answered); d > early {
+							t.Errorf("request %d: answered %d before the body, the server closed the connection %v after the answer, want no later than refusalDrainGrace + 1 s = %v", i, o.status, d, early)
+						}
+						continue
+					}
+					lateN++
+					if took > lateLimit {
+						t.Errorf("request %d: answered %d %v after its head, want no later than intakeReadDeadline + 2 s = %v", i, o.status, took, lateLimit)
+					}
+				}
+				if lateN != readers {
+					t.Errorf("%d answers came later than refusalDrainGrace + 1 s = %v, but %d requests read the body: an answer before the body held its request", lateN, early, readers)
+				}
+				if most := int64(min(n, srv.ipRateRPM, srv.clientRateRPM)); readers > most {
+					t.Errorf("%d requests read the body, above min(%d, ipRateRPM %d, clientRateRPM %d) = %d", readers, n, srv.ipRateRPM, srv.clientRateRPM, most)
+				}
+				bound := max(1, readers) * per
+				if burst.tail > bound {
+					t.Errorf("2 s after the last head the mass holds %d bytes (%.1f MiB), above max(1, readers %d) x preAuthRequestHeapBytes = %d (%.1f MiB)", burst.tail, mib(burst.tail), readers, bound, mib(bound))
+				}
+				if floor := readers * headerPhaseFloor; readers > 0 && burst.tail < floor {
+					t.Errorf("2 s after the last head the mass holds %d bytes, below readers %d x headerPhaseFloor = %d: the measurement does not see the held heads", burst.tail, readers, floor)
+				}
+				verdict := "PASS"
+				if t.Failed() {
+					verdict = "FAIL"
+				}
+				t.Logf("EARLY | %s | %s %s | %s | statuses %v | readers %d | early %d | late %d | answer %v | close %v | tail %d | bound %d | %s", op.listener, op.method, op.route, scenario, statuses, readers, earlyN, lateN, answer.Round(time.Millisecond), closed.Round(time.Millisecond), burst.tail, bound, verdict)
+				rows = append(rows, earlyRow{op: op, keyed: keyed, statuses: statuses, readers: readers})
+			})
+		}
+	}
+	answeredBelow400 := map[string]bool{}
+	readRows := 0
+	keyedSeen := map[string]earlyRow{}
+	healthz := map[string]bool{}
+	for _, row := range rows {
+		if row.readers == 0 {
+			for code := range row.statuses {
+				if code < http.StatusBadRequest {
+					answeredBelow400[row.op.listener] = true
+				}
+			}
+		} else {
+			readRows++
+		}
+		if row.keyed {
+			keyedSeen[row.op.method+" "+row.op.route] = row
+		}
+		if row.op.method == http.MethodGet && row.op.route == "/healthz" {
+			healthz[row.op.listener] = true
+		}
+	}
+	for _, listener := range []string{"Routes", "HealthRoutes"} {
+		if !answeredBelow400[listener] {
+			t.Errorf("no row on %s answered below 400 without reading the body", listener)
+		}
+		if !healthz[listener] {
+			t.Errorf("no GET /healthz row on %s", listener)
+		}
+	}
+	if readRows == 0 {
+		t.Errorf("no row read the body: the positive control is missing")
+	}
+	for _, op := range []string{"GET /v1/formats", "POST /v1/jobs/{id}/cancel"} {
+		row, ok := keyedSeen[op]
+		if !ok || row.readers != 0 || row.statuses[http.StatusOK] == 0 {
+			t.Errorf("keyed %s: row found %v, readers %d, statuses %v; want 200 answers before the body and no reader", op, ok, row.readers, row.statuses)
+		}
+	}
+	if row, ok := keyedSeen["POST /v1/presets"]; !ok || row.readers == 0 {
+		t.Errorf("keyed POST /v1/presets: row found %v, readers %d; want a row whose requests read the body", ok, row.readers)
+	}
+	t.Logf("%d rows over %d operations; %d rows read the body", len(rows), len(ops), readRows)
+}
+
+func answerClassRouter(srv *Server, listener string) chi.Router {
+	r := listenerRouter(srv, listener)
+	code := func(r *http.Request) int {
+		var c int
+		_, _ = fmt.Sscan(chi.URLParam(r, "code"), &c)
+		return c
+	}
+	r.Post("/zz-answer/{code}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(code(r))
+	})
+	r.Post("/zz-implicit-write", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "implicit")
+	})
+	r.Post("/zz-flush-first", func(w http.ResponseWriter, _ *http.Request) {
+		_ = http.NewResponseController(w).Flush()
+		_, _ = io.WriteString(w, "flushed")
+	})
+	r.Post("/zz-silent", func(http.ResponseWriter, *http.Request) {})
+	r.Post("/zz-informational/{code}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(code(r))
+		w.WriteHeader(http.StatusOK)
+	})
+	return r
+}
+
+func TestEveryAnswerClassBeforeTheBodyCutsTheBodyRead(t *testing.T) {
+	type class struct {
+		path          string
+		status        int
+		informational []int
+	}
+	var classes []class
+	for _, code := range []int{200, 201, 202, 204, 301, 302, 304, 307} {
+		classes = append(classes, class{path: fmt.Sprintf("/zz-answer/%d", code), status: code})
+	}
+	classes = append(classes,
+		class{path: "/zz-implicit-write", status: http.StatusOK},
+		class{path: "/zz-flush-first", status: http.StatusOK},
+		class{path: "/zz-silent", status: http.StatusOK},
+	)
+	for _, code := range []int{100, 102, 103} {
+		classes = append(classes, class{path: fmt.Sprintf("/zz-informational/%d", code), status: http.StatusOK, informational: []int{code}})
+	}
+	limit := refusalDrainGrace + time.Second
+	for _, listener := range []string{"Routes", "HealthRoutes"} {
+		ts := startShippedServer(t, answerClassRouter(heapProbeServer(), listener))
+		for _, c := range classes {
+			t.Run(listener+" "+c.path, func(t *testing.T) {
+				k := dialKept(t, ts)
+				reply := k.earlyExchange(requestHead(http.MethodPost, c.path, nil, "application/octet-stream", 100_000), []string{strings.Repeat("s", 1024)}, 0, intakeReadDeadline+10*time.Second)
+				closedAfter, cerr := k.serverClosed(intakeReadDeadline + 5*time.Second)
+				t.Logf("CLASS | %s | POST %s | informational %v | status %d | answer %v | Connection: close %v | server closed %v after the answer (%v)", listener, c.path, reply.informational, reply.status, reply.elapsed.Round(time.Millisecond), reply.close, closedAfter.Round(time.Millisecond), cerr)
+				if reply.err != nil {
+					t.Fatalf("no whole answer: %v", reply.err)
+				}
+				if reply.status != c.status {
+					t.Errorf("status %d, want %d", reply.status, c.status)
+				}
+				if fmt.Sprint(reply.informational) != fmt.Sprint(c.informational) {
+					t.Errorf("informational answers %v before the final one, want %v", reply.informational, c.informational)
+				}
+				if reply.elapsed > limit {
+					t.Errorf("answered after %v, want no later than refusalDrainGrace + 1 s = %v: the answer waited for a body the route does not read", reply.elapsed, limit)
+				}
+				if !errors.Is(cerr, io.EOF) || closedAfter > limit {
+					t.Errorf("the server closed the connection %v after the answer (%v), want EOF no later than refusalDrainGrace + 1 s = %v", closedAfter, cerr, limit)
+				}
+			})
+		}
+	}
+}
+
+func TestEarlyAnswerIsStatedInTheReadme(t *testing.T) {
+	raw, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(raw), "**Status semantics**")
+	if !ok {
+		t.Fatal("README.md has no Status semantics section")
+	}
+	section, _, _ = strings.Cut(section, "\n**")
+	flat := strings.Join(strings.Fields(section), " ")
+	for _, phrase := range []string{
+		"Any other answer sent before the request body is read",
+		fmt.Sprintf("waits at most %d ms", refusalDrainGrace.Milliseconds()),
+		"the connection closes after the answer",
+		"keeps the connection",
+	} {
+		if !strings.Contains(flat, phrase) {
+			t.Errorf("README.md Status semantics does not say %q", phrase)
+		}
 	}
 }
