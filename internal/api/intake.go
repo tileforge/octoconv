@@ -135,3 +135,14 @@ func dropMultipartForm(r *http.Request) {
 	r.Form = nil
 	r.PostForm = nil
 }
+
+const smallBodyMaxBytes = 8 << 10
+
+func smallBodyWindow(limit int64) time.Duration {
+	return max(refusalDrainGrace, apiReadHeaderTimeout*time.Duration(limit)/apiMaxHeaderBytes)
+}
+
+func smallBodyReader(w http.ResponseWriter, body io.ReadCloser, limit int64) io.ReadCloser {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(smallBodyWindow(limit)))
+	return http.MaxBytesReader(w, body, limit)
+}
