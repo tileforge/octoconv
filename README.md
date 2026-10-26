@@ -493,6 +493,10 @@ documented list — including how each measured limit was derived.
 > request and limit, so an overrun evicts the api pod rather than its neighbours.
 > `docker-compose.yml` only moves the spill out of the container's writable layer onto the
 > named volume `api_spill`, with no hard size: the chart is what bounds the disk.
+> A spill file outlives an api container that dies mid-request: the `emptyDir` lives as long
+> as the pod, and `api_spill` survives a recreate. So the api removes the regular
+> `multipart-<digits>` files directly in `TMPDIR` at startup, before it listens, and logs how
+> many it removed; `sizeLimit` only has to cover live intake slots.
 
 ## Documentation
 
