@@ -430,7 +430,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	}
 	releaseIntake()
 	release = sync.OnceFunc(release)
-	defer release()
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+			file = nil
+		}
+		dropMultipartForm(r)
+		release()
+	}()
 
 	filename := path.Base(header.Filename)
 	// declaredFormat is the normalized filename-extension-derived format --

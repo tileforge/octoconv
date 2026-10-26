@@ -1068,8 +1068,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		akey := storage.InputKey(jobID, ordinal, name)
-		uerr := s.storage.Upload(ctx, akey, src, a.Size, "application/octet-stream")
-		src.Close()
+		uerr := func() error {
+			defer src.Close()
+			return s.storage.Upload(ctx, akey, src, a.Size, "application/octet-stream")
+		}()
 		if uerr != nil {
 			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 			return
