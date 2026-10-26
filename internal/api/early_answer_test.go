@@ -687,7 +687,7 @@ func answerClassRouter(srv *Server, listener string) chi.Router {
 		w.WriteHeader(code(r))
 	})
 	r.Post("/zz-implicit-write", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "implicit")
+		_, _ = io.WriteString(w, strings.Repeat("i", 8<<10))
 	})
 	r.Post("/zz-flush-first", func(w http.ResponseWriter, _ *http.Request) {
 		_ = http.NewResponseController(w).Flush()
