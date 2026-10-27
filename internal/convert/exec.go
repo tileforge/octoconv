@@ -2,12 +2,42 @@ package convert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
 	"time"
 )
+
+const (
+	engineWaitDelay   = time.Second
+	groupKillInterval = time.Millisecond
+	groupKillBudget   = time.Second
+)
+
+func killGroupAndReap(pgid int, done <-chan error) {
+	killGroupWith(syscall.Kill, pgid, done)
+}
+
+func killGroupWith(kill func(int, syscall.Signal) error, pgid int, done <-chan error) {
+	stop := time.Now().Add(groupKillBudget)
+	for {
+		started := time.Now()
+		// XNU's killpg signals a snapshot of the group's members, so a child forked during the call is missed.
+		if err := kill(-pgid, syscall.SIGKILL); errors.Is(err, syscall.ESRCH) || started.After(stop) {
+			break
+		}
+		select {
+		case <-done:
+			done = nil
+		case <-time.After(groupKillInterval):
+		}
+	}
+	if done != nil {
+		<-done
+	}
+}
 
 // tailBuffer is an io.Writer that retains at most max bytes, discarding from
 // the FRONT as more arrive. max <= 0 retains everything.
@@ -194,6 +224,7 @@ func runCommandAs(ctx context.Context, label, name string, args ...string) ([]by
 func runCommandCore(ctx context.Context, limit int, env []string, label, name string, args ...string) ([]byte, engineCPU, error) {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = engineWaitDelay
 	if env != nil {
 		cmd.Env = env
 	}
@@ -214,15 +245,14 @@ func runCommandCore(ctx context.Context, limit int, env []string, label, name st
 
 	select {
 	case <-ctx.Done():
-		// Negative pid targets the process group led by the child.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done // reap -- and it is the reap that populates ProcessState
+		killGroupAndReap(cmd.Process.Pid, done) // reap -- and it is the reap that populates ProcessState
 		// nil, not the partial output: every other engine reaches this path
 		// too, and changing what a timeout returns for all of them is not what
 		// this change is for.
 		return nil, cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s killed: %w", label, ctx.Err())
 	case err := <-done:
 		if err != nil {
+			killGroupAndReap(cmd.Process.Pid, nil)
 			return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s failed: %w: %s", label, err, stderr.String())
 		}
 		return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), nil
