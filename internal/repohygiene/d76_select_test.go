@@ -203,6 +203,7 @@ type d76Row struct {
 	noEnd       bool
 	oom         bool
 	quality     string
+	extra       string
 }
 
 func (r d76Row) line() string {
@@ -226,7 +227,7 @@ func (r d76Row) line() string {
 	if r.quality != "" {
 		s += ",quality=" + r.quality
 	}
-	return s
+	return s + r.extra
 }
 
 func d76Cell(t *testing.T, dir, name, format string) string {
@@ -359,6 +360,32 @@ func TestD76SelectRejectsLoadContaminatedRows(t *testing.T) {
 		)
 		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "T"), rows), nil)
 		d76WantPick(t, sec, "dxf_svg", "P", "21.00", "T:not_eligible")
+	})
+	t.Run("render_refusal_kept", func(t *testing.T) {
+		dir := t.TempDir()
+		rows := append(d76BaseRows(),
+			d76Row{cell: "U", stage: "stats", wall: "1.00"},
+			d76Row{cell: "U", stage: "render", wall: "10.00", extra: ",view=iso,background=opaque"},
+			d76Row{cell: "U", stage: "render", rep: 2, wall: "8.00", loaded: true, oom: true, extra: ",view=iso,background=opaque"},
+			d76Row{cell: "V", stage: "guard", wall: "1.00"},
+			d76Row{cell: "V", stage: "mesh", wall: "1.00", quality: "fine"},
+			d76Row{cell: "V", stage: "render", wall: "10.00", quality: "fine", extra: ",view=iso,background=opaque"},
+			d76Row{cell: "V", stage: "render", rep: 2, wall: "8.00", loaded: true, oom: true, quality: "fine", extra: ",view=iso,background=opaque"},
+		)
+		cells := append(d76BaseCells(t, dir), d76Cell(t, dir, "U", "stl"), d76Cell(t, dir, "V", "step"))
+		sec, _ := d76Fixture(t, d76Bounds(cells, rows), nil)
+		for _, c := range []struct{ route, entry string }{
+			{"render_stl", "U:iso:opaque:refused:w=10.00:"},
+			{"render_step", "V:fine:iso:opaque:refused:w=10.00:"},
+		} {
+			if specs := d76Lines(sec, "CELLSPEC,route="+c.route+","); len(specs) != 0 {
+				t.Errorf("%s picks a variant with a refused render row: %s", c.route, specs[0])
+			}
+			stops := d76Lines(sec, "STOP,mode=derive76,step=select_cells,route="+c.route+",")
+			if len(stops) != 1 || !strings.Contains(stops[0], c.entry) {
+				t.Errorf("%s STOP lines %q, want one listing %s", c.route, stops, c.entry)
+			}
+		}
 	})
 	t.Run("non_setter", func(t *testing.T) {
 		dir := t.TempDir()
