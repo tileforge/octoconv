@@ -2,10 +2,13 @@ package repohygiene_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -221,4 +224,174 @@ func TestCadBucketListAgainstTheStubShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+const mcLiveDir = "testdata/mc-ls-live"
+
+func mcGateUUID(t *testing.T, path string) *regexp.Regexp {
+	t.Helper()
+	source, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, line := range strings.Split(string(source), "\n") {
+		if v, ok := strings.CutPrefix(line, "UUID_RE='"); ok && strings.HasSuffix(v, "'") {
+			found = append(found, strings.TrimSuffix(v, "'"))
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("UUID_RE is assigned on %d lines of %s, want 1", len(found), path)
+	}
+	return regexp.MustCompile(found[0])
+}
+
+func mcLiveFields(t *testing.T, n int, line string) map[string]string {
+	t.Helper()
+	fields := map[string]string{}
+	for _, part := range strings.Split(line, ",") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key == "" || value == "" {
+			t.Fatalf("SOURCES.txt line %d: malformed field %q", n, part)
+		}
+		if _, dup := fields[key]; dup {
+			t.Fatalf("SOURCES.txt line %d: duplicate field %q", n, key)
+		}
+		fields[key] = value
+	}
+	return fields
+}
+
+func mcLiveCopies(t *testing.T) (map[string][]byte, string) {
+	t.Helper()
+	sources, err := os.ReadFile(filepath.Join(mcLiveDir, "SOURCES.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := map[string][]byte{}
+	job := ""
+	for i, line := range strings.Split(string(sources), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := mcLiveFields(t, i+1, line)
+		if fields["probe"] != "" {
+			if job != "" {
+				t.Fatalf("SOURCES.txt line %d: second probe line", i+1)
+			}
+			job = fields["job"]
+			continue
+		}
+		for _, key := range []string{"file", "bytes", "sha256", "origin", "lines", "origin_commit"} {
+			if fields[key] == "" {
+				t.Fatalf("SOURCES.txt line %d: missing %s", i+1, key)
+			}
+		}
+		name := fields["file"]
+		if name != filepath.Base(name) || name == "SOURCES.txt" {
+			t.Fatalf("SOURCES.txt line %d: file %q is not a copy in %s", i+1, name, mcLiveDir)
+		}
+		if _, dup := copies[name]; dup {
+			t.Fatalf("SOURCES.txt line %d: %s listed twice", i+1, name)
+		}
+		data, err := os.ReadFile(filepath.Join(mcLiveDir, name))
+		if err != nil {
+			t.Fatalf("SOURCES.txt line %d: %v", i+1, err)
+		}
+		want, err := strconv.Atoi(fields["bytes"])
+		if err != nil {
+			t.Fatalf("SOURCES.txt line %d: bytes %q: %v", i+1, fields["bytes"], err)
+		}
+		if len(data) != want {
+			t.Fatalf("%s has %d bytes, SOURCES.txt says %d", name, len(data), want)
+		}
+		sum := sha256.Sum256(data)
+		if got := hex.EncodeToString(sum[:]); got != fields["sha256"] {
+			t.Fatalf("%s has sha256 %s, SOURCES.txt says %s", name, got, fields["sha256"])
+		}
+		copies[name] = data
+	}
+	entries, err := os.ReadDir(mcLiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == "SOURCES.txt" {
+			continue
+		}
+		if _, ok := copies[e.Name()]; !ok {
+			t.Fatalf("%s/%s is not listed in SOURCES.txt", mcLiveDir, e.Name())
+		}
+	}
+	for _, name := range []string{"ls.jsonl", "ls.err", "ls.rc", "absent.out", "absent.err", "absent.rc"} {
+		if _, ok := copies[name]; !ok {
+			t.Fatalf("SOURCES.txt does not list %s", name)
+		}
+	}
+	return copies, job
+}
+
+func mcLiveRC(t *testing.T, name string, data []byte) int {
+	t.Helper()
+	rc, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("%s holds %q: %v", name, data, err)
+	}
+	return rc
+}
+
+func TestCadBucketListReadsTheLiveMcShape(t *testing.T) {
+	gate := mcGateScript(t)
+	copies, job := mcLiveCopies(t)
+	if !mcGateUUID(t, gate).MatchString(job) {
+		t.Fatalf("probe job %q does not match the gate's UUID_RE", job)
+	}
+	t.Run("listing", func(t *testing.T) {
+		fns := mcGateFunctions(t, gate)
+		stdout := copies["ls.jsonl"]
+		fnRC, rows, uploads, results, replayStderr := mcJudge(t, fns, stdout, copies["ls.err"], mcLiveRC(t, "ls.rc", copies["ls.rc"]), job)
+		if strings.Contains(replayStderr, "REPLAY_UNEXPECTED") {
+			t.Fatalf("the gate called docker with another command: %s", replayStderr)
+		}
+		if n := strings.Count(replayStderr, "REPLAY_CALL"); n != 1 {
+			t.Fatalf("the gate listed the bucket %d times, want 1", n)
+		}
+		if fnRC != 0 {
+			t.Fatalf("cad_bucket_list returned %d on the live listing, want 0; rows %q", fnRC, rows)
+		}
+		values := 0
+		for _, line := range strings.Split(string(stdout), "\n") {
+			if line != "" {
+				values++
+			}
+		}
+		if len(rows) != values {
+			t.Fatalf("list has %d rows for %d live lines", len(rows), values)
+		}
+		for _, r := range rows {
+			if r == "BAD" {
+				t.Fatalf("list has a BAD row: %q", rows)
+			}
+			_, key, ok := strings.Cut(r, "\t")
+			if !ok {
+				t.Fatalf("list row %q has no tab", r)
+			}
+			if strings.HasPrefix(key, "octoconv/") {
+				t.Fatalf("key %q carries the bucket name", key)
+			}
+		}
+		if uploads[0] < 1 || results[0] < 1 {
+			t.Fatalf("uploads=%v results=%v for job %s, want at least one key under each prefix", uploads, results, job)
+		}
+	})
+	t.Run("absent_bucket", func(t *testing.T) {
+		fns := mcGateFunctions(t, gate)
+		fnRC, rows, _, _, replayStderr := mcJudge(t, fns, copies["absent.out"], copies["absent.err"], mcLiveRC(t, "absent.rc", copies["absent.rc"]), job)
+		if strings.Contains(replayStderr, "REPLAY_UNEXPECTED") {
+			t.Fatalf("the gate called docker with another command: %s", replayStderr)
+		}
+		if fnRC == 0 {
+			t.Fatalf("cad_bucket_list returned 0 on the absent bucket, want non-zero; rows %q", rows)
+		}
+	})
 }
