@@ -4300,7 +4300,10 @@ def render_band(rs, r_upper):
 
 def select(argv):
     src, ladder, cellsfile, budget = argv[0], argv[1], argv[2], int(argv[3])
-    rows, cells, contaminated, results = load_all(src, ladder)
+    quietf = argv[4] if len(argv) > 4 else ""
+    _, cells, contaminated, results = load_all(src, ladder)
+    pool = [r for r in all_rows(src, ladder, quietf) if not r["_sleep"]]
+    rows = [r for r in pool if r["_clean"]]
     amend = amendments(cellsfile)
     need = {"render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else"}
     if not need <= amend:
@@ -4933,7 +4936,7 @@ PY
 }
 
 d76_mode() {
-  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" ladder="$REPO_ROOT/$D76_LADDER_REL" rc=0 attempt
+  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" ladder="$REPO_ROOT/$D76_LADDER_REL" quiet="$REPO_ROOT/$D76_QUIET_REL" rc=0 attempt
   need_tool python3
   need_tool shasum
   need_tool git
@@ -4954,7 +4957,7 @@ d76_mode() {
   } > "$WORK/out.txt"
   if [ -f "$out" ]; then cp "$out" "$WORK/cells.txt"; else : > "$WORK/cells.txt"; fi
   cat "$WORK/out.txt" >> "$WORK/cells.txt"
-  python3 "$WORK/tools/d76.py" select "$src" "$ladder" "$WORK/cells.txt" "$D76_BUDGET_S" >> "$WORK/out.txt" || rc=$?
+  python3 "$WORK/tools/d76.py" select "$src" "$ladder" "$WORK/cells.txt" "$D76_BUDGET_S" "$REPO_ROOT/$D76_QUIET_REL" >> "$WORK/out.txt" || rc=$?
   mkdir -p "$(dirname "$out")"
   cat "$WORK/out.txt" >> "$out"
   cut -c1-260 "$WORK/out.txt" >&2
