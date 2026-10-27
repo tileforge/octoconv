@@ -316,6 +316,170 @@ func TestD76SelectRejectsLoadContaminatedRows(t *testing.T) {
 		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "Q"), rows), nil)
 		d76WantPick(t, sec, "dxf_svg", "P", "21.00", "Q:11.00")
 	})
+	t.Run("neighbour_load", func(t *testing.T) {
+		dir := t.TempDir()
+		var rows []d76Row
+		for _, r := range d76BaseRows() {
+			r.noEnd = true
+			rows = append(rows, r)
+		}
+		rows = append(rows,
+			d76Row{cell: "Q", stage: "guard", wall: "1.00", noEnd: true},
+			d76Row{cell: "Q", stage: "dxf", wall: "5.00", noEnd: true},
+			d76Row{cell: "Q", stage: "rsvg_ink", wall: "5.00", noEnd: true},
+			d76Row{cell: "B", stage: "guard", wall: "1.00", nonSetter: true, noEnd: true},
+			d76Row{cell: "N", stage: "guard", wall: "1.00", nonSetter: true, loaded: true, noEnd: true},
+			d76Row{cell: "Q", stage: "rsvg_ink", rep: 2, wall: "100.00", noEnd: true},
+		)
+		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "Q"), rows), nil)
+		d76WantPick(t, sec, "dxf_svg", "P", "21.00", "Q:11.00")
+	})
+	t.Run("quiet_replacement", func(t *testing.T) {
+		dir := t.TempDir()
+		rows := append(d76BaseRows(),
+			d76Row{cell: "R", stage: "guard", wall: "1.00"},
+			d76Row{cell: "R", stage: "dxf", wall: "5.00"},
+			d76Row{cell: "R", stage: "rsvg_ink", wall: "500.00", loaded: true},
+		)
+		quiet := []byte(strings.Join([]string{
+			"HDR,mode=derive76_quiet,load1=1.00",
+			d76Row{cell: "R", stage: "rsvg_ink", wall: "50.00"}.line(),
+			"QUIET_END,load1=1.00,result=ok",
+		}, "\n") + "\n")
+		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "R"), rows), quiet)
+		d76WantPick(t, sec, "dxf_svg", "R", "56.00", "P:21.00", "R:56.00")
+	})
+	t.Run("refusal_kept", func(t *testing.T) {
+		dir := t.TempDir()
+		rows := append(d76BaseRows(),
+			d76Row{cell: "T", stage: "guard", wall: "1.00"},
+			d76Row{cell: "T", stage: "dxf", wall: "50.00"},
+			d76Row{cell: "T", stage: "rsvg_ink", wall: "50.00"},
+			d76Row{cell: "T", stage: "dxf", rep: 2, wall: "40.00", loaded: true, oom: true},
+		)
+		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "T"), rows), nil)
+		d76WantPick(t, sec, "dxf_svg", "P", "21.00", "T:not_eligible")
+	})
+	t.Run("non_setter", func(t *testing.T) {
+		dir := t.TempDir()
+		rows := append(d76BaseRows(),
+			d76Row{cell: "Q", stage: "guard", wall: "1.00"},
+			d76Row{cell: "Q", stage: "dxf", wall: "5.00"},
+			d76Row{cell: "Q", stage: "rsvg_ink", wall: "5.00"},
+			d76Row{cell: "Q", stage: "rsvg_ink", rep: 2, wall: "100.00", nonSetter: true, loaded: true},
+		)
+		sec, _ := d76Fixture(t, d76Bounds(d76BaseCells(t, dir, "Q"), rows), nil)
+		d76WantPick(t, sec, "dxf_svg", "P", "21.00", "Q:11.00")
+	})
+	t.Run("no_clean_deadline_rows", func(t *testing.T) {
+		dir := t.TempDir()
+		rows := []d76Row{
+			{cell: "S", stage: "guard", wall: "1.00", loaded: true},
+			{cell: "S", stage: "mesh", wall: "1.00", quality: "fine"},
+		}
+		sec, rc := d76Fixture(t, d76Bounds([]string{d76Cell(t, dir, "S", "step")}, rows), nil)
+		if rc != 1 {
+			t.Errorf("rc %d, want 1", rc)
+		}
+		want := []string{
+			"STOP,mode=derive76,step=select_cells,reason=no_load_clean_setter_rows,stage=guard",
+			"SUMMARY,mode=derive76_select,routes=8,cellspec=0,stop=1,result=STOP",
+		}
+		for _, w := range want {
+			if len(d76Lines(sec, w)) != 1 || d76Lines(sec, w)[0] != w {
+				t.Errorf("section lacks the line %s\nsection:\n%s", w, strings.Join(sec, "\n"))
+			}
+		}
+		if b := d76Lines(sec, "BASIS,"); len(b) != 0 {
+			t.Errorf("BASIS printed without load-clean deadline rows: %q", b)
+		}
+	})
+}
+
+const d76NoteProgram = `import sys
+sys.path.insert(0, sys.argv[1])
+import d76
+names = {"76-02": "76-02-bounds.txt", "76-03-ladders": "76-03-ladders.txt"}
+idx = {}
+for r in d76.all_rows(sys.argv[2], sys.argv[3], sys.argv[4]):
+    if r["_src"] in names:
+        idx[(names[r["_src"]], r["_line"])] = r
+notes = missing = clean = 0
+for l in open(sys.argv[4]).read().splitlines():
+    if not l.startswith("NOTE,key=load_contaminated_row,"):
+        continue
+    notes += 1
+    d = d76.kv(l)
+    line = d.get("line", "")
+    r = idx.get((d.get("file"), int(line))) if line.isdigit() else None
+    if r is None:
+        missing += 1
+    elif r["_clean"]:
+        clean += 1
+print("notes=%d missing=%d clean=%d" % (notes, missing, clean))
+`
+
+func d76Tool(t *testing.T) string {
+	t.Helper()
+	lines := strings.Split(string(d76Read(t, d76Script(t))), "\n")
+	start, starts := -1, 0
+	for i, line := range lines {
+		if line == `  cat > "$WORK/tools/d76.py" <<'PY'` {
+			start = i
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("the d76.py heredoc start matches %d lines, want exactly 1", starts)
+	}
+	end := -1
+	for i := start + 1; i < len(lines); i++ {
+		if lines[i] == "PY" {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		t.Fatal("the d76.py heredoc has no closing PY line")
+	}
+	dir := t.TempDir()
+	d76Write(t, filepath.Join(dir, "d76.py"), []byte(strings.Join(lines[start+1:end], "\n")+"\n"), 0o644)
+	return dir
+}
+
+func TestD76SelectFilterCoversEveryQuietNote(t *testing.T) {
+	tool := d76Tool(t)
+	ladders := d76Read(t, filepath.Join(selectionEvidenceDir, "76-03-ladders.txt"))
+	bounds, err := filepath.Abs(filepath.Join(selectionEvidenceDir, "76-02-bounds.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := filepath.Abs(filepath.Join(selectionEvidenceDir, "76-03-quiet.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		ladders []byte
+	}{
+		{"select_time", d76HeadLines(t, ladders, 48)},
+		{"archived", ladders},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lpath := filepath.Join(t.TempDir(), "76-03-ladders.txt")
+			d76Write(t, lpath, tc.ladders, 0o644)
+			cmd := exec.Command("python3", "-I", "-B", "-c", d76NoteProgram, tool, bounds, lpath, quiet)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("python3: %v\nstderr:\n%s", err, stderr.String())
+			}
+			if got := strings.TrimSpace(stdout.String()); got != "notes=163 missing=0 clean=0" {
+				t.Errorf("got %q, want notes=163 missing=0 clean=0", got)
+			}
+		})
+	}
 }
 
 func d76HeadLines(t *testing.T, data []byte, n int) []byte {
