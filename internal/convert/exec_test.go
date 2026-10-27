@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -332,6 +333,279 @@ func TestRunnersEndADescendantHoldingThePipesAfterTheLeaderExits(t *testing.T) {
 					killTestRequireGroupGone(t, pgid, 2*time.Second, "descendant in the leader's group")
 					t.Logf("returned %s after start: %v", took, err)
 				})
+			}
+		})
+	}
+}
+
+func TestKillTestReturnBoundCoversTheRunnerBounds(t *testing.T) {
+	if want := engineWaitDelay + groupKillBudget + time.Second; killTestReturnBound < want {
+		t.Errorf("killTestReturnBound = %s, want at least engineWaitDelay + groupKillBudget + 1s = %s", killTestReturnBound, want)
+	}
+	if groupKillInterval <= 0 || groupKillInterval >= groupKillBudget {
+		t.Errorf("groupKillInterval = %s, want > 0 and < groupKillBudget (%s)", groupKillInterval, groupKillBudget)
+	}
+}
+
+type killTestCall struct{ start, end time.Time }
+
+type killTestFakeKill struct {
+	t     *testing.T
+	calls []killTestCall
+	reply func(i int) error
+	block func(i int) time.Duration
+}
+
+func (f *killTestFakeKill) kill(pid int, sig syscall.Signal) error {
+	if pid != -(1<<30) || sig != syscall.SIGKILL {
+		f.t.Errorf("kill(%d, %v), want kill(%d, SIGKILL)", pid, sig, -(1 << 30))
+	}
+	i := len(f.calls)
+	c := killTestCall{start: time.Now()}
+	if f.block != nil {
+		time.Sleep(f.block(i))
+	}
+	c.end = time.Now()
+	f.calls = append(f.calls, c)
+	if f.reply != nil {
+		return f.reply(i)
+	}
+	return nil
+}
+
+func killTestRunLoop(t *testing.T, f *killTestFakeKill, done <-chan error) (before time.Time, took time.Duration) {
+	t.Helper()
+	returned := make(chan struct{})
+	before = time.Now()
+	go func() {
+		defer close(returned)
+		killGroupWith(f.kill, 1<<30, done)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * groupKillBudget):
+		t.Fatalf("killGroupWith did not return within %s", 5*groupKillBudget)
+	}
+	return before, time.Since(before)
+}
+
+func TestKillGroupLoopIssuesAKillAfterASlowOne(t *testing.T) {
+	t.Run("slow kill", func(t *testing.T) {
+		f := &killTestFakeKill{t: t, block: func(i int) time.Duration {
+			if i == 0 {
+				return groupKillBudget * 3 / 2
+			}
+			return 0
+		}}
+		before, _ := killTestRunLoop(t, f, nil)
+		if len(f.calls) != 2 {
+			t.Fatalf("kill was called %d times, want 2: after a kill that blocked past the budget, one more kill must follow", len(f.calls))
+		}
+		if f.calls[1].start.Before(f.calls[0].end) {
+			t.Errorf("the second kill started %s before the first returned", f.calls[0].end.Sub(f.calls[1].start))
+		}
+		if f.calls[1].start.Before(before.Add(groupKillBudget)) {
+			t.Errorf("the last kill started %s after the loop began, want after the %s budget", f.calls[1].start.Sub(before), groupKillBudget)
+		}
+	})
+	t.Run("esrch", func(t *testing.T) {
+		f := &killTestFakeKill{t: t, reply: func(i int) error {
+			if i == 2 {
+				return syscall.ESRCH
+			}
+			return nil
+		}}
+		_, took := killTestRunLoop(t, f, nil)
+		if len(f.calls) != 3 {
+			t.Fatalf("kill was called %d times, want 3: the loop ends on the first ESRCH", len(f.calls))
+		}
+		if took >= groupKillBudget {
+			t.Errorf("the loop took %s, want less than the %s budget", took, groupKillBudget)
+		}
+	})
+	t.Run("never gone", func(t *testing.T) {
+		f := &killTestFakeKill{t: t}
+		before, took := killTestRunLoop(t, f, nil)
+		if took < groupKillBudget || took > groupKillBudget+200*time.Millisecond {
+			t.Errorf("the loop took %s, want between %s and %s", took, groupKillBudget, groupKillBudget+200*time.Millisecond)
+		}
+		if n := len(f.calls); n == 0 || f.calls[n-1].start.Before(before.Add(groupKillBudget)) {
+			t.Errorf("the last of %d kills did not start after the %s budget", n, groupKillBudget)
+		}
+	})
+	t.Run("done first", func(t *testing.T) {
+		done := make(chan error, 1)
+		done <- nil
+		f := &killTestFakeKill{t: t, reply: func(i int) error {
+			if i == 2 {
+				return syscall.ESRCH
+			}
+			return nil
+		}}
+		_, took := killTestRunLoop(t, f, done)
+		if len(f.calls) != 3 {
+			t.Fatalf("kill was called %d times, want 3: done must not end the loop, ESRCH must", len(f.calls))
+		}
+		if len(done) != 0 {
+			t.Error("done was never read")
+		}
+		if took >= groupKillBudget {
+			t.Errorf("the loop took %s, want less than the %s budget", took, groupKillBudget)
+		}
+	})
+}
+
+func killTestErrKind(err error) string {
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, exec.ErrWaitDelay):
+		return "waitdelay"
+	case errors.As(err, &ee):
+		return fmt.Sprintf("exit:%d", ee.ExitCode())
+	default:
+		return "other"
+	}
+}
+
+func killTestArgvEnv(t *testing.T, name string) []string {
+	t.Helper()
+	raw := os.Getenv(name)
+	var argv []string
+	if err := json.Unmarshal([]byte(raw), &argv); err != nil || len(argv) == 0 {
+		t.Fatalf("%s = %q: want a non-empty JSON array of strings (%v)", name, raw, err)
+	}
+	return argv
+}
+
+func TestRunnerReturnLatencyLive(t *testing.T) {
+	if os.Getenv("OCTOCONV_RUNNER_LATENCY_LIVE") != "1" {
+		t.Skip("set OCTOCONV_RUNNER_LATENCY_LIVE=1 and OCTOCONV_RUNNER_LATENCY_{KILL,ERROR,OK}_ARGV to measure runner return latency")
+	}
+	var killAfter time.Duration
+	if v := os.Getenv("OCTOCONV_RUNNER_LATENCY_KILL_AFTER"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			t.Fatalf("OCTOCONV_RUNNER_LATENCY_KILL_AFTER = %q: %v", v, err)
+		}
+		killAfter = d
+	}
+	killArgv := killTestArgvEnv(t, "OCTOCONV_RUNNER_LATENCY_KILL_ARGV")
+	okArgv := killTestArgvEnv(t, "OCTOCONV_RUNNER_LATENCY_OK_ARGV")
+	var errArgv []string
+	errNone := ""
+	if raw := os.Getenv("OCTOCONV_RUNNER_LATENCY_ERROR_ARGV"); strings.HasPrefix(raw, "none:") {
+		errNone = strings.TrimPrefix(raw, "none:")
+	} else {
+		errArgv = killTestArgvEnv(t, "OCTOCONV_RUNNER_LATENCY_ERROR_ARGV")
+	}
+	bound := engineWaitDelay + groupKillBudget + 500*time.Millisecond
+
+	for _, c := range []struct {
+		name string
+		argv []string
+	}{{"kill", killArgv}, {"error", errArgv}, {"ok", okArgv}} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.name == "error" && errNone != "" {
+				t.Logf("RUNNERLAT case=error none reason=%s", errNone)
+				return
+			}
+			pidFile := filepath.Join(t.TempDir(), "leader.pid")
+			args := append([]string{"-c", `echo $$ > "$0"; exec "$@"`, pidFile}, c.argv...)
+
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if c.name == "kill" {
+				ctx, cancel = context.WithCancel(context.Background())
+			} else {
+				ctx, cancel = context.WithTimeout(context.Background(), 10*time.Minute)
+			}
+			defer cancel()
+
+			ret := make(chan error, 1)
+			go func() {
+				_, _, err := runCommandCore(ctx, 0, nil, "engine", "/bin/sh", args...)
+				ret <- err
+			}()
+			leader := killTestWaitPid(t, pidFile, 30*time.Second)
+			if leader == 0 {
+				cancel()
+				killTestDrain(t, ret, "runCommandCore")
+				t.Fatal("the wrapper never wrote the leader's pid")
+			}
+			exited := make(chan time.Time, 1)
+			go func() {
+				for end := time.Now().Add(15 * time.Minute); time.Now().Before(end); time.Sleep(time.Millisecond) {
+					if err := syscall.Kill(leader, 0); errors.Is(err, syscall.ESRCH) {
+						exited <- time.Now()
+						return
+					}
+				}
+			}()
+
+			late, aliveAtCancel := "na", "na"
+			var cancelled time.Time
+			if c.name == "kill" {
+				time.Sleep(killAfter)
+				aliveAtCancel = strconv.FormatBool(syscall.Kill(leader, 0) == nil)
+				cancelled = time.Now()
+				cancel()
+			}
+			err := <-ret
+			returned := time.Now()
+			if c.name == "kill" {
+				late = strconv.FormatInt(returned.Sub(cancelled).Milliseconds(), 10)
+			}
+			afterExit := int64(-1)
+			select {
+			case at := <-exited:
+				afterExit = returned.Sub(at).Milliseconds()
+			case <-time.After(2 * time.Second):
+			}
+
+			var live, zombies []string
+			for end := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+				live, zombies = killTestGroupMembers(leader)
+				if len(live) == 0 || time.Now().After(end) {
+					break
+				}
+			}
+			waitDelay := 0
+			if errors.Is(err, exec.ErrWaitDelay) {
+				waitDelay = 1
+			}
+			t.Logf("RUNNERLAT case=%s after_leader_exit_ms=%d late_ms=%s leader_alive_at_cancel=%s err=%s waitdelay=%d live_after=%d zombies_after=%d",
+				c.name, afterExit, late, aliveAtCancel, killTestErrKind(err), waitDelay, len(live), len(zombies))
+			if len(live) > 0 {
+				killTestSweep(leader)
+				t.Fatalf("group %d still has live members 2s after the runner returned: %v", leader, live)
+			}
+
+			switch c.name {
+			case "kill":
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("err = %v, want context.Canceled", err)
+				}
+				if d := returned.Sub(cancelled); d > bound {
+					t.Fatalf("returned %s after cancel, want at most %s", d, bound)
+				}
+			case "error":
+				if err == nil {
+					t.Fatal("err = nil, want the engine to fail")
+				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("err = %v, want an engine failure, not a cancellation", err)
+				}
+				if afterExit < 0 || time.Duration(afterExit)*time.Millisecond > bound {
+					t.Fatalf("returned %d ms after the leader exited, want at most %s", afterExit, bound)
+				}
+			case "ok":
+				if err != nil {
+					t.Fatalf("err = %v (ErrWaitDelay: %t), want nil: the success path regressed", err, errors.Is(err, exec.ErrWaitDelay))
+				}
 			}
 		})
 	}
