@@ -39,7 +39,11 @@ type cadDXFDrawing struct {
 	verdict        cadVerdict
 }
 
-func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
+func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	return c.ConvertWithStages(ctx, inPath, outPath, opts, nil)
+}
+
+func (c CADDXFConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) (err error) {
 	parsed, err := CADOptsFromMap(opts)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)
@@ -52,6 +56,7 @@ func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, op
 	if err := ValidateCADApplicability(EngineCAD, OperationConvert, format, target, parsed); err != nil {
 		return fmt.Errorf("cad: %w", err)
 	}
+	st := newCADStager(sink, OperationConvert, "dxf", target)
 	jobDir, err := cadDXFAdmit(inPath, outPath)
 	if err != nil {
 		return err
@@ -65,19 +70,21 @@ func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, op
 	}()
 
 	if target == "svg" {
-		_, err = c.dxfDrawing(ctx, jobDir, inPath, outPath, "")
+		_, err = c.dxfDrawing(ctx, jobDir, inPath, outPath, "", st)
 		return err
 	}
-	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", "")
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", "", st)
 	if err != nil {
 		return err
 	}
 	if err := cadDXFClear(outPath); err != nil {
 		return err
 	}
+	st.enter(cadStageRsvg)
 	if err := c.rsvgStage(ctx, jobDir, outPath, cadDXFPDFArgs(outPath, clean)...); err != nil {
 		return err
 	}
+	st.enter(cadStageJudge)
 	if err := cadDXFRegular(outPath, "the PDF", ErrCADDrawingFailed); err != nil {
 		return err
 	}
@@ -95,7 +102,11 @@ func (CADDXFRenderConverter) Pairs() []Pair {
 	return []Pair{{From: "dxf", To: "png"}}
 }
 
-func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
+func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	return c.ConvertWithStages(ctx, inPath, outPath, opts, nil)
+}
+
+func (c CADDXFRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) (err error) {
 	parsed, err := CADOptsFromMap(opts)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)
@@ -110,6 +121,7 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	}
 	o := parsed.Resolved()
 	size := *o.Size
+	st := newCADStager(sink, OperationRender, "dxf", "png")
 	jobDir, err := cadDXFAdmit(inPath, outPath)
 	if err != nil {
 		return err
@@ -125,7 +137,7 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	}()
 
 	draftPath := filepath.Join(jobDir, cadMeasureDraftName)
-	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", draftPath)
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", draftPath, st)
 	if err != nil {
 		return err
 	}
@@ -157,9 +169,11 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 			return err
 		}
 	}
+	st.enter(cadStageRsvg)
 	if err := c.rsvgStage(ctx, jobDir, outPath, args...); err != nil {
 		return err
 	}
+	st.enter(cadStageJudge)
 	if err := cadDXFRegular(outPath, "the PNG", ErrCADDrawingFailed); err != nil {
 		return err
 	}
@@ -227,8 +241,9 @@ func cadDXFClear(path string) error {
 	return nil
 }
 
-func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut, measure string) (cadDXFDrawing, error) {
+func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut, measure string, st cadStager) (cadDXFDrawing, error) {
 	var d cadDXFDrawing
+	st.enter(cadStageGuard)
 	if _, err := c.guardStage(ctx, jobDir, "dxf", inPath); err != nil {
 		return d, err
 	}
@@ -245,6 +260,7 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 			return d, err
 		}
 	}
+	st.enter(cadStageDXF)
 	v, err := c.dxfStage(ctx, jobDir, inPath, draw, render, texts, measure)
 	if err != nil {
 		return d, err
@@ -283,6 +299,7 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	if d.client.Visible == 0 {
 		return d, fmt.Errorf("cad dxf: %w: %w: the drawing has nothing visible", ErrCADNothingDrawable, ErrCADEmptyResult)
 	}
+	st.enter(cadStageInk)
 	if err := c.dxfInk(ctx, jobDir, clean, d.render); err != nil {
 		return d, err
 	}

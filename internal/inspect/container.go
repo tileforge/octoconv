@@ -201,7 +201,7 @@ func AnalyzeContainerWith(cr convert.ContainerResult, zr *zip.Reader, r io.Reade
 		zr = parsed
 	}
 
-	appendMacroResult(&res, zr, cr.HasMacro)
+	appendMacroResult(&res, zr, cr.HasMacro, tr)
 	appendBombResult(&res, cr.TotalUncompressed, bombThreshold)
 	// ONE budget, shared by both readers below, decremented in place as parts
 	// are read. PR9R23 found this class in pdf.go and image.go; this file had
@@ -263,7 +263,7 @@ func unknownContainerResult(res FamilyResult, reason Reason) FamilyResult {
 // (should not happen -- see the doc comment on ooxmlMacroPartNames), the
 // Finding is still recorded, just with an empty Location, rather than
 // silently downgrading a real positive signal to a Check.
-func appendMacroResult(res *FamilyResult, zr *zip.Reader, hasMacro bool) {
+func appendMacroResult(res *FamilyResult, zr *zip.Reader, hasMacro bool, tr *Tracker) {
 	if !hasMacro {
 		res.Checks = append(res.Checks, Check{Code: CodeOOXMLMacro, Status: StatusClean})
 		return
@@ -272,13 +272,13 @@ func appendMacroResult(res *FamilyResult, zr *zip.Reader, hasMacro bool) {
 	res.Findings = append(res.Findings, Finding{
 		Code:     CodeOOXMLMacro,
 		Severity: sev,
-		Location: findMacroPartName(zr),
+		Location: findMacroPartName(zr, tr),
 	})
 }
 
-func findMacroPartName(zr *zip.Reader) string {
+func findMacroPartName(zr *zip.Reader, tr *Tracker) string {
 	for i, f := range zr.File {
-		if i >= maxZipEntriesScanned {
+		if i >= maxZipEntriesScanned || tr.OutOfTime() {
 			return ""
 		}
 		if ooxmlMacroPartNames[f.Name] || strings.HasPrefix(f.Name, "Basic/") {
@@ -353,7 +353,7 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 		// OUR OWN resource limit, never the file's fault -- it must never be
 		// reported as clean (T-58-16's sibling concern, applied to the
 		// container family).
-		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: tr.ceilingReason()})
 	case st.malformed:
 		// A candidate part was read to completion, within EVERY one of this
 		// scan's own ceilings, and STILL failed to parse as XML -- a fact
@@ -424,7 +424,7 @@ func scanExternalReferences(zr *zip.Reader, format string, budget *int64, tr *Tr
 	malformedAnyPart := false
 
 	for i, f := range zr.File {
-		if i >= maxZipEntriesScanned {
+		if i >= maxZipEntriesScanned || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return externalRefStatus{ceiling: true}
 		}
@@ -491,11 +491,14 @@ func scanExternalReferences(zr *zip.Reader, format string, budget *int64, tr *Tr
 		rc.Close()
 		*budget -= int64(len(data))
 
-		switch containsExternalReference(data, format) {
+		switch containsExternalReference(data, format, tr) {
 		case xmlScanFound:
 			return externalRefStatus{location: f.Name}
 		case xmlScanMalformed:
 			malformedAnyPart = true
+		case xmlScanCeiling:
+			tr.MarkCeilingHit()
+			return externalRefStatus{ceiling: true}
 		}
 		if readErr != nil {
 			// codex PR9 round 2 (container.go:334)'s sibling case: the part
@@ -582,6 +585,7 @@ const (
 	xmlScanNotFound xmlScanResult = iota
 	xmlScanFound
 	xmlScanMalformed
+	xmlScanCeiling
 )
 
 // odfExternalHrefSchemes are the URL schemes this file treats as an
@@ -591,12 +595,12 @@ const (
 // file:, which can still exfiltrate/track via a local-resource probe.
 var odfExternalHrefSchemes = []string{"http:", "https:", "ftp:", "file:"}
 
-func containsExternalReference(data []byte, format string) xmlScanResult {
+func containsExternalReference(data []byte, format string, tr *Tracker) xmlScanResult {
 	switch format {
 	case "docx", "xlsx", "pptx":
-		return containsExternalRelationship(data)
+		return containsExternalRelationship(data, tr)
 	case "odt", "ods", "odp", "epub":
-		return containsODFExternalHref(data)
+		return containsODFExternalHref(data, tr)
 	default:
 		return xmlScanNotFound
 	}
@@ -642,9 +646,12 @@ func containsExternalReference(data []byte, format string) xmlScanResult {
 // consumed the whole part and found no match -- an honest "not found") from
 // any other decode error (the part's XML could not be parsed at all --
 // xmlScanMalformed, never silently folded into "not found").
-func containsExternalRelationship(data []byte) xmlScanResult {
+func containsExternalRelationship(data []byte, tr *Tracker) xmlScanResult {
 	dec := xml.NewDecoder(bytes.NewReader(data))
-	for {
+	for iter := 0; ; iter++ {
+		if iter%pdfTimeCheckEvery == 0 && tr.OutOfTime() {
+			return xmlScanCeiling
+		}
 		tok, err := dec.Token()
 		if err != nil {
 			if err == io.EOF {
@@ -715,9 +722,12 @@ func containsExternalRelationship(data []byte) xmlScanResult {
 // what counts as clean: an over-report costs an external_reference FINDING
 // on a document that may not have deserved one, while a miss costs a false
 // clean -- and this project has now paid the second cost four times.
-func containsODFExternalHref(data []byte) xmlScanResult {
+func containsODFExternalHref(data []byte, tr *Tracker) xmlScanResult {
 	dec := xml.NewDecoder(bytes.NewReader(data))
-	for {
+	for iter := 0; ; iter++ {
+		if iter%pdfTimeCheckEvery == 0 && tr.OutOfTime() {
+			return xmlScanCeiling
+		}
 		tok, err := dec.Token()
 		if err != nil {
 			if err == io.EOF {
@@ -795,9 +805,9 @@ func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format st
 			// read the part, not a structural fact about the file -- the
 			// exact same class scanExternalReferences already closed for
 			// external_reference, just unaddressed for sheet_count.
-			reason := ReasonMalformedInput
+			reason := Reason(ReasonMalformedInput)
 			if ceilingHit {
-				reason = ReasonWorkCeilingBytes
+				reason = tr.ceilingReason()
 			}
 			res.Characteristics["sheet_count"] = nil
 			res.Characteristics["sheet_count_reason"] = string(reason)
@@ -844,6 +854,10 @@ func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format st
 // maxRelsPartBytes but decompressing to more data").
 func extractXLSXSheetCount(zr *zip.Reader, budget *int64, tr *Tracker) (count int, ok bool, ceilingHit bool) {
 	for _, f := range zr.File {
+		if tr.OutOfTime() {
+			tr.MarkCeilingHit()
+			return 0, false, true
+		}
 		if f.Name != "xl/workbook.xml" {
 			continue
 		}
@@ -885,7 +899,11 @@ func extractXLSXSheetCount(zr *zip.Reader, budget *int64, tr *Tracker) (count in
 			tr.MarkCeilingHit()
 			return 0, false, true
 		}
-		n, ok := countSheetElements(data)
+		n, ok, timedOut := countSheetElements(data, tr)
+		if timedOut {
+			tr.MarkCeilingHit()
+			return 0, false, true
+		}
 		if !ok {
 			// The part was read in full and still did not parse as XML.
 			// That is a fact about the FILE, and it must not be published
@@ -961,7 +979,7 @@ func trimXMLSpace(b []byte) []byte {
 	return bytes.Trim(b, xmlSpaceChars)
 }
 
-func countSheetElements(data []byte) (count int, ok bool) {
+func countSheetElements(data []byte, tr *Tracker) (count int, ok bool, timedOut bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	// workbookNS is the namespace the ROOT element declared, and every
 	// sheets/sheet that counts must match it exactly. Deciding this from the
@@ -995,7 +1013,10 @@ func countSheetElements(data []byte) (count int, ok bool) {
 	// which pins that measurement so a future Go release changing it fails
 	// loudly instead of silently.
 	rootClosed := false
-	for {
+	for iter := 0; ; iter++ {
+		if iter%pdfTimeCheckEvery == 0 && tr.OutOfTime() {
+			return 0, false, true
+		}
 		tok, err := dec.Token()
 		if err != nil {
 			if err == io.EOF {
@@ -1016,9 +1037,9 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// inspected, from a part that is not a valid workbook. The
 				// invariant has to hold in both directions: not more than one
 				// list, and not fewer.
-				return count, haveRoot && sheetsSeen
+				return count, haveRoot && sheetsSeen, false
 			}
-			return 0, false
+			return 0, false, false
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -1028,7 +1049,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// malformed_input, which is what this part is -- publishing
 				// the tally instead would state a fact about a workbook
 				// read out of something that is not an XML document.
-				return 0, false
+				return 0, false, false
 			}
 			depth++
 			if !haveRoot {
@@ -1046,13 +1067,13 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// fallback here. Zero is an answer; "not a workbook" is the
 				// absence of one.
 				if t.Name.Local != "workbook" {
-					return 0, false
+					return 0, false, false
 				}
 				// The only namespace accepted without being one of the two
 				// known SpreadsheetML URIs is the empty one, i.e. a wholly
 				// unnamespaced (minimal or hand-written) workbook.
 				if workbookNS != "" && !spreadsheetMLNamespaces[workbookNS] {
-					return 0, false
+					return 0, false, false
 				}
 			}
 			if t.Name.Space != workbookNS {
@@ -1085,7 +1106,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// that has two.
 				if depth == 2 {
 					if sheetsSeen {
-						return 0, false
+						return 0, false, false
 					}
 					sheetsSeen = true
 					sheetsDepth = depth
@@ -1126,7 +1147,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 			// on its own, so those never reach here; trimXMLSpace keeps them
 			// regardless rather than depending on that.)
 			if depth == 0 && len(trimXMLSpace(t)) > 0 {
-				return 0, false
+				return 0, false, false
 			}
 		}
 	}

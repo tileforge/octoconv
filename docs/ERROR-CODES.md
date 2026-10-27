@@ -31,6 +31,12 @@ Future extensibility (`retry_after`, `details`, etc.) is added as additional TOP
 on the same flat envelope, never by changing this shape. `429` responses already carry
 `retry_after` this way; that precedent is what any future addition should follow.
 
+One status never carries this envelope: `431`. The HTTP server writes it before routing, before
+the API key and before any rate limit, when the request line and headers together are longer
+than 64 KiB. The body is the plain text `431 Request Header Fields Too Large` with no envelope
+and no `code`, and the connection is closed. Treat it like any other non-JSON error response.
+It has no row in the tables below because it has no `code` on the wire.
+
 **Asynchronous job failures** do not use an HTTP error envelope at all — the job itself
 completes its HTTP request successfully at creation time, and the failure surfaces later as two
 plain string fields:
@@ -89,20 +95,20 @@ instead of about their document. Both name the offending package in `message`.
 
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Twenty-one codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Twenty-two codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
 | Code | Typical HTTP status | Failure class | What a client should do |
 |------|---------------------|----------------|--------------------------|
-| `invalid_request` | 400 | Generic request/form validation failure: missing target format, preset+target conflict, unrecognized source format, invalid `callback_url`, malformed job id, invalid `status`/`engine` filter, invalid `client_id`, invalid period filter, invalid JSON body, invalid preset name | Fix the request; the `message` names the specific field/reason |
+| `invalid_request` | 400, 422 | Generic request/form validation failure: missing target format, preset+target conflict, unrecognized source format, invalid `callback_url`, malformed job id, invalid `status`/`engine` filter, invalid `client_id`, invalid period filter, invalid JSON body, invalid preset name. Content refusals of `POST /v1/jobs` answer 422 with this code, among them a ZIP-based upload whose central directory is past the bound `POST /v1/inspect` reads (`the archive's central directory is larger than this service reads; repackage the archive with fewer entries`), refused before anything is stored | Fix the request; the `message` names the specific field/reason |
 | `unsupported_conversion` | 422 | The requested `(source, target)` format pair is not served by any registered engine | Do not retry unmodified; check `GET /v1/formats` for a supported pair |
 | `unsupported_operation` | 422 | The requested `operation` is not registered by any engine at all — no `(source, target)` triple exists under it (client typo, or the engine is not compiled into this build) | Check the `operation` value against `GET /v1/formats`; do not retry unmodified |
 | `invalid_options` | 422 | `opts` present but malformed/invalid for the chosen conversion (shared code space with the async `invalid_options` below — D-03) | Fix `opts` against the conversion's documented schema; do not retry unmodified |
 | `opts_not_applicable` | 422 | `opts` are well-formed JSON but not meaningful for this specific conversion | Omit `opts` or use only fields the target conversion documents |
 | `missing_file` | 400 | No file part present in the multipart request body | Attach the file; do not retry unmodified |
 | `unknown_preset` | 404 | The named preset does not exist, is not active for this client, or (deliberately, to avoid leaking auth-vs-existence to a non-operator) an operator-only lookup target does not exist | Verify the preset name via `GET /v1/presets`; do not treat this as evidence a client-visible preset was deleted |
-| `payload_too_large` | 413 (multipart body) or 422 (an oversized single field, e.g. `opts`) | The request body or a specific field exceeds its configured size cap, or a CAD file exceeds the per-format ceiling of the `cad` engine (63 MiB STEP, 120 MiB IGES, 182 MiB STL, 118 MiB DXF; the message names the format) | Reduce payload size; status code varies by which cap fired, code does not |
+| `payload_too_large` | 413 (multipart body: the whole body above its upload ceiling, or every field value and every part's headers together above 65536 bytes — message `form fields too large`) or 422 (an oversized single field: `opts` above 4096 bytes, `callback_url` above 2048 bytes, the document's file name above 255 bytes; the message names the field) | The request body or a specific field exceeds its configured size cap, or a CAD file exceeds the per-format ceiling of the `cad` engine (63 MiB STEP, 120 MiB IGES, 182 MiB STL, 118 MiB DXF; the message names the format) | Reduce payload size; status code varies by which cap fired, code does not |
 | `not_found` | 404 | The requested job or preset does not exist for this authenticated client | Verify the id/name; a 404 here never distinguishes "exists but not yours" from "does not exist" |
 | `invalid_cursor` | 400 | An opaque pagination cursor on `GET /v1/jobs` failed to decode | Drop the cursor and restart pagination from the first page |
 | `already_exists` | 409 | A preset name collision on create | Choose a different name, or update the existing preset instead |
@@ -115,6 +121,7 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 | `binary_dxf_unsupported` | 422 | A DXF in the binary encoding (AutoCAD Binary DXF sentinel) | Re-export as ASCII DXF |
 | `dwg_unsupported` | 422 | A DWG file (`AC10xx` signature) | Re-export as DXF |
 | `inspect_busy` | 429 | The service has exhausted its bounded concurrency budget for synchronous `inspect` parsing right now and refuses to accept another one immediately — the request is neither queued nor parsed (58-CONTEXT.md D-06, mechanism 2); distinct from `rate_limited` (own request rate) and `quota_exceeded` (own daily/concurrent job budget) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — do not reduce file size or alter the request, this is not a property of the request |
+| `intake_busy` | 429 | Every create intake slot of this API process is taken right now (`POST /v1/jobs`): the request is refused before its body is read, neither parsed nor stored; distinct from `rate_limited` (own request rate), `quota_exceeded` (own daily/concurrent job budget) and `inspect_busy` (the inspect path) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — this is not a property of the request |
 | `internal_error` | 5xx | Anything the client cannot act on (unexpected server-side failure) | Retry later or escalate; do not attempt to parse `message` for a remediation |
 
 CAD content checks run only for uploads whose extension is `step`, `stp`, `iges`, `igs`, `stl`, `dxf` or `dwg`. Compressed or binary-flag IGES, pre-R2.5 DWG signatures with a dot (`AC1.40`, `AC2.10`), a binary STL uploaded under another CAD extension, and CAD content under a non-CAD extension are not recognized and get `invalid_request` (unrecognized content). The `cad` engine converts STEP and IGES to STL (binary STL, millimetres) and DXF to SVG or PDF, and with operation `render` draws STEP, IGES, STL and DXF as a PNG preview with a second output of role `measurements` (docs/MEASUREMENTS.md). Any other pair for a CAD file, an STL `convert` included, is answered `unsupported_conversion`. A file above its format's ceiling (63 MiB STEP, 120 MiB IGES, 182 MiB STL, 118 MiB DXF) is refused before the upload is stored with 413 `payload_too_large`, and the message names the format and its ceiling (for example `step file exceeds the 63 MiB limit for this conversion`); `POST /v1/inspect` reports the same ceiling as `max_bytes` on every `cad` offer (123731968 bytes for a DXF). Every shipped deployment (the Helm chart, `docker-compose.yml`, `.env.example`) sets the global `MAX_UPLOAD_BYTES` and `INSPECT_MAX_UPLOAD_BYTES` above the largest of these ceilings plus the request's multipart framing, so a CAD file at or below its ceiling gets the per-format answer, never the generic transport 413.

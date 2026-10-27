@@ -105,9 +105,11 @@ components:
         vocabulary frozen by docs/ERROR-CODES.md (milestone v1.13 Phase 56,
         ERRC-01); internal/errcode/openapi_sync_test.go mechanically proves
         this enum never drifts from internal/errcode's Go constants. On a
-        429, code distinguishes the two independent producers of that status:
-        the per-IP/per-client rate limiter (rate_limited) and the per-client
-        quota admission gate (quota_exceeded, QUOT-01..04).
+        429, code distinguishes the independent producers of that status:
+        the per-IP/per-client rate limiter (rate_limited), the per-client
+        quota admission gate (quota_exceeded, QUOT-01..04), the inspect
+        concurrency gates (inspect_busy) and the create intake slots
+        (intake_busy).
       properties:
         error:
           type: string
@@ -129,6 +131,7 @@ components:
             - quota_exceeded
             - rate_limited
             - inspect_busy
+            - intake_busy
             - unsupported_package
             - truncated_cad_file
             - ambiguous_stl
@@ -180,7 +183,66 @@ components:
           example: svc-checkout/req-8f31c2a4
         status:
           type: string
-          enum: [queued, active, done, failed]
+          enum: [queued, active, done, failed, canceled]
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+          description: >-
+            Percent done, for the engines that measure it. null means
+            unknown, never zero. A done job of such an engine reads 100, a
+            failed or canceled one keeps its last value. A cad job reads null
+            from queued to its terminal status; its progress is stage.
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+          description: >-
+            Estimated seconds left, for the engines that measure it. null
+            means unknown, never zero. A cad job reads null from queued to its
+            terminal status.
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            The stage a cad job is in. Present only for a job of engine cad;
+            a job of any other class has no stage key at all, nor
+            stage_index nor stage_count. null while the job is queued and
+            before its first stage starts. A new attempt and a return to the
+            queue reset it to null. On done, failed and canceled the last
+            reported stage stays: a done job reads the last stage of its
+            route, a failed job reads the stage it stopped in.
+
+            Stages by route, in order:
+
+            convert step->stl: guard, mesh, judge
+
+            convert iges->stl: guard, mesh, judge
+
+            render step->png: guard, mesh, render, judge
+
+            render iges->png: guard, mesh, render, judge
+
+            render stl->png: mesh, render, judge
+
+            convert dxf->svg: guard, dxf, ink
+
+            convert dxf->pdf: guard, dxf, ink, rsvg, judge
+
+            render dxf->png: guard, dxf, ink, rsvg, judge
+
+            What each stage does is in docs/CAD.md, section Stages.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: >-
+            Position of the current stage in the job's route, counted from 1.
+            Present only for a cad job; null exactly when stage is null.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: >-
+            Number of stages in the job's route. Present only for a cad job;
+            null exactly when stage is null.
         opts:
           description: >-
             Shape depends on the target engine — AudioOpts for audio-engine
@@ -248,6 +310,93 @@ components:
           type: string
           description: Human-readable failure detail. Only present when status=failed.
       required: [job_id, status]
+
+    ProgressEvent:
+      type: object
+      description: >-
+        The JSON data of one `event: progress` frame of GET
+        /v1/jobs/{id}/events. Every frame but the last carries status,
+        progress_pct and eta_seconds, with the same meaning as in JobStatus;
+        a frame of a cad job also carries stage, stage_index and stage_count.
+        A frame the stream sends for a stage it polled past carries status
+        active, progress_pct and eta_seconds null, and that stage. The last
+        frame, sent on a terminal status, carries status only.
+      properties:
+        status:
+          type: string
+          enum: [queued, active, done, failed, canceled]
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            Only in the frames of a cad job, as in JobStatus.stage.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the frames of a cad job, as in JobStatus.stage_index.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the frames of a cad job, as in JobStatus.stage_count.
+      required: [status]
+
+    ProgressWebhookEvent:
+      type: object
+      description: >-
+        The body of an intermediate webhook, POSTed to callback_url when the
+        job was created with progress_webhook "true". It is signed like the
+        completion webhook: X-OctoConv-Timestamp carries the Unix time in
+        seconds and X-OctoConv-Signature the hex HMAC-SHA256 of
+        "<timestamp>.<body>" under the service's webhook signing secret.
+
+        Each delivery is one attempt with no retry. It is not recorded as a
+        webhook delivery and does not use the retry budget of the
+        completion webhook, so a receiver that is down misses it for good;
+        GET /v1/jobs/{id} always has the current state.
+
+        A cad job sends one delivery on every stage change, with
+        progress_pct and eta_seconds null. The deliveries of one attempt
+        leave one at a time, in stage order. stage, stage_index and stage_count
+        are present only in the deliveries of a cad job.
+      properties:
+        job_id:
+          type: string
+          format: uuid
+        event:
+          type: string
+          enum: [progress]
+        correlation_id:
+          type: string
+          maxLength: 128
+          description: Present only when the job was created with a Correlation-Id.
+        progress_pct:
+          type: [integer, "null"]
+          minimum: 0
+          maximum: 100
+        eta_seconds:
+          type: [integer, "null"]
+          minimum: 0
+        stage:
+          type: [string, "null"]
+          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          description: >-
+            Only in the deliveries of a cad job, as in JobStatus.stage.
+        stage_index:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the deliveries of a cad job, as in JobStatus.stage_index.
+        stage_count:
+          type: [integer, "null"]
+          minimum: 1
+          description: Only in the deliveries of a cad job, as in JobStatus.stage_count.
+      required: [job_id, event, progress_pct, eta_seconds]
 
     AudioOpts:
       type: object
@@ -823,6 +972,20 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    RequestHeaderFieldsTooLarge:
+      description: >-
+        The request line and headers together are longer than 64 KiB, the
+        MaxHeaderBytes of every HTTP listener of the API process (net/http
+        reads up to 64 KiB plus its own 4096-byte buffer slack, 69632 bytes,
+        and answers one byte more with 431). net/http writes this answer
+        itself, before routing, before the API key is checked and before any
+        rate limit. The body is plain text, "431 Request Header Fields Too
+        Large", and the server closes the connection. There is no error
+        envelope and no code field.
+      content:
+        text/plain:
+          schema:
+            type: string
 
 paths:
   /healthz:
@@ -868,6 +1031,8 @@ paths:
                 redis: unreachable
                 s3: ok
                 status: degraded
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           description: >-
             A panic in the handler, answered by chi's Recoverer middleware.
@@ -949,6 +1114,9 @@ paths:
                     the stem is what is reserved, not the prefix. At most 32
                     parts per job. A name is refused rather than repaired: a
                     repaired name is not the name your document \inputs.
+                    The document's file name, as sent in its
+                    Content-Disposition, is at most 255 bytes; a longer name is
+                    refused with 422 (payload_too_large), never truncated.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
@@ -963,7 +1131,22 @@ paths:
                 callback_url:
                   type: string
                   format: uri
-                  description: Optional SSRF-validated webhook URL notified on completion.
+                  description: >-
+                    Optional SSRF-validated webhook URL notified on completion.
+                    At most 2048 bytes; a longer value is refused with 422
+                    (payload_too_large), never truncated. The bound applies
+                    when a job is created; jobs created before it keep their
+                    callback_url.
+                progress_webhook:
+                  type: string
+                  enum: ["true", "false"]
+                  description: >-
+                    When "true" and callback_url is set, the service also POSTs
+                    intermediate events to callback_url while the job runs, if
+                    its engine reports progress (a cad job reports its stage);
+                    the body is ProgressWebhookEvent. Any other value, or no
+                    callback_url, sends none. Without callback_url the flag does
+                    nothing and is not an error.
                 preset:
                   type: string
                   description: Named server preset supplying target_format and opts. Mutually exclusive with target/opts.
@@ -1042,7 +1225,10 @@ paths:
           description: >-
             Invalid multipart form / missing file / missing target format /
             cannot determine source format from filename / invalid
-            callback_url / invalid preset name.
+            callback_url / invalid preset name. The body has 30 s, plus one
+            second for every 1 MiB received so far, to arrive: a body that
+            falls below 1 MiB/s once its first 30 s have passed is cut and
+            answered with this 400 (invalid_request, invalid multipart form).
           content:
             application/json:
               schema:
@@ -1050,7 +1236,11 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "413":
-          description: File exceeds the configured size limit.
+          description: >-
+            File exceeds the configured size limit (file exceeds size limit),
+            or the form's non-file data -- every field value and every part's
+            headers together, above 65536 bytes (form fields too large) -- is
+            refused while the body is read, before anything is stored.
           content:
             application/json:
               schema:
@@ -1074,13 +1264,43 @@ paths:
             That last check reads a BOUNDED window of the preamble and
             abstains when the preamble runs past it -- such a document is
             accepted here and fails later with the SAME code in the job's
-            error_code, which is why the two vocabularies share it.
+            error_code, which is why the two vocabularies share it. A
+            callback_url above 2048 bytes or a document file name above 255
+            bytes is refused with payload_too_large before anything is
+            stored. Of the form fields only opts, callback_url and the
+            document's file name have a length bound of their own;
+            progress_webhook and any field this endpoint does not read count
+            toward the 65536-byte bound on the form's non-file data (413
+            payload_too_large, form fields too large).
+            A ZIP-based upload whose central directory is past the bound
+            POST /v1/inspect reads is refused with invalid_request and the
+            message "the archive's central directory is larger than this
+            service reads; repackage the archive with fewer entries", before
+            anything is stored.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          $ref: "#/components/responses/TooManyRequests"
+          description: >-
+            One of three independent 429 producers rejected this request,
+            distinguished by the body's code field: the per-IP/per-client
+            rate limiter (rate_limited), the per-client quota admission
+            gate (quota_exceeded, QUOT-01..04), or the create intake slots
+            (intake_busy) -- every slot this API process has for reading a
+            create body is taken, so the request is refused before its body
+            is read; this is the service's own capacity, not the caller's
+            budget. Retry unchanged after Retry-After.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1206,6 +1426,8 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1268,7 +1490,10 @@ paths:
             Body exceeds this endpoint's OWN upload ceiling
             (INSPECT_MAX_UPLOAD_BYTES) -- separate from, and never larger than,
             POST /v1/jobs' own MAX_UPLOAD_BYTES, since this endpoint never
-            writes the body to S3.
+            writes the body to S3. Also returned when the form's non-file
+            data -- every field value and every part's headers together,
+            above 65536 bytes (form fields too large) -- is refused while the
+            body is read.
           content:
             application/json:
               schema:
@@ -1295,6 +1520,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1355,6 +1582,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1372,7 +1601,18 @@ paths:
         status (`done`/`failed`/`canceled`). The terminal event carries
         `status` only -- never a presigned URL; fetch `GET /v1/jobs/{id}` for
         the result. Streams are also closed by a server-side maximum duration
-        (`SSE_MAX_STREAM_DURATION`).
+        (`SSE_MAX_STREAM_DURATION`). The data of every event is
+        ProgressEvent.
+
+        For a cad job an event is also emitted when `stage` changes, and its
+        data carries `stage`, `stage_index` and `stage_count`. The stream
+        reads the job on a poll, so a short stage can pass between two polls.
+        When the job moved on by more than one stage, the stream sends one
+        event for every stage it missed, in route order and each with
+        `status` `active`, before the event of the current state. A client
+        that connects in the middle of a job gets one event with the current
+        stage and no history. A new attempt resets the stage to null and
+        sends one event without any catch-up.
       parameters:
         - name: id
           in: path
@@ -1408,6 +1648,26 @@ paths:
 
                     event: progress
                     data: {"status":"done"}
+                cadStages:
+                  summary: A cad render step->png, with the render stage caught up after a poll that missed it
+                  value: |
+                    event: progress
+                    data: {"status":"queued","progress_pct":null,"eta_seconds":null,"stage":null,"stage_index":null,"stage_count":null}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"guard","stage_index":1,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"mesh","stage_index":2,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"active","progress_pct":null,"eta_seconds":null,"stage":"render","stage_index":3,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"done","progress_pct":null,"eta_seconds":null,"stage":"judge","stage_index":4,"stage_count":4}
+
+                    event: progress
+                    data: {"status":"done"}
         "400":
           description: Invalid job id.
           content:
@@ -1430,6 +1690,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1503,6 +1765,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1586,6 +1850,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1608,7 +1874,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PresetResponse"
         "400":
-          description: Invalid preset name, or invalid JSON body.
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
           content:
             application/json:
               schema:
@@ -1632,6 +1898,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -1659,6 +1927,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1688,6 +1958,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     put:
@@ -1710,7 +1982,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PresetResponse"
         "400":
-          description: Invalid preset name, or invalid JSON body.
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
           content:
             application/json:
               schema:
@@ -1737,6 +2009,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     delete:
@@ -1774,6 +2048,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1797,7 +2073,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PresetResponse"
         "400":
-          description: Invalid preset name, or invalid JSON body.
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
           content:
             application/json:
               schema:
@@ -1827,6 +2103,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     get:
@@ -1861,6 +2139,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1895,6 +2175,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     put:
@@ -1918,7 +2200,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PresetResponse"
         "400":
-          description: Invalid preset name, or invalid JSON body.
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
           content:
             application/json:
               schema:
@@ -1939,6 +2221,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
     delete:
@@ -1978,6 +2262,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -2202,5 +2488,7 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"

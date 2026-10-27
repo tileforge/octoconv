@@ -87,6 +87,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  cad-worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   # document-worker: E2E-ONLY fault-injection shim for the veraPDF live
   # terminal-fail gate (Phase 23 Plan 03, D-09). NEVER present in production
   # docker-compose.yml. A single-file, read-only bind mount SHADOWS the real

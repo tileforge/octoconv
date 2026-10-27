@@ -703,6 +703,52 @@ if [ -n "$BADWAIT" ]; then
 fi
 echo "OK: no octoconv chart install uses --wait"
 
+echo "### api spill: TMPDIR on a disk emptyDir with sizeLimit, ephemeral-storage request = limit, TMPDIR only on api"
+SPILL_RENDER=$(mktemp)
+API_DEPLOYMENT='select(.kind == "Deployment" and .metadata.name == "api")'
+for SPILL_VALUES in "$CHART/values.yaml" "$CHART"/values-*.yaml; do
+  if [ "$SPILL_VALUES" = "$CHART/values.yaml" ]; then
+    helm template octoconv "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET > "$SPILL_RENDER"
+  else
+    helm template octoconv "$CHART" -f "$SPILL_VALUES" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET > "$SPILL_RENDER"
+  fi
+  SPILL_TMPDIR=$(yq "$API_DEPLOYMENT | .spec.template.spec.containers[] | select(.name == \"api\") | .env[] | select(.name == \"TMPDIR\") | .value" "$SPILL_RENDER" | grep -v '^---$' || true)
+  SPILL_MOUNT=$(yq "$API_DEPLOYMENT | .spec.template.spec.containers[] | select(.name == \"api\") | .volumeMounts[] | select(.name == \"spill\") | .mountPath" "$SPILL_RENDER" | grep -v '^---$' || true)
+  SPILL_SIZE=$(yq "$API_DEPLOYMENT | .spec.template.spec.volumes[] | select(.name == \"spill\") | .emptyDir.sizeLimit" "$SPILL_RENDER" | grep -v '^---$' || true)
+  SPILL_MEDIUM=$(yq "$API_DEPLOYMENT | .spec.template.spec.volumes[] | select(.name == \"spill\") | .emptyDir.medium" "$SPILL_RENDER" | grep -v '^---$' || true)
+  SPILL_REQUEST=$(yq "$API_DEPLOYMENT | .spec.template.spec.containers[] | select(.name == \"api\") | .resources.requests.\"ephemeral-storage\"" "$SPILL_RENDER" | grep -v '^---$' || true)
+  SPILL_LIMIT=$(yq "$API_DEPLOYMENT | .spec.template.spec.containers[] | select(.name == \"api\") | .resources.limits.\"ephemeral-storage\"" "$SPILL_RENDER" | grep -v '^---$' || true)
+  if [ -z "$SPILL_TMPDIR" ] || [ "$SPILL_TMPDIR" = "null" ] || [ "$SPILL_TMPDIR" != "$SPILL_MOUNT" ]; then
+    echo "FAIL: $SPILL_VALUES: api TMPDIR '$SPILL_TMPDIR' is not the mountPath '$SPILL_MOUNT' of the spill volume"
+    exit 1
+  fi
+  if [ -z "$SPILL_SIZE" ] || [ "$SPILL_SIZE" = "null" ]; then
+    echo "FAIL: $SPILL_VALUES: the api spill emptyDir has no sizeLimit"
+    exit 1
+  fi
+  if [ "$SPILL_MEDIUM" != "null" ]; then
+    echo "FAIL: $SPILL_VALUES: the api spill emptyDir has medium '$SPILL_MEDIUM'; a memory-backed spill counts against the pod memory limit"
+    exit 1
+  fi
+  if [ -z "$SPILL_REQUEST" ] || [ "$SPILL_REQUEST" = "null" ] || [ "$SPILL_REQUEST" != "$SPILL_LIMIT" ]; then
+    echo "FAIL: $SPILL_VALUES: api ephemeral-storage request '$SPILL_REQUEST' is not equal to its limit '$SPILL_LIMIT'"
+    exit 1
+  fi
+  OTHER_TMPDIR=$(yq 'select(.kind == "Deployment" and .metadata.name != "api") | .metadata.name + " " + (([(.spec.template.spec.containers // []) + (.spec.template.spec.initContainers // []) | .[] | .env // [] | .[] | select(.name == "TMPDIR")] | length) | tostring)' "$SPILL_RENDER" | grep -v '^---$' | awk '$2 > 0 { print $1 }')
+  if [ -n "$OTHER_TMPDIR" ]; then
+    echo "FAIL: $SPILL_VALUES: TMPDIR belongs to the api container only, these Deployments set it too:"
+    echo "$OTHER_TMPDIR" | sed 's/^/        /'
+    exit 1
+  fi
+  CM_TMPDIR=$(yq 'select(.kind == "ConfigMap") | .metadata.name + " " + ((.data // {}) | has("TMPDIR") | tostring)' "$SPILL_RENDER" | grep -v '^---$' | awk '$2 == "true" { print $1 }')
+  if [ -n "$CM_TMPDIR" ]; then
+    echo "FAIL: $SPILL_VALUES: TMPDIR in a ConfigMap reaches every pod through envFrom: $CM_TMPDIR"
+    exit 1
+  fi
+  echo "OK: $SPILL_VALUES: TMPDIR=$SPILL_TMPDIR sizeLimit=$SPILL_SIZE ephemeral-storage=$SPILL_REQUEST"
+done
+rm -f "$SPILL_RENDER"
+
 rm -f "$DEFAULT_RENDER" "$OVERLAY_RENDER"
 
 echo "### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero"

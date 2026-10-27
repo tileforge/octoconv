@@ -83,6 +83,7 @@ import (
 // missing here would silently drop out of the comparison -- so
 // TestEveryEmittedStatusConstantIsMapped below fails on an unlisted one.
 var httpStatusConstants = map[string]int{
+	"StatusSwitchingProtocols":    101,
 	"StatusOK":                    200,
 	"StatusCreated":               201,
 	"StatusAccepted":              202,

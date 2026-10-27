@@ -23,6 +23,7 @@ import (
 	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/sandbox"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/webhook"
 	"github.com/tileforge/octoconv/internal/worker"
 )
 
@@ -124,6 +125,15 @@ func main() {
 		0,
 		nil,
 	)
+
+	webhookSigningSecret := []byte(os.Getenv("WEBHOOK_SIGNING_SECRET"))
+	progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)
+	if len(webhookSigningSecret) > 0 {
+		h.SetProgressWebhook(webhook.NewDeliverer(), webhookSigningSecret, progressWebhookTimeout)
+		log.Printf("🔔 progress webhooks enabled (PROGRESS_WEBHOOK_TIMEOUT=%v)", progressWebhookTimeout)
+	} else {
+		log.Printf("🔕 progress webhooks disabled (WEBHOOK_SIGNING_SECRET unset)")
+	}
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(queue.TypeCADJob, worker.NewRunner(h, worker.CADDescriptor).Handle)

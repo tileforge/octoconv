@@ -137,6 +137,9 @@ func (r *cadOutRepo) UpdateProgress(_ context.Context, _ uuid.UUID, _ int, _ *in
 func (r *cadOutRepo) SetSourceDuration(_ context.Context, _ uuid.UUID, _ float64) error {
 	return nil
 }
+func (r *cadOutRepo) UpdateStage(_ context.Context, _ uuid.UUID, _ string, _, _ int) (bool, error) {
+	return true, nil
+}
 
 func (r *cadOutRepo) count(name string) int {
 	n := 0

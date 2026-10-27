@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -51,7 +52,15 @@ const (
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
-	maxOptsBytes = 4096
+	maxOptsBytes                      = 4096
+	maxCallbackURLBytes               = 2048
+	maxInputFilenameBytes             = 255
+	maxFormNonFileBytes               = 64 << 10
+	formFieldsTooLargeMessage         = "form fields too large"
+	createIntakeMaxConcurrent         = 8
+	createIntakeBusyRetryAfterSeconds = 3
+	createIntakeBusyMessage           = "service is at its concurrent upload-intake ceiling right now"
+	createZipDirectoryTooLargeMessage = "the archive's central directory is larger than this service reads; repackage the archive with fewer entries"
 	// multipartInMemoryBudget caps how many bytes of a multipart upload
 	// ParseMultipartForm buffers in the process heap; larger file parts spill
 	// to temp files on disk (Go's documented behavior). It is deliberately
@@ -59,9 +68,8 @@ const (
 	// already bounded pre-parse by http.MaxBytesReader, so passing the full
 	// upload ceiling (2 GiB since D-07) as the in-memory budget would let one
 	// large-video upload buffer up to 2 GiB in RAM -- linear in concurrent
-	// uploads, a real memory-exhaustion vector. 32 MiB matches Go's own
-	// net/http defaultMaxMemory.
-	multipartInMemoryBudget = 32 << 20
+	// uploads, a real memory-exhaustion vector.
+	multipartInMemoryBudget = 4 << 20
 	// maxPresetNameBytes bounds the client-supplied preset name before any DB
 	// lookup (T-18-09) -- an opaque-string DoS guard, request-independent of
 	// preset existence, so a 400 here leaks nothing about the presets table.
@@ -129,6 +137,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // the job in Postgres (queued) and enqueues the conversion task.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	rc, start := s.armIntakeDeadline(w)
 
 	// BEFORE the body is read, let alone uploaded. A value this service will
 	// not carry is worth refusing while the request has cost nothing -- and
@@ -142,15 +151,25 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cap the request body to reject oversized uploads before buffering them.
-	// The total-size ceiling is enforced here by MaxBytesReader; the separate,
-	// smaller multipartInMemoryBudget bounds heap use during parsing (CR-01).
-	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadByte)
-	err := r.ParseMultipartForm(multipartInMemoryBudget)
-	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+	select {
+	case s.createIntakeSem <- struct{}{}:
+	default:
+		w.Header().Set("Retry-After", strconv.Itoa(createIntakeBusyRetryAfterSeconds))
+		writeError(w, http.StatusTooManyRequests, errcode.IntakeBusy, createIntakeBusyMessage)
+		return
 	}
+	defer func() {
+		dropMultipartForm(r)
+		<-s.createIntakeSem
+	}()
+
+	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.maxUploadByte)
+	err := parseIntakeForm(r)
 	if err != nil {
+		if errors.Is(err, errFormFieldsTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, formFieldsTooLargeMessage)
+			return
+		}
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")
@@ -158,6 +177,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
 		return
+	}
+
+	if len(r.FormValue(formFieldCallbackURL)) > maxCallbackURLBytes {
+		writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "callback_url field too large")
+		return
+	}
+	if r.MultipartForm != nil {
+		if fhs := r.MultipartForm.File[formFieldFile]; len(fhs) > 0 && len(rawPartFilename(fhs[0])) > maxInputFilenameBytes {
+			writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "file name too long")
+			return
+		}
 	}
 
 	// preset, target, and opts are read up front so the D-01 mutual-
@@ -276,10 +306,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		presetVer = p.Version
 	}
 
-	// Detect the actual content format by magic bytes BEFORE anything else
-	// touches storage or Postgres (D-01/D-02/D-05). rest re-stitches the
-	// peeked prefix onto the remaining stream so the full file still reaches
-	// s3.Upload below.
 	// latexPrefix holds the validated sniff window for a declared-latex upload,
 	// read ONCE below and used twice: for the content check that sets
 	// detected == "latex", and for the tex-package admission gate after the
@@ -300,8 +326,13 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// disturbs Sniff's sequential cursor, so rest remains valid below.
 		var prefix [4]byte
 		if n, _ := file.ReadAt(prefix[:], 0); n == 4 && bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
-			cr, cerr := convert.SniffContainer(file, header.Size)
-			if cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
+			cr, outcome, cerr := sniffCreateContainer(file, header.Size)
+			if outcome == zipBoundExceedsCeiling {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=zip_directory_too_large", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, createZipDirectoryTooLargeMessage)
+				return
+			}
+			if cerr == nil && outcome == zipBoundOK && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				// D-02/D-04: reject a zip-bomb-shaped declared uncompressed
 				// total before any storage write or decompression.
@@ -478,23 +509,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// SniffAudio's mp3PeekLen=512KiB peek is the single most expensive
 		// buffer in this chain -- ordering video first keeps that cost paid
 		// only when video detection has already declined.
-		//
-		// CRITICAL deviation from SniffAudio's exact reassignment shape
-		// (auto-fixed, Rule 1): SniffAudio only reassigns `rest` when it gets
-		// a non-empty match because it is the LAST detector in this chain --
-		// on a miss, `detected` stays "" and the handler returns the
-		// unrecognized-content 422 immediately after, so a stale `rest` is
-		// never read again. SniffVideo is NOT last (SniffAudio still runs
-		// after it): SniffVideo's io.ReadFull(rest, ...) call ALWAYS drains
-		// up to avPeekLen bytes from the underlying stream `rest` refers to,
-		// whether or not it finds a match. If `rest` were only reassigned on
-		// a match, a miss would silently leave `rest` pointing at a reader
-		// that has already lost its first bytes to this drain, and
-		// SniffAudio's subsequent read (or, on a genuine unrecognized upload
-		// with no further sniffer, s.storage.Upload) would receive a
-		// truncated stream (the exact T-31-02 class of bug). `rest` is
-		// therefore ALWAYS rebound to SniffVideo's returned reader on
-		// verr == nil, regardless of match; only `detected` is conditional.
 		if videoDetected, videoRest, verr := convert.SniffVideo(rest); verr == nil {
 			rest = videoRest
 			if videoDetected != "" {
@@ -503,18 +517,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if detected == "" {
-		// AUD-05: mp3/wav/m4a/ogg content detection, placed LAST (after the
-		// OLE-CFB check, before the final fail-closed 422 below) because
-		// mp3PeekLen=512KiB is the most expensive buffer of the whole chain --
-		// ordering it last means a non-audio upload never pays for it.
-		// CRITICAL: chained off `rest` (Sniff's re-stitched full-file-from-
-		// byte-0 reader), NOT `file` -- file's sequential cursor has already
-		// advanced past Sniff's first sniffLen=12 bytes, and SniffAudio
-		// re-stitches its OWN rest from whatever reader it's given. Passing
-		// `file` here instead would silently drop the first 12 bytes of every
-		// audio upload at s.storage.Upload below (T-31-02). No source gate --
-		// SniffAudio self-identifies from magic bytes, matching the
-		// unconditional ZIP/OLE-CFB detection shape above.
 		if audioDetected, audioRest, aerr := convert.SniffAudio(rest); aerr == nil && audioDetected != "" {
 			detected = audioDetected
 			rest = audioRest
@@ -589,33 +591,28 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// of them in the paper this phase ran end to end. A gate is only worth
 	// having if what it refuses genuinely cannot succeed; 63-02 removed a whole
 	// admission gate for exactly this defect.
-	//
-	// IT MAY ABSTAIN, AND SAYS SO. ScanTeXPreamble reads a bounded window and
-	// does not expand macros or follow \input, so a package can be invisible
-	// to it. complete == false means the preamble ran past the window, and then
-	// the absence of a violation means nothing at all -- the document is
-	// ADMITTED and cmd/tectonic-worker refuses it instead, with the SAME error
-	// code (one code space, D-03). This is 63-02's shape, reused knowingly: a
-	// cheap gate that is allowed to give up, plus an authoritative one that is
-	// not.
 	if engine == convert.EngineTectonic && len(latexPrefix) > 0 {
-		packages, complete := convert.ScanTeXPreamble(latexPrefix)
-		for _, pkg := range packages {
+		var unsupported string
+		complete := convert.VisitTeXPreamblePackages(latexPrefix, func(pkg string) bool {
 			if convert.TeXPackageResolvable(pkg) {
-				continue
+				return true
 			}
+			unsupported = pkg
+			return false
+		})
+		if unsupported != "" {
 			// The package name is echoed to the client deliberately: a refusal
 			// that does not say WHICH one leaves them bisecting their own
 			// preamble, one upload per attempt. It is client-supplied text, so
 			// it is logged quoted and reaches the response inside a fixed
 			// sentence rather than being formatted as one.
-			log.Printf("content validation rejected: client_id=%s filename=%q reason=unsupported_package package=%q", client.ID, filename, pkg)
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=unsupported_package package=%q", client.ID, filename, unsupported)
 			// The sentence is built in convert, not here: cmd/tectonic-worker
 			// says the same thing for the same package when this scan does not
 			// see it, and two formatters for one condition is how the wordings
 			// drift apart while the code stays equal.
 			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedPackage,
-				convert.TeXUnsupportedPackageMessage(pkg))
+				convert.TeXUnsupportedPackageMessage(unsupported))
 			return
 		}
 		if !complete {
@@ -745,23 +742,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		log.Printf("quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s", client.ID, engine)
 	}
 
-	// VALID-03: reject a decompression-bomb-shaped upload (declared pixel
-	// dimensions exceeding the configured limit) before any storage write.
-	// convert.Dimensions re-stitches its own bounded peek onto rest, so the
-	// full original stream still reaches s.storage.Upload below unmodified.
-	// HasDimensionLimit scopes this to image formats only — pixel dimensions
-	// are not a document concept, so documents skip the block entirely
-	// (fixes the confirmed regression where Dimensions() unconditionally
-	// 422'd every document upload, RESEARCH.md Pitfall 5).
 	if convert.HasDimensionLimit(detected) {
-		width, height, dimRest, err := convert.Dimensions(detected, rest)
+		width, height, _, err := convert.Dimensions(detected, rest)
 		if err != nil {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimensions_unknown", client.ID, filename)
 			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"cannot determine declared image dimensions for "+filename)
 			return
 		}
-		rest = dimRest
 		totalPixels := uint64(width) * uint64(height)
 		if totalPixels > s.maxImagePixels {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimension_limit width=%d height=%d limit=%d", client.ID, filename, width, height, s.maxImagePixels)
@@ -1046,7 +1034,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// the client-supplied multipart header (D-06).
 	contentType := convert.MIMEType(detected)
 
-	if err := s.storage.Upload(ctx, key, rest, header.Size, contentType); err != nil {
+	if err := s.storage.Upload(ctx, key, io.NewSectionReader(file, 0, header.Size), header.Size, contentType); err != nil {
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 		return
 	}
@@ -1080,8 +1068,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		akey := storage.InputKey(jobID, ordinal, name)
-		uerr := s.storage.Upload(ctx, akey, src, a.Size, "application/octet-stream")
-		src.Close()
+		uerr := func() error {
+			defer src.Close()
+			return s.storage.Upload(ctx, akey, src, a.Size, "application/octet-stream")
+		}()
 		if uerr != nil {
 			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 			return
@@ -1208,6 +1198,38 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, resp)
 }
 
+func sniffCreateContainer(file multipart.File, size int64) (cr convert.ContainerResult, outcome zipBoundOutcome, err error) {
+	bounded := &readFailureRecorder{r: file}
+	if outcome, _, _ = zipDirectoryExceedsStructuralBound(bounded, size); outcome.exceeds() {
+		return convert.ContainerResult{}, outcome, nil
+	}
+	if bounded.err != nil {
+		return convert.ContainerResult{}, zipBoundReadFailed, bounded.err
+	}
+	cr, err = convert.SniffContainer(file, size)
+	switch {
+	case err == nil:
+		return cr, zipBoundOK, nil
+	case errors.Is(err, convert.ErrNotAZip):
+		return convert.ContainerResult{}, zipBoundMalformed, err
+	default:
+		return convert.ContainerResult{}, zipBoundReadFailed, err
+	}
+}
+
+type readFailureRecorder struct {
+	r   io.ReaderAt
+	err error
+}
+
+func (f *readFailureRecorder) ReadAt(p []byte, off int64) (int, error) {
+	n, err := f.r.ReadAt(p, off)
+	if err != nil && err != io.EOF && f.err == nil {
+		f.err = err
+	}
+	return n, err
+}
+
 // enqueueForEngine routes one created job to its engine-class queue. The
 // FIRST return value is false for an engine this switch does not know --
 // which the caller turns into a fail-closed 500.
@@ -1299,6 +1321,11 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	// fabricated value ever being invented here.
 	resp["progress_pct"] = job.ProgressPct
 	resp["eta_seconds"] = job.EtaSeconds
+	if job.Engine == convert.EngineCAD {
+		resp["stage"] = job.Stage
+		resp["stage_index"] = job.StageIndex
+		resp["stage_count"] = job.StageCount
+	}
 
 	switch job.Status {
 	case jobs.StatusDone:

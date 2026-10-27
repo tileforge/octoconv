@@ -48,6 +48,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	spillDir := os.TempDir()
+	if removed, err := sweepMultipartSpill(spillDir); err != nil {
+		log.Printf("⚠️  multipart spill sweep of %s removed %d files: %v", spillDir, removed, err)
+	} else {
+		log.Printf("🧹 removed %d orphaned multipart spill files from %s", removed, spillDir)
+	}
+
 	pool, err := db.Connect(ctx)
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
@@ -301,11 +308,7 @@ func main() {
 	if addr == "" {
 		addr = ":8090"
 	}
-	httpSrv := &http.Server{
-		Addr:              addr,
-		Handler:           srv.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpSrv := api.NewHTTPServer(addr, srv.Routes())
 
 	go func() {
 		log.Printf("🚀 API listening on %s", addr)
@@ -321,11 +324,7 @@ func main() {
 	if metricsAddr == "" {
 		metricsAddr = "127.0.0.1:9090"
 	}
-	metricsSrv := &http.Server{
-		Addr:              metricsAddr,
-		Handler:           promhttp.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	metricsSrv := api.NewHTTPServer(metricsAddr, promhttp.Handler())
 
 	go func() {
 		log.Printf("📊 metrics listening on %s", metricsAddr)
@@ -349,11 +348,7 @@ func main() {
 	if healthAddr == "" {
 		healthAddr = ":8091"
 	}
-	healthSrv := &http.Server{
-		Addr:              healthAddr,
-		Handler:           srv.HealthRoutes(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	healthSrv := api.NewHTTPServer(healthAddr, srv.HealthRoutes())
 
 	go func() {
 		log.Printf("🩺 health listening on %s", healthAddr)

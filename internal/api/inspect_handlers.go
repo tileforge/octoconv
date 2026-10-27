@@ -28,6 +28,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tileforge/octoconv/internal/auth"
@@ -211,49 +212,11 @@ const (
 	// request that reaches this handler runs ParseMultipartForm
 	// unconditionally, however many are already running it right now.
 	//
-	// inspectIntakeSem (api.go) holds this slot for exactly the duration of
-	// ONE ParseMultipartForm call, released the instant it returns
-	// (success or failure) -- NOT for the rest of the handler. This is
-	// deliberately unlike the T-SLF-02 mistake, not a repeat of it: the
-	// resource this slot protects (heap bytes ParseMultipartForm is
-	// actively buffering) really is occupied for exactly as long as the
-	// client's own network transfer takes, so holding the slot for that
-	// long is correct, not wasteful -- unlike s.inspectSem's CPU/DB-pool
-	// slot, which was never actually consumed while waiting on the network
-	// and therefore should never be held for it.
-	//
-	// The arithmetic this capacity was chosen from, stated here because a
-	// future "simplification" that drops it is exactly the kind of change
-	// this project's own history shows recurring:
-	//   - multipartInMemoryBudget (handlers.go) = 32 MiB: the MOST heap
-	//     ParseMultipartForm will ever hold for ONE request, regardless of
-	//     INSPECT_MAX_UPLOAD_BYTES's own 100 MiB ceiling on total body size
-	//     -- bytes past this budget spill to a disk-backed temp file, not
-	//     RAM (net/http's own ParseMultipartForm doc comment).
-	//   - inspectIntakeMaxConcurrent (this constant) = 8.
-	//   - Worst case: 8 * 32 MiB = 256 MiB -- a QUARTER of the deployed api
-	//     pod's own resources.limits.memory = 1 GiB
-	//     (deploy/chart/octoconv/values.yaml), not the ~30 * 32 MiB ≈
-	//     960 MiB (94% of that same 1 GiB) an UNBOUNDED intake stage can
-	//     reach under the default RATE_LIMIT_INSPECT_RPM=30 burst budget
-	//     (api.go's own InspectRateLimitRPM default) -- the exact PR9R8-F1
-	//     scenario this constant closes.
-	//   - This is a SEPARATE budget from INSPECT_MAX_CONCURRENT's own
-	//     default of 4 (Config.InspectMaxConcurrent): that one bounds the
-	//     ANALYSIS phase, which only starts once a request has already
-	//     released THIS slot (see handleInspect's own step-1/step-2 split),
-	//     so the two are never charged against the same 1 GiB for the same
-	//     concurrent request at the same time -- 4 concurrent analyses at
-	//     INSPECT_MAX_WORK_BYTES's own 8 MiB default costs a further
-	//     32 MiB, comfortably inside the 768 MiB this constant leaves free.
-	//   - Deliberately NOT sized to 30 (matching RATE_LIMIT_INSPECT_RPM's
-	//     own default): that would merely rename PR9R8-F1's own bug, not
-	//     close it.
-	//   - Deliberately a fixed Go constant, not a new env-configurable
-	//     Config field: this bound protects a deployment-topology fact
-	//     already hard-coded in the Helm chart (the pod's own memory
-	//     ceiling), not a per-environment tuning knob like
-	//     INSPECT_MAX_CONCURRENT.
+	// Deliberately a fixed Go constant, not a new env-configurable
+	// Config field: this bound protects a deployment-topology fact
+	// already hard-coded in the Helm chart (the pod's own memory
+	// ceiling), not a per-environment tuning knob like
+	// INSPECT_MAX_CONCURRENT.
 	inspectIntakeMaxConcurrent = 8
 
 	// cmd/api/main.go sets httpSrv.ReadHeaderTimeout
@@ -270,9 +233,9 @@ const (
 	// underlying connection's Read may block -- rather than a context
 	// timeout: a context deadline alone does not unblock an in-progress
 	// net.Conn.Read the way SetReadDeadline does.
-	inspectIntakeReadDeadline = 30 * time.Second
+	intakeReadDeadline = 30 * time.Second
 
-	inspectIntakeMinBytesPerSecond int64 = 1 << 20
+	intakeMinBytesPerSecond int64 = 1 << 20
 
 	// inspectIntakeBusyMessage mirrors inspectBusyMessage's own
 	// non-leaking discipline (inspectgate.go) -- names the SERVICE's
@@ -382,16 +345,9 @@ type inspectResponse struct {
 // aspiration): no call in this file, or anything it calls, reaches
 // s.storage.Upload or s.repo.Create.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
-	// 1. Accept. Deliberately repeats handleCreateJob's own multipart
-	// intake SHAPE (MaxBytesReader -> ParseMultipartForm -> FormFile,
-	// http.MaxBytesError -> 413, anything else -> 400) rather than
-	// factoring it into a shared helper: two endpoints that both accept a
-	// file upload must fail identically at the body-size boundary, and
-	// inspect's own ceiling (s.inspectMaxUploadBytes) is deliberately
-	// separate from and smaller than s.maxUploadByte (Config.
-	// InspectMaxUploadBytes's own doc comment, api.go) -- this is a
-	// conscious repetition of a proven shape, not copy-paste debt.
-	//
+	// 1. Accept.
+	rc, start := s.armIntakeDeadline(w)
+
 	// T-SLF-02/T-SLF-03 (PR #9 findings at inspectgate.go:120 and
 	// inspect_handlers.go:114): body intake happens BEFORE this handler
 	// takes the concurrency-gate slot AND before the D-06 mechanism-1 work
@@ -413,10 +369,9 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// T-SLF-02 by moving s.inspectSem's own acquisition to AFTER this
 	// point, but that left THIS call -- the one that actually buffers an
 	// untrusted upload into the process heap -- with no concurrency bound
-	// of its own at all. inspectIntakeSem closes that gap; see
-	// inspectIntakeMaxConcurrent's own doc comment for the arithmetic this
-	// capacity was chosen from. Acquired non-blocking, exactly like
-	// s.inspectSem's own acquireOrReject below: a saturated intake stage is
+	// of its own at all. inspectIntakeSem closes that gap. Acquired
+	// non-blocking, exactly like s.inspectSem's own acquireOrReject below:
+	// a saturated intake stage is
 	// an immediate, honest 429 (the same closed-vocabulary InspectBusy
 	// code, never a 500), not a queued wait that would itself accumulate
 	// goroutines.
@@ -428,35 +383,16 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// See inspectIntakeReadDeadline's own doc comment: bounds how long THIS
-	// request's own ParseMultipartForm call may block on the network before
-	// the slot just acquired above is released. Ignored when unsupported -- the
-	// inspectIntakeMaxConcurrent bound above still holds either way, since
-	// it does not depend on this deadline to be effective.
-	rc := http.NewResponseController(w)
-	start := time.Now()
-	_ = rc.SetReadDeadline(start.Add(s.inspectIntakeWindow))
-
-	r.Body = &inspectIntakeReader{
-		body:        http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes),
-		setDeadline: rc.SetReadDeadline,
-		start:       start,
-		window:      s.inspectIntakeWindow,
-		minRate:     s.inspectIntakeMinRate,
-		limit:       s.inspectMaxUploadBytes,
-	}
-	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
-	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
-	}
-	// Released HERE, immediately after the buffering call returns --
-	// success or failure -- not deferred to handler exit: the resource this
-	// slot bounds (heap bytes ParseMultipartForm is actively filling) is
-	// spent by the time this call returns, whatever ended up in memory from
-	// here on is already accounted for by multipartInMemoryBudget's own
-	// per-request ceiling, the same as it always was before this fix.
-	<-s.inspectIntakeSem
+	releaseIntake := sync.OnceFunc(func() { <-s.inspectIntakeSem })
+	defer releaseIntake()
+	r.Body = s.newIntakeReader(w, r.Body, rc, start, s.inspectMaxUploadBytes)
+	parseErr := parseIntakeForm(r)
+	defer dropMultipartForm(r)
 	if parseErr != nil {
+		if errors.Is(parseErr, errFormFieldsTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, formFieldsTooLargeMessage)
+			return
+		}
 		var maxErr *http.MaxBytesError
 		if errors.As(parseErr, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")
@@ -471,7 +407,11 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errcode.MissingFile, "missing file")
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+		}
+	}()
 
 	// 2. Gate. The D-06 mechanism-2 concurrency slot is taken HERE -- after
 	// body intake has fully completed, immediately before the CPU-bound
@@ -488,7 +428,16 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	defer release()
+	releaseIntake()
+	release = sync.OnceFunc(release)
+	defer func() {
+		if file != nil {
+			_ = file.Close()
+			file = nil
+		}
+		dropMultipartForm(r)
+		release()
+	}()
 
 	filename := path.Base(header.Filename)
 	// declaredFormat is the normalized filename-extension-derived format --
@@ -561,6 +510,10 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// ever reachable from this function or anything it calls (D-09/T-58-37)
 	// -- inspect has no state that could go stale and no object that would
 	// need a TTL, because it never creates either.
+	_ = file.Close()
+	file = nil
+	dropMultipartForm(r)
+	release()
 	writeJSON(w, http.StatusOK, inspectResponse{Report: report, Operations: operations})
 }
 

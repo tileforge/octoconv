@@ -101,6 +101,8 @@ type Tracker struct {
 	// MarkCeilingHit's own doc comment for why this is a SEPARATE field
 	// from exhausted rather than reusing it.
 	ceilingHit bool
+	checkedAt  time.Time
+	longestGap time.Duration
 }
 
 // NewTracker builds a Tracker for one inspect operation. b's zero fields
@@ -236,6 +238,39 @@ func (t *Tracker) ExhaustedReason() Reason {
 	}
 	return ""
 }
+
+func (t *Tracker) OutOfTime() bool {
+	if t == nil || t.start.IsZero() {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	last := t.checkedAt
+	if last.IsZero() {
+		last = t.start
+	}
+	if gap := now.Sub(last); gap > t.longestGap {
+		t.longestGap = gap
+	}
+	t.checkedAt = now
+	if now.Sub(t.start) <= t.budget.MaxDuration {
+		return false
+	}
+	if t.exhausted == "" {
+		t.exhausted = ReasonWorkCeilingTime
+	}
+	return true
+}
+
+func (t *Tracker) ceilingReason() Reason {
+	if t != nil && t.ExhaustedReason() == ReasonWorkCeilingTime {
+		return ReasonWorkCeilingTime
+	}
+	return ReasonWorkCeilingBytes
+}
+
+const pdfTimeCheckEvery = 1024
 
 // Exhausted reports whether either ceiling has been hit.
 func (t *Tracker) Exhausted() bool {

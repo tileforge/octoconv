@@ -48,6 +48,20 @@ type ProgressConverter interface {
 	ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, sink ProgressSink) error
 }
 
+type StageUpdate struct {
+	Stage string
+	Index int
+	Count int
+}
+
+type StageSink interface {
+	Stage(u StageUpdate)
+}
+
+type StageConverter interface {
+	ConvertWithStages(ctx context.Context, inPath, outPath string, opts map[string]any, sink StageSink) error
+}
+
 // progressTick is one parsed ffmpeg -progress block. Unexported: this is the
 // parser's internal currency, not a seam contract (ProgressUpdate is the
 // exported shape callers receive).

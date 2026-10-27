@@ -35,6 +35,7 @@ import (
 // probe hitting a SEPARATE port, not from this path disappearing.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
+	r.Use(s.armBodyWindow)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.ClientIPFromRemoteAddr)
 	r.Use(middleware.Logger)
@@ -142,13 +143,14 @@ func (s *Server) Routes() chi.Router {
 // router. HTTP-accept isolation and dependency-pool isolation are two
 // independent claims; this method only proves the first one.
 //
-// Middleware is deliberately minimal: only middleware.Recoverer. No
+// Middleware is deliberately minimal: the body read window and middleware.Recoverer. No
 // middleware.Logger — a probe firing every 5-10s produces no useful signal
 // and only adds log noise; no middleware.RequestID/ClientIPFromRemoteAddr —
 // nothing on this router ever reads either value, unlike Routes()'s /v1
 // subtree.
 func (s *Server) HealthRoutes() chi.Router {
 	r := chi.NewRouter()
+	r.Use(s.armBodyWindow)
 	r.Use(middleware.Recoverer)
 	r.Get("/healthz", s.handleHealth)
 	return r

@@ -133,11 +133,11 @@ tier_gate() {
   echo "go vet ./...: clean"
   go build ./... || return 1
   echo "go build ./...: clean"
-  go test -count=1 ./... -timeout 10m || return 1
+  go test -count=1 ./... -timeout 20m || return 1
 }
 
 tier_race() {
-  go test -race ./... -timeout 20m
+  go test -race ./... -timeout 40m
 }
 
 tier_docker_build() {

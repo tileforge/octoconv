@@ -62,31 +62,23 @@ func endstreamFollowsIndependently(b []byte, end int) bool {
 	return bytes.HasPrefix(b[i:], []byte("endstream"))
 }
 
+var pdfLexFuzzSeeds = [][]byte{
+	[]byte(""),
+	[]byte("%PDF-1.4\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 2 0 R >>\nstream\nabcde\nendstream\nendobj\n" +
+		"2 0 obj\n5\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 /Foo [/Length 900] >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n% 7 0 obj 5\n1 0 obj\n<< /Length 5 >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length -5 >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 2 % c\n0 R >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Le#6egth 5 >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 /X ( >>\nstream\nabcde\nendstream\nendobj\n"),
+	[]byte("%PDF-1.4\n1 0 obj\n<< /Length 30 >>\nstream\n2 0 obj\n<< /Length 1 >>\nx\nendstream\nendobj\n"),
+}
+
 func FuzzPDFStreamPayloads(f *testing.F) {
-	// Seeds: the reviewer's own inputs. These are the eighteen findings'
-	// shapes, and they are exactly what a corpus wants to mutate from.
-	seeds := [][]byte{
-		[]byte(""),
-		[]byte("%PDF-1.4\n"),
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 >>\nstream\nabcde\nendstream\nendobj\n"),
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 2 0 R >>\nstream\nabcde\nendstream\nendobj\n" +
-			"2 0 obj\n5\nendobj\n"),
-		// round 4: /Length inside an array must not overwrite the real one
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 /Foo [/Length 900] >>\nstream\nabcde\nendstream\nendobj\n"),
-		// round 3: a comment is not an object header
-		[]byte("%PDF-1.4\n% 7 0 obj 5\n1 0 obj\n<< /Length 5 >>\nstream\nabcde\nendstream\nendobj\n"),
-		// round 4: signed integers
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length -5 >>\nstream\nabcde\nendstream\nendobj\n"),
-		// round 4: comments between the tokens of a reference
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 2 % c\n0 R >>\nstream\nabcde\nendstream\nendobj\n"),
-		// round 5: name escapes
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Le#6egth 5 >>\nstream\nabcde\nendstream\nendobj\n"),
-		// unbalanced literal string -- the shape that hid a genuine definition
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 5 /X ( >>\nstream\nabcde\nendstream\nendobj\n"),
-		// an in-payload decoy
-		[]byte("%PDF-1.4\n1 0 obj\n<< /Length 30 >>\nstream\n2 0 obj\n<< /Length 1 >>\nx\nendstream\nendobj\n"),
-	}
-	for _, s := range seeds {
+	for _, s := range pdfLexFuzzSeeds {
 		f.Add(s)
 	}
 	// And the real files this repository already pins: ghostscript output and

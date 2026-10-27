@@ -11,37 +11,51 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tileforge/octoconv/internal/auth"
+	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // sseUnset is the sentinel sseSnapshot uses for a nil *int (progress_pct /
-// eta_seconds) field so the struct stays comparable with == -- comparing the
+// eta_seconds / stage_index) field so the struct stays comparable with == -- comparing the
 // *jobs.Job pointers directly would spuriously "change" every poll, since
 // s.repo.Get returns a fresh *jobs.Job each call.
 const sseUnset = -1
 
 // sseSnapshot is the D-01 comparable summary of the fields that gate a new
-// emit: status, progress_pct, eta_seconds. Two snapshots compare equal with
-// == iff none of those three changed since the last emit.
+// emit: status, progress_pct, eta_seconds, and for a CAD job stage, stage_index and attempts.
+// Two snapshots compare equal with == iff none of those changed since the last emit.
 type sseSnapshot struct {
-	status string
-	pct    int
-	eta    int
+	status   string
+	pct      int
+	eta      int
+	stage    string
+	stageIdx int
+	attempts int
 }
 
 func snapshotOf(job *jobs.Job) sseSnapshot {
-	snap := sseSnapshot{status: job.Status, pct: sseUnset, eta: sseUnset}
+	snap := sseSnapshot{status: job.Status, pct: sseUnset, eta: sseUnset, stageIdx: sseUnset}
 	if job.ProgressPct != nil {
 		snap.pct = *job.ProgressPct
 	}
 	if job.EtaSeconds != nil {
 		snap.eta = *job.EtaSeconds
 	}
+	if job.Engine != convert.EngineCAD {
+		return snap
+	}
+	if job.Stage != nil {
+		snap.stage = *job.Stage
+	}
+	if job.StageIndex != nil {
+		snap.stageIdx = *job.StageIndex
+	}
+	snap.attempts = job.Attempts
 	return snap
 }
 
-// sseProgressPayload is the `event: progress` JSON body -- deliberately the
+// sseProgressPayload is the non-CAD `event: progress` JSON body -- deliberately the
 // SAME null-aware shape handleGetJob renders (nil *int -> JSON null), so a
 // client already parsing GET /v1/jobs/{id} responses needs no second parser.
 type sseProgressPayload struct {
@@ -50,21 +64,33 @@ type sseProgressPayload struct {
 	EtaSeconds  *int   `json:"eta_seconds"`
 }
 
+type sseCADProgressPayload struct {
+	Status      string  `json:"status"`
+	ProgressPct *int    `json:"progress_pct"`
+	EtaSeconds  *int    `json:"eta_seconds"`
+	Stage       *string `json:"stage"`
+	StageIndex  *int    `json:"stage_index"`
+	StageCount  *int    `json:"stage_count"`
+}
+
 // emit writes one named SSE event carrying the null-aware progress payload
 // and flushes immediately (no client-visible buffering delay).
 func emit(rc *http.ResponseController, w http.ResponseWriter, event string, job *jobs.Job) error {
-	body, err := json.Marshal(sseProgressPayload{
+	if job.Engine == convert.EngineCAD {
+		return writeFrame(rc, w, event, sseCADProgressPayload{
+			Status:      job.Status,
+			ProgressPct: job.ProgressPct,
+			EtaSeconds:  job.EtaSeconds,
+			Stage:       job.Stage,
+			StageIndex:  job.StageIndex,
+			StageCount:  job.StageCount,
+		})
+	}
+	return writeFrame(rc, w, event, sseProgressPayload{
 		Status:      job.Status,
 		ProgressPct: job.ProgressPct,
 		EtaSeconds:  job.EtaSeconds,
 	})
-	if err != nil {
-		return err
-	}
-	if _, err := io.WriteString(w, "event: "+event+"\ndata: "+string(body)+"\n\n"); err != nil {
-		return err
-	}
-	return rc.Flush()
 }
 
 // emitTerminal writes the ONE final event a terminal status produces (D-02):
@@ -82,6 +108,49 @@ func emitTerminal(rc *http.ResponseController, w http.ResponseWriter, status str
 	return rc.Flush()
 }
 
+func stageCatchUp(last sseSnapshot, job *jobs.Job) []sseCADProgressPayload {
+	if job.Engine != convert.EngineCAD || job.Stage == nil || job.StageIndex == nil || job.StageCount == nil {
+		return nil
+	}
+	if last.attempts != 0 && last.attempts != job.Attempts {
+		return nil
+	}
+	from := 0
+	if last.stageIdx != sseUnset {
+		from = last.stageIdx
+	}
+	cur := *job.StageIndex
+	if cur <= from+1 {
+		return nil
+	}
+	route, ok := convert.CADStages(job.Operation, job.SourceFormat, job.TargetFormat)
+	if !ok || len(route) != *job.StageCount || cur > len(route) || route[cur-1] != *job.Stage {
+		return nil
+	}
+	frames := make([]sseCADProgressPayload, 0, cur-from-1)
+	for k := from + 1; k < cur; k++ {
+		stage, index, count := route[k-1], k, len(route)
+		frames = append(frames, sseCADProgressPayload{
+			Status:     jobs.StatusActive,
+			Stage:      &stage,
+			StageIndex: &index,
+			StageCount: &count,
+		})
+	}
+	return frames
+}
+
+func writeFrame(rc *http.ResponseController, w http.ResponseWriter, event string, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "event: "+event+"\ndata: "+string(body)+"\n\n"); err != nil {
+		return err
+	}
+	return rc.Flush()
+}
+
 // handleJobEvents streams a job's live progress over Server-Sent Events
 // (PUSH-01, GET /v1/jobs/{id}/events). Auth + the 404-not-403 ownership
 // guard are IDENTICAL to handleGetJob's (T-39-01/T-42-04): a cross-client or
@@ -91,7 +160,7 @@ func emitTerminal(rc *http.ResponseController, w http.ResponseWriter, status str
 // The stream is DB-poll-sourced (repeated s.repo.Get -- the SAME method
 // handleGetJob calls; no in-memory pub/sub), so any stateless api replica
 // can serve any client. It emits a named `progress` event ONLY when
-// {status, progress_pct, eta_seconds} changed since the last emit, sends a
+// {status, progress_pct, eta_seconds, stage, stage_index, attempts} changed since the last emit, sends a
 // `: keepalive` heartbeat comment on its own cadence to survive proxy
 // idle-timeouts, and closes after one final event on a terminal status
 // (done/failed/canceled, D-02).
@@ -184,6 +253,11 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if snap := snapshotOf(job); snap != last {
+				for _, f := range stageCatchUp(last, job) {
+					if err := writeFrame(rc, w, "progress", f); err != nil {
+						return
+					}
+				}
 				if err := emit(rc, w, "progress", job); err != nil {
 					return
 				}

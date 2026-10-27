@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,8 @@ var (
 	cadOpenAPIQuoted   = regexp.MustCompile(`'([a-z_]+)'`)
 	cadOpenAPIWord     = regexp.MustCompile(`[a-z][a-z0-9_]*`)
 )
+
+var cadOpenAPIStageList = regexp.MustCompile(`CHECK \(stage IN \(([^)]*)\)\)`)
 
 func cadOpenAPIRead(t *testing.T) []string {
 	t.Helper()
@@ -196,6 +199,32 @@ func cadOpenAPIReservedRoles(t *testing.T) map[string]bool {
 	return legal
 }
 
+func cadOpenAPIStageCheck(t *testing.T) map[string]bool {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(cadOpenAPIMigrations, "*.sql"))
+	if err != nil || len(names) == 0 {
+		t.Fatalf("no migrations under %s: %v", cadOpenAPIMigrations, err)
+	}
+	sort.Strings(names)
+	var legal map[string]bool
+	for _, name := range names {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range cadOpenAPIStageList.FindAllStringSubmatch(string(b), -1) {
+			legal = map[string]bool{}
+			for _, q := range cadOpenAPIQuoted.FindAllStringSubmatch(m[1], -1) {
+				legal[q[1]] = true
+			}
+		}
+	}
+	if len(legal) == 0 {
+		t.Fatal("no migration declares the jobs stage CHECK: the scan read nothing")
+	}
+	return legal
+}
+
 func TestCADOpenAPIMatchesTheCode(t *testing.T) {
 	lines := cadOpenAPIRead(t)
 
@@ -350,6 +379,91 @@ func TestCADOpenAPIMatchesTheCode(t *testing.T) {
 		}
 		if !strings.Contains(desc, "reserved") || !strings.Contains(desc, "never produced") {
 			t.Error(`the outputs description does not say the reserved roles are "reserved" and "never produced"`)
+		}
+	})
+	t.Run("stages", func(t *testing.T) {
+		vocab := cadOpenAPISet(CADStageVocabulary()...)
+		if len(vocab) == 0 {
+			t.Fatal("CADStageVocabulary is empty: the comparison would read nothing")
+		}
+		cadDocSameSet(t, "the stage CHECK of the migrations, read as the document, against CADStageVocabulary", cadOpenAPIStageCheck(t), vocab)
+
+		for _, name := range []string{"JobStatus", "ProgressEvent", "ProgressWebhookEvent"} {
+			props := cadOpenAPIBlock(t, lines, "components:", "schemas:", name+":", "properties:")
+			p := cadOpenAPIScalars(cadOpenAPIBlock(t, props, "stage:"))
+			types := cadOpenAPISet(cadOpenAPIFlowList(t, p["type"], name+".stage type")...)
+			if !types["string"] || !types[`"null"`] {
+				t.Errorf(`%s.stage type is %s, want [string, "null"]`, name, p["type"])
+			}
+			enum := cadOpenAPISet(cadOpenAPIFlowList(t, p["enum"], name+".stage enum")...)
+			if !enum["null"] {
+				t.Errorf("%s.stage enum has no null: the schema would refuse the null of a queued cad job", name)
+			}
+			delete(enum, "null")
+			cadDocSameSet(t, name+".stage enum", enum, vocab)
+			for _, field := range []string{"stage_index", "stage_count"} {
+				q := cadOpenAPIScalars(cadOpenAPIBlock(t, props, field+":"))
+				types := cadOpenAPISet(cadOpenAPIFlowList(t, q["type"], name+"."+field+" type")...)
+				if !types["integer"] || !types[`"null"`] {
+					t.Errorf(`%s.%s type is %s, want [integer, "null"]`, name, field, q["type"])
+				}
+			}
+		}
+
+		stage := cadOpenAPIBlock(t, lines, "components:", "schemas:", "JobStatus:", "properties:", "stage:")
+		desc := cadOpenAPIDescription(t, stage, "JobStatus.stage")
+		if !strings.Contains(desc, "docs/CAD.md") {
+			t.Error("the JobStatus.stage description does not point to docs/CAD.md")
+		}
+		ops := Default.OperationClasses()
+		doc := map[string][]string{}
+		for _, para := range strings.Split(desc, "\n\n") {
+			toks := cadOpenAPIToken.FindAllString(para, -1)
+			if len(toks) < 2 {
+				continue
+			}
+			if _, ok := ops[toks[0]]; !ok {
+				continue
+			}
+			from, to, ok := strings.Cut(toks[1], "->")
+			if !ok {
+				continue
+			}
+			key := toks[0] + " " + from + " " + to
+			if _, dup := doc[key]; dup {
+				t.Errorf("the JobStatus.stage description lists the route %s twice", key)
+			}
+			doc[key] = toks[2:]
+		}
+		docKeys := map[string]bool{}
+		for k := range doc {
+			docKeys[k] = true
+		}
+		code := map[string]bool{}
+		for k, route := range cadStageRoutes {
+			key := k.op + " " + k.from + " " + k.to
+			code[key] = true
+			if stages, ok := doc[key]; ok && !slices.Equal(stages, route) {
+				t.Errorf("the JobStatus.stage description gives %s the stages %v, the code runs %v", key, stages, route)
+			}
+		}
+		cadDocSameSet(t, "routes of the JobStatus.stage description", docKeys, code)
+
+		form := cadOpenAPIBlock(t, lines, "paths:", "/v1/jobs:", "post:", "requestBody:", "content:", "multipart/form-data:", "schema:", "properties:", "progress_webhook:")
+		if desc := cadOpenAPIDescription(t, form, "the progress_webhook field"); !strings.Contains(desc, "ProgressWebhookEvent") {
+			t.Errorf("the progress_webhook field description does not name ProgressWebhookEvent: %q", desc)
+		}
+
+		events := cadOpenAPIBlock(t, lines, "paths:", "/v1/jobs/{id}/events:", "get:")
+		desc = cadOpenAPIDescription(t, events, "GET /v1/jobs/{id}/events")
+		words := cadOpenAPISet(cadOpenAPIWord.FindAllString(desc, -1)...)
+		for _, w := range []string{"stage", "active"} {
+			if !words[w] {
+				t.Errorf("the GET /v1/jobs/{id}/events description does not say %q", w)
+			}
+		}
+		if !strings.Contains(desc, "ProgressEvent") {
+			t.Error("the GET /v1/jobs/{id}/events description does not name ProgressEvent")
 		}
 	})
 }

@@ -84,7 +84,7 @@ func newPresetResponse(p *presets.Preset) presetResponse {
 // ok=false; callers must return immediately in that case.
 func decodePresetRequest(w http.ResponseWriter, r *http.Request) (presetRequest, bool) {
 	var req presetRequest
-	r.Body = http.MaxBytesReader(w, r.Body, maxPresetBodyBytes)
+	r.Body = smallBodyReader(w, r.Body, maxPresetBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid JSON body")
 		return presetRequest{}, false

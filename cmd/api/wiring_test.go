@@ -94,3 +94,12 @@ func TestJobsRepoUsesMainPool(t *testing.T) {
 		t.Fatalf("jobs.NewRepo(%s) in %s, want jobs.NewRepo(pool) -- the jobs repository (and Repo.PreAdmit, INSP-04's quota check) must stay on the MAIN pool, never the dedicated health pool (D-06a)", m[1], mainSourcePath)
 	}
 }
+
+func TestEveryAPIListenerIsBuiltByTheConstructor(t *testing.T) {
+	src := readMainSource(t)
+	literals := strings.Count(src, "&http.Server{")
+	calls := strings.Count(src, "api.NewHTTPServer(")
+	if literals != 0 || calls != 3 {
+		t.Fatalf("%s has %d &http.Server{ literals and %d api.NewHTTPServer( calls, want 0 and 3: every listener of the api process (API_ADDR, METRICS_ADDR, HEALTH_ADDR) must carry the header and idle bounds of api.NewHTTPServer (D-25)", mainSourcePath, literals, calls)
+	}
+}

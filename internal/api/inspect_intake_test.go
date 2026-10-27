@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,14 +21,33 @@ import (
 
 func newIntakeServer(t *testing.T, cfg Config, window time.Duration, minRate int64) (*Server, *httptest.Server) {
 	t.Helper()
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
-	srv.inspectIntakeWindow = window
-	srv.inspectIntakeMinRate = minRate
+	return newIntakeServerWith(t, &fakeRepo{}, &fakeStorage{}, cfg, window, minRate)
+}
+
+func newIntakeServerWith(t *testing.T, repo Repo, store Storage, cfg Config, window time.Duration, minRate int64) (*Server, *httptest.Server) {
+	t.Helper()
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
+	srv.intakeWindow = window
+	srv.intakeMinRate = minRate
 	ts := httptest.NewUnstartedServer(srv.Routes())
-	ts.Config.ReadHeaderTimeout = 10 * time.Second
+	ts.Config = NewHTTPServer("", ts.Config.Handler)
 	ts.Start()
-	t.Cleanup(ts.Close)
+	t.Cleanup(func() { closeWithin(t, ts, 10*time.Second) })
 	return srv, ts
+}
+
+func closeWithin(t *testing.T, ts *httptest.Server, limit time.Duration) {
+	t.Helper()
+	closed := make(chan struct{})
+	go func() {
+		ts.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(limit):
+		t.Errorf("the server did not shut down within %v: a handler never returned", limit)
+	}
 }
 
 type pacedReader struct {
@@ -51,7 +71,17 @@ func (p *pacedReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
-func rawInspect(t *testing.T, ts *httptest.Server, contentType string, contentLength int64, body io.Reader) (int, map[string]string, time.Duration) {
+type rawResult struct {
+	status  int
+	header  http.Header
+	payload map[string]string
+	raw     []byte
+	jsonErr error
+	elapsed time.Duration
+	closed  bool
+}
+
+func rawRequest(t *testing.T, ts *httptest.Server, method, path string, header http.Header, contentType string, contentLength int64, body io.Reader, wait time.Duration, checkClose bool) (rawResult, bool) {
 	t.Helper()
 	addr := ts.Listener.Addr().String()
 	conn, err := net.Dial("tcp", addr)
@@ -59,38 +89,81 @@ func rawInspect(t *testing.T, ts *httptest.Server, contentType string, contentLe
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(wait)); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if _, err := fmt.Fprintf(conn, "POST /v1/inspect HTTP/1.1\r\nHost: %s\r\nAuthorization: ApiKey %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", addr, testClientKey, contentType, contentLength); err != nil {
+	var head strings.Builder
+	fmt.Fprintf(&head, "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, addr)
+	for k, vs := range header {
+		for _, v := range vs {
+			fmt.Fprintf(&head, "%s: %s\r\n", k, v)
+		}
+	}
+	if contentType != "" {
+		fmt.Fprintf(&head, "Content-Type: %s\r\n", contentType)
+	}
+	if contentLength >= 0 {
+		fmt.Fprintf(&head, "Content-Length: %d\r\n", contentLength)
+	}
+	head.WriteString("\r\n")
+	if _, err := io.WriteString(conn, head.String()); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = io.Copy(conn, body)
+		if body != nil {
+			_, _ = io.Copy(conn, body)
+		}
 	}()
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	defer func() {
+		conn.Close()
+		<-done
+	}()
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
 	elapsed := time.Since(start)
 	if err != nil {
-		t.Fatalf("no response after %v: %v", elapsed, err)
+		t.Logf("%s %s: no response after %v: %v", method, path, elapsed, err)
+		return rawResult{elapsed: elapsed}, false
 	}
 	raw, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		t.Fatalf("read the response body after %v: %v", elapsed, err)
+		t.Logf("%s %s: read the response body after %v: %v", method, path, elapsed, err)
+		return rawResult{status: resp.StatusCode, header: resp.Header, elapsed: elapsed}, false
 	}
-	var payload map[string]string
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status %d after %v with a body that is not a JSON error: %v; body=%.300s", resp.StatusCode, elapsed, err, raw)
+	res := rawResult{status: resp.StatusCode, header: resp.Header, raw: raw, elapsed: elapsed}
+	if err := json.Unmarshal(raw, &res.payload); err != nil {
+		res.payload = nil
+		res.jsonErr = err
+	}
+	if checkClose {
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatal(err)
 		}
-		payload = nil
+		_, err := br.ReadByte()
+		res.closed = errors.Is(err, io.EOF)
 	}
-	conn.Close()
-	<-done
-	return resp.StatusCode, payload, elapsed
+	return res, true
+}
+
+func rawPost(t *testing.T, ts *httptest.Server, path string, extra http.Header, contentType string, contentLength int64, body io.Reader) rawResult {
+	t.Helper()
+	header := extra.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	header.Set("Authorization", "ApiKey "+testClientKey)
+	res, ok := rawRequest(t, ts, http.MethodPost, path, header, contentType, contentLength, body, 15*time.Second, false)
+	if !ok {
+		t.Fatalf("no response after %v", res.elapsed)
+	}
+	if res.jsonErr != nil && res.status != http.StatusOK {
+		t.Fatalf("status %d after %v with a body that is not a JSON error: %v; body=%.300s", res.status, res.elapsed, res.jsonErr, res.raw)
+	}
+	return res
 }
 
 func intakeBody(t *testing.T, size int) (*bytes.Buffer, string) {
@@ -110,7 +183,8 @@ func TestInspectIntakeAdmitsASteadyBodyThatOutlastsTheWindow(t *testing.T) {
 	_, ts := newIntakeServer(t, Config{}, window, 32<<10)
 	body, ct := intakeBody(t, 96<<10)
 	size := int64(body.Len())
-	status, payload, elapsed := rawInspect(t, ts, ct, size, &pacedReader{r: body, rate: 64 << 10, chunk: 4 << 10})
+	res := rawPost(t, ts, "/v1/inspect", nil, ct, size, &pacedReader{r: body, rate: 64 << 10, chunk: 4 << 10})
+	status, payload, elapsed := res.status, res.payload, res.elapsed
 	t.Logf("%d bytes at 64 KiB/s against a %v window and 32 KiB/s: status %d after %v", size, window, status, elapsed)
 	if status != http.StatusOK {
 		t.Errorf("status %d payload %v after %v, want 200 for a body sent at twice the minimum rate", status, payload, elapsed)
@@ -125,7 +199,8 @@ func TestInspectIntakeCutsABodyBelowTheMinimumRate(t *testing.T) {
 	_, ts := newIntakeServer(t, Config{}, window, 32<<10)
 	body, ct := intakeBody(t, 96<<10)
 	size := int64(body.Len())
-	status, payload, elapsed := rawInspect(t, ts, ct, size, &pacedReader{r: body, rate: 8 << 10, chunk: 512})
+	res := rawPost(t, ts, "/v1/inspect", nil, ct, size, &pacedReader{r: body, rate: 8 << 10, chunk: 512})
+	status, payload, elapsed := res.status, res.payload, res.elapsed
 	t.Logf("%d bytes at 8 KiB/s against a %v window and 32 KiB/s: status %d after %v", size, window, status, elapsed)
 	requireIntakeCut(t, status, payload, elapsed)
 	if elapsed < window || elapsed >= 3*time.Second {
@@ -136,7 +211,8 @@ func TestInspectIntakeCutsABodyBelowTheMinimumRate(t *testing.T) {
 func TestInspectIntakeCutsAStalledClientAtTheWindow(t *testing.T) {
 	window := 400 * time.Millisecond
 	_, ts := newIntakeServer(t, Config{}, window, 32<<10)
-	status, payload, elapsed := rawInspect(t, ts, "multipart/form-data; boundary=intakestall", 4096, strings.NewReader(""))
+	res := rawPost(t, ts, "/v1/inspect", nil, "multipart/form-data; boundary=intakestall", 4096, strings.NewReader(""))
+	status, payload, elapsed := res.status, res.payload, res.elapsed
 	t.Logf("no body byte against a %v window: status %d after %v", window, status, elapsed)
 	requireIntakeCut(t, status, payload, elapsed)
 	if elapsed < window || elapsed > window+2*time.Second {
@@ -177,7 +253,7 @@ func TestInspectIntakeDeadlineIsBoundedByTheUploadCap(t *testing.T) {
 
 	t.Run("a body past a small limit", func(t *testing.T) {
 		rec := &deadlineRecorder{t: t}
-		r := &inspectIntakeReader{body: io.NopCloser(bytes.NewReader(make([]byte, 25))), setDeadline: rec.set, start: start, window: time.Second, minRate: 1000, limit: 10}
+		r := &intakeReader{body: io.NopCloser(bytes.NewReader(make([]byte, 25))), setDeadline: rec.set, start: start, window: time.Second, minRate: 1000, limit: 10}
 		buf := make([]byte, 3)
 		for {
 			_, err := r.Read(buf)
@@ -205,11 +281,11 @@ func TestInspectIntakeDeadlineIsBoundedByTheUploadCap(t *testing.T) {
 	t.Run("the chart cap with the production constants", func(t *testing.T) {
 		limit := chartLiteral(t, "INSPECT_MAX_UPLOAD_BYTES")
 		rec := &deadlineRecorder{t: t}
-		r := &inspectIntakeReader{body: io.NopCloser(io.LimitReader(transportCapZeros{}, limit+1<<20)), setDeadline: rec.set, start: start, window: inspectIntakeReadDeadline, minRate: inspectIntakeMinBytesPerSecond, limit: limit}
+		r := &intakeReader{body: io.NopCloser(io.LimitReader(transportCapZeros{}, limit+1<<20)), setDeadline: rec.set, start: start, window: intakeReadDeadline, minRate: intakeMinBytesPerSecond, limit: limit}
 		if _, err := io.Copy(io.Discard, r); err != nil {
 			t.Fatal(err)
 		}
-		want := intakeBound(start, inspectIntakeReadDeadline, inspectIntakeMinBytesPerSecond, limit)
+		want := intakeBound(start, intakeReadDeadline, intakeMinBytesPerSecond, limit)
 		if !rec.max.Equal(want) {
 			t.Errorf("max deadline %v, want %v", rec.max, want)
 		}
@@ -220,7 +296,7 @@ func TestInspectIntakeDeadlineIsBoundedByTheUploadCap(t *testing.T) {
 func TestInspectIntakeCreditsBytesReturnedNotRequested(t *testing.T) {
 	start := time.Unix(1700000000, 0)
 	rec := &deadlineRecorder{t: t}
-	r := &inspectIntakeReader{body: io.NopCloser(iotest.OneByteReader(strings.NewReader("abcde"))), setDeadline: rec.set, start: start, window: time.Second, minRate: 1000, limit: 1 << 20}
+	r := &intakeReader{body: io.NopCloser(iotest.OneByteReader(strings.NewReader("abcde"))), setDeadline: rec.set, start: start, window: time.Second, minRate: 1000, limit: 1 << 20}
 	buf := make([]byte, 4096)
 	for {
 		_, err := r.Read(buf)
@@ -241,17 +317,11 @@ func TestInspectIntakeCreditsBytesReturnedNotRequested(t *testing.T) {
 	}
 }
 
-func TestInspectIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
-	raw, err := os.ReadFile(specPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var node any
-	if err := yaml.Unmarshal(raw, &node); err != nil {
-		t.Fatalf("decode %s: %v", specPath, err)
-	}
+func openAPIString(t *testing.T, doc any, keys ...string) string {
+	t.Helper()
+	node := doc
 	walked := "$"
-	for _, key := range []string{"paths", "/v1/inspect", "post", "responses", "400", "description"} {
+	for _, key := range keys {
 		m, ok := node.(map[string]any)
 		if !ok {
 			t.Fatalf("%s: %s is %T, not a mapping", specPath, walked, node)
@@ -262,21 +332,39 @@ func TestInspectIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
 			t.Fatalf("%s: %s is missing", specPath, walked)
 		}
 	}
-	description, ok := node.(string)
+	s, ok := node.(string)
 	if !ok {
 		t.Fatalf("%s: %s is %T, not a string", specPath, walked, node)
 	}
-	if inspectIntakeReadDeadline%time.Second != 0 || inspectIntakeMinBytesPerSecond%(1<<20) != 0 {
-		t.Fatalf("inspectIntakeReadDeadline %v is not whole seconds or inspectIntakeMinBytesPerSecond %d is not whole MiB", inspectIntakeReadDeadline, inspectIntakeMinBytesPerSecond)
+	return s
+}
+
+func TestIntakeRuleIsStatedInTheOpenAPI(t *testing.T) {
+	raw, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
 	}
-	w := int64(inspectIntakeReadDeadline / time.Second)
-	r := inspectIntakeMinBytesPerSecond >> 20
-	for _, want := range []string{
-		fmt.Sprintf("The body has %d s, plus one second for every %d MiB received so far, to arrive", w, r),
-		fmt.Sprintf("a body that falls below %d MiB/s once its first %d s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)", r, w),
-	} {
-		if !strings.Contains(description, want) {
-			t.Errorf("%s: %s does not state %q; it reads %q", specPath, walked, want, description)
+	var doc any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode %s: %v", specPath, err)
+	}
+	if intakeReadDeadline%time.Second != 0 || intakeMinBytesPerSecond%(1<<20) != 0 {
+		t.Fatalf("intakeReadDeadline %v is not whole seconds or intakeMinBytesPerSecond %d is not whole MiB", intakeReadDeadline, intakeMinBytesPerSecond)
+	}
+	w := int64(intakeReadDeadline / time.Second)
+	r := intakeMinBytesPerSecond >> 20
+	for _, path := range []string{"/v1/inspect", "/v1/jobs"} {
+		description := openAPIString(t, doc, "paths", path, "post", "responses", "400", "description")
+		for _, want := range []string{
+			fmt.Sprintf("The body has %d s, plus one second for every %d MiB received so far, to arrive", w, r),
+			fmt.Sprintf("a body that falls below %d MiB/s once its first %d s have passed is cut and answered with this 400 (invalid_request, invalid multipart form)", r, w),
+		} {
+			if !strings.Contains(description, want) {
+				t.Errorf("%s: the 400 of POST %s does not state %q; it reads %q", specPath, path, want, description)
+			}
 		}
+	}
+	if description := openAPIString(t, doc, "paths", "/v1/jobs", "post", "responses", "429", "description"); !strings.Contains(description, "intake_busy") {
+		t.Errorf("%s: the 429 of POST /v1/jobs does not name intake_busy; it reads %q", specPath, description)
 	}
 }

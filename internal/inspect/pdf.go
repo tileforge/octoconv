@@ -343,7 +343,7 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 				// Confirming a Finding on that basis would repeat the exact
 				// false-positive class the literal/hex-string filter exists
 				// to close.
-				res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+				res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: tr.ceilingReason()})
 				continue
 			}
 			if rt.code == CodePDFEncrypted {
@@ -366,7 +366,7 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 			// Coverage accounting (status.go's MarkTruncated) sees it: a
 			// scan that gave up because of its own budget must mark the
 			// report selective, never silently agree with "clean".
-			res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+			res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: tr.ceilingReason()})
 			continue
 		}
 
@@ -403,10 +403,14 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		// back in on the assumption that A5 is certain would be trading a
 		// safe redundancy for an unverified one.
 		opaqueRangesCeilingHit := headOpaqueCeilingHit || (tailOK && tailOpaqueCeilingHit)
+		reason := verdictReason(compressed, truncated, hexEscape, opaqueRangesCeilingHit)
+		if reason == ReasonWorkCeilingBytes && !truncated {
+			reason = tr.ceilingReason()
+		}
 		res.Checks = append(res.Checks, Check{
 			Code:   rt.code,
 			Status: verdictStatus(compressed, truncated, hexEscape, opaqueRangesCeilingHit),
-			Reason: verdictReason(compressed, truncated, hexEscape, opaqueRangesCeilingHit),
+			Reason: reason,
 		})
 	}
 
@@ -426,11 +430,11 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	// It also runs on the HEAD window only, deliberately. The tail window
 	// exists for the trailer (where /Encrypt lives) and re-scanning it would
 	// double-count streams that straddle both.
-	textLayer, textLayerReason := pdfTextLayerVerdict(
-		scanPDFTextLayer(head, inflateAllowance, tr),
-		truncated,
-		encrypted,
-	)
+	textState := scanPDFTextLayer(head, inflateAllowance, tr)
+	textLayer, textLayerReason := pdfTextLayerVerdict(textState, truncated, encrypted)
+	if textLayerReason == ReasonWorkCeilingBytes && textState.budgetHit {
+		textLayerReason = tr.ceilingReason()
+	}
 	res.Characteristics["text_layer"] = textLayer
 	if textLayerReason != "" {
 		// The "_reason" suffix is load-bearing naming, not decoration:
@@ -646,15 +650,43 @@ type pdfOpaqueRange struct {
 // SET this function returns is incomplete, and AnalyzePDF's caller-facing
 // verdict rule (verdictStatus/verdictReason) must know that, not just this
 // function's own local state.
+const pdfOpaqueRangeFloor = 4096
+
+func pdfMaxOpaqueRanges(n int) int {
+	return max(n/48, pdfOpaqueRangeFloor)
+}
+
 func scanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
-	var ranges []pdfOpaqueRange
-	streamRanges, streamCeilingHit := scanPDFStreamRanges(buf, tr)
-	commentRanges, commentCeilingHit := scanPDFCommentRanges(buf, tr)
-	stringRanges, stringCeilingHit := scanPDFLiteralAndHexStringRanges(buf, tr)
-	ranges = append(ranges, streamRanges...)
-	ranges = append(ranges, commentRanges...)
-	ranges = append(ranges, stringRanges...)
+	limit := pdfMaxOpaqueRanges(len(buf))
+	ranges, streamCeilingHit := scanPDFStreamRanges(buf, nil, limit, tr)
+	ranges, commentCeilingHit := scanPDFCommentRanges(buf, ranges, limit, tr)
+	ranges, stringCeilingHit := scanPDFLiteralAndHexStringRanges(buf, ranges, limit, tr)
 	return mergeOpaqueRanges(ranges), streamCeilingHit || commentCeilingHit || stringCeilingHit
+}
+
+func appendOpaqueRange(ranges []pdfOpaqueRange, r pdfOpaqueRange, limit int, tr *Tracker) ([]pdfOpaqueRange, bool) {
+	if len(ranges) >= limit {
+		tr.MarkCeilingHit()
+		return ranges, false
+	}
+	if len(ranges) == cap(ranges) {
+		grown := make([]pdfOpaqueRange, len(ranges), nextOpaqueRangeCap(cap(ranges), limit))
+		copy(grown, ranges)
+		ranges = grown
+	}
+	return append(ranges, r), true
+}
+
+func nextOpaqueRangeCap(c, limit int) int {
+	half := limit/2 + limit%2
+	next := max(64, 2*c)
+	if next > half {
+		next = half
+		if c >= half {
+			next = limit
+		}
+	}
+	return min(next, limit)
 }
 
 // scanPDFStreamRanges finds every "stream"..."endstream" body in buf,
@@ -665,10 +697,11 @@ func scanPDFOpaqueRanges(buf []byte, tr *Tracker) ([]pdfOpaqueRange, bool) {
 // is called at the exact point that happens (quick/260811-r3s: the
 // receptacle, not a return value a caller could drop, is what makes this
 // fact reach Coverage unconditionally).
-func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFStreamRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
 	for iter := 0; ; iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			ceilingHit = true
 			tr.MarkCeilingHit()
 			break
@@ -683,11 +716,16 @@ func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceil
 			// No matching "endstream" within the scanned window at all --
 			// treat everything from here to the end of buf as opaque
 			// (the stream may simply continue past this window).
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: len(buf)}, limit, tr); !ok {
+				ceilingHit = true
+			}
 			break
 		}
 		end := start + endIdx
-		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+			ceilingHit = true
+			break
+		}
 		pos = end + len("endstream")
 		if pos >= len(buf) {
 			break
@@ -699,10 +737,11 @@ func scanPDFStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceil
 // scanPDFCommentRanges finds every "%"-to-end-of-line comment range in buf,
 // capped by maxTokenScanIterations for the same reason scanPDFStreamRanges
 // is; ceilingHit/tr.MarkCeilingHit mirror scanPDFStreamRanges's own.
-func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFCommentRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
 	for iter := 0; ; iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			ceilingHit = true
 			tr.MarkCeilingHit()
 			break
@@ -716,7 +755,10 @@ func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, cei
 		for end < len(buf) && buf[end] != '\n' && buf[end] != '\r' {
 			end++
 		}
-		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+			ceilingHit = true
+			break
+		}
 		pos = end
 		if pos >= len(buf) {
 			break
@@ -741,32 +783,33 @@ func scanPDFCommentRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, cei
 // mirror scanPDFStreamRanges's own -- this is the sub-scan quick/260811-r3s's
 // pdf.go:543 finding names directly (4096 harmless delimiters followed by a
 // risk token inside the 4097th string).
-func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanPDFLiteralAndHexStringRanges(buf []byte, ranges []pdfOpaqueRange, limit int, tr *Tracker) (_ []pdfOpaqueRange, ceilingHit bool) {
 	pos := 0
+	var ok bool
+	nextParen, nextAngle := -2, -2
 	for iter := 0; ; iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			ceilingHit = true
 			tr.MarkCeilingHit()
 			return ranges, ceilingHit
 		}
-		idxParen := bytes.IndexByte(buf[pos:], '(')
-		idxAngle := bytes.IndexByte(buf[pos:], '<')
+		nextParen = nextPDFByteAt(buf, pos, nextParen, '(')
+		nextAngle = nextPDFByteAt(buf, pos, nextAngle, '<')
 
-		var next int
+		var start int
 		isParen := false
 		switch {
-		case idxParen < 0 && idxAngle < 0:
+		case nextParen < 0 && nextAngle < 0:
 			return ranges, ceilingHit
-		case idxParen < 0:
-			next, isParen = idxAngle, false
-		case idxAngle < 0:
-			next, isParen = idxParen, true
-		case idxParen < idxAngle:
-			next, isParen = idxParen, true
+		case nextParen < 0:
+			start, isParen = nextAngle, false
+		case nextAngle < 0:
+			start, isParen = nextParen, true
+		case nextParen < nextAngle:
+			start, isParen = nextParen, true
 		default:
-			next, isParen = idxAngle, false
+			start, isParen = nextAngle, false
 		}
-		start := pos + next
 
 		if isParen {
 			depth := 1
@@ -783,7 +826,9 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 				}
 				j++
 			}
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: j})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: j}, limit, tr); !ok {
+				return ranges, true
+			}
 			pos = j
 		} else {
 			if start+1 < len(buf) && buf[start+1] == '<' {
@@ -800,11 +845,15 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 				// No closing ">" within the scanned window -- treat the
 				// rest of buf as opaque, the same over-approximation
 				// scanPDFStreamRanges applies to an unterminated stream.
-				ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+				if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: len(buf)}, limit, tr); !ok {
+					ceilingHit = true
+				}
 				return ranges, ceilingHit
 			}
 			end := start + 1 + closeIdx + 1
-			ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+			if ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: start, end: end}, limit, tr); !ok {
+				return ranges, true
+			}
 			pos = end
 		}
 		if pos >= len(buf) {
@@ -812,6 +861,17 @@ func scanPDFLiteralAndHexStringRanges(buf []byte, tr *Tracker) (ranges []pdfOpaq
 		}
 	}
 	return ranges, ceilingHit
+}
+
+func nextPDFByteAt(buf []byte, pos, cached int, c byte) int {
+	if cached == -1 || cached >= pos {
+		return cached
+	}
+	idx := bytes.IndexByte(buf[pos:], c)
+	if idx < 0 {
+		return -1
+	}
+	return pos + idx
 }
 
 // mergeOpaqueRanges sorts ranges by start and merges any that overlap or
@@ -883,6 +943,10 @@ func scanTokenOccurrences(buf []byte, tokens [][]byte, opaque []pdfOpaqueRange, 
 	for _, tok := range tokens {
 		p := 0
 		for iter := 0; iter < maxTokenScanIterations; iter++ {
+			if iter%pdfTimeCheckEvery == 0 && tr.OutOfTime() {
+				tr.MarkCeilingHit()
+				return 0, false, filtered, true
+			}
 			idx := bytes.Index(buf[p:], tok)
 			if idx < 0 {
 				break
@@ -939,6 +1003,9 @@ func scanTokenOccurrences(buf []byte, tokens [][]byte, opaque []pdfOpaqueRange, 
 func scanAllOccurrences(buf, token []byte, max int, tr *Tracker, fn func(pos int) bool) (ceilingHit bool) {
 	pos := 0
 	for i := 0; i < max; i++ {
+		if i%pdfTimeCheckEvery == 0 && tr.OutOfTime() {
+			break
+		}
 		idx := bytes.Index(buf[pos:], token)
 		if idx < 0 {
 			return false
@@ -1011,7 +1078,11 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr 
 	// inflateAllowance above). What this walk costs is bounded locally, by
 	// maxPagesDictsScanned, exactly as the scan it replaces was bounded by
 	// maxTokenScanIterations.
-	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned)
+	if tr.OutOfTime() {
+		tr.MarkCeilingHit()
+		return nil, tr.ceilingReason()
+	}
+	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned, tr.OutOfTime)
 	if ceilingHit {
 		// The receptacle, not a return value a caller could drop: this is what
 		// makes a ceiling reach the report-wide Coverage claim unconditionally
@@ -1041,7 +1112,10 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr 
 	// though the scan stopped early." A ceiling-truncated walk never gets to
 	// assert found's value is the final word, regardless of whether it
 	// happened to see one along the way.
-	if ceilingHit || truncated {
+	if ceilingHit {
+		return nil, tr.ceilingReason()
+	}
+	if truncated {
 		return nil, ReasonWorkCeilingBytes
 	}
 	if found != nil {

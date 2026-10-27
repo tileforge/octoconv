@@ -238,7 +238,7 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1 WHERE id = $1`, id)
+			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1, stage = NULL, stage_index = NULL, stage_count = NULL WHERE id = $1`, id)
 		return err
 	})
 }
@@ -466,7 +466,7 @@ func nullableInterval(d time.Duration) any {
 func (r *Repo) RequeueStale(ctx context.Context, id uuid.UUID, reason string) error {
 	detail := map[string]any{"action": detailActionRecovery, "reason": reason}
 	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued' WHERE id = $1`, id)
+		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued', stage = NULL, stage_index = NULL, stage_count = NULL WHERE id = $1`, id)
 		return err
 	})
 }
@@ -699,11 +699,13 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
 		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
-		       progress_pct, eta_seconds, source_duration_seconds, correlation_id
+		       progress_pct, eta_seconds, source_duration_seconds, correlation_id,
+		       stage, stage_index, stage_count, attempts
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
 		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
-		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr)
+		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr,
+		&j.Stage, &j.StageIndex, &j.StageCount, &j.Attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -750,6 +752,18 @@ func (r *Repo) UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *i
 		return fmt.Errorf("update progress for job %s: %w", id, err)
 	}
 	return nil
+}
+
+func (r *Repo) UpdateStage(ctx context.Context, id uuid.UUID, stage string, index, count int) (bool, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE jobs SET stage = $2, stage_index = $3, stage_count = $4
+		WHERE id = $1 AND status = $5 AND (stage_index IS NULL OR stage_index < $3)`,
+		id, stage, index, count, StatusActive,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update stage for job %s: %w", id, err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // SetSourceDuration persists the ffprobe-derived source duration once per

@@ -711,6 +711,93 @@ func fmtIntPtr(p *int) string {
 	return fmt.Sprintf("%d", *p)
 }
 
+func TestGetJob_StageFieldsDecoded(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      map[string]any
+		wantStage *string
+		wantIndex *int
+		wantCount *int
+	}{
+		{
+			name:      "cad job in a stage",
+			body:      map[string]any{"job_id": "j", "status": "active", "progress_pct": nil, "eta_seconds": nil, "stage": "mesh", "stage_index": 2, "stage_count": 4},
+			wantStage: strPtr("mesh"), wantIndex: intPtr(2), wantCount: intPtr(4),
+		},
+		{
+			name: "queued cad job",
+			body: map[string]any{"job_id": "j", "status": "queued", "progress_pct": nil, "eta_seconds": nil, "stage": nil, "stage_index": nil, "stage_count": nil},
+		},
+		{
+			name: "image job without stage keys",
+			body: map[string]any{"job_id": "j", "status": "active", "progress_pct": nil, "eta_seconds": nil},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tc.body)
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			c := newTestClient(t, Config{
+				BaseURL:        srv.URL,
+				APIKey:         testAPIKey,
+				OutputDir:      t.TempDir(),
+				ConvertTimeout: time.Second,
+				PollInterval:   time.Millisecond,
+			})
+
+			js, err := c.GetJob(context.Background(), "j")
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if (js.Stage == nil) != (tc.wantStage == nil) || (js.Stage != nil && *js.Stage != *tc.wantStage) {
+				t.Errorf("Stage = %s, want %s", fmtStrPtr(js.Stage), fmtStrPtr(tc.wantStage))
+			}
+			if !eqIntPtr(js.StageIndex, tc.wantIndex) {
+				t.Errorf("StageIndex = %s, want %s", fmtIntPtr(js.StageIndex), fmtIntPtr(tc.wantIndex))
+			}
+			if !eqIntPtr(js.StageCount, tc.wantCount) {
+				t.Errorf("StageCount = %s, want %s", fmtIntPtr(js.StageCount), fmtIntPtr(tc.wantCount))
+			}
+		})
+	}
+}
+
+func TestJobStatusOmitsStageForOtherClasses(t *testing.T) {
+	out, err := json.Marshal(JobStatus{JobID: "x", Status: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "stage") {
+		t.Fatalf("a job without a stage gains stage keys in the get_job_status output: %s", out)
+	}
+
+	out, err = json.Marshal(JobStatus{JobID: "x", Status: "active", Stage: strPtr("mesh"), StageIndex: intPtr(2), StageCount: intPtr(4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"stage":"mesh"`, `"stage_index":2`, `"stage_count":4`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("the get_job_status output drops %s: %s", want, out)
+		}
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
+func fmtStrPtr(p *string) string {
+	if p == nil {
+		return "null"
+	}
+	return *p
+}
+
 // TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
 // CreateJob writes a multipart part named "operation" with the supplied
 // value when operation is non-empty.

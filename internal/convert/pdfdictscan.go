@@ -74,7 +74,7 @@ const pdfMaxIndexedObjects = 65536
 // a writer produces and refuses what only a generator produces.
 const maxPDFDictDepth = 64
 
-func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []int, ceilingHit bool) {
+func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int, stop func() bool) (values []int, ceilingHit bool) {
 	// INDIRECT LENGTHS ARE THE ORDINARY CASE, NOT AN EDGE ONE.
 	//
 	// Ghostscript writes "/Length 6 0 R" with object 6 defined AFTER the stream
@@ -113,12 +113,15 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	// PR. Reaching this one abstains rather than answering from a half-built
 	// index: an incomplete index resolves some references and silently misses
 	// others, which is a wrong answer rather than a missing one.
-	scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects)
-	if scan.objectsCapped {
+	scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects, stop)
+	if scan.objectsCapped || scan.stopped {
 		return nil, true
 	}
 	objects := scan.objects
 	for num, off := range pdfXrefObjectsLimited(b, pdfMaxIndexedObjects) {
+		if _, known := objects[num]; !known && len(objects) >= pdfMaxIndexedObjects {
+			return nil, true
+		}
 		objects[num] = off
 	}
 
@@ -138,7 +141,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		val       int
 		haveVal   bool
 		expectKey bool
-		key       string
+		keyOff    int
 		// valueArrayDepth remembers the array nesting at which this frame's
 		// current VALUE began, so the frame returns to expecting a key when
 		// that array closes rather than at the first "]" of any depth.
@@ -151,10 +154,11 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	// endValue returns the top frame to expecting a key.
 	endValue := func() {
 		if n := len(stack); n > 0 {
-			stack[n-1].key = ""
+			stack[n-1].keyOff = -1
 			stack[n-1].expectKey = true
 		}
 	}
+	keyIs := func(f frame, s string) bool { return f.keyOff >= 0 && pdfNameEquals(b, f.keyOff, s) }
 	// endValueIfDirect is endValue for tokens that are only a value when they
 	// are a direct member of the dictionary -- inside an array they are array
 	// elements and the dictionary is still waiting for the array to close.
@@ -184,7 +188,10 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	pendingLength, pendingRef, pendingHave := 0, false, false
 
 	i := 0
-	for i < len(b) {
+	for iter := 0; i < len(b); iter++ {
+		if stop != nil && iter%pdfStopCheckEvery == 0 && stop() {
+			return nil, true
+		}
 		c := b[i]
 
 		if isPDFSpace(c) {
@@ -229,7 +236,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 					// This dictionary IS the value of the key just read.
 					stack[n-1].valueDictDepth = len(stack)
 				}
-				stack = append(stack, frame{expectKey: true})
+				stack = append(stack, frame{expectKey: true, keyOff: -1})
 				i += 2
 				dictClosed, awaitVal = false, false
 				continue
@@ -290,22 +297,13 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		}
 
 		if c == '/' {
-			// A name is DECODED only where it can be a key: inside a
-			// dictionary and outside any array. Everywhere else the walk needs
-			// its end position and nothing more, and decoding it allocates --
-			// 8 MiB of "/a" cost 8 388 629 allocations across the two passes
-			// before this split (PR #18 review, P1), on a window a client
-			// supplies to POST /v1/inspect.
 			if len(stack) == 0 || arrayDepth != 0 {
 				i = pdfSkipName(b, i)
 				dictClosed = false
 				continue
 			}
-			// pdfReadName, not a prefix compare: "/Count300" is the name
-			// "Count300", which is not "Count". That distinction is the round-3
-			// finding, and it is already this tokenizer's job.
-			name, next := pdfReadName(b, i)
-			i = next
+			start := i
+			i = pdfSkipName(b, i)
 			dictClosed = false
 			n := len(stack)
 			if n == 0 || arrayDepth != 0 {
@@ -314,13 +312,13 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				continue
 			}
 			if stack[n-1].expectKey {
-				stack[n-1].key = name
+				stack[n-1].keyOff = start
 				stack[n-1].expectKey = false
-				awaitLength = n == 1 && name == "Length"
+				awaitLength = n == 1 && pdfNameEquals(b, start, "Length")
 				continue
 			}
 			// This name is the VALUE of the key just read.
-			if stack[n-1].key == "Type" && name == typeName {
+			if keyIs(stack[n-1], "Type") && pdfNameEquals(b, start, typeName) {
 				stack[n-1].isType = true
 				// MATCHING dictionaries are what maxDicts bounds, not every
 				// dictionary in the file. Counting all of them regressed the
@@ -331,10 +329,6 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				// reported a work ceiling for a file with nothing wrong with
 				// it (PR #18 review). Refusing valid work to bound work is the
 				// trade this project has paid for most.
-				//
-				// Total work needs no separate cap: the walk is linear in the
-				// input, the caller's window is what bounds the input, and
-				// since pdfSkipName no token allocates unless it can be a key.
 				if matched++; matched > maxDicts {
 					return nil, true
 				}
@@ -348,7 +342,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			v, next := pdfReadSignedInt(b, i)
 			isValue := false
 			if n := len(stack); n > 0 && arrayDepth == 0 && !stack[n-1].expectKey {
-				isValue = stack[n-1].key == key
+				isValue = keyIs(stack[n-1], key)
 			}
 			awaitVal = isValue
 			if awaitVal {
@@ -402,8 +396,8 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			continue
 		}
 
-		word, next := pdfReadKeyword(b, i)
-		if word == "stream" && dictClosed {
+		word, next := pdfKeywordAt(b, i)
+		if pdfKeywordIs(word, "stream") && dictClosed {
 			payload := next
 			if payload < len(b) && b[payload] == '\r' {
 				payload++
@@ -425,7 +419,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		}
 		i = next
 		dictClosed, awaitVal = false, false
-		if word != "" && arrayDepth == 0 {
+		if len(word) != 0 && arrayDepth == 0 {
 			if n := len(stack); n > 0 && !stack[n-1].expectKey {
 				endValue()
 			}

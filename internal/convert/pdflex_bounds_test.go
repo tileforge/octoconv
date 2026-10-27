@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"runtime"
 	"testing"
+
+	"github.com/tileforge/octoconv/internal/convert/pdfref805d49da"
 )
 
 // Two allocation bounds, both measured before they existed and both on paths
@@ -75,7 +77,7 @@ func TestTypedDictScanIsBoundedByNestingDepth(t *testing.T) {
 
 	var values []int
 	var ceiling bool
-	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(deep, "Pages", "Count", 1<<20) })
+	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(deep, "Pages", "Count", 1<<20, nil) })
 
 	if !ceiling {
 		t.Fatal("a file nesting a million dictionaries did not report a ceiling: a walk that answers " +
@@ -113,23 +115,12 @@ func TestRealFilesStillResolveAfterTheBounds(t *testing.T) {
 	}
 }
 
-// TestNamesOutsideDictionariesAreNotDecoded is PR #18's P1, and it is about
-// allocation rather than about an answer.
-//
-// A file of bare names -- "/a/a/a..." -- never opens a dictionary, so no
-// dictionary-shaped bound applies to it, and both walks called the ALLOCATING
-// pdfReadName on every token anyway. Measured on the window POST /v1/inspect
-// actually accepts:
-//
-//	8 388 608 bytes  ->  8 388 629 allocations, 64.0 MB, 213ms
-//
-// A name is decoded only where it can be a key now: 2 allocations, 0.0 MB.
 func TestNamesOutsideDictionariesAreNotDecoded(t *testing.T) {
 	body := bytes.Repeat([]byte("/a"), (8<<20)/2)
 
 	var values []int
 	var ceiling bool
-	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(body, "Pages", "Count", 8192) })
+	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(body, "Pages", "Count", 8192, nil) })
 
 	if len(values) != 0 || ceiling {
 		t.Fatalf("a file of bare names answered (values=%v ceiling=%v); it declares no dictionary at all",
@@ -158,7 +149,7 @@ func TestUnrelatedDictionariesDoNotExhaustTheLookup(t *testing.T) {
 	}
 	buf.WriteString("1 0 obj\n<< /Type /Pages /Count 42 >>\nendobj\n")
 
-	values, ceiling := PDFTypedDictUints(buf.Bytes(), "Pages", "Count", 8192)
+	values, ceiling := PDFTypedDictUints(buf.Bytes(), "Pages", "Count", 8192, nil)
 	if ceiling {
 		t.Fatal("9 000 unrelated dictionaries exhausted the page lookup: the cap is counting " +
 			"dictionaries that have nothing to do with what was asked for")
@@ -191,13 +182,6 @@ func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
 	}
 }
 
-// TestSkipNameAgreesWithReadName is the invariant pdfSkipName's own comment
-// claims: it must advance EXACTLY as pdfReadName does, or the two walks
-// disagree about where the next token starts -- and a disagreement about token
-// boundaries in a security walk is not a small thing.
-//
-// Asserted over the shapes that make the two implementations differ if either
-// drifts: escapes that decode, escapes that do not, delimiters, EOF.
 func TestSkipNameAgreesWithReadName(t *testing.T) {
 	for _, src := range []string{
 		"/Length", "/Length1", "/Count300", "/a", "/",
@@ -207,10 +191,10 @@ func TestSkipNameAgreesWithReadName(t *testing.T) {
 	} {
 		t.Run(src, func(t *testing.T) {
 			b := []byte(src)
-			_, want := pdfReadName(b, 0)
+			_, want := pdfref805d49da.ReadName(b, 0)
 			got := pdfSkipName(b, 0)
 			if got != want {
-				t.Fatalf("pdfSkipName ended at %d, pdfReadName at %d, for %q: the two walks would "+
+				t.Fatalf("pdfSkipName ended at %d, the 805d49da ReadName at %d, for %q: the two walks would "+
 					"read the next token from different places", got, want, src)
 			}
 		})

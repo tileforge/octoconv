@@ -296,7 +296,7 @@ func TestCountTextOperatorArgBytesRequiresARealOperatorToken(t *testing.T) {
 		{"dictionary open is not a hex string", "<< /Type /Page >> (hi) Tj", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countTextOperatorArgBytes([]byte(tc.in)); got != tc.want {
+			if got := countTextOperatorArgBytes([]byte(tc.in), nil); got != tc.want {
 				t.Fatalf("countTextOperatorArgBytes(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
@@ -325,7 +325,7 @@ func TestDecodePDFStreamClassification(t *testing.T) {
 		{"undecodable declared filter", build("<< /Filter /LZWDecode >>", "\x80\x0b\x60"), pdfStreamOpaque},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ranges, _ := scanPDFStreamRanges(tc.buf, nil)
+			ranges, _ := scanPDFStreamRanges(tc.buf, nil, pdfMaxOpaqueRanges(len(tc.buf)), nil)
 			if len(ranges) == 0 {
 				t.Fatal("fixture produced no stream range")
 			}
@@ -482,7 +482,7 @@ func TestOctalEscapesAreDecodedNotCounted(t *testing.T) {
 		{"escaped backslash is one byte", `(a\\b) Tj`, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := countTextOperatorArgBytes([]byte(tc.in)); got != tc.want {
+			if got := countTextOperatorArgBytes([]byte(tc.in), nil); got != tc.want {
 				t.Fatalf("countTextOperatorArgBytes(%q) = %d, want %d", tc.in, got, tc.want)
 			}
 		})
@@ -589,7 +589,7 @@ func TestProvenSkipMarkersStillSkip(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := []byte("1 0 obj\n" + tc.dict + "\nstream\n\x00\x01\x02\nendstream\nendobj\n")
-			ranges, _ := scanPDFStreamRanges(buf, nil)
+			ranges, _ := scanPDFStreamRanges(buf, nil, pdfMaxOpaqueRanges(len(buf)), nil)
 			if len(ranges) == 0 {
 				t.Fatal("fixture produced no stream range")
 			}

@@ -35,18 +35,18 @@ spec:
           image: "{{ .Values.api.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- include "octoconv.commonEnv" . | nindent 10 }}
-          {{- if .Values.api.extraEnv }}
           # extraEnv (plan 03): explicit `env:` entries always take
           # precedence over envFrom-sourced values for the same key
           # (k8s-documented behaviour) — this is how values-e2e.yaml's SSRF
           # relaxations override the ConfigMap's RATE_LIMIT_* defaults
           # without editing the ConfigMap itself.
           env:
+            - name: TMPDIR
+              value: {{ .Values.api.spill.mountPath | quote }}
             {{- range $k, $v := .Values.api.extraEnv }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          {{- end }}
           ports:
             - name: http
               containerPort: 8090
@@ -100,7 +100,17 @@ spec:
           # STARTING points (see values.yaml api.resources.limits' own
           # comment) subject to calibration by the live gate (58-08), not a
           # measured ceiling yet.
+          volumeMounts:
+            - name: spill
+              mountPath: {{ .Values.api.spill.mountPath | quote }}
           resources:
+            requests:
+              ephemeral-storage: {{ .Values.api.resources.requests.ephemeralStorage | quote }}
             limits:
               cpu: {{ .Values.api.resources.limits.cpu | quote }}
               memory: {{ .Values.api.resources.limits.memory | quote }}
+              ephemeral-storage: {{ .Values.api.resources.limits.ephemeralStorage | quote }}
+      volumes:
+        - name: spill
+          emptyDir:
+            sizeLimit: {{ .Values.api.spill.sizeLimit | quote }}

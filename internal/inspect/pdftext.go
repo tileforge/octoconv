@@ -250,6 +250,7 @@ const (
 	// Reporting the first as the second tells a client their file is corrupt
 	// when it is merely using a feature we did not implement.
 	pdfStreamMalformed
+	pdfStreamOverBudget
 )
 
 // pdfTextScanState accumulates what a whole-buffer scan learned.
@@ -286,6 +287,8 @@ type pdfTextScanState struct {
 	// through MarkCeilingHit -- the receptacle built for precisely this: a
 	// ceiling INSIDE an analyzer, not the shared byte budget.
 	remaining int64
+	zr        io.ReadCloser
+	out       []byte
 }
 
 // scanPDFTextLayer walks every stream body in buf and counts the
@@ -321,6 +324,12 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 	}
 
 	for _, rng := range ranges {
+		if tr.OutOfTime() {
+			tr.MarkCeilingHit()
+			state.covered = false
+			state.budgetHit = true
+			return state
+		}
 		if rng.start < 0 || rng.end > len(buf) || rng.start >= rng.end {
 			continue
 		}
@@ -336,8 +345,17 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 			state.covered = false
 			state.malformed = true
 			continue
+		case pdfStreamOverBudget:
+			state.covered = false
+			state.parserLimit = true
+			return state
 		}
-		state.nonWhitespace += countTextOperatorArgBytes(data)
+		state.nonWhitespace += countTextOperatorArgBytes(data, tr)
+	}
+	if tr.OutOfTime() {
+		tr.MarkCeilingHit()
+		state.covered = false
+		state.budgetHit = true
 	}
 
 	return state
@@ -386,10 +404,12 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 // iteration cap, not the buffer's content, decided when the walk stopped, and
 // it marks the shared receptacle at that point.
 func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool, complete bool) {
+	limit := pdfMaxOpaqueRanges(len(buf))
+	var ok bool
 	complete = true
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			tr.MarkCeilingHit()
 			return ranges, true, complete
 		}
@@ -426,11 +446,14 @@ func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange
 				// The body runs past the end of this window. Report what is
 				// there; the caller charges it and the truncation is already
 				// visible through its own window accounting.
-				ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)})
-				return ranges, false, complete
+				ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)}, limit, tr)
+				return ranges, !ok, complete
 			}
 			bodyEnd := bodyStart + endIdx
-			ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})
+			ranges, ok = appendOpaqueRange(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd}, limit, tr)
+			if !ok {
+				return ranges, true, complete
+			}
 			// Resume AFTER the body, so its binary content is never lexed.
 			i = bodyEnd + len("endstream")
 			continue
@@ -536,7 +559,13 @@ func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfText
 		return nil, pdfStreamSkipped
 	}
 
-	zr, err := zlib.NewReader(bytes.NewReader(body))
+	if state.remaining == 0 {
+		state.budgetHit = true
+		tr.MarkCeilingHit()
+		return nil, pdfStreamOverBudget
+	}
+
+	zr, err := state.inflater(body)
 	if err != nil {
 		// Not Flate. Two possibilities, and they are NOT the same answer
 		// (59-RESEARCH.md R1). A stream with no /Filter at all is a raw
@@ -548,33 +577,70 @@ func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfText
 			return nil, pdfStreamOpaque
 		}
 		if !chargeInflatedBytes(tr, len(body), state) {
-			return nil, pdfStreamOpaque
+			return nil, pdfStreamOverBudget
 		}
 		return body, pdfStreamScannable
 	}
-	defer zr.Close()
 
 	// LimitReader at ceiling+1 so an output that would EXCEED the ceiling is
 	// distinguishable from one that lands exactly on it -- reading exactly
 	// pdfMaxInflatedStreamBytes cannot tell those apart, and treating a
 	// legitimately ceiling-sized stream as truncated would cost coverage for
 	// nothing.
-	out, readErr := io.ReadAll(io.LimitReader(zr, pdfMaxInflatedStreamBytes+1))
-	if len(out) > pdfMaxInflatedStreamBytes {
+	limit := min(int64(pdfMaxInflatedStreamBytes), state.remaining)
+	out, readErr := state.inflate(zr, limit+1)
+	if int64(len(out)) > limit {
 		state.budgetHit = true
 		tr.MarkCeilingHit()
-		return nil, pdfStreamOpaque
+		return nil, pdfStreamOverBudget
 	}
-	if readErr != nil && readErr != io.EOF {
+	if readErr != nil {
 		// zlib accepted the header and then failed: the body really is corrupt
 		// or truncated. That IS a claim about the file, unlike everything else
 		// on this path, so it gets its own class.
 		return nil, pdfStreamMalformed
 	}
 	if !chargeInflatedBytes(tr, len(out), state) {
-		return nil, pdfStreamOpaque
+		return nil, pdfStreamOverBudget
 	}
 	return out, pdfStreamScannable
+}
+
+func (state *pdfTextScanState) inflater(body []byte) (io.Reader, error) {
+	if state.zr == nil {
+		zr, err := zlib.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		state.zr = zr
+		return zr, nil
+	}
+	if err := state.zr.(zlib.Resetter).Reset(bytes.NewReader(body), nil); err != nil {
+		return nil, err
+	}
+	return state.zr, nil
+}
+
+func (state *pdfTextScanState) inflate(zr io.Reader, limit int64) ([]byte, error) {
+	out := state.out[:0]
+	for int64(len(out)) < limit {
+		if len(out) == cap(out) {
+			grown := make([]byte, len(out), min(max(512, 2*int64(cap(out))), limit))
+			copy(grown, out)
+			out = grown
+		}
+		n, err := zr.Read(out[len(out):cap(out)])
+		out = out[:len(out)+n]
+		if err != nil {
+			state.out = out
+			if err == io.EOF {
+				return out, nil
+			}
+			return out, err
+		}
+	}
+	state.out = out
+	return out, nil
 }
 
 // chargeInflatedBytes spends n bytes of the scan's LOCAL allowance and reports
@@ -642,17 +708,17 @@ var pdfTextOperators = [][]byte{
 // The walk is capped by maxTokenScanIterations for the same reason every other
 // scanner in this package is: an adversarial stream can repeat "(" without
 // bound, and a CPU-bound loop is not interrupted by a context deadline.
-func countTextOperatorArgBytes(buf []byte) int {
+func countTextOperatorArgBytes(buf []byte, tr *Tracker) int {
 	total := 0
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && tr.OutOfTime()) {
 			break
 		}
 		switch buf[i] {
 		case '(':
 			content, next := readPDFLiteralString(buf, i)
-			if operatorFollows(buf, next) {
+			if operatorFollows(buf, next, tr) {
 				total += countNonWhitespaceBytes(content)
 			}
 			i = next
@@ -663,7 +729,7 @@ func countTextOperatorArgBytes(buf []byte) int {
 				continue
 			}
 			content, next := readPDFHexString(buf, i)
-			if operatorFollows(buf, next) {
+			if operatorFollows(buf, next, tr) {
 				total += countNonWhitespaceBytes(content)
 			}
 			i = next
@@ -853,9 +919,9 @@ func hexDigitValue(c byte) (byte, bool) {
 // array, then requires an EXACT token match with a delimiter (or end of input)
 // on the right. isPDFNameByte (pdf.go) already encodes ISO 32000 §7.3.5's
 // delimiter set, so the boundary rule is shared rather than restated.
-func operatorFollows(buf []byte, i int) bool {
+func operatorFollows(buf []byte, i int, tr *Tracker) bool {
 	for iter := 0; i < len(buf); iter++ {
-		if iter >= maxTokenScanIterations {
+		if iter >= maxTokenScanIterations || (iter%pdfTimeCheckEvery == 0 && iter > 0 && tr.OutOfTime()) {
 			return false
 		}
 		c := buf[i]

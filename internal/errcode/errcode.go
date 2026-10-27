@@ -31,7 +31,7 @@ const (
 	OptsNotApplicable    = "opts_not_applicable" // opts are well-formed but not meaningful for this conversion
 	MissingFile          = "missing_file"        // no file part in the multipart body
 	UnknownPreset        = "unknown_preset"      // named preset does not exist / is not active
-	PayloadTooLarge      = "payload_too_large"   // 413: body or opts field exceeds its cap
+	PayloadTooLarge      = "payload_too_large"   // 413: body over its cap; 422: one field over its own cap (opts, callback_url, file name)
 	NotFound             = "not_found"           // 404: job or preset does not exist for this client
 	InvalidCursor        = "invalid_cursor"      // 400: opaque list cursor failed to decode
 	AlreadyExists        = "already_exists"      // 409: preset name collision
@@ -47,9 +47,10 @@ const (
 	// rate"; QuotaExceeded means "you exhausted your own daily/concurrent
 	// job budget"; InspectBusy means "the service as a whole is at its
 	// parallel-parsing ceiling right now — your budget is not the issue at
-	// all." Declared directly after RateLimited so the three 429 codes read
+	// all." Declared directly after RateLimited so the 429 codes read
 	// together in one place.
 	InspectBusy = "inspect_busy"
+	IntakeBusy  = "intake_busy"
 
 	// UnsupportedPackage is its own class and not InvalidRequest, because it
 	// is the one 422 in this list a client can act on WITHOUT changing what
@@ -94,6 +95,7 @@ var all = []string{
 	QuotaExceeded,
 	RateLimited,
 	InspectBusy,
+	IntakeBusy,
 	UnsupportedPackage,
 	TruncatedCADFile,
 	AmbiguousSTL,

@@ -68,6 +68,7 @@ var cadCodesSync = map[string]bool{
 	"quota_exceeded":         false,
 	"rate_limited":           false,
 	"inspect_busy":           false,
+	"intake_busy":            false,
 	"unsupported_package":    false,
 	"truncated_cad_file":     true,
 	"ambiguous_stl":          true,

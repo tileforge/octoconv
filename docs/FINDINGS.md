@@ -229,7 +229,7 @@ in the measurement, not established agreement.
 
 ## Binding to existing job-creation rejections (D-04)
 
-`handleCreateJob` (`internal/api/handlers.go`) rejects twenty-three classes of
+`handleCreateJob` (`internal/api/handlers.go`) rejects twenty-five classes of
 content-validation failure with a `400`/`413`/`422` response, predating this findings vocabulary.
 `internal/inspect/bindings.go` (`RejectBindings`) declares, for every one of those
 `reason=` log tokens, whether the rejection is a statement about the FILE (a finding code from
@@ -267,6 +267,7 @@ either with the prose (PR #20 review).
 | `ambiguous_stl` | not a finding — `errcode.ambiguous_stl` (an STL that is valid as both ASCII and binary; inspect reports the same string as its format) |
 | `binary_dxf_unsupported` | not a finding — `errcode.binary_dxf_unsupported` (a binary DXF, which this service does not read; inspect reports the same string as its format) |
 | `dwg_unsupported` | not a finding — `errcode.dwg_unsupported` (a DWG, which this service does not read; inspect reports the same string as its format) |
+| `zip_directory_too_large` | not a finding — `errcode.invalid_request` (the ZIP central directory declares more than this service reads; inspect reports the same string as its format) |
 
 **Migrating `handleCreateJob` onto this vocabulary is NOT done in this phase.** This section
 declares the correspondence and proves it stays complete

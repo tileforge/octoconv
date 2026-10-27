@@ -157,7 +157,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		// limit, so this must mark the report selective, never agree with
 		// "malformed" (which never does).
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
+		c["duration_seconds_reason"] = string(tr.ceilingReason())
 	} else {
 		// mvhd is MANDATORY inside a well-formed moov (ISO/IEC 14496-12) --
 		// its absence here (with the cap NOT exhausted) is a structural
@@ -172,9 +172,9 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 			c["width"] = w
 			c["height"] = h
 		} else {
-			reason := ReasonMalformedInput
+			reason := Reason(ReasonMalformedInput)
 			if ceilingHit {
-				reason = ReasonWorkCeilingBytes
+				reason = tr.ceilingReason()
 			}
 			c["width"] = nil
 			c["width_reason"] = string(reason)
@@ -186,9 +186,9 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload, wantHandler, tr); ok {
 		c["declared_codec"] = codec
 	} else {
-		reason := ReasonMalformedInput
+		reason := Reason(ReasonMalformedInput)
 		if ceilingHit {
-			reason = ReasonWorkCeilingBytes
+			reason = tr.ceilingReason()
 		}
 		c["declared_codec"] = nil
 		c["declared_codec_reason"] = string(reason)
@@ -423,7 +423,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 			return nil, ReasonReadFailed
 		}
 		if headCeilingHit {
-			return nil, ReasonWorkCeilingBytes
+			return nil, tr.ceilingReason()
 		}
 		return nil, ReasonMalformedInput
 	}
@@ -477,7 +477,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		// shapes specifically to defeat the proof, so treating any of them
 		// as "genuinely absent" would hand the decoy right back its
 		// opening).
-		return nil, ReasonWorkCeilingBytes
+		return nil, tr.ceilingReason()
 	}
 	if nextOff < tailOff {
 		// The proven boundary exists but falls in the gap between what the
@@ -501,7 +501,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
 		return payload, ""
 	} else if ceilingHit {
-		return nil, ReasonWorkCeilingBytes
+		return nil, tr.ceilingReason()
 	}
 	// tailWin's own end IS the file's true end (tailOff+tailLen == size by
 	// construction), so a walk from the PROVEN nextOff all the way to
@@ -555,7 +555,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 func headBoxChainProvenEnd(headWin []byte, tr *Tracker) (nextOffset int64, ok bool) {
 	i := 0
 	for count := 0; i+8 <= len(headWin); count++ {
-		if count >= maxISOBMFFBoxes {
+		if count >= maxISOBMFFBoxes || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return 0, false
 		}
@@ -732,7 +732,7 @@ func findTrackByHandler(moovPayload []byte, wantHandler string, tr *Tracker) (tr
 		if t != "trak" {
 			return true
 		}
-		if candidates >= maxTrakCandidatesScanned {
+		if candidates >= maxTrakCandidatesScanned || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			ceilingHit = true
 			return false
@@ -860,7 +860,7 @@ func parseSTSDCodec(b []byte) (codec string, ok bool) {
 func walkTopLevelBoxes(buf []byte, tr *Tracker, fn func(boxType string, payload []byte) bool) (ceilingHit bool) {
 	i := 0
 	for count := 0; i+8 <= len(buf); count++ {
-		if count >= maxISOBMFFBoxes {
+		if count >= maxISOBMFFBoxes || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return true
 		}
@@ -999,7 +999,7 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Chara
 
 	segmentPayload, foundSegment, segCeilingHit := firstEBMLChild(buf, ebmlIDSegment, tr)
 	if !foundSegment {
-		reason := ebmlMissReason(windowCoversWholeFile, segCeilingHit)
+		reason := ebmlMissReason(windowCoversWholeFile, segCeilingHit, tr)
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)
 		c["declared_codec"] = nil
@@ -1011,14 +1011,14 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Chara
 		c["duration_seconds"] = durSec
 	} else {
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit))
+		c["duration_seconds_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit, tr))
 	}
 
 	if codec, ok, ceilingHit := findEBMLCodecID(segmentPayload, tr); ok {
 		c["declared_codec"] = codec
 	} else {
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit))
+		c["declared_codec_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit, tr))
 	}
 
 	return c
@@ -1029,8 +1029,11 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Chara
 // element walk hit maxEBMLElements) versus a genuine structural fact about
 // the file. See ebmlCharacteristics's own doc comment for why these must
 // never collapse into one answer.
-func ebmlMissReason(windowCoversWholeFile, ceilingHit bool) Reason {
-	if !windowCoversWholeFile || ceilingHit {
+func ebmlMissReason(windowCoversWholeFile, ceilingHit bool, tr *Tracker) Reason {
+	if ceilingHit {
+		return tr.ceilingReason()
+	}
+	if !windowCoversWholeFile {
 		return ReasonWorkCeilingBytes
 	}
 	return ReasonMalformedInput
@@ -1140,7 +1143,7 @@ func firstEBMLChild(buf []byte, id uint32, tr *Tracker) (payload []byte, found b
 func walkEBMLElements(buf []byte, tr *Tracker, fn func(id uint32, payload []byte) bool) (ceilingHit bool) {
 	pos := 0
 	for count := 0; pos < len(buf); count++ {
-		if count >= maxEBMLElements {
+		if count >= maxEBMLElements || tr.OutOfTime() {
 			tr.MarkCeilingHit()
 			return true
 		}
@@ -1314,7 +1317,7 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Charac
 	pos := 12
 	ceilingHit := false
 	for count := 0; pos+8 <= len(buf) && !(foundFmt && foundData); count++ {
-		if count >= maxRIFFChunks {
+		if count >= maxRIFFChunks || tr.OutOfTime() {
 			ceilingHit = true
 			tr.MarkCeilingHit()
 			break
@@ -1344,8 +1347,11 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Charac
 	}
 
 	if !foundFmt || !foundData || byteRate == 0 {
-		reason := ReasonMalformedInput
-		if windowTruncated || ceilingHit {
+		reason := Reason(ReasonMalformedInput)
+		switch {
+		case ceilingHit:
+			reason = tr.ceilingReason()
+		case windowTruncated:
 			reason = ReasonWorkCeilingBytes
 		}
 		c["duration_seconds"] = nil

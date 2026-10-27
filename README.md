@@ -254,14 +254,34 @@ really pings Postgres, Redis and S3.
 
 **Status semantics**
 
+- Request line and headers together above 64 KiB → `431` with a plain-text body, answered
+  before the key or the rate limit is checked; no `code`
 - No key, or an invalid/revoked one → `401`
+- A refusal sent before the request body is read (`401`, `429` and the other early answers)
+  comes with `Connection: close`: the server reads no more of the body, so send the retry on a
+  new connection
+- Any other answer sent before the request body is read, `2xx` included (for example
+  `GET /healthz` with a body), waits at most 500 ms for the rest of a body the route does not
+  read: a body that has not arrived by then is dropped and the connection closes after the
+  answer; one that arrives in time keeps the connection
+- A JSON request body (`POST` and `PUT` on `/v1/presets` and `/v1/system/presets`) has to
+  arrive in full within 1250 ms of the moment the server starts reading it: a body still
+  incomplete then is answered with `400` and `code: "invalid_request"`, and the connection
+  closes after the answer
 - A job belonging to another client, or one that doesn't exist → `404`; the API never
   confirms the existence of jobs you don't own
 - Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`
 - Over quota → `429` with `Retry-After` and `code: "quota_exceeded"` — a consumption limit,
   never an authorization boundary
+- Every create intake slot of the API process taken → `429` with `Retry-After` and
+  `code: "intake_busy"` — the service's own capacity, not your budget; retry the request
+  unchanged
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
+- A ZIP-based upload whose central directory is past the bound `POST /v1/inspect` reads →
+  `422` with `code: "invalid_request"` and the message "the archive's central directory is
+  larger than this service reads; repackage the archive with fewer entries", rejected before
+  anything touches storage
 
 **Correlating a job with your own request.** Send your identifier as a
 `Correlation-Id` header on `POST /v1/jobs`. It comes back in the job status and in the
@@ -464,6 +484,19 @@ documented list — including how each measured limit was derived.
 > `callback_url` validation blocks loopback, RFC1918, link-local and cloud metadata
 > endpoints by default. `WEBHOOK_ALLOW_PRIVATE_IPS` opts into RFC1918 for internal-network
 > deployments; loopback and link-local stay blocked with no override.
+
+> [!NOTE]
+> Multipart parts larger than the API's in-memory budget are written to `TMPDIR`. The
+> chart mounts a disk-backed `emptyDir` there with a `sizeLimit` equal to the create
+> intake slots × `MAX_UPLOAD_BYTES` plus the inspect intake and analysis slots ×
+> `INSPECT_MAX_UPLOAD_BYTES`, and gives the api container equal `ephemeral-storage`
+> request and limit, so an overrun evicts the api pod rather than its neighbours.
+> `docker-compose.yml` only moves the spill out of the container's writable layer onto the
+> named volume `api_spill`, with no hard size: the chart is what bounds the disk.
+> A spill file outlives an api container that dies mid-request: the `emptyDir` lives as long
+> as the pod, and `api_spill` survives a recreate. So the api removes the regular
+> `multipart-<digits>` files directly in `TMPDIR` at startup, before it listens, and logs how
+> many it removed; `sizeLimit` only has to cover live intake slots.
 
 ## Documentation
 
