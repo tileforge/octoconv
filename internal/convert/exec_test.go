@@ -526,6 +526,7 @@ func TestRunnerReturnLatencyLive(t *testing.T) {
 			defer cancel()
 
 			ret := make(chan error, 1)
+			launched := time.Now()
 			go func() {
 				_, _, err := runCommandCore(ctx, 0, nil, "engine", "/bin/sh", args...)
 				ret <- err
@@ -537,14 +538,16 @@ func TestRunnerReturnLatencyLive(t *testing.T) {
 				t.Fatal("the wrapper never wrote the leader's pid")
 			}
 			exited := make(chan time.Time, 1)
-			go func() {
+			go func(lastAlive time.Time) {
 				for end := time.Now().Add(15 * time.Minute); time.Now().Before(end); time.Sleep(time.Millisecond) {
+					probed := time.Now()
 					if err := syscall.Kill(leader, 0); errors.Is(err, syscall.ESRCH) {
-						exited <- time.Now()
+						exited <- lastAlive
 						return
 					}
+					lastAlive = probed
 				}
-			}()
+			}(launched)
 
 			late, aliveAtCancel := "na", "na"
 			var cancelled time.Time
