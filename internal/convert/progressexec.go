@@ -30,11 +30,10 @@ func progressStreamArgs(fifoPath string, args []string) []string {
 	return append([]string{"-progress", "file:" + fifoPath}, args...)
 }
 
-// runCommandStreaming is a byte-for-byte-independent sibling of runCommand
-// (exec.go, NEVER modified by this file, D-01a/PROG-05) that additionally
+// runCommandStreaming is a sibling of runCommand (exec.go) that additionally
 // streams an ffmpeg -progress feed to onLine, one raw "key=value" line at a
-// time, while mirroring runCommand's EXACT Setpgid + syscall.Kill(-pid,
-// SIGKILL) process-group-kill discipline.
+// time, with runCommand's process handling: Setpgid, WaitDelay and
+// killGroupAndReap.
 //
 // Transport: a private named FIFO opened through the already-allowed
 // "file:" protocol -- NEVER the fd-based transport ("-progress" pointed at
@@ -113,6 +112,7 @@ func runCommandStreaming(ctx context.Context, onLine func(string), fifoDir, labe
 
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // mirrors runCommand exactly
+	cmd.WaitDelay = engineWaitDelay
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -169,9 +169,7 @@ func runCommandStreaming(ctx context.Context, onLine func(string), fifoDir, labe
 
 	select {
 	case <-ctx.Done():
-		// Negative pid targets the process group led by the child.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done // reap, same as runCommand
+		killGroupAndReap(cmd.Process.Pid, done) // reap, same as runCommand
 		// Guaranteed unblock on the never-opened-FIFO path: push a
 		// definitive EOF even if ffmpeg's own writer never appeared.
 		if w, werr := os.OpenFile(fifoPath, os.O_WRONLY, 0); werr == nil {
@@ -181,6 +179,9 @@ func runCommandStreaming(ctx context.Context, onLine func(string), fifoDir, labe
 		<-scanDone // join before returning -- zero leaked goroutines (PROG-05)
 		return nil, fmt.Errorf("%s killed: %w", label, ctx.Err())
 	case err := <-done:
+		if err != nil {
+			killGroupAndReap(cmd.Process.Pid, nil)
+		}
 		// Same guaranteed-unblock poke on the normal-exit path: ffmpeg
 		// may have exited having never opened the FIFO (e.g. an early
 		// argument-parse failure) just as validly as on the kill path.
