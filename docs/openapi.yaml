@@ -1555,6 +1555,64 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/jobs/archive:
+    post:
+      summary: Download completed selected task results as one ZIP
+      description: >-
+        Accepts 1–20 unique owned completed jobs. Includes all outputs in safe per-job folders.
+        Maximum 100 outputs and 256 MiB combined output bytes; browser clients should cap ZIP
+        responses at 260 MiB. Two concurrent archives per API process, with a two minute deadline.
+        Missing and foreign jobs return identical errors. Objects are opened before streaming;
+        a storage failure during streaming aborts the HTTP response without finalizing the ZIP.
+        Archives are not stored. Existing per-job signed downloads are unchanged.
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [job_ids]
+              properties:
+                job_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  uniqueItems: true
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: Complete ZIP attachment results.zip
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Invalid selection, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
+        "401":
+          description: Invalid API key
+        "404":
+          description: Job missing or not owned by caller
+        "409":
+          description: Selected task is not complete or its output is unavailable
+        "413":
+          description: Output count or combined size exceeds archive limit
+        "429":
+          description: Request rate or concurrent archive capacity exceeded
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          description: Repository or storage metadata failure
+        "501":
+          description: Archive download unavailable in this server
+        "504":
+          description: Archive preparation timed out
+
   /v1/jobs/{id}:
     get:
       tags: [Jobs]

@@ -47,6 +47,7 @@ func (s *Server) Routes() chi.Router {
 		r.Use(auth.Middleware(s.resolver))
 		r.Use(ratelimit.PerClient(s.clientRateRPM))
 		r.Post("/jobs", s.handleCreateJob)
+		r.Post("/jobs/archive", s.handleArchive)
 		// POST /v1/inspect (Plan 58-07, INSP-01..INSP-06): a dedicated
 		// sub-group so this route carries an extra layer the rest of
 		// /v1 does not (58-CONTEXT.md D-06). ratelimit.ByIP ->
