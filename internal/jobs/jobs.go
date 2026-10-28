@@ -119,22 +119,25 @@ type Output struct {
 // PresignGet calls). ProgressPct stays nil until Phase 41 populates it
 // (0007_job_progress.sql). ErrorCode is empty unless Status is StatusFailed.
 type JobSummary struct {
-	ID           uuid.UUID
-	Status       string
-	Engine       string
-	SourceFormat string
-	TargetFormat string
-	ProgressPct  *int
-	CreatedAt    time.Time
-	StartedAt    *time.Time
-	FinishedAt   *time.Time
-	ErrorCode    string
+	SourceFilename string
+	ID             uuid.UUID
+	Status         string
+	Engine         string
+	SourceFormat   string
+	TargetFormat   string
+	ProgressPct    *int
+	CreatedAt      time.Time
+	StartedAt      *time.Time
+	FinishedAt     *time.Time
+	ErrorCode      string
 }
 
 // ListFilter narrows Repo.List's result set. Each field is empty-means-unset;
 // validating field values against the known status/engine sets is the
 // handler's responsibility (Plan 02) — this type only carries them through.
 type ListFilter struct {
+	Query  string
+	Sort   string
 	Status string
 	Engine string
 }

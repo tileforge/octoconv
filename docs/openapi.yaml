@@ -1312,8 +1312,25 @@ paths:
         Scoped to the authenticated client unconditionally -- there is no
         parameter for listing another client's jobs. Results are keyset
         paginated: pass the previous response's `next_cursor` back as `cursor`
-        until it is `null`.
+        until it is `null`. Search is a case-insensitive literal substring of
+        the primary source filename or job ID, applied across retained history
+        before pagination. Default order is newest-first. Keep q and sort
+        unchanged when following a cursor; a mismatch is rejected.
       parameters:
+        - name: q
+          in: query
+          required: false
+          description: Trimmed literal substring, at most 256 UTF-8 bytes; NUL is rejected. SQL wildcard characters are literal.
+          schema:
+            type: string
+            maxLength: 256
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [newest, oldest]
+            default: newest
         - name: status
           in: query
           required: false
@@ -1371,6 +1388,9 @@ paths:
                           enum: [awaiting_upload, queued, active, done, failed, canceled]
                         engine:
                           type: string
+                        source_filename:
+                          type: string
+                          description: Primary input filename when retained; absent when unavailable.
                         source_format:
                           type: string
                         target_format:
@@ -1389,6 +1409,16 @@ paths:
                         error_code:
                           type: string
                           description: Present only on a failed job.
+                  query:
+                    type: object
+                    description: Echoes applied query/order when q or sort was explicitly supplied. Absent on legacy default requests.
+                    required: [q, sort]
+                    properties:
+                      q:
+                        type: string
+                      sort:
+                        type: string
+                        enum: [newest, oldest]
                   next_cursor:
                     type: [string, "null"]
                     description: Pass back as `cursor` for the next page; `null` on the last page.
@@ -1405,7 +1435,7 @@ paths:
                     finished_at: "2026-09-18T10:00:03Z"
                 next_cursor: null
         "400":
-          description: The cursor failed to decode.
+          description: The cursor failed to decode or does not match q/sort.
           content:
             application/json:
               schema:
@@ -1416,7 +1446,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "422":
-          description: Unrecognized status or engine filter.
+          description: Invalid status, engine, query or chronological sort.
           content:
             application/json:
               schema:

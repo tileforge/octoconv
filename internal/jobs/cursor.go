@@ -15,6 +15,8 @@ import (
 // this directly from client input — it only ever comes from DecodeCursor, or
 // is built server-side from the last row of a page.
 type Cursor struct {
+	Sort      string
+	Query     string
 	CreatedAt time.Time
 	ID        uuid.UUID
 }
@@ -35,6 +37,9 @@ const cursorSep = "|"
 // keyed MAC (and its secret management) would be disproportionate here.
 func EncodeCursor(c Cursor) string {
 	payload := c.CreatedAt.Format(time.RFC3339Nano) + cursorSep + c.ID.String()
+	if c.Sort != "" || c.Query != "" {
+		payload += cursorSep + c.Sort + cursorSep + base64.RawURLEncoding.EncodeToString([]byte(c.Query))
+	}
 	sum := crc32.ChecksumIEEE([]byte(payload))
 	full := fmt.Sprintf("%08x", sum) + cursorSep + payload
 	return base64.RawURLEncoding.EncodeToString([]byte(full))
@@ -46,7 +51,7 @@ func EncodeCursor(c Cursor) string {
 // invalid uuid — returns a wrapped error rather than panicking or silently
 // returning a wrong Cursor (T-40-02).
 func DecodeCursor(s string) (Cursor, error) {
-	if s == "" {
+	if s == "" || len(s) > 2048 {
 		return Cursor{}, fmt.Errorf("decode cursor: empty cursor")
 	}
 
@@ -67,8 +72,8 @@ func DecodeCursor(s string) (Cursor, error) {
 		return Cursor{}, fmt.Errorf("decode cursor: checksum mismatch (corrupted or tampered cursor)")
 	}
 
-	parts := strings.SplitN(payload, cursorSep, 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(payload, cursorSep, 4)
+	if len(parts) != 2 && len(parts) != 4 {
 		return Cursor{}, fmt.Errorf("decode cursor: malformed payload (missing separator)")
 	}
 
@@ -82,5 +87,18 @@ func DecodeCursor(s string) (Cursor, error) {
 		return Cursor{}, fmt.Errorf("decode cursor: parse id: %w", err)
 	}
 
-	return Cursor{CreatedAt: createdAt, ID: id}, nil
+	c := Cursor{CreatedAt: createdAt, ID: id}
+	if len(parts) == 4 {
+		query, err := base64.RawURLEncoding.DecodeString(parts[3])
+		if err != nil {
+			return Cursor{}, fmt.Errorf("decode cursor query: %w", err)
+		}
+		f, err := NormalizeListFilter(ListFilter{Query: string(query), Sort: parts[2]})
+		if err != nil || f.Query != string(query) || (parts[2] != "" && f.Sort != parts[2]) {
+			return Cursor{}, fmt.Errorf("decode cursor: invalid query context")
+		}
+		c.Query = f.Query
+		c.Sort = parts[2]
+	}
+	return c, nil
 }
