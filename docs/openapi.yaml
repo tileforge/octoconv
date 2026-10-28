@@ -1604,6 +1604,8 @@ paths:
           description: Output count or combined size exceeds archive limit
         "429":
           description: Request rate or concurrent archive capacity exceeded
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           description: Repository or storage metadata failure
         "501":
