@@ -99,6 +99,7 @@ derive76  plan 76-03 from the 76-02 evidence, with no docker. --select-cells wri
        .planning/milestones/v1.16-phases/76-measured-bounds-keda-proof-client-docs/evidence/76-03-cells.txt). A route with no eligible
        cell is STOP. --select-cells appends a new section when the file exists and reads the amendments and the
        ladder results of evidence/76-03-ladders.txt.
+       Only load-clean rows count (RULE_AMEND quiet_host, with the re-measured rows of evidence/76-03-quiet.txt); a refusal flag on any row still refuses.
        --ladder runs one pre-registered ladder of the RULE_AMEND lines of 76-03-cells.txt on the 76-02 engine image,
        under caffeinate, appending BOUND76_ROW, LADDER_RUNG and LADDER_RESULT lines to evidence/76-03-ladders.txt:
        render_iges renders IGES copies at 16, 8, 4 and 2 MiB until ceil(1.5W) <= 402; memory_iges meshes IGES copies at
@@ -4300,13 +4301,21 @@ def render_band(rs, r_upper):
 
 def select(argv):
     src, ladder, cellsfile, budget = argv[0], argv[1], argv[2], int(argv[3])
-    rows, cells, contaminated, results = load_all(src, ladder)
+    quietf = argv[4] if len(argv) > 4 else ""
+    _, cells, contaminated, results = load_all(src, ladder)
+    pool = [r for r in all_rows(src, ladder, quietf) if not r["_sleep"]]
+    rows = [r for r in pool if r["_clean"]]
     amend = amendments(cellsfile)
     need = {"render_remainder_all", "render_route_cell", "iges_memory_ceiling", "nothing_else"}
     if not need <= amend:
         print("STOP,mode=derive76,step=select_cells,reason=amendments_missing,missing=%s" % "+".join(sorted(need - amend)))
         print("SUMMARY,mode=derive76_select,routes=8,cellspec=0,stop=1,result=STOP")
         return 1
+    for stage, stages in (("guard", ("guard",)), ("mesh", ("mesh", "stats"))):
+        if not any(r.get("setter") == "1" and r["stage"] in stages for r in rows):
+            print("STOP,mode=derive76,step=select_cells,reason=no_load_clean_setter_rows,stage=%s" % stage)
+            print("SUMMARY,mode=derive76_select,routes=8,cellspec=0,stop=1,result=STOP")
+            return 1
     w_guard, w_mesh = deadlines(rows)
     g_dl, m_dl = ceil15(w_guard), ceil15(w_mesh)
     r_upper = budget - g_dl - m_dl
@@ -4314,11 +4323,12 @@ def select(argv):
     ren = results.get("render_iges")
     ceiling = int(mem["ceiling_bytes"]) if mem else None
     print("BASIS,mode=derive76_select,w_guard_s=%.2f,w_mesh_s=%.2f,guard_deadline_s=%d,mesh_deadline_s=%d,io_assumed_s=0,r_upper_s=%d,"
-          "iges_ceiling_bytes=%s,iges_memory_cell=%s,render_iges_ladder_cell=%s,"
-          "rule=r_upper=%d-ceil(1.5xW_guard)-ceil(1.5xW_mesh)-io_with_io=0;W_from_setter_rows_of_76-02_and_76-03-ladders_(every_band;mesh_covers_stats);"
+          "iges_ceiling_bytes=%s,iges_memory_cell=%s,render_iges_ladder_cell=%s,quiet_rows=%d,unclean_rows_excluded=%d,"
+          "rule=r_upper=%d-ceil(1.5xW_guard)-ceil(1.5xW_mesh)-io_with_io=0;W_from_load-clean_setter_rows_of_76-02_76-03-ladders_and_76-03-quiet_(quiet_host;every_band;mesh_covers_stats);refusal_flags_of_every_non-sleep_row_still_refuse;"
           "render_variants_classified_against_r_upper_stacked_or_not_(render_remainder_all);an_IGES_cell_above_the_iges_ceiling_is_not_admitted_(iges_memory_ceiling);"
           "contaminated_lines_excluded=%s" % (w_guard, w_mesh, g_dl, m_dl, r_upper, ceiling if ceiling is not None else "none",
-                                              mem["cell"] if mem else "none", ren["cell"] if ren else "none", budget,
+                                              mem["cell"] if mem else "none", ren["cell"] if ren else "none",
+                                              len([r for r in pool if r["_src"] == "76-03-quiet"]), len(pool) - len(rows), budget,
                                               "+".join(str(c) for c in sorted(contaminated)) or "none"))
 
     def of(cell, stage, **match):
@@ -4326,6 +4336,15 @@ def select(argv):
 
     def plain_ok(rs):
         return bool(rs) and all(r.get("band") == "within" and r.get("rc") == "0" and r.get("timeout") == "0" and r.get("oom_kill") == "0" for r in rs)
+
+    def flagged(r):
+        return r.get("timeout") != "0" or r.get("oom_kill") != "0" or r.get("rc") != "0" or r.get("band") != "within"
+
+    def refused(cell, stage, **match):
+        return any(flagged(r) for r in pool if r["cell"] == cell and r["stage"] == stage and all(r.get(k) == v for k, v in match.items()))
+
+    def stage_ok(cell, stage, **match):
+        return plain_ok(of(cell, stage, **match)) and not refused(cell, stage, **match)
 
     routes = ("convert_step", "convert_iges", "render_step", "render_iges", "render_stl", "dxf_svg", "dxf_pdf", "dxf_png")
     cand = {k: [] for k in routes}
@@ -4340,7 +4359,7 @@ def select(argv):
             guard = of(name, "guard")
             for q in sorted({r["quality"] for r in of(name, "mesh")}):
                 mesh = of(name, "mesh", quality=q)
-                ok = plain_ok(guard) and plain_ok(mesh)
+                ok = stage_ok(name, "guard") and stage_ok(name, "mesh", quality=q)
                 if fmt == "iges" and not (mem and name == mem["cell"] and q == "fine"):
                     ok = False
                 s = (max(wall(r) for r in guard) if guard else 0) + max(wall(r) for r in mesh)
@@ -4352,7 +4371,9 @@ def select(argv):
                 rr = of(name, "render", quality=q, view=v, background=b)
                 mesh = of(name, "mesh", quality=q)
                 band, w = render_band(rr, r_upper)
-                ok = plain_ok(guard) and plain_ok(mesh) and band == "margin"
+                if refused(name, "render", quality=q, view=v, background=b):
+                    band = "refused"
+                ok = stage_ok(name, "guard") and stage_ok(name, "mesh", quality=q) and band == "margin"
                 s = (max(wall(r) for r in guard) if guard else 0) + (max(wall(r) for r in mesh) if mesh else 0) + (w or 0)
                 route = "render_" + fmt
                 seen[route].append("%s:%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, q, v, b, band, w or 0, ceil15(w or 0)))
@@ -4363,14 +4384,16 @@ def select(argv):
             for v, b in sorted({(r["view"], r["background"]) for r in of(name, "render")}):
                 rr = of(name, "render", view=v, background=b)
                 band, w = render_band(rr, r_upper)
-                ok = plain_ok(stats) and band == "margin"
+                if refused(name, "render", view=v, background=b):
+                    band = "refused"
+                ok = stage_ok(name, "stats") and band == "margin"
                 s = (max(wall(r) for r in stats) if stats else 0) + (w or 0)
                 seen["render_stl"].append("%s:%s:%s:%s:w=%.2f:ceil15=%d" % (name, v, b, band, w or 0, ceil15(w or 0)))
                 if ok:
                     cand["render_stl"].append((s, name, {"size": "2048", "view": v, "background": b}, "stats+render_%s_%s" % (v, b), band))
         elif fmt == "dxf":
             guard, dxf, ink = of(name, "guard"), of(name, "dxf"), of(name, "rsvg_ink")
-            if not (plain_ok(guard) and plain_ok(dxf) and plain_ok(ink)):
+            if not (stage_ok(name, "guard") and stage_ok(name, "dxf") and stage_ok(name, "rsvg_ink")):
                 for route in ("dxf_svg", "dxf_pdf", "dxf_png"):
                     seen[route].append("%s:not_eligible" % name)
                 continue
@@ -4378,13 +4401,13 @@ def select(argv):
             seen["dxf_svg"].append("%s:%.2f" % (name, base))
             cand["dxf_svg"].append((base, name, {}, "guard+dxf+rsvg_ink", "within"))
             pdf = of(name, "rsvg_pdf")
-            if plain_ok(pdf):
+            if stage_ok(name, "rsvg_pdf"):
                 s = base + max(wall(r) for r in pdf)
                 seen["dxf_pdf"].append("%s:%.2f" % (name, s))
                 cand["dxf_pdf"].append((s, name, {}, "guard+dxf+rsvg_ink+rsvg_pdf", "within"))
             png_t = of(name, "rsvg_png_transparent")
             opts = [(max(wall(r) for r in ink), "opaque", "rsvg_ink_argv")]
-            if plain_ok(png_t):
+            if stage_ok(name, "rsvg_png_transparent"):
                 opts.append((max(wall(r) for r in png_t), "transparent", "rsvg_png_transparent"))
             w, bg, st = max(opts)
             s = base + w
@@ -4933,7 +4956,7 @@ PY
 }
 
 d76_mode() {
-  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" ladder="$REPO_ROOT/$D76_LADDER_REL" rc=0 attempt
+  local out=$1 src="$REPO_ROOT/$B76_EVID_REL" ladder="$REPO_ROOT/$D76_LADDER_REL" quiet="$REPO_ROOT/$D76_QUIET_REL" rc=0 attempt
   need_tool python3
   need_tool shasum
   need_tool git
@@ -4947,14 +4970,15 @@ d76_mode() {
   attempt=1
   [ ! -f "$out" ] || attempt=$(( $(grep -c '^HDR,mode=derive76_select,' "$out" || true) + 1 ))
   {
-    printf 'HDR,mode=derive76_select,attempt=%s,date_utc=%s,commit=%s,tracked_dirt=%s,source=%s,source_sha256=%s,ladders=%s,ladders_sha256=%s,budget_s=%s\n' \
+    printf 'HDR,mode=derive76_select,attempt=%s,date_utc=%s,commit=%s,tracked_dirt=%s,source=%s,source_sha256=%s,ladders=%s,ladders_sha256=%s,budget_s=%s,quiet=%s,quiet_sha256=%s\n' \
       "$attempt" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(git rev-parse HEAD)" "$(tracked_dirt)" "$B76_EVID_REL" "$(sha_of "$src")" \
-      "$( [ -f "$ladder" ] && echo "$D76_LADDER_REL" || echo none)" "$( [ -f "$ladder" ] && sha_of "$ladder" || echo none)" "$D76_BUDGET_S"
-    [ "$attempt" != 1 ] || printf 'RULE,key=select_cells,mode=derive76,rule=per_route_the_cell_and_variant_whose_rows_have_the_largest_sum_of_per-stage_maxima_among_rows_of_band_within_or_margin_(never_refused_or_no_margin);routes=convert_step;convert_iges_(guard+mesh_per_quality);render_step;render_iges_(guard+mesh+render_per_quality;view;background);render_stl_(stats+render_per_view;background);dxf_svg_(guard+dxf+rsvg_ink);dxf_pdf_(+rsvg_pdf);dxf_png_(+the_slower_of_rsvg_ink_argv_opaque_and_rsvg_png_transparent_at_2048);a_stacked_render_variant_is_margin_iff_ceil(1.5W)<=r_upper;a_timeout_or_OOM_is_refused;sha256_re-checked_against_the_76-02_CELL_line;a_route_with_no_eligible_cell_is_STOP\n'
+      "$( [ -f "$ladder" ] && echo "$D76_LADDER_REL" || echo none)" "$( [ -f "$ladder" ] && sha_of "$ladder" || echo none)" "$D76_BUDGET_S" \
+      "$( [ -f "$quiet" ] && echo "$D76_QUIET_REL" || echo none)" "$( [ -f "$quiet" ] && sha_of "$quiet" || echo none)"
+    [ "$attempt" != 1 ] || printf 'RULE,key=select_cells,mode=derive76,rule=per_route_the_cell_and_variant_whose_rows_have_the_largest_sum_of_per-stage_maxima_among_rows_of_band_within_or_margin_(never_refused_or_no_margin);routes=convert_step;convert_iges_(guard+mesh_per_quality);render_step;render_iges_(guard+mesh+render_per_quality;view;background);render_stl_(stats+render_per_view;background);dxf_svg_(guard+dxf+rsvg_ink);dxf_pdf_(+rsvg_pdf);dxf_png_(+the_slower_of_rsvg_ink_argv_opaque_and_rsvg_png_transparent_at_2048);a_stacked_render_variant_is_margin_iff_ceil(1.5W)<=r_upper;a_timeout_or_OOM_is_refused;sha256_re-checked_against_the_76-02_CELL_line;a_route_with_no_eligible_cell_is_STOP;rows_count_only_if_load-clean_(RULE_AMEND_quiet_host;76-03-quiet.txt_rows_included;host-sleep_rows_dropped);refusal_flags_of_every_non-sleep_row_still_refuse;no_load-clean_setter_guard_or_mesh_row_is_STOP\n'
   } > "$WORK/out.txt"
   if [ -f "$out" ]; then cp "$out" "$WORK/cells.txt"; else : > "$WORK/cells.txt"; fi
   cat "$WORK/out.txt" >> "$WORK/cells.txt"
-  python3 "$WORK/tools/d76.py" select "$src" "$ladder" "$WORK/cells.txt" "$D76_BUDGET_S" >> "$WORK/out.txt" || rc=$?
+  python3 "$WORK/tools/d76.py" select "$src" "$ladder" "$WORK/cells.txt" "$D76_BUDGET_S" "$REPO_ROOT/$D76_QUIET_REL" >> "$WORK/out.txt" || rc=$?
   mkdir -p "$(dirname "$out")"
   cat "$WORK/out.txt" >> "$out"
   cut -c1-260 "$WORK/out.txt" >&2
