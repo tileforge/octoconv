@@ -62,6 +62,11 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		limit = s.jobsListMaxPageSize // D-06: above-MAX clamps, never a 422
 	}
 
+	filter, err := jobs.NormalizeListFilter(jobs.ListFilter{Status: status, Engine: engine, Query: q.Get("q"), Sort: q.Get("sort")})
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, err.Error())
+		return
+	}
 	var cursor *jobs.Cursor
 	if v := q.Get("cursor"); v != "" {
 		c, err := jobs.DecodeCursor(v)
@@ -69,10 +74,14 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errcode.InvalidCursor, "invalid cursor")
 			return
 		}
+		if !c.Matches(filter) {
+			writeError(w, http.StatusBadRequest, errcode.InvalidCursor, "cursor does not match query or sort")
+			return
+		}
 		cursor = &c
 	}
 
-	summaries, next, err := s.repo.List(ctx, client.ID, jobs.ListFilter{Status: status, Engine: engine}, cursor, limit)
+	summaries, next, err := s.repo.List(ctx, client.ID, filter, cursor, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to list jobs")
 		return
@@ -92,6 +101,9 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 			"started_at":    j.StartedAt,
 			"finished_at":   j.FinishedAt,
 		}
+		if j.SourceFilename != "" {
+			item["source_filename"] = j.SourceFilename
+		}
 		if j.Status == jobs.StatusFailed && j.ErrorCode != "" {
 			item["error_code"] = j.ErrorCode
 		}
@@ -99,6 +111,9 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{"jobs": items, "next_cursor": nil}
+	if q.Has("q") || q.Has("sort") {
+		resp["query"] = map[string]string{"q": filter.Query, "sort": filter.Sort}
+	}
 	if next != nil {
 		resp["next_cursor"] = jobs.EncodeCursor(*next)
 	}

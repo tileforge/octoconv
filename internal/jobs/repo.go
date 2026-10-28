@@ -854,34 +854,52 @@ func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 // value is a bound $N parameter, never string-interpolated (T-40-02). This
 // is exactly one r.pool.Query call: the selected columns are everything a
 // listing item needs, so there is no per-row Outputs/Inputs/PresignGet
-// N+1 (D-07). It reuses jobs_client_created_idx; no new migration/index.
+// N+1 (D-07). Tenant/time and primary-input lookup indexes are reused.
+// Literal substring search may scan the caller's retained history; no schema change.
 //
 // limit+1 rows are fetched as a probe for whether a further page exists: if
 // more than limit rows come back, the extra row is dropped and the next
 // Cursor is built from the LAST RETURNED row; otherwise the next cursor is
 // nil (no further page).
 func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, cursor *Cursor, limit int) ([]JobSummary, *Cursor, error) {
+	f, err := NormalizeListFilter(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cursor != nil && !cursor.Matches(f) {
+		return nil, nil, fmt.Errorf("cursor does not match query or sort")
+	}
 	query := `
-		SELECT id, status, engine, source_format, target_format, progress_pct,
-		       created_at, started_at, finished_at, error_code
-		FROM jobs WHERE client_id = $1`
+  SELECT j.id, j.status, j.engine, j.source_format, j.target_format, j.progress_pct,
+         j.created_at, j.started_at, j.finished_at, j.error_code, coalesce(input.filename,'')
+  FROM jobs j
+  LEFT JOIN LATERAL (
+   SELECT filename FROM job_inputs WHERE job_id=j.id AND ordinal=0 ORDER BY id LIMIT 1
+  ) input ON true
+  WHERE j.client_id=$1`
 	args := []any{clientID}
-
 	if f.Status != "" {
 		args = append(args, f.Status)
-		query += fmt.Sprintf(" AND status = $%d", len(args))
+		query += fmt.Sprintf(" AND j.status=$%d", len(args))
 	}
 	if f.Engine != "" {
 		args = append(args, f.Engine)
-		query += fmt.Sprintf(" AND engine = $%d", len(args))
+		query += fmt.Sprintf(" AND j.engine=$%d", len(args))
+	}
+	if f.Query != "" {
+		args = append(args, f.Query)
+		query += fmt.Sprintf(" AND (strpos(lower(coalesce(input.filename,'')),lower($%d))>0 OR strpos(j.id::text,lower($%d))>0)", len(args), len(args))
+	}
+	direction, comparison := "DESC", "<"
+	if f.Sort == "oldest" {
+		direction, comparison = "ASC", ">"
 	}
 	if cursor != nil {
 		args = append(args, cursor.CreatedAt, cursor.ID)
-		query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)-1, len(args))
+		query += fmt.Sprintf(" AND (j.created_at,j.id) %s ($%d,$%d)", comparison, len(args)-1, len(args))
 	}
-
 	args = append(args, limit+1)
-	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
+	query += fmt.Sprintf(" ORDER BY j.created_at %s,j.id %s LIMIT $%d", direction, direction, len(args))
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -894,7 +912,7 @@ func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, curso
 		var j JobSummary
 		var src, tgt, code *string
 		if err := rows.Scan(&j.ID, &j.Status, &j.Engine, &src, &tgt, &j.ProgressPct,
-			&j.CreatedAt, &j.StartedAt, &j.FinishedAt, &code); err != nil {
+			&j.CreatedAt, &j.StartedAt, &j.FinishedAt, &code, &j.SourceFilename); err != nil {
 			return nil, nil, fmt.Errorf("scan job summary: %w", err)
 		}
 		j.SourceFormat = deref(src)
@@ -911,6 +929,10 @@ func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, curso
 		out = out[:limit]
 		last := out[len(out)-1]
 		next = &Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+		if f.Query != "" || f.Sort != "newest" {
+			next.Query = f.Query
+			next.Sort = f.Sort
+		}
 	}
 	return out, next, nil
 }
