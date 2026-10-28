@@ -428,6 +428,7 @@ func TestEveryBodyReadOutsideASlotIsASmallBody(t *testing.T) {
 		"parseIntakeForm":           "slot helper",
 		"(*Server).newIntakeReader": "slot helper",
 		"decodePresetRequest":       "small body",
+		"(*Server).handleArchive":   "small body",
 		"smallBodyReader":           "small body constructor",
 		"(*Server).armBodyWindow":   "window",
 	}
@@ -558,53 +559,55 @@ func TestEveryBodyReadOutsideASlotIsASmallBody(t *testing.T) {
 			}
 		}
 	}
-	decode := byFunc["decodePresetRequest"]
-	if len(decode) > 0 {
-		first := decode[0]
-		ok := false
-		var limit int64
-		var assign *ast.AssignStmt
-		if len(first.parents) > 0 {
-			assign, _ = first.parents[len(first.parents)-1].(*ast.AssignStmt)
-		}
-		if first.sel != nil && first.kind == "(*net/http.Request).Body" && assign != nil && assign.Tok == token.ASSIGN && len(assign.Lhs) == 1 && len(assign.Rhs) == 1 && assign.Lhs[0] == first.sel {
-			call, isCall := assign.Rhs[0].(*ast.CallExpr)
-			if isCall && len(call.Args) == 3 {
-				fun, _ := call.Fun.(*ast.Ident)
-				w, _ := call.Args[0].(*ast.Ident)
-				body, _ := call.Args[1].(*ast.SelectorExpr)
-				k, _ := call.Args[2].(*ast.Ident)
-				recv, _ := first.sel.X.(*ast.Ident)
-				params := first.fn.Type.Params.List
-				var wParam types.Object
-				if len(params) > 0 && len(params[0].Names) > 0 {
-					wParam = p.info.Defs[params[0].Names[0]]
-				}
-				if fun != nil && p.info.Uses[fun] == smallBodyReaderObj && w != nil && wParam != nil && p.info.Uses[w] == wParam && body != nil && p.info.Uses[body.Sel] == bodyField && recv != nil {
-					bodyRecv, _ := body.X.(*ast.Ident)
-					c, isConst := p.info.Uses[k].(*types.Const)
-					if bodyRecv != nil && p.info.Uses[bodyRecv] == p.info.Uses[recv] && isConst && c.Pkg() == p.pkg && c.Parent() == p.pkg.Scope() {
-						v := constant.ToInt(constantFromAST(t, p.info, specs, k, 0))
-						n, exact := constant.Int64Val(v)
-						if !exact {
-							t.Fatalf("%s = %v is not an int64", k.Name, v)
+	for _, readerName := range []string{"decodePresetRequest", "(*Server).handleArchive"} {
+		decode := byFunc[readerName]
+		if len(decode) > 0 {
+			first := decode[0]
+			ok := false
+			var limit int64
+			var assign *ast.AssignStmt
+			if len(first.parents) > 0 {
+				assign, _ = first.parents[len(first.parents)-1].(*ast.AssignStmt)
+			}
+			if first.sel != nil && first.kind == "(*net/http.Request).Body" && assign != nil && assign.Tok == token.ASSIGN && len(assign.Lhs) == 1 && len(assign.Rhs) == 1 && assign.Lhs[0] == first.sel {
+				call, isCall := assign.Rhs[0].(*ast.CallExpr)
+				if isCall && len(call.Args) == 3 {
+					fun, _ := call.Fun.(*ast.Ident)
+					w, _ := call.Args[0].(*ast.Ident)
+					body, _ := call.Args[1].(*ast.SelectorExpr)
+					k, _ := call.Args[2].(*ast.Ident)
+					recv, _ := first.sel.X.(*ast.Ident)
+					params := first.fn.Type.Params.List
+					var wParam types.Object
+					if len(params) > 0 && len(params[0].Names) > 0 {
+						wParam = p.info.Defs[params[0].Names[0]]
+					}
+					if fun != nil && p.info.Uses[fun] == smallBodyReaderObj && w != nil && wParam != nil && p.info.Uses[w] == wParam && body != nil && p.info.Uses[body.Sel] == bodyField && recv != nil {
+						bodyRecv, _ := body.X.(*ast.Ident)
+						c, isConst := p.info.Uses[k].(*types.Const)
+						if bodyRecv != nil && p.info.Uses[bodyRecv] == p.info.Uses[recv] && isConst && c.Pkg() == p.pkg && c.Parent() == p.pkg.Scope() {
+							v := constant.ToInt(constantFromAST(t, p.info, specs, k, 0))
+							n, exact := constant.Int64Val(v)
+							if !exact {
+								t.Fatalf("%s = %v is not an int64", k.Name, v)
+							}
+							if typed := p.info.Types[k].Value; typed != nil && constant.Compare(typed, token.NEQ, v) {
+								t.Fatalf("%s: the AST gives %v, the type checker %v", k.Name, v, typed)
+							}
+							limit, ok = n, true
+							t.Logf("BODYREAD | %s | decodePresetRequest | smallBodyReader cap %s = %d | small body (smallBodyMaxBytes %d)", p.where(call.Pos()), k.Name, n, smallBodyMaxBytes)
 						}
-						if typed := p.info.Types[k].Value; typed != nil && constant.Compare(typed, token.NEQ, v) {
-							t.Fatalf("%s: the AST gives %v, the type checker %v", k.Name, v, typed)
-						}
-						limit, ok = n, true
-						t.Logf("BODYREAD | %s | decodePresetRequest | smallBodyReader cap %s = %d | small body (smallBodyMaxBytes %d)", p.where(call.Pos()), k.Name, n, smallBodyMaxBytes)
 					}
 				}
 			}
+			if !ok {
+				t.Errorf("%s: the first body access of %s is not r.Body = smallBodyReader(w, r.Body, K) with K a package constant", p.where(first.pos), readerName)
+			} else if limit > smallBodyMaxBytes {
+				t.Errorf("decodePresetRequest caps its body at %d bytes, above smallBodyMaxBytes %d: the short window does not cover it", limit, smallBodyMaxBytes)
+			}
 		}
-		if !ok {
-			t.Errorf("%s: the first body access of decodePresetRequest is not r.Body = smallBodyReader(w, r.Body, K) with K a package constant", p.where(first.pos))
-		} else if limit > smallBodyMaxBytes {
-			t.Errorf("decodePresetRequest caps its body at %d bytes, above smallBodyMaxBytes %d: the short window does not cover it", limit, smallBodyMaxBytes)
-		}
-	}
 
+	}
 	smallUses := 0
 	for id, obj := range p.info.Uses {
 		if obj != smallBodyReaderObj {

@@ -56,17 +56,21 @@ func archiveComponent(raw string) string {
 }
 
 func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	r.Body = smallBodyReader(w, r.Body, smallBodyMaxBytes)
 	var request struct {
 		IDs []uuid.UUID `json:"job_ids"`
 	}
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&request); err != nil {
-		writeError(w, 400, errcode.InvalidRequest, "invalid archive request")
+		writeError(w, 400, errcode.InvalidRequest, "invalid JSON body")
 		return
 	}
-	if err := dec.Decode(new(any)); err != io.EOF || len(request.IDs) == 0 || len(request.IDs) > 20 {
+	if err := dec.Decode(new(any)); err != io.EOF {
+		writeError(w, 400, errcode.InvalidRequest, "invalid JSON body")
+		return
+	}
+	if len(request.IDs) == 0 || len(request.IDs) > 20 {
 		writeError(w, 400, errcode.InvalidRequest, "select 1 to 20 unique jobs")
 		return
 	}

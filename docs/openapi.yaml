@@ -1593,7 +1593,7 @@ paths:
                 type: string
                 format: binary
         "400":
-          description: Invalid selection or JSON request
+          description: Invalid selection, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
         "401":
           description: Invalid API key
         "404":
