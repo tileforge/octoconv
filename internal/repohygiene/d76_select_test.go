@@ -526,7 +526,7 @@ var d76SpecFields = []string{"cell", "file", "sha256", "target", "operation", "o
 
 func TestD76SelectCommittedRows(t *testing.T) {
 	if os.Getenv("OCTOCONV_D76_COMMITTED") != "1" {
-		t.Skip("set OCTOCONV_D76_COMMITTED=1 to re-run select on the v1.16 rows; it needs the CAD cache ~/.cache/octoconv/cad-corpus/scaled/b76")
+		t.Skip("set OCTOCONV_D76_COMMITTED=1 to re-run select on the v1.16 rows; it needs the CAD cache at /Users/apaderin/.cache/octoconv/cad-corpus/scaled/b76, the absolute path the published CELLSPEC rows pin")
 	}
 	sectionDir := os.Getenv("OCTOCONV_D76_SECTION_DIR")
 	if sectionDir != "" && !filepath.IsAbs(sectionDir) {
