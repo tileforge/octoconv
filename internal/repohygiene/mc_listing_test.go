@@ -380,8 +380,8 @@ func TestCadBucketListReadsTheLiveMcShape(t *testing.T) {
 				t.Fatalf("key %q carries the bucket name", key)
 			}
 		}
-		if uploads[0] < 1 || results[0] < 1 {
-			t.Fatalf("uploads=%v results=%v for job %s, want at least one key under each prefix", uploads, results, job)
+		if uploads != [2]int{1, 15567} || results != [2]int{2, 19787} {
+			t.Fatalf("uploads=%v results=%v for job %s, want [1 15567] and [2 19787] from ls.jsonl", uploads, results, job)
 		}
 	})
 	t.Run("absent_bucket", func(t *testing.T) {
