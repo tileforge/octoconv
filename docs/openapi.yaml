@@ -503,6 +503,7 @@ components:
           type: string
         operation:
           type: string
+          enum: [convert, render, sanitize]
           description: Optional supported job operation; create defaults to convert and update preserves the saved operation when omitted.
         expected_version:
           type: integer
@@ -2127,6 +2128,10 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     get:
       tags: [Presets]
@@ -2252,8 +2257,16 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     delete:
       tags: [Presets]
@@ -2303,8 +2316,16 @@ paths:
 
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/preset-settings:
     post:
@@ -2355,6 +2376,10 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/preset-settings/{name}:
     put:
@@ -2413,8 +2438,16 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     delete:
       tags: [Presets]
@@ -2464,8 +2497,16 @@ paths:
 
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/system/presets:
     post:
@@ -2523,6 +2564,10 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     get:
       tags: [System]
@@ -2655,8 +2700,16 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
     delete:
       tags: [System]
@@ -2708,8 +2761,16 @@ paths:
 
         "501":
           description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/system/usage:
     get:
