@@ -16,9 +16,8 @@ const (
 	ScopeUser   = "user"
 )
 
-// Preset operations (mirror the CHECK constraint in the presets table). This
-// phase (18-presets) only ever writes/reads OperationConvert; the other
-// enum values (extract, archive, inspect, render) stay dormant (D-05).
+// OperationConvert is the backward-compatible default for preset writes.
+// Explicit operations are validated against the current converter registry by the API.
 const (
 	OperationConvert = "convert"
 )

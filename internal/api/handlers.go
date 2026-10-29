@@ -298,6 +298,9 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to resolve preset")
 			return
 		}
+		if r.FormValue(formFieldOperation) == "" && p.Operation != "" {
+			operation = p.Operation
+		}
 		target = convert.NormalizeFormat(p.TargetFormat)
 		presetOptsMap = p.Options
 		presetNameProv = p.Name

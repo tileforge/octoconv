@@ -13,7 +13,7 @@ import (
 // trust boundary -- the engine that a preset's opts will actually be applied
 // to is only known at job-creation time (derived from detected source +
 // target), so this helper accepts opts that pass AT LEAST ONE of the current
-// allowlist parsers (ParseDocOpts or ParseHTMLOpts). The real enforcement
+// allowlist parsers (the current engine parsers). The real enforcement
 // point is D-06: handleCreateJob re-runs the SAME strict parsers, engine-
 // scoped, on every use of a resolved preset -- stored opts are never trusted
 // (Pitfall 9).
@@ -30,6 +30,9 @@ func ValidateOptsJSON(options map[string]any) error {
 		return fmt.Errorf("marshal opts: %w", err)
 	}
 
+	if len(raw) > 4096 {
+		return fmt.Errorf("opts exceed 4096 bytes")
+	}
 	if _, err := convert.ParseDocOpts(raw); err == nil {
 		return nil
 	}
@@ -37,5 +40,21 @@ func ValidateOptsJSON(options map[string]any) error {
 		return nil
 	}
 
-	return fmt.Errorf("opts match no known schema (document or html print options)")
+	if _, err := convert.ParseAudioOpts(raw); err == nil {
+		return nil
+	}
+	if _, err := convert.ParseAVOpts(raw); err == nil {
+		return nil
+	}
+	if _, err := convert.ParseOCROpts(raw); err == nil {
+		return nil
+	}
+	if _, err := convert.ParsePandocOpts(raw); err == nil {
+		return nil
+	}
+	if _, err := convert.ParseCADOpts(raw); err == nil {
+		return nil
+	}
+
+	return fmt.Errorf("opts match no known engine schema")
 }

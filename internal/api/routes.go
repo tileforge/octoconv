@@ -95,6 +95,13 @@ func (s *Server) Routes() chi.Router {
 			r.Put("/{name}", s.handleUpdatePreset)
 			r.Delete("/{name}", s.handleDeactivatePreset)
 		})
+		r.Route("/preset-settings", func(r chi.Router) {
+			r.Use(s.requirePresetManagement)
+			r.Post("/", s.handleCreatePreset)
+			r.Put("/{name}", s.handleUpdatePreset)
+			r.Delete("/{name}", s.handleDeactivatePreset)
+		})
+
 		// /v1/system/presets (OPER-01, D-02/D-03): a distinct literal path
 		// segment under /v1, not nested under /v1/presets/{name} -- no chi
 		// routing conflict. Gated by requireOperator, which runs AFTER
