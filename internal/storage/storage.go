@@ -93,6 +93,20 @@ func (c *Client) Download(ctx context.Context, key string) (io.ReadCloser, error
 	return obj, nil
 }
 
+// ObjectExists probes input availability without treating a storage outage as expiry.
+func (c *Client) ObjectExists(ctx context.Context, key string) (bool, error) {
+	_, err := c.mc.StatObject(ctx, c.bucket, key, minio.StatObjectOptions{})
+	if err == nil {
+		return true, nil
+	}
+	switch minio.ToErrorResponse(err).Code {
+	case "NoSuchKey", "NoSuchObject", "NotFound":
+		return false, nil
+	default:
+		return false, fmt.Errorf("probe object: %w", err)
+	}
+}
+
 // PresignGet returns a time-limited URL for downloading an object directly.
 func (c *Client) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	u, err := c.mc.PresignedGetObject(ctx, c.bucket, key, ttl, nil)

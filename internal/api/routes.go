@@ -77,6 +77,8 @@ func (s *Server) Routes() chi.Router {
 		})
 		r.Get("/jobs", s.handleListJobs)
 		r.Get("/jobs/{id}", s.handleGetJob)
+		r.Get("/jobs/{id}/repeat", s.handleRepeatMetadata)
+		r.Post("/jobs/{id}/repeat", s.handleRepeat)
 		// GET /jobs/{id}/events (PUSH-01, Phase 42): SSE progress stream.
 		// Registered here so it inherits the EXACT SAME ByIP -> auth ->
 		// PerClient middleware chain as every other /v1 route (T-42-05) --
