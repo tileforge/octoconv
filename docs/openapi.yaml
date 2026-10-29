@@ -501,6 +501,14 @@ components:
           additionalProperties: true
         description:
           type: string
+        operation:
+          type: string
+          enum: [convert, render, sanitize]
+          description: Optional supported job operation; create defaults to convert and update preserves the saved operation when omitted.
+        expected_version:
+          type: integer
+          minimum: 1
+          description: Optional on legacy PUT; required on versioned management PUT. Stale own versions return 409 without overwriting content. Not accepted on POST.
       required: [name, target_format]
 
     PresetResponse:
@@ -2118,6 +2126,13 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
     get:
       tags: [Presets]
       operationId: listPresets
@@ -2133,6 +2148,11 @@ paths:
       responses:
         "200":
           description: Effective preset list.
+          headers:
+            X-Octoconv-Presets:
+              description: Present with operations,version-preconditions only when version-aware management is supported. Use /v1/preset-settings for new writes so old mixed-version servers fail closed.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -2158,6 +2178,11 @@ paths:
       responses:
         "200":
           description: Preset found.
+          headers:
+            X-Octoconv-Presets:
+              description: Present with operations,version-preconditions only when version-aware management is supported. Use /v1/preset-settings for new writes so old mixed-version servers fail closed.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -2178,6 +2203,7 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+
     put:
       tags: [Presets]
       operationId: updatePreset
@@ -2229,12 +2255,31 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
     delete:
       tags: [Presets]
       operationId: deactivatePreset
       summary: Soft-deactivate the caller's OWN (scope=user) preset named {name}
       parameters:
         - $ref: "#/components/parameters/PresetName"
+        - in: header
+          name: If-Match
+          required: false
+          description: Expected positive preset version, optionally quoted. Required on versioned management routes.
+          schema:
+            type: string
       responses:
         "200":
           description: Preset deactivated.
@@ -2268,6 +2313,200 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/preset-settings:
+    post:
+      tags: [Presets]
+      operationId: createPresetSettings
+      summary: Create a caller-owned preset through the version-aware management surface
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PresetRequest"
+      responses:
+        "201":
+          description: Preset created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresetResponse"
+        "400":
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: A preset with this name already exists for the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset already exists
+                code: already_exists
+        "422":
+          description: Invalid opts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/preset-settings/{name}:
+    put:
+      tags: [Presets]
+      operationId: updatePresetSettings
+      summary: Update the caller's OWN (scope=user) preset named {name} (bumps version)
+      parameters:
+        - $ref: "#/components/parameters/PresetName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/PresetRequest"
+                - type: object
+                  required: [expected_version]
+      responses:
+        "200":
+          description: Preset updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PresetResponse"
+        "400":
+          description: Invalid preset name, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: >-
+            Preset not found. Also returned for a preset owned by a
+            different client, or a same-name system-scope preset (write
+            access to system presets is not exposed on this route).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+                code: unknown_preset
+        "422":
+          description: Invalid opts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      tags: [Presets]
+      operationId: deactivatePresetSettings
+      summary: Soft-deactivate the caller's OWN (scope=user) preset named {name}
+      parameters:
+        - $ref: "#/components/parameters/PresetName"
+        - in: header
+          name: If-Match
+          required: true
+          description: Expected positive preset version, optionally quoted. Required on versioned management routes.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Preset deactivated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  is_active:
+                    type: boolean
+                    enum: [false]
+                required: [name, is_active]
+              example:
+                name: my-preset
+                is_active: false
+        "400":
+          description: Invalid preset name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/system/presets:
     post:
@@ -2323,6 +2562,13 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
     get:
       tags: [System]
       operationId: listSystemPresets
@@ -2339,6 +2585,11 @@ paths:
       responses:
         "200":
           description: System preset list.
+          headers:
+            X-Octoconv-Presets:
+              description: Present with operations,version-preconditions only when version-aware management is supported. Use /v1/preset-settings for new writes so old mixed-version servers fail closed.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -2371,6 +2622,11 @@ paths:
       responses:
         "200":
           description: System preset found.
+          headers:
+            X-Octoconv-Presets:
+              description: Present with operations,version-preconditions only when version-aware management is supported. Use /v1/preset-settings for new writes so old mixed-version servers fail closed.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -2395,6 +2651,7 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+
     put:
       tags: [System]
       operationId: updateSystemPreset
@@ -2441,6 +2698,19 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
     delete:
       tags: [System]
       operationId: deactivateSystemPreset
@@ -2448,6 +2718,12 @@ paths:
       description: Operator-only. A non-operator caller receives 404, never 403.
       parameters:
         - $ref: "#/components/parameters/PresetName"
+        - in: header
+          name: If-Match
+          required: false
+          description: Expected positive preset version, optionally quoted. Required on versioned management routes.
+          schema:
+            type: string
       responses:
         "200":
           description: System preset deactivated.
@@ -2482,6 +2758,19 @@ paths:
           $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
         "500":
           $ref: "#/components/responses/InternalError"
+
+        "501":
+          description: New preset features unavailable for this server adapter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Preset version changed or was removed; reload or save under another name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/system/usage:
     get:

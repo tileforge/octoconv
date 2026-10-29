@@ -26,8 +26,7 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 // inserts it at MAX(version)+1 across ALL rows (active and inactive) for that
 // tuple -- a fresh name starts at version 1, and a previously-deactivated
 // name is revived at the next version rather than reusing version 1.
-// Operation is not exposed here: Create always writes OperationConvert
-// (D-05 — this phase only activates the 'convert' operation).
+// Operation is additive; an omitted value retains the legacy convert default.
 type CreateParams struct {
 	Name         string
 	Scope        string
@@ -35,6 +34,7 @@ type CreateParams struct {
 	TargetFormat string
 	Options      map[string]any
 	Description  string
+	Operation    string
 }
 
 // Resolve is the scope-precedence lookup (D-02/D-03/D-05): a client-scoped
@@ -54,7 +54,7 @@ func (r *Repo) Resolve(ctx context.Context, clientID uuid.UUID, name string) (*P
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, name, version, scope, client_id, operation, target_format, options
 		FROM presets
-		WHERE name = $2 AND is_active AND operation = 'convert'
+		WHERE name = $2 AND is_active AND operation IN ('convert','render','sanitize')
 		  AND ((scope='system' AND client_id IS NULL) OR (scope='user' AND client_id = $1))
 		ORDER BY (scope='user') DESC, version DESC
 		LIMIT 1`,
@@ -84,47 +84,41 @@ func (r *Repo) Resolve(ctx context.Context, clientID uuid.UUID, name string) (*P
 // version of the same (scope, client_id, name) already exists, Create
 // returns a plain error instructing the operator to use Update instead
 // (versions are immutable, D-04). A lost unique-index race (23505) is also
-// mapped to ErrAlreadyExists as a backstop, since the version pre-check and
-// insert are not serialized (T-26-03).
+// mapped to ErrAlreadyExists as a backstop for older writers. Identity writes
+// now share a transaction-level advisory lock before checking active versions.
 func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, int, error) {
-	optsJSON := []byte("{}")
-	if p.Options != nil {
-		var err error
-		optsJSON, err = json.Marshal(p.Options)
-		if err != nil {
-			return uuid.Nil, 0, fmt.Errorf("marshal preset options: %w", err)
-		}
+	raw, err := json.Marshal(p.Options)
+	if err != nil {
+		return uuid.Nil, 0, fmt.Errorf("marshal preset options: %w", err)
 	}
-
-	var exists bool
-	if err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM presets WHERE scope = $1 AND name = $2 AND is_active
-			AND (client_id = $3 OR ($3::uuid IS NULL AND client_id IS NULL)))`,
-		p.Scope, p.Name, p.ClientID,
-	).Scan(&exists); err != nil {
-		return uuid.Nil, 0, fmt.Errorf("check existing preset: %w", err)
+	if p.Options == nil {
+		raw = []byte("{}")
 	}
-	if exists {
-		return uuid.Nil, 0, fmt.Errorf("active preset %q already exists for scope %q; use Update instead: %w", p.Name, p.Scope, ErrAlreadyExists)
+	operation := p.Operation
+	if operation == "" {
+		operation = OperationConvert
 	}
-
 	var id uuid.UUID
 	var version int
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO presets (name, version, scope, client_id, operation, target_format, options, description)
-		 SELECT $1, COALESCE(MAX(p.version), 0) + 1, $2, $3, $4, $5, $6, $7
-		 FROM presets p
-		 WHERE p.scope = $2 AND p.name = $1
-		   AND (p.client_id = $3 OR ($3::uuid IS NULL AND p.client_id IS NULL))
-		 RETURNING id, version`,
-		p.Name, p.Scope, p.ClientID, OperationConvert, p.TargetFormat, optsJSON, p.Description,
-	).Scan(&id, &version)
+	err = pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := lockIdentity(ctx, tx, p.Scope, p.ClientID, p.Name); err != nil {
+			return fmt.Errorf("lock preset identity: %w", err)
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM presets WHERE scope=$1 AND name=$2 AND is_active AND (client_id=$3 OR ($3::uuid IS NULL AND client_id IS NULL)))`, p.Scope, p.Name, p.ClientID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists {
+			return ErrAlreadyExists
+		}
+		return tx.QueryRow(ctx, `INSERT INTO presets(name,version,scope,client_id,operation,target_format,options,description) SELECT $1,COALESCE(MAX(version),0)+1,$2,$3,$4,$5,$6,$7 FROM presets WHERE scope=$2 AND name=$1 AND (client_id=$3 OR ($3::uuid IS NULL AND client_id IS NULL)) RETURNING id,version`, p.Name, p.Scope, p.ClientID, operation, p.TargetFormat, raw, p.Description).Scan(&id, &version)
+	})
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return uuid.Nil, 0, ErrAlreadyExists
 		}
-		return uuid.Nil, 0, fmt.Errorf("insert preset: %w", err)
+		return uuid.Nil, 0, err
 	}
 	return id, version, nil
 }
@@ -135,83 +129,14 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, int, erro
 // no active row exists. Versions are immutable — Update never mutates an
 // existing row's content, only its is_active flag.
 func (r *Repo) Update(ctx context.Context, scope string, clientID *uuid.UUID, name, targetFormat string, options map[string]any, description string) (int, error) {
-	optsJSON := []byte("{}")
-	if options != nil {
-		var err error
-		optsJSON, err = json.Marshal(options)
-		if err != nil {
-			return 0, fmt.Errorf("marshal preset options: %w", err)
-		}
-	}
-
-	var newVersion int
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var currentVersion int
-		err := tx.QueryRow(ctx,
-			`SELECT version FROM presets
-			 WHERE scope = $1 AND name = $2 AND is_active
-			   AND (client_id = $3 OR ($3::uuid IS NULL AND client_id IS NULL))
-			 FOR UPDATE`,
-			scope, name, clientID,
-		).Scan(&currentVersion)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("lock active preset: %w", err)
-		}
-
-		newVersion = currentVersion + 1
-
-		if _, err := tx.Exec(ctx,
-			`UPDATE presets SET is_active = false
-			 WHERE scope = $1 AND name = $2 AND version = $3
-			   AND (client_id = $4 OR ($4::uuid IS NULL AND client_id IS NULL))`,
-			scope, name, currentVersion, clientID,
-		); err != nil {
-			return fmt.Errorf("deactivate prior preset version: %w", err)
-		}
-
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO presets (name, version, scope, client_id, operation, target_format, options, description, is_active)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)`,
-			name, newVersion, scope, clientID, OperationConvert, targetFormat, optsJSON, description,
-		); err != nil {
-			return fmt.Errorf("insert new preset version: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return newVersion, nil
+	return r.UpdateWithVersion(ctx, MutationParams{Scope: scope, ClientID: clientID, Name: name, TargetFormat: targetFormat, Options: options, Description: description})
 }
 
 // Deactivate flips is_active=false on the current active row for (scope,
 // clientID, name); no hard DELETE (D-04, mirrors the client key-rotation
 // pattern). Returns ErrNotFound if no active row exists.
 func (r *Repo) Deactivate(ctx context.Context, scope string, clientID *uuid.UUID, name string) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var id uuid.UUID
-		err := tx.QueryRow(ctx,
-			`SELECT id FROM presets
-			 WHERE scope = $1 AND name = $2 AND is_active
-			   AND (client_id = $3 OR ($3::uuid IS NULL AND client_id IS NULL))
-			 FOR UPDATE`,
-			scope, name, clientID,
-		).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("lock active preset: %w", err)
-		}
-
-		if _, err := tx.Exec(ctx, `UPDATE presets SET is_active = false WHERE id = $1`, id); err != nil {
-			return fmt.Errorf("deactivate preset: %w", err)
-		}
-		return nil
-	})
+	return r.DeactivateWithVersion(ctx, scope, clientID, name, nil)
 }
 
 // List returns presets for (scope, clientID), ordered by name then version
@@ -347,7 +272,7 @@ func (r *Repo) GetForClient(ctx context.Context, clientID *uuid.UUID, name strin
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, name, version, scope, client_id, operation, target_format, options, description, is_active, created_at, updated_at
 		FROM presets
-		WHERE name = $2 AND is_active AND operation = 'convert'
+		WHERE name = $2 AND is_active AND operation IN ('convert','render','sanitize')
 		  AND ((scope='system' AND client_id IS NULL) OR (scope='user' AND client_id = $1))
 		ORDER BY (scope='user') DESC, version DESC
 		LIMIT 1`,

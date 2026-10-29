@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/tileforge/octoconv/internal/auth"
@@ -86,6 +85,9 @@ func (s *Server) handleCreateSystemPreset(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if !s.validatePresetFeatures(w, r, req) {
+		return
+	}
 	if !validPresetName(req.Name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -102,6 +104,7 @@ func (s *Server) handleCreateSystemPreset(w http.ResponseWriter, r *http.Request
 		TargetFormat: req.TargetFormat,
 		Options:      req.Options,
 		Description:  req.Description,
+		Operation:    presetOperation(req),
 	}); err != nil {
 		if errors.Is(err, presets.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, errcode.AlreadyExists, "preset already exists")
@@ -122,6 +125,7 @@ func (s *Server) handleCreateSystemPreset(w http.ResponseWriter, r *http.Request
 // handleListSystemPresets returns every system-scope preset (D-02); active
 // only by default, ?all=true includes inactive versions.
 func (s *Server) handleListSystemPresets(w http.ResponseWriter, r *http.Request) {
+	s.advertisePresetFeatures(w)
 	ctx := r.Context()
 
 	includeInactive := r.URL.Query().Get("all") == "true"
@@ -141,9 +145,10 @@ func (s *Server) handleListSystemPresets(w http.ResponseWriter, r *http.Request)
 // handleShowSystemPreset returns the active system-scope preset named
 // {name}; ErrNotFound -> the uniform no-leak 404 (D-02/D-03).
 func (s *Server) handleShowSystemPreset(w http.ResponseWriter, r *http.Request) {
+	s.advertisePresetFeatures(w)
 	ctx := r.Context()
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -167,7 +172,7 @@ func (s *Server) handleShowSystemPreset(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleUpdateSystemPreset(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -177,12 +182,18 @@ func (s *Server) handleUpdateSystemPreset(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	if !s.validatePresetFeatures(w, r, req) {
+		return
+	}
 	if err := presets.ValidateOptsJSON(req.Options); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 		return
 	}
 
-	if _, err := s.presetAdmin.Update(ctx, presets.ScopeSystem, nil, name, req.TargetFormat, req.Options, req.Description); err != nil {
+	if _, err := s.updatePreset(ctx, presets.ScopeSystem, nil, name, req); err != nil {
+		if presetMutationFailure(w, err) {
+			return
+		}
 		if errors.Is(err, presets.ErrNotFound) {
 			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return
@@ -205,13 +216,20 @@ func (s *Server) handleUpdateSystemPreset(w http.ResponseWriter, r *http.Request
 func (s *Server) handleDeactivateSystemPreset(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 
-	if err := s.presetAdmin.Deactivate(ctx, presets.ScopeSystem, nil, name); err != nil {
+	expected, ok := expectedPresetVersion(w, r)
+	if !ok {
+		return
+	}
+	if err := s.deactivatePreset(ctx, presets.ScopeSystem, nil, name, expected); err != nil {
+		if presetMutationFailure(w, err) {
+			return
+		}
 		if errors.Is(err, presets.ErrNotFound) {
 			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return

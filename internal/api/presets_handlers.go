@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/tileforge/octoconv/internal/auth"
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/presets"
@@ -39,10 +37,12 @@ const (
 // or owner is structurally impossible -- scope is always hardcoded
 // presets.ScopeUser and clientID always comes from auth.ClientFromContext.
 type presetRequest struct {
-	Name         string         `json:"name"`
-	TargetFormat string         `json:"target_format"`
-	Options      map[string]any `json:"options"`
-	Description  string         `json:"description"`
+	Name            string         `json:"name"`
+	TargetFormat    string         `json:"target_format"`
+	Options         map[string]any `json:"options"`
+	Description     string         `json:"description"`
+	Operation       *string        `json:"operation"`
+	ExpectedVersion *int           `json:"expected_version"`
 }
 
 // presetResponse is the narrow read DTO (D-04): it NEVER carries id or
@@ -112,6 +112,9 @@ func (s *Server) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.validatePresetFeatures(w, r, req) {
+		return
+	}
 	if !validPresetName(req.Name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -128,6 +131,7 @@ func (s *Server) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 		TargetFormat: req.TargetFormat,
 		Options:      req.Options,
 		Description:  req.Description,
+		Operation:    presetOperation(req),
 	}); err != nil {
 		if errors.Is(err, presets.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, errcode.AlreadyExists, "preset already exists")
@@ -150,6 +154,7 @@ func (s *Server) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 // recognizable as read-only. Active-only by default; ?all=true includes
 // inactive versions (D-01).
 func (s *Server) handleListPresets(w http.ResponseWriter, r *http.Request) {
+	s.advertisePresetFeatures(w)
 	ctx := r.Context()
 	client, _ := auth.ClientFromContext(ctx)
 
@@ -172,10 +177,11 @@ func (s *Server) handleListPresets(w http.ResponseWriter, r *http.Request) {
 // the system preset, read-only. A nonexistent or cross-client name returns
 // the single no-leak 404 (D-03).
 func (s *Server) handleShowPreset(w http.ResponseWriter, r *http.Request) {
+	s.advertisePresetFeatures(w)
 	ctx := r.Context()
 	client, _ := auth.ClientFromContext(ctx)
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -204,7 +210,7 @@ func (s *Server) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	client, _ := auth.ClientFromContext(ctx)
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
@@ -214,12 +220,18 @@ func (s *Server) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.validatePresetFeatures(w, r, req) {
+		return
+	}
 	if err := presets.ValidateOptsJSON(req.Options); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 		return
 	}
 
-	if _, err := s.presetAdmin.Update(ctx, presets.ScopeUser, &client.ID, name, req.TargetFormat, req.Options, req.Description); err != nil {
+	if _, err := s.updatePreset(ctx, presets.ScopeUser, &client.ID, name, req); err != nil {
+		if presetMutationFailure(w, err) {
+			return
+		}
 		if errors.Is(err, presets.ErrNotFound) {
 			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return
@@ -244,13 +256,20 @@ func (s *Server) handleDeactivatePreset(w http.ResponseWriter, r *http.Request) 
 	ctx := r.Context()
 	client, _ := auth.ClientFromContext(ctx)
 
-	name := chi.URLParam(r, "name")
+	name := presetPathName(r)
 	if !validPresetName(name) {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 
-	if err := s.presetAdmin.Deactivate(ctx, presets.ScopeUser, &client.ID, name); err != nil {
+	expected, ok := expectedPresetVersion(w, r)
+	if !ok {
+		return
+	}
+	if err := s.deactivatePreset(ctx, presets.ScopeUser, &client.ID, name, expected); err != nil {
+		if presetMutationFailure(w, err) {
+			return
+		}
 		if errors.Is(err, presets.ErrNotFound) {
 			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return
