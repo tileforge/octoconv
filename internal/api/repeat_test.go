@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,12 +26,13 @@ func (r *repeatRepoFake) Inputs(context.Context, uuid.UUID) ([]jobs.Input, error
 
 type repeatStoreFake struct {
 	fakeStorage
-	available     bool
-	probes, reads int
-	probeErr      error
-	data          []byte
-	dataByKey     map[string][]byte
-	expireOnRead  bool
+	available                    bool
+	probes, reads                int
+	probeErr                     error
+	data                         []byte
+	dataByKey                    map[string][]byte
+	expireOnRead                 bool
+	streamFailure, streamExpired bool
 }
 
 func (s *repeatStoreFake) ObjectExists(context.Context, string) (bool, error) {
@@ -39,6 +41,9 @@ func (s *repeatStoreFake) ObjectExists(context.Context, string) (bool, error) {
 }
 func (s *repeatStoreFake) Download(_ context.Context, key string) (io.ReadCloser, error) {
 	s.reads++
+	if s.streamFailure {
+		return &repeatFailingStream{store: s}, nil
+	}
 	if s.expireOnRead {
 		s.available = false
 		return nil, errors.New("expired during preparation")
@@ -205,5 +210,35 @@ func TestRepeatCancellationDuringPreparationDoesNotCreate(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, authed(request.WithContext(ctx)))
 	if rec.Code != http.StatusServiceUnavailable || repo.created != nil || store.uploaded {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+type repeatFailingStream struct{ store *repeatStoreFake }
+
+func (r *repeatFailingStream) Read([]byte) (int, error) {
+	if r.store.streamExpired {
+		r.store.available = false
+	}
+	return 0, errors.New("stream failed")
+}
+func (r *repeatFailingStream) Close() error { return nil }
+func TestRepeatRechecksAvailabilityAfterStreamFailure(t *testing.T) {
+	for _, expired := range []bool{true, false} {
+		t.Run(fmt.Sprint(expired), func(t *testing.T) {
+			id := uuid.New()
+			repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{ID: id, Status: jobs.StatusDone, SourceFormat: "png"}}, inputs: []jobs.Input{{Filename: "a.png", Format: "png", SizeBytes: 24}}}
+			store := &repeatStoreFake{available: true, streamFailure: true, streamExpired: expired}
+			srv, resolver := newTestServer(repo, store, &fakeQueue{})
+			repo.getJob.ClientID = resolver.client.ID
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, authed(httptest.NewRequest("POST", "/v1/jobs/"+id.String()+"/repeat", strings.NewReader(`{"operation":"convert","target":"jpg","opts":{}}`))))
+			want := 503
+			if expired {
+				want = 409
+			}
+			if rec.Code != want || store.probes < 2 || repo.created != nil || store.uploaded {
+				t.Fatalf("status %d probes %d body %s", rec.Code, store.probes, rec.Body.String())
+			}
+		})
 	}
 }

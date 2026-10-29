@@ -196,12 +196,7 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 	for _, in := range source.inputs {
 		reader, err := source.store.Download(ctx, in.ObjectKey)
 		if err != nil {
-			available, probeErr := source.store.ObjectExists(ctx, in.ObjectKey)
-			if probeErr == nil && !available {
-				writeError(w, 409, errcode.InvalidRequest, "original inputs expired; upload replacements")
-			} else {
-				writeError(w, 503, errcode.InternalError, "source storage temporarily unavailable")
-			}
+			writeRepeatReadFailure(w, ctx, source.store, in.ObjectKey)
 			return
 		}
 		file, err := os.CreateTemp(dir, "input-")
@@ -214,7 +209,7 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 		n, copyErr := io.Copy(file, io.LimitReader(repeatContextReader{ctx, reader}, in.SizeBytes+1))
 		_ = reader.Close()
 		if copyErr != nil {
-			writeError(w, 503, errcode.InternalError, "source storage temporarily unavailable")
+			writeRepeatReadFailure(w, ctx, source.store, in.ObjectKey)
 			return
 		}
 		if n != in.SizeBytes {
@@ -239,6 +234,18 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 	created.Header.Set("Content-Type", contentType)
 	// Fresh request inherits caller context but no notification/correlation headers or fields.
 	s.handleCreateJob(w, created)
+}
+
+// Both lazy object-open and streaming-read failures can race lifecycle deletion.
+func writeRepeatReadFailure(w http.ResponseWriter, ctx context.Context, store repeatStorage, key string) {
+	if ctx.Err() == nil {
+		available, err := store.ObjectExists(ctx, key)
+		if err == nil && !available {
+			writeError(w, 409, errcode.InvalidRequest, "original inputs expired; upload replacements")
+			return
+		}
+	}
+	writeError(w, 503, errcode.InternalError, "source storage temporarily unavailable")
 }
 
 type repeatContextReader struct {
