@@ -43,4 +43,18 @@ func TestPresetOperationsMigrationPreservesRecords(t *testing.T) {
 	if _, err := tx.Exec(ctx, `INSERT INTO presets VALUES('new','sanitize','{}')`); err != nil {
 		t.Fatal(err)
 	}
+	validation, err := migrationsFS.ReadFile("migrations/0021_validate_preset_operations.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, string(validation)); err != nil {
+		t.Fatal(err)
+	}
+	var validated bool
+	if err := tx.QueryRow(ctx, `SELECT convalidated FROM pg_constraint WHERE conrelid='pg_temp.presets'::regclass AND conname='presets_operation_check'`).Scan(&validated); err != nil {
+		t.Fatal(err)
+	}
+	if !validated {
+		t.Fatal("preset operation constraint remains unvalidated")
+	}
 }

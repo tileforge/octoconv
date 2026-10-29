@@ -507,7 +507,7 @@ components:
         expected_version:
           type: integer
           minimum: 1
-          description: Optional on legacy PUT; required on versioned management PUT. Stale own versions return409 without overwriting content. Not accepted on POST.
+          description: Optional on legacy PUT; required on versioned management PUT. Stale own versions return 409 without overwriting content. Not accepted on POST.
       required: [name, target_format]
 
     PresetResponse:
