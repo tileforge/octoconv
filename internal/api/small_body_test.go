@@ -428,6 +428,7 @@ func TestEveryBodyReadOutsideASlotIsASmallBody(t *testing.T) {
 		"parseIntakeForm":           "slot helper",
 		"(*Server).newIntakeReader": "slot helper",
 		"decodePresetRequest":       "small body",
+		"(*Server).handleRepeat":    "small body",
 		"(*Server).handleArchive":   "small body",
 		"smallBodyReader":           "small body constructor",
 		"(*Server).armBodyWindow":   "window",
@@ -559,7 +560,7 @@ func TestEveryBodyReadOutsideASlotIsASmallBody(t *testing.T) {
 			}
 		}
 	}
-	for _, readerName := range []string{"decodePresetRequest", "(*Server).handleArchive"} {
+	for _, readerName := range []string{"decodePresetRequest", "(*Server).handleArchive", "(*Server).handleRepeat"} {
 		decode := byFunc[readerName]
 		if len(decode) > 0 {
 			first := decode[0]

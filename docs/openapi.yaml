@@ -1613,6 +1613,134 @@ paths:
         "504":
           description: Archive preparation timed out
 
+  /v1/jobs/{id}/repeat:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      summary: Open previous conversion settings without creating work
+      description: >-
+        Only terminal owned tasks. Returns saved conversion settings and input availability,
+        never object keys. Temporary storage failures return503, not expired-source flags.
+        Probes are bounded to15seconds and100inputs. Opening consumes no conversion quota.
+      responses:
+        "200":
+          description: Repeat settings and ordered input availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, operation, source_format, target_format, opts, inputs]
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  operation:
+                    type: string
+                  source_format:
+                    type: string
+                  target_format:
+                    type: string
+                  opts:
+                    type: object
+                    additionalProperties: true
+                  inputs:
+                    type: array
+                    items:
+                      type: object
+                      required: [ordinal, filename, format, size_bytes, available]
+                      properties:
+                        ordinal:
+                          type: integer
+                        filename:
+                          type: string
+                        format:
+                          type: string
+                        size_bytes:
+                          type: integer
+                          format: int64
+                        available:
+                          type: boolean
+        "400":
+          description: Invalid job ID
+        "401":
+          description: Invalid API key
+        "404":
+          description: Missing or foreign task
+        "409":
+          description: Task is not terminal or input set is unavailable
+        "429":
+          description: Request rate or repeat preparation capacity exhausted
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          description: Repository failure
+        "501":
+          description: Repeat unavailable on this server
+        "503":
+          description: Source storage temporarily unavailable
+    post:
+      summary: Explicitly create a new task from retained inputs and edited settings
+      description: >-
+        Copies inputs to fresh task-owned keys through normal create intake validation.
+        Does not inherit callbacks, progress webhooks, correlation IDs or preset provenance.
+        Source staging is bounded to100inputs, the lower of100MiB and the configured upload
+        limit, two concurrent preparations per process and two minutes. Temporary files are
+        removed on all paths. Uses current content, option, attachment and quota validation.
+        Missing inputs return409 for replacement upload through POST /v1/jobs.
+        Failed or uncertain creation must not be retried automatically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operation, target]
+              properties:
+                operation:
+                  type: string
+                target:
+                  type: string
+                opts:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "202":
+          description: New queued task, same response shape as POST /v1/jobs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobCreated"
+        "400":
+          description: Invalid selection, or invalid JSON body. The JSON body has 1250 ms to arrive in full once the server starts reading it; a body still incomplete then is answered with this 400 (invalid_request, invalid JSON body) and the connection closes.
+        "401":
+          description: Invalid API key
+        "404":
+          description: Missing or foreign task
+        "409":
+          description: Task is not terminal or input set is unavailable
+        "413":
+          description: Original sources exceed repeat or normal intake limits
+        "415":
+          description: Unsupported content type
+        "422":
+          description: Current conversion, options or input validation rejected the request
+        "429":
+          description: Request rate or repeat preparation capacity exhausted
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          description: Repository failure
+        "501":
+          description: Repeat unavailable on this server
+        "503":
+          description: Source storage temporarily unavailable
+
   /v1/jobs/{id}:
     get:
       tags: [Jobs]
