@@ -263,7 +263,7 @@ func verifyPDF(ctx context.Context, _ engineExec, _, path string) ([]ThreatClass
 	}
 
 	// --- view 1: an independent parser ---
-	pctx, err := api.ReadContextFile(path)
+	pctx, err := api.ReadContextFile(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: pdfcpu could not read the output: %v",
 			ErrSanitizeUnverifiable, err)

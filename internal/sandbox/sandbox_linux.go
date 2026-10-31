@@ -125,9 +125,11 @@ func Apply(p Paths) error {
 	}
 	handled := supportedAccess(abi)
 
-	attr := unix.LandlockRulesetAttr{Access_fs: handled}
+	attr := unix.LandlockRulesetAttr{Handled_access_fs: handled}
+	// Use only the original filesystem field. Newer x/sys versions also
+	// expose network, scope and audit fields, which this sandbox does not use.
 	fd, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET,
-		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
+		uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr.Handled_access_fs), 0)
 	if errno != 0 {
 		return fmt.Errorf("landlock: create ruleset: %w", errno)
 	}

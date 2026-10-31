@@ -285,21 +285,19 @@ func TestTwoKeys_NoCrossBleed(t *testing.T) {
 	}
 }
 
-// TestSessionHijack_403 (D-03/D-07, T-25-04b): K1 initializes and is assigned
-// session id S; a request with valid key K2 but Mcp-Session-Id: S is rejected
+// TestSessionHijack_403 (D-03/D-07, T-25-04b): K1 presents a legacy session
+// id S; a request with valid key K2 but Mcp-Session-Id: S is rejected
 // 403 BEFORE ServeHTTP -- K1's session-bound state never executes K2's call
 // and the upstream API never sees the hijack attempt.
 func TestSessionHijack_403(t *testing.T) {
 	url, _, seen := newTestStack(t)
 
-	// K1 initializes and receives a session id.
-	initResp := doMCP(t, http.MethodPost, url, "hijack-victim-k1", "", "", initializeBody)
+	// The stateless SDK no longer issues IDs. The guard still binds IDs
+	// presented by older clients before the SDK processes their requests.
+	const sid = "legacy-victim-session"
+	initResp := doMCP(t, http.MethodPost, url, "hijack-victim-k1", "", sid, initializeBody)
 	if initResp.StatusCode != http.StatusOK {
 		t.Fatalf("initialize status = %d, want 200 (body: %s)", initResp.StatusCode, readBody(t, initResp))
-	}
-	sid := initResp.Header.Get("Mcp-Session-Id")
-	if sid == "" {
-		t.Fatal("initialize response carries no Mcp-Session-Id; the hijack test needs one")
 	}
 	_ = readBody(t, initResp) // drain
 
@@ -332,13 +330,10 @@ func TestSessionHijack_403(t *testing.T) {
 func TestSessionBinding_DeleteCleansUp(t *testing.T) {
 	url, bindings, _ := newTestStack(t)
 
-	initResp := doMCP(t, http.MethodPost, url, "cleanup-key", "", "", initializeBody)
+	const sid = "legacy-cleanup-session"
+	initResp := doMCP(t, http.MethodPost, url, "cleanup-key", "", sid, initializeBody)
 	if initResp.StatusCode != http.StatusOK {
 		t.Fatalf("initialize status = %d, want 200", initResp.StatusCode)
-	}
-	sid := initResp.Header.Get("Mcp-Session-Id")
-	if sid == "" {
-		t.Fatal("initialize response carries no Mcp-Session-Id")
 	}
 	_ = readBody(t, initResp)
 
@@ -347,11 +342,33 @@ func TestSessionBinding_DeleteCleansUp(t *testing.T) {
 	}
 
 	del := doMCP(t, http.MethodDelete, url, "cleanup-key", "", sid, "")
-	if del.StatusCode != http.StatusNoContent {
-		t.Fatalf("DELETE status = %d, want 204", del.StatusCode)
+	if del.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE status = %d, want 405 for stateless transport", del.StatusCode)
 	}
 	if n := bindings.len(); n != 0 {
 		t.Fatalf("bindings.len() = %d after DELETE, want 0 (binding must be dropped)", n)
+	}
+}
+
+func TestStatelessTransportDoesNotIssueSessions(t *testing.T) {
+	url, bindings, _ := newTestStack(t)
+	initResp := doMCP(t, http.MethodPost, url, "stateless-key", "", "", initializeBody)
+	if initResp.StatusCode != http.StatusOK {
+		t.Fatalf("initialize status = %d, want 200", initResp.StatusCode)
+	}
+	if sid := initResp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.Fatalf("stateless initialize issued session %q", sid)
+	}
+	_ = readBody(t, initResp)
+	if n := bindings.len(); n != 0 {
+		t.Fatalf("bindings.len() = %d, want 0 for sessionless requests", n)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		resp := doMCP(t, method, url, "stateless-key", "", "", "")
+		if resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s status = %d, want 405 for stateless transport", method, resp.StatusCode)
+		}
+		_ = readBody(t, resp)
 	}
 }
 
