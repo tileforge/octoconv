@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"go.yaml.in/yaml/v3"
 
@@ -159,17 +160,33 @@ func liveHeapPeak(t *testing.T, call func()) livePeak {
 		}
 	}()
 	var p livePeak
+	callTopLive, callTopAlloc := baseLive, baseAlloc
 	began := time.Now()
 	for {
 		call()
 		p.calls++
-		_, _, cycles := readLiveHeap(s)
-		p.cycles = cycles - baseCycles
+		// Record the completed call before collecting its now-unreachable
+		// objects; the asynchronous sampler can miss a short-lived GC peak.
+		live, alloc, cycles := readLiveHeap(s)
+		callTopLive = max(callTopLive, live)
+		callTopAlloc = max(callTopAlloc, alloc)
+		p.cycles += cycles - baseCycles
 		if liveHeapPeakSingleSample || p.calls >= 100000 {
 			break
 		}
 		if p.cycles >= liveHeapMinGCCycles && (p.cycles >= liveHeapEnoughGCCycles || time.Since(began) >= liveHeapSampleFor) {
 			break
+		}
+		if cycles != baseCycles {
+			// A measured call's dead windows must not stay marked into the
+			// next operation. Reachable retained objects survive this boundary,
+			// and the peak above preserves objects that coexisted in the call.
+			runtime.GC()
+			// Cleanup cycles do not mark a call's heap. Exclude them from the
+			// measurement count. Calls with no GC must still accumulate enough
+			// allocation to trigger one; collecting after those would starve
+			// small-allocation paths of measurable cycles.
+			_, _, baseCycles = readLiveHeap(s)
 		}
 	}
 	stop.Store(true)
@@ -181,8 +198,8 @@ func liveHeapPeak(t *testing.T, call func()) livePeak {
 	if alloc > topAlloc.Load() {
 		topAlloc.Store(alloc)
 	}
-	p.peak = topLive.Load() - baseLive
-	p.heapAllocPeak = topAlloc.Load() - baseAlloc
+	p.peak = max(topLive.Load(), callTopLive) - baseLive
+	p.heapAllocPeak = max(topAlloc.Load(), callTopAlloc) - baseAlloc
 	if liveHeapPeakSingleSample {
 		p.peak = 0
 		if live, _, _ := readLiveHeap(s); live > baseLive {
@@ -214,6 +231,75 @@ func TestLiveHeapPeakRejectsAPeakWithoutGCCycles(t *testing.T) {
 	}
 	if p.peak < 4<<20 {
 		t.Errorf("liveHeapPeak saw %d B live while a 4 MiB slice was held", p.peak)
+	}
+}
+
+func TestLiveHeapPeakCollectsCompletedCalls(t *testing.T) {
+	if os.Getenv(analysisChildEnv) == "" {
+		runAnalysisChild(t)
+		return
+	}
+	var previous weak.Pointer[byte]
+	var uncollected int
+	p := liveHeapPeak(t, func() {
+		if previous.Value() != nil {
+			uncollected++
+		}
+		window := make([]byte, 8<<20)
+		previous = weak.Make(&window[0])
+		// Mark this call's window, then let it become unreachable on return.
+		runtime.GC()
+		runtime.KeepAlive(window)
+	})
+	if err := liveHeapPeakValid(p); err != nil {
+		t.Fatal(err)
+	}
+	if uncollected != 0 {
+		t.Errorf("%d calls started before the previous unreachable window was collected", uncollected)
+	}
+	if p.peak < 8<<20 || p.peak > (8<<20)+(256<<10) {
+		t.Errorf("one 8 MiB window: live peak %d B", p.peak)
+	}
+}
+
+func TestLiveHeapPeakDetectsRetainedWindows(t *testing.T) {
+	if os.Getenv(analysisChildEnv) == "" {
+		runAnalysisChild(t)
+		return
+	}
+	var retained [][]byte
+	p := liveHeapPeak(t, func() {
+		if len(retained) < 2 {
+			retained = append(retained, make([]byte, 8<<20))
+		}
+		runtime.GC()
+	})
+	runtime.KeepAlive(retained)
+	if err := liveHeapPeakValid(p); err != nil {
+		t.Fatal(err)
+	}
+	if p.peak < 16<<20 {
+		t.Errorf("two retained 8 MiB windows: live peak %d B", p.peak)
+	}
+}
+
+func TestLiveHeapPeakDetectsCoexistingWindows(t *testing.T) {
+	if os.Getenv(analysisChildEnv) == "" {
+		runAnalysisChild(t)
+		return
+	}
+	p := liveHeapPeak(t, func() {
+		first := make([]byte, 8<<20)
+		second := make([]byte, 8<<20)
+		runtime.GC()
+		runtime.KeepAlive(first)
+		runtime.KeepAlive(second)
+	})
+	if err := liveHeapPeakValid(p); err != nil {
+		t.Fatal(err)
+	}
+	if p.peak < 16<<20 {
+		t.Errorf("two 8 MiB windows in one call: live peak %d B", p.peak)
 	}
 }
 
