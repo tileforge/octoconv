@@ -28,7 +28,7 @@ STEP_CEILING_BYTES=$((63 * MIB))
 IGES_CEILING_BYTES=$((155 * MIB))
 HIER_FILE_LIMIT_BYTES=$((512 * MIB))
 HIER_MAX_K=16
-LOCK_COMMON_SHA=9d391daad60a17595077c7aa68f16890c95511a617dbb209fefaf0b5b69a78da
+LOCK_COMMON_SHA=45a0dd48849323cfd8022e08d0ab34d01c4cb2b02fd4d6b3befbad6a2ee27ba2
 LOCK_OCP_SHA=72b833ac43ac4cdab8fbb694ed9b2954472f2c1ab09b4ebc32684bf2387147df
 BASE_DIGEST=sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 GO_TOOLCHAIN=go1.27.3
@@ -37,11 +37,13 @@ LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
 usage() {
   cat >&2 <<'USAGE'
 Usage:
+  scripts/cad-spike.sh locks
   scripts/cad-spike.sh tracer
   scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5,S5I]
   scripts/cad-spike.sh rules [--check]
   scripts/cad-spike.sh finish
 
+locks    check the committed lock files without Docker or changes to evidence.
 tracer   build the production engine image, run cad-mesh on the three inch STEP
          files under a real Landlock ruleset, judge the STL by content and prove
          that the same bytes outside the job directory yield no STL.
@@ -54,7 +56,8 @@ rules    print the RULE and DERIVED lines computed from the evidence rows;
 finish   recompute the GAP, LOADCHECK_SUMMARY, RULE, DERIVED and SUMMARY lines
          from the ROW and LOADCHECK lines, without running anything.
 
-Needs a native docker server. Exit codes: 64 usage, 69 docker or go missing, 1 a check failed.
+Modes other than locks need a native docker server.
+Exit codes: 64 usage, 69 docker or go missing, 1 a check failed.
 USAGE
   exit 64
 }
@@ -710,6 +713,7 @@ rules_mode() {
 mode=$1
 shift
 case "$mode" in
+  locks) [ $# -eq 0 ] || usage; lock_check ;;
   tracer) tracer "$@" ;;
   spikes) spikes "$@" ;;
   rules) rules_mode "$@" ;;

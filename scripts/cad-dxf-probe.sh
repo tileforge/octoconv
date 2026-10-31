@@ -49,12 +49,14 @@ INK_EVID_NAME="evidence/75-ink.txt"
 usage() {
   cat >&2 <<'USAGE'
 Usage:
+  scripts/cad-dxf-probe.sh locks
   scripts/cad-dxf-probe.sh tracer   [--out FILE]
   scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
   scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|fonts|all] [--write-out] [--out FILE]
   scripts/cad-dxf-probe.sh judge    [--out FILE]
   scripts/cad-dxf-probe.sh ink      [--ceilings] [--out FILE]
 
+locks     check the committed lock files without Docker or changes to evidence.
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
           uncommon.dxf with cad-dxf under its candidate Landlock ruleset, turn each SVG into a
           PDF and a letterboxed 1280 x 1280 PNG with rsvg-convert under its own candidate
@@ -103,9 +105,9 @@ ink       draw every committed DXF (testdata/cad/dxf, public, synthetic, dxf-cr)
           and the guard verdict is recorded.
           The evidence file defaults to .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-ink.txt.
 
-Every mode rewrites its own lines in the evidence file (default
+All modes except locks rewrite their own lines in the evidence file (default
 .planning/milestones/v1.16-phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
-removes the image tags it built. Needs a native arm64 docker server, go, python3 and pdftotext.
+remove the image tags they built. They need a native arm64 docker server, go, python3 and pdftotext.
 Exit codes: 64 usage, 69 a tool is missing, 3 VM disk below 6 GiB, 1 a check failed.
 USAGE
   exit 64
@@ -149,7 +151,7 @@ lock_line() {
   hashes=$(grep -c 'hash=sha256:' "$DXF_LOCK" || true)
   packages=$(grep -E '^[A-Za-z0-9_.-]+==' "$DXF_LOCK" | awk '{print $1}' | paste -sd '+' -)
   if numpy_block "$MESH_LOCK" | cmp -s - <(numpy_block "$COMMON_LOCK"); then numpy=identical; fi
-  if [ "$hashes" != 183 ] || [ "$numpy" != identical ]; then
+  if [ "$hashes" != 179 ] || [ "$numpy" != identical ]; then
     printf 'LOCK,file=requirements-dxf.txt,cmp=identical,hashes=%s,numpy_block=%s,result=fail\n' "$hashes" "$numpy"
     return 1
   fi
@@ -2708,6 +2710,12 @@ PY
   grep -E '^(INK|CRAFTED|INK_COST|CRAFTED_SUMMARY|SUMMARY),' "$LINES"
   [ "$fails" = 0 ] && [ "$INK_FAIL" = 0 ]
 }
+
+if [ "${1:-}" = locks ]; then
+  [ $# -eq 1 ] || usage
+  lock_line
+  exit
+fi
 
 [ $# -ge 1 ] || usage
 MODE=$1

@@ -7,9 +7,6 @@ cd "$REPO_ROOT"
 BASE_IMAGE="debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251"
 LOCK_DIR="$REPO_ROOT/scripts/cad-measure"
 
-COMMON_INPUT='ezdxf==1.4.4
-numpy==2.4.6
-pillow==12.3.0'
 COMMON_ALLOWED="ezdxf numpy pillow fonttools pyparsing typing-extensions"
 
 OCP_NEW=7.9.3.1.1
@@ -33,15 +30,16 @@ echo "container python3: $(python3 --version)"
 echo "pip-compile: $(/tmp/pt/bin/pip-compile --version)"
 echo "pip-tools venv:"
 /tmp/pt/bin/pip freeze | sed 's/^/  /'
-printf '%s\n' "$COMMON_INPUT" | /tmp/pt/bin/pip-compile --quiet --generate-hashes --strip-extras --no-header \
-  --output-file=/out/requirements-common.txt -
+cd /out
+/tmp/pt/bin/pip-compile --quiet --generate-hashes --strip-extras \
+  --output-file=requirements-common.txt requirements-common.in
 chown "$HOST_UID:$HOST_GID" /out/requirements-common.txt
 EOF
 )
 
 echo "== requirements-common.txt (pip-compile inside the pinned base image)"
 docker run --rm -v "$LOCK_DIR:/out" \
-  -e "COMMON_INPUT=$COMMON_INPUT" -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
+  -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
   "$BASE_IMAGE" sh -c "$GEN_SCRIPT"
 
 wheel_lock() {
