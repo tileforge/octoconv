@@ -76,6 +76,11 @@ PNG shows them; a transparent PNG keeps them at alpha 0, so it has slightly fewe
 extent (in the corpus measured for this, up to 4% fewer for a filled model and 14% for a thin part at 256 px).
 A PNG that fails the check is `cad_empty_result`.
 
+For a 3D render with dimensions enabled (the default), this check runs on the model PNG before any
+annotations. The validated image is then inset and annotated with the document's bounding-box lengths,
+unit and unit source. Text or dimension lines cannot make an empty model pass the check. The measurements
+JSON is unchanged by annotation; `dimensions: false` returns the checked model PNG directly.
+
 ## DXF drawings
 
 A DXF document describes the same drawing as the picture. The `cad-dxf` helper draws model space only, with

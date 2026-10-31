@@ -289,6 +289,8 @@ func cadDocClosed(tag string) (map[string]bool, bool) {
 		return cadBackgrounds, true
 	case "assume_unit":
 		return cadUnits, true
+	case "dimensions":
+		return map[string]bool{"true": true, "false": true}, true
 	}
 	return nil, false
 }
@@ -309,6 +311,11 @@ func cadDocOnly(t *testing.T, tag string) CADOpts {
 			}
 			fv.SetString(cadDocSorted(closed)[0])
 		case reflect.Pointer:
+			if fv.Type().Elem().Kind() == reflect.Bool {
+				enabled := true
+				fv.Set(reflect.ValueOf(&enabled))
+				break
+			}
 			n := CADMinRenderSize
 			fv.Set(reflect.ValueOf(&n))
 		default:
@@ -508,7 +515,7 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 				}
 			case reflect.Pointer:
 				if !fv.IsNil() {
-					want = strconv.Itoa(int(fv.Elem().Int()))
+					want = fmt.Sprint(fv.Elem().Interface())
 				}
 			}
 			if d := cadDocOne(t, r[2], "default of "+tag); d != want {

@@ -33,6 +33,7 @@ type CADOpts struct {
 	Quality    string `json:"quality,omitempty"`
 	Background string `json:"background,omitempty"`
 	AssumeUnit string `json:"assume_unit,omitempty"`
+	Dimensions *bool  `json:"dimensions,omitempty"`
 }
 
 func ParseCADOpts(raw []byte) (CADOpts, error) {
@@ -76,6 +77,15 @@ func ParseCADOpts(raw []byte) (CADOpts, error) {
 				return CADOpts{}, err
 			}
 			o.Size = &n
+		case "dimensions":
+			var enabled bool
+			if string(value) != "true" && string(value) != "false" {
+				return CADOpts{}, fmt.Errorf("parse opts: dimensions must be a boolean")
+			}
+			if err := json.Unmarshal(value, &enabled); err != nil {
+				return CADOpts{}, fmt.Errorf("parse opts: dimensions: %w", err)
+			}
+			o.Dimensions = &enabled
 		default:
 			return CADOpts{}, fmt.Errorf("parse opts: unknown option %q", key)
 		}
@@ -134,6 +144,10 @@ func (o CADOpts) Resolved() CADOpts {
 	if o.Background == "" {
 		o.Background = CADBackgroundOpq
 	}
+	if o.Dimensions == nil {
+		enabled := true
+		o.Dimensions = &enabled
+	}
 	return o
 }
 
@@ -156,6 +170,8 @@ func ValidateCADApplicability(engine, operation, source, target string, o CADOpt
 			return fmt.Errorf("view does not apply to a dxf source")
 		case operation == OperationRender && o.Quality != "":
 			return fmt.Errorf("quality does not apply to a dxf source")
+		case operation == OperationRender && o.Dimensions != nil:
+			return fmt.Errorf("dimensions does not apply to a dxf source")
 		}
 	}
 	switch operation {

@@ -448,6 +448,15 @@ components:
           description: >-
             Unit of a file that declares none. Omitted, nothing is assumed;
             it never overrides a declared unit (docs/MEASUREMENTS.md).
+        dimensions:
+          type: boolean
+          default: true
+          description: >-
+            Overall bounding-box dimension lines and a Size heading on a 3D
+            render (step, iges, stl). Values and units match the measurements
+            output; unknown and client-assumed units are labeled explicitly.
+            False returns the original unannotated PNG. Applies only to 3D
+            render jobs; dxf and convert reject this option even when false.
       additionalProperties: false
 
     EngineFormats:
