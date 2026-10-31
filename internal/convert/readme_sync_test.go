@@ -1,6 +1,6 @@
 package convert_test
 
-// This file makes README.md's engine-class list a CONTRACT rather than prose,
+// This file makes docs/OPERATIONS.md's engine-class list a CONTRACT rather than prose,
 // the same way internal/errcode/doc_sync_test.go does for the error-code tables
 // and internal/inspect/doc_sync_test.go for the findings vocabulary.
 //
@@ -24,8 +24,8 @@ import (
 	"github.com/tileforge/octoconv/internal/convert"
 )
 
-// readmePath is repo-relative from this package's directory.
-const readmePath = "../../README.md"
+// operationsDocPath is repo-relative from this package's directory.
+const operationsDocPath = "../../docs/OPERATIONS.md"
 
 // engineListMarker anchors the machine-checked list. An HTML comment rather
 // than a heading: it survives prose being rewritten around it, and it tells the
@@ -35,28 +35,28 @@ const engineListMarker = "<!-- engine-classes:"
 // engineTokenPattern matches the backticked tokens on the list line.
 var engineTokenPattern = regexp.MustCompile("`([a-z][a-z0-9]*)`")
 
-// readmeEngineClasses returns the classes enumerated in README.md, or fails
+// documentedEngineClasses returns the classes enumerated in docs/OPERATIONS.md, or fails
 // the test with a message naming what to look for.
-func readmeEngineClasses(t *testing.T) []string {
+func documentedEngineClasses(t *testing.T) []string {
 	t.Helper()
 
-	doc, err := os.ReadFile(readmePath)
+	doc, err := os.ReadFile(operationsDocPath)
 	if err != nil {
-		t.Fatalf("read %s: %v", readmePath, err)
+		t.Fatalf("read %s: %v", operationsDocPath, err)
 	}
 
 	idx := strings.Index(string(doc), engineListMarker)
 	if idx < 0 {
 		t.Fatalf("%s no longer contains the marker %q -- the engine-class list is the thing this test holds equal to "+
 			"convert.AllEngines(); if the section moved, move the marker with it rather than deleting the check",
-			readmePath, engineListMarker)
+			operationsDocPath, engineListMarker)
 	}
 
 	// The list is the first line after the marker comment ends.
 	rest := string(doc)[idx:]
 	end := strings.Index(rest, "-->")
 	if end < 0 {
-		t.Fatalf("marker comment in %s is unterminated", readmePath)
+		t.Fatalf("marker comment in %s is unterminated", operationsDocPath)
 	}
 	lines := strings.Split(rest[end:], "\n")
 	for _, line := range lines[1:] {
@@ -73,11 +73,11 @@ func readmeEngineClasses(t *testing.T) []string {
 		}
 		return out
 	}
-	t.Fatalf("no content line follows the engine-class marker in %s", readmePath)
+	t.Fatalf("no content line follows the engine-class marker in %s", operationsDocPath)
 	return nil
 }
 
-// TestREADMEEngineClassesMatchAllEngines compares the two sets in BOTH
+// TestOperationsDocEngineClassesMatchAllEngines compares the two sets in BOTH
 // directions.
 //
 // One-way checking would miss both halves of what can go wrong, and both have
@@ -85,8 +85,8 @@ func readmeEngineClasses(t *testing.T) []string {
 // code is a promise of something that does not exist, and a class in the code
 // but not the document is silence about something that does. Neither is
 // detectable by checking only the other direction.
-func TestREADMEEngineClassesMatchAllEngines(t *testing.T) {
-	got := readmeEngineClasses(t)
+func TestOperationsDocEngineClassesMatchAllEngines(t *testing.T) {
+	got := documentedEngineClasses(t)
 	want := convert.AllEngines()
 
 	gotSet := make(map[string]bool, len(got))
@@ -113,26 +113,26 @@ func TestREADMEEngineClassesMatchAllEngines(t *testing.T) {
 	sort.Strings(extra)
 
 	if len(missing) > 0 || len(extra) > 0 {
-		t.Errorf("README.md's engine-class list has drifted from convert.AllEngines().\n"+
-			"  missing from the README: %v\n"+
-			"  present in the README but not declared in Go: %v\n\n"+
+		t.Errorf("docs/OPERATIONS.md's engine-class list has drifted from convert.AllEngines().\n"+
+			"  missing from the OperationsDoc: %v\n"+
+			"  present in the OperationsDoc but not declared in Go: %v\n\n"+
 			"Fix whichever side is wrong — never relax this test. A class in the document but not the code promises "+
 			"something that does not exist; a class in the code but not the document leaves an operator unable to set "+
 			"a limit they are entitled to.", missing, extra)
 	}
 }
 
-// TestREADMEDoesNotHardcodeTheEngineCount guards the specific mistake this file
+// TestOperationsDocDoesNotHardcodeTheEngineCount guards the specific mistake this file
 // was written for: a sentence that states HOW MANY classes there are.
 //
 // Deliberately narrow. Matching any number near the word "engine" would fire on
 // unrelated prose, and a test that cries wolf gets deleted rather than obeyed —
 // so it looks for the handful of spellings the sentence would actually take,
 // and says so, so a future reader can extend the list knowingly.
-func TestREADMEDoesNotHardcodeTheEngineCount(t *testing.T) {
-	doc, err := os.ReadFile(readmePath)
+func TestOperationsDocDoesNotHardcodeTheEngineCount(t *testing.T) {
+	doc, err := os.ReadFile(operationsDocPath)
 	if err != nil {
-		t.Fatalf("read %s: %v", readmePath, err)
+		t.Fatalf("read %s: %v", operationsDocPath, err)
 	}
 	lower := strings.ToLower(string(doc))
 
@@ -145,10 +145,10 @@ func TestREADMEDoesNotHardcodeTheEngineCount(t *testing.T) {
 		"five known engine", "six known engine", "seven known engine", "eight known engine",
 	} {
 		if strings.Contains(lower, form) {
-			t.Errorf("README.md contains %q.\n\n"+
+			t.Errorf("docs/OPERATIONS.md contains %q.\n\n"+
 				"The number of engine classes must not be written out: phase 60 adds an eighth, and a sentence "+
 				"stating a count becomes false from a commit that never opens this file. Enumerate the classes "+
-				"instead — TestREADMEEngineClassesMatchAllEngines keeps the enumeration honest.", form)
+				"instead — TestOperationsDocEngineClassesMatchAllEngines keeps the enumeration honest.", form)
 		}
 	}
 }
