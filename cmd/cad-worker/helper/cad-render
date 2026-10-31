@@ -153,7 +153,9 @@ def render(fd, args):
     edge = vtkActor()
     edge.SetMapper(edge_mapper)
     edge.GetProperty().SetColor(*EDGE)
-    edge.GetProperty().SetLineWidth(max(1.0, args.size / 640.0))
+    # FXAA blends one-pixel edges into the bright fill at small frame sizes.
+    # Keep a dark edge core without changing the material or studio lighting.
+    edge.GetProperty().SetLineWidth(max(2.0, args.size / 640.0))
     edge.GetProperty().LightingOff()
 
     transparent = args.background == "transparent"
