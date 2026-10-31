@@ -1,0 +1,5 @@
+cadquery-ocp-novtk==8.0.1.1.0 \
+    --hash=sha256:b29d3b11b2798cdcc7ab6cb5ddd0ecb741885f36626044c54814e4879b9e9729 \
+    --hash=sha256:ecc2a1788477c4edf7d262d0af98e8cfc1c4ee9aa2edfe6fda869ddccf3cb4ec
+cadquery-ocp-proxy==8.0.1.1.0 \
+    --hash=sha256:98c71bb60cfb651afe179b134ab88580fd75384fce0cc6d633f727002cd18abd

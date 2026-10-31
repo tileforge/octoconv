@@ -9,11 +9,11 @@ LOCK_DIR="$REPO_ROOT/scripts/cad-measure"
 
 COMMON_ALLOWED="ezdxf numpy pillow fonttools pyparsing typing-extensions"
 
-OCP_NEW=7.9.3.1.1
+OCP_NEW=8.0.1.1.0
 OCP_CAND=8.0.1.0.0
 VTK_VERSION=9.7.1
 
-EXPECT_OCP_NEW_AARCH64=0b566f9e00f0e4255996b2bcb18b580dc758f451fd2b7546542fae08261db535
+EXPECT_OCP_NEW_AARCH64=b29d3b11b2798cdcc7ab6cb5ddd0ecb741885f36626044c54814e4879b9e9729
 EXPECT_OCP_CAND_AARCH64=90fb7182fb322b81f8b7fe3934dc3a780cfb58c2e5f02eb6ac1628b0f762c461
 
 echo "BASE_IMAGE=$BASE_IMAGE"
@@ -109,7 +109,7 @@ crosscheck() {
   fi
 }
 CROSSCHECK_FAILED=0
-crosscheck "cadquery-ocp-novtk $OCP_NEW cp311 manylinux_2_31_aarch64" "requirements-ocp-$OCP_NEW.txt" "$EXPECT_OCP_NEW_AARCH64"
+crosscheck "cadquery-ocp-novtk $OCP_NEW cp311 manylinux_2_28_aarch64" "requirements-ocp-$OCP_NEW.txt" "$EXPECT_OCP_NEW_AARCH64"
 crosscheck "cadquery-ocp-novtk $OCP_CAND cp311 manylinux_2_28_aarch64" "requirements-ocp-$OCP_CAND.txt" "$EXPECT_OCP_CAND_AARCH64"
 if [ "$CROSSCHECK_FAILED" -ne 0 ]; then
   echo "error: lock hash differs from the independently measured research hash; do not edit by hand" >&2
