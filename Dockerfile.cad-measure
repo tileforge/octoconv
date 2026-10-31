@@ -1,6 +1,6 @@
 ARG VENV_STAGE=venv
 
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS venv
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS venv
 ARG OCP_VERSION=7.9.3.1.1
 ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update \
@@ -23,7 +23,7 @@ RUN /opt/venv/bin/python -I -B /tmp/keeplist/vtk_keeplist.py prune \
 
 FROM ${VENV_STAGE} AS venv-selected
 
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
