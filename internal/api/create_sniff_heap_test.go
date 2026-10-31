@@ -50,13 +50,13 @@ func zipSniffTerms() []heapTerm {
 	return []heapTerm{
 		{"inspect bound: EOCD tail window, 66560 B rounded up to 9 pages", "internal/api/inspect_handlers.go", 0, "buf := make([]byte, tailLen)", 73728},
 		{"inspect bound: directory window inspectMaxZipDirBytes, 23 pages", "internal/api/inspect_handlers.go", 0, "window := make([]byte, windowLen)", inspectMaxZipDirBytes},
-		{"zip.NewReader: EOCD search, 1024 B then 65*1024 B rounded up to 9 pages", "$GOROOT/src/archive/zip/reader.go", 576, "buf = make([]byte, int(bLen))", 1024 + 73728},
-		{"zip.NewReader: EOCD comment copy, 65535 B rounded up to 8 pages", "$GOROOT/src/archive/zip/reader.go", 605, "d.comment = string(b[:l])", 65536},
-		{"zip.NewReader: bufio.Reader over the directory, 4096 B buffer and the struct", "$GOROOT/src/archive/zip/reader.go", 140, "buf := bufio.NewReader(rs)", 4096 + 80},
-		{"zip.NewReader: one File per record and one for the read that ends the walk, 176 B size class", "$GOROOT/src/archive/zip/reader.go", 147, "f := &File{zip: r, zipr: rdr}", records * 176},
-		{"readDirectoryHeader: the 46-byte header buffer escapes, 48 B size class", "$GOROOT/src/archive/zip/reader.go", 358, "var buf [directoryHeaderLen]byte", records * 48},
-		{"zip.NewReader: r.File grows by append to 4096 pointers, nextslicecap and roundupsize with the malloc header: 16 allocations up to 49152 B", "$GOROOT/src/archive/zip/reader.go", 156, "r.File = append(r.File, f)", zipFileSliceGrowthBytes},
-		{"small objects: zip.Reader (reader.go:111), directoryEnd (reader.go:592), readerAtRecorder and nameCount (docsniff.go), readFailureRecorder (handlers.go)", "$GOROOT/src/archive/zip/reader.go", 111, "zr := new(Reader)", 1024},
+		{"zip.NewReader: EOCD search, 1024 B then 65*1024 B rounded up to 9 pages", "$GOROOT/src/archive/zip/reader.go", 0, "buf = make([]byte, int(bLen))", 1024 + 73728},
+		{"zip.NewReader: EOCD comment copy, 65535 B rounded up to 8 pages", "$GOROOT/src/archive/zip/reader.go", 0, "d.comment = string(b[:l])", 65536},
+		{"zip.NewReader: bufio.Reader over the directory, 4096 B buffer and the struct", "$GOROOT/src/archive/zip/reader.go", 0, "buf := bufio.NewReader(rs)", 4096 + 80},
+		{"zip.NewReader: one File per record and one for the read that ends the walk, 176 B size class", "$GOROOT/src/archive/zip/reader.go", 0, "f := &File{zip: r, zipr: rdr}", records * 176},
+		{"readDirectoryHeader: the 46-byte header buffer escapes, 48 B size class", "$GOROOT/src/archive/zip/reader.go", 0, "var buf [directoryHeaderLen]byte", records * 48},
+		{"zip.NewReader: r.File grows by append to 4096 pointers, nextslicecap and roundupsize with the malloc header: 16 allocations up to 49152 B", "$GOROOT/src/archive/zip/reader.go", 0, "r.File = append(r.File, f)", zipFileSliceGrowthBytes},
+		{"small objects: zip.Reader, directoryEnd, readerAtRecorder and nameCount (docsniff.go), readFailureRecorder (handlers.go)", "$GOROOT/src/archive/zip/reader.go", 0, "zr := new(Reader)", 1024},
 	}
 }
 
@@ -525,8 +525,8 @@ func TestZipSniffHeapTermIsDerived(t *testing.T) {
 	if roundUp64KiB(sum) != zipSniffHeapBytes {
 		t.Errorf("zipSniffHeapBytes = %d, the terms sum to %d and round up to %d", zipSniffHeapBytes, sum, roundUp64KiB(sum))
 	}
-	if got := int64(unsafe.Sizeof(zip.File{})); got != 176 {
-		t.Errorf("unsafe.Sizeof(zip.File{}) = %d, the per-record term assumes 176", got)
+	if got := roundAlloc(int64(unsafe.Sizeof(zip.File{})), true); got != 176 {
+		t.Errorf("zip.File allocation size class = %d, the per-record term assumes 176", got)
 	}
 	var files []*zip.File
 	growth := allocatedBy(func() {

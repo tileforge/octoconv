@@ -25,7 +25,7 @@ W15_SRC="$CAD_CACHE_DIR/scaled/stl-ascii-nasa-sls-block1-1MiB.stl"
 W15_SHA=77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0
 GO_AMD_DERIVED=x86_64-linux-gnu
 RENDER_VARIANTS=(iso:1280:opaque top:2048:opaque iso:1280:transparent)
-GO_TOOLCHAIN=go1.26.4
+GO_TOOLCHAIN=go1.27.3
 MIN_FREE_KIB=6291456
 LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
 ENVS=(-e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2)

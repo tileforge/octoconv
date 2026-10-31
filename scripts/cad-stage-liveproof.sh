@@ -17,7 +17,7 @@ EXPECT_WEBHOOK="${STAGE_LIVEPROOF_EXPECT_WEBHOOK_IMAGE:-}"
 IMAGE_PATHS=(cmd internal Dockerfile.api Dockerfile.cad-worker Dockerfile.worker Dockerfile.webhook-worker go.mod go.sum docker-compose.yml docker-compose.e2e.yml)
 CALLBACK="http://host.docker.internal:$PORT/hook"
 JOB_LIMIT_S=900
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.27.3}"
 
 mkdir -p "$OUT"
 TRANSCRIPT="$OUT/transcript.log"

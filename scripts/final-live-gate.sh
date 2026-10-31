@@ -227,7 +227,7 @@ ev "HDR,commit=$COMMIT"
 ev "HDR,tracked_dirt=$TRACKED_DIRT"
 ev "HDR,branch=$(git rev-parse --abbrev-ref HEAD)"
 ev "HDR,clone=$ROOT"
-ev "HDR,go=$(GOTOOLCHAIN=go1.26.4 go version 2> /dev/null | awk '{ print $3 }' || true)"
+ev "HDR,go=$(GOTOOLCHAIN=go1.27.3 go version 2> /dev/null | awk '{ print $3 }' || true)"
 ev "HDR,server_arch=$(tmo 60 docker version --format '{{.Server.Arch}}' < /dev/null 2> /dev/null || true)"
 ev "HDR,load1=$(load1 || true)"
 ev "HDR,vm_free_gib=$(awk -v k="${FREE0:-0}" 'BEGIN { printf "%.2f", k / 1048576 }')"
@@ -292,7 +292,7 @@ step_preflight() {
 	else
 		pf tectonic_bundle fail "missing=deploy/tectonic-bundle/octoconv-bundle.ttb"
 	fi
-	if GOTOOLCHAIN=go1.26.4 go version 2> /dev/null | grep -q ' go1\.26\.4 '; then pf go ok "go=go1.26.4"; else pf go fail "go=$(GOTOOLCHAIN=go1.26.4 go version 2>&1 | tr ' ' '_')"; fi
+	if GOTOOLCHAIN=go1.27.3 go version 2> /dev/null | grep -q ' go1\.27\.3 '; then pf go ok "go=go1.27.3"; else pf go fail "go=$(GOTOOLCHAIN=go1.27.3 go version 2>&1 | tr ' ' '_')"; fi
 	if [ -e "$OVERRIDE_FILE" ] || [ -e "$E2E_PORTS_FILE" ]; then
 		pf override_files fail "existing=$([ -e "$OVERRIDE_FILE" ] && echo override)$([ -e "$E2E_PORTS_FILE" ] && echo e2e_ports)"
 	elif [ "$ok" = 1 ]; then
@@ -365,7 +365,7 @@ step_ci_local() {
 	CI_START_UTC=$(utc)
 	start_epoch=$(date +%s)
 	before=$(ls "$EVD"/ci-local-*.log 2> /dev/null | sort || true)
-	bg_run tmo 14400 env CI_LOCAL_EVIDENCE_DIR="$EVD" CI_LOCAL_E2E_API_PORT=18090 CI_LOCAL_E2E_EXTRA_COMPOSE_FILES="$E2E_PORTS_FILE" CI_LOCAL_E2E_TEARDOWN=stop CI_LOCAL_E2E_GO_TEST_FLAGS=-v GOTOOLCHAIN=go1.26.4 scripts/ci-local.sh helm gate race docker-build e2e > /dev/null 2>&1 || rc=$?
+	bg_run tmo 14400 env CI_LOCAL_EVIDENCE_DIR="$EVD" CI_LOCAL_E2E_API_PORT=18090 CI_LOCAL_E2E_EXTRA_COMPOSE_FILES="$E2E_PORTS_FILE" CI_LOCAL_E2E_TEARDOWN=stop CI_LOCAL_E2E_GO_TEST_FLAGS=-v GOTOOLCHAIN=go1.27.3 scripts/ci-local.sh helm gate race docker-build e2e > /dev/null 2>&1 || rc=$?
 	STEP_RC=$rc
 	[ "$STOPPED" = 0 ] || return 2
 	after=$(ls "$EVD"/ci-local-*.log 2> /dev/null | sort || true)
@@ -454,7 +454,7 @@ step_tectonic() {
 step_sandbox() {
 	local f="$EVD/76-11-sandbox-liveproof.txt" rc=0 last pairs left nrl lout lrc=0 cres
 	STEP_TRANSCRIPT=76-11-sandbox-liveproof.txt
-	bg_run tmo 14400 env GOTOOLCHAIN=go1.26.4 scripts/sandbox-liveproof.sh $SANDBOX_CLASSES > "$f" 2>&1 || rc=$?
+	bg_run tmo 14400 env GOTOOLCHAIN=go1.27.3 scripts/sandbox-liveproof.sh $SANDBOX_CLASSES > "$f" 2>&1 || rc=$?
 	STEP_RC=$rc
 	[ "$STOPPED" = 0 ] || return 2
 	last=$(tail -1 "$f")
@@ -575,7 +575,7 @@ run_cad() {
 	local n=$1 name=$2 since rc=0 f summ dirt cc ok=1 rows bad cres crc lf qres
 	since=$(utc)
 	f="$EVD/$name"
-	bg_run tmo 21600 env CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090 CAD_LIVEPROOF_QUIET_LOAD="$ROW_QUIET_LOAD" GOTOOLCHAIN=go1.26.4 scripts/cad-liveproof.sh --out "$f" > "$EVD/${name%.txt}-console.txt" 2>&1 || rc=$?
+	bg_run tmo 21600 env CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090 CAD_LIVEPROOF_QUIET_LOAD="$ROW_QUIET_LOAD" GOTOOLCHAIN=go1.27.3 scripts/cad-liveproof.sh --out "$f" > "$EVD/${name%.txt}-console.txt" 2>&1 || rc=$?
 	STEP_RC=$rc
 	if [ "$STOPPED" = 1 ]; then
 		cres=not_run

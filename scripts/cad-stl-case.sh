@@ -69,7 +69,7 @@ LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody -e HO
 VARIANTS=(lower upper vertex_upper mixed_body header_upper header_title lower_header_upper_rest leading_ws binary_solid_header)
 OLD_STATS_OK=" lower header_upper header_title leading_ws binary_solid_header "
 RENDER_OK=" lower vertex_upper mixed_body lower_header_upper_rest leading_ws binary_solid_header "
-export GOTOOLCHAIN=go1.26.4
+export GOTOOLCHAIN=go1.27.3
 
 W=""
 cleanup() {

@@ -8,15 +8,17 @@ import (
 const (
 	apiReadHeaderTimeout = 10 * time.Second
 	apiMaxHeaderBytes    = 64 << 10
+	apiMaxHeaderValues   = 500
 	apiIdleTimeout       = 120 * time.Second
 )
 
 func NewHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: apiReadHeaderTimeout,
-		MaxHeaderBytes:    apiMaxHeaderBytes,
-		IdleTimeout:       apiIdleTimeout,
+		Addr:                addr,
+		Handler:             handler,
+		ReadHeaderTimeout:   apiReadHeaderTimeout,
+		MaxHeaderBytes:      apiMaxHeaderBytes,
+		MaxHeaderValueCount: apiMaxHeaderValues,
+		IdleTimeout:         apiIdleTimeout,
 	}
 }

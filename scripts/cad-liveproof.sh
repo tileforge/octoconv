@@ -58,7 +58,7 @@ QUIET_LOAD="${CAD_LIVEPROOF_QUIET_LOAD:-}"
 EXPECT_API_IMAGE="${CAD_LIVEPROOF_EXPECT_API_IMAGE:-}"
 EXPECT_CAD_IMAGE="${CAD_LIVEPROOF_EXPECT_CAD_IMAGE:-}"
 IMAGE_PATHS="cmd internal Dockerfile.api Dockerfile.cad-worker go.mod go.sum deploy docker-compose.yml"
-export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.27.3}"
 
 W=""
 LOADF=/dev/null
