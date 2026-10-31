@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">OctoConv — one API for file conversion</title>
+  <desc id="desc">Example supported routes: photo.png to photo.webp, report.docx to report.pdf, and clip.mov to clip.mp4. Jobs are processed asynchronously.</desc>
+  <rect width="1200" height="360" rx="24" fill="#101A22"/>
+  <g id="message" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="56" y="65" font-size="20" letter-spacing="2" fill="#79D5BC">SELF-HOSTED · ASYNC</text>
+    <text x="54" y="148" font-size="72" font-weight="700" fill="#F2F5F4">Files in</text>
+    <text x="54" y="226" font-size="72" font-weight="700" fill="#F2F5F4">Results out</text>
+    <text x="56" y="300" font-size="24" fill="#A8B9C4">One API. Your infrastructure.</text>
+  </g>
+  <line x1="505" y1="48" x2="505" y2="312" stroke="#32434E" stroke-width="1.5"/>
+  <g id="conversion-routes" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="26">
+    <text x="552" y="91" fill="#F2F5F4">photo.png</text>
+    <text x="820" y="91" fill="#79D5BC">photo.webp</text>
+    <path d="M752 82h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+    <line x1="552" y1="127" x2="1144" y2="127" stroke="#32434E"/>
+    <text x="552" y="178" fill="#F2F5F4">report.docx</text>
+    <text x="820" y="178" fill="#79D5BC">report.pdf</text>
+    <path d="M752 169h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+    <line x1="552" y1="214" x2="1144" y2="214" stroke="#32434E"/>
+    <text x="552" y="265" fill="#F2F5F4">clip.mov</text>
+    <text x="820" y="265" fill="#79D5BC">clip.mp4</text>
+    <path d="M752 256h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+  </g>
+</svg>

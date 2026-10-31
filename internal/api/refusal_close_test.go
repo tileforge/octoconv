@@ -583,21 +583,21 @@ func TestHonestRefusedClientGetsItsAnswer(t *testing.T) {
 	}
 }
 
-func TestPreBodyRefusalIsStatedInTheReadme(t *testing.T) {
-	raw, err := os.ReadFile("../../README.md")
+func TestPreBodyRefusalIsStatedInTheAPIDocs(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/API.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
 	_, section, ok := strings.Cut(text, "**Status semantics**")
 	if !ok {
-		t.Fatal("README.md has no Status semantics section")
+		t.Fatal("docs/API.md has no Status semantics section")
 	}
 	section, _, _ = strings.Cut(section, "\n**")
 	const want = "A refusal sent before the request body is read"
 	for _, phrase := range []string{want, "`Connection: close`", "reads no more of the body", "new connection"} {
 		if !strings.Contains(strings.Join(strings.Fields(section), " "), phrase) {
-			t.Errorf("README.md Status semantics does not say %q", phrase)
+			t.Errorf("docs/API.md Status semantics does not say %q", phrase)
 		}
 	}
 }

@@ -755,7 +755,7 @@ func TestHeaderLimitAnswerIsDocumentedAndServed(t *testing.T) {
 		t.Fatalf("decode %s: %v", specPath, err)
 	}
 	texts := map[string]string{specPath + " components.responses.RequestHeaderFieldsTooLarge": openAPIString(t, doc, "components", "responses", "RequestHeaderFieldsTooLarge", "description")}
-	for _, path := range []string{"../../docs/ERROR-CODES.md", "../../README.md"} {
+	for _, path := range []string{"../../docs/ERROR-CODES.md", "../../docs/API.md"} {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

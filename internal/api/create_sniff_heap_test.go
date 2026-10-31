@@ -503,17 +503,17 @@ func TestZipDirectoryRefusalIsStatedInTheContracts(t *testing.T) {
 		t.Errorf("%s: the 422 of POST /v1/jobs does not state %q; it reads %q", specPath, want, d)
 	}
 
-	readme, err := os.ReadFile("../../README.md")
+	readme, err := os.ReadFile("../../docs/API.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, semantics, ok := strings.Cut(string(readme), "**Status semantics**")
 	if !ok {
-		t.Fatal("README.md has no Status semantics section")
+		t.Fatal("docs/API.md has no Status semantics section")
 	}
 	semantics, _, _ = strings.Cut(semantics, "\n**")
 	if !strings.Contains(collapse(semantics), want) {
-		t.Errorf("README.md: Status semantics does not state %q; it reads %q", want, semantics)
+		t.Errorf("docs/API.md: Status semantics does not state %q; it reads %q", want, semantics)
 	}
 }
 
