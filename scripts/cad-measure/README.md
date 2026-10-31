@@ -3,6 +3,12 @@
 The measurement tools and CAD worker share pinned Python packages. Keep their
 generated locks and probe checks in the same dependency-update PR.
 
+The worker and the default measurement image use OCP **8.0.1.1.0**. The engine
+and proxy packages must have the same version. The `7.9.3.1.1` and `8.0.1.0.0`
+locks remain available to reproduce historical measurements; those results
+do not describe the current production pin. Select a historical measurement
+image with `--build-arg OCP_VERSION=<version>`.
+
 ## Dependabot security PRs
 
 The `exclude-paths` rules in [dependabot.yml](../../.github/dependabot.yml) exclude

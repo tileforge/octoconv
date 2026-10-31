@@ -11,7 +11,7 @@ PHASE_DIR="$REPO_ROOT/.planning/milestones/v1.16-phases/73-cad-class-convert-sli
 EVID="$PHASE_DIR/evidence/73-01-spikes.txt"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
 LOCK_COMMON="$REPO_ROOT/scripts/cad-measure/requirements-common.txt"
-LOCK_OCP="$REPO_ROOT/scripts/cad-measure/requirements-ocp-7.9.3.1.1.txt"
+LOCK_OCP="$REPO_ROOT/scripts/cad-measure/requirements-ocp-8.0.1.1.0.txt"
 SUBSET="$REPO_ROOT/cmd/cad-worker/requirements-mesh.txt"
 HELPER="$REPO_ROOT/cmd/cad-worker/helper/cad-mesh"
 DOCKERFILE="$REPO_ROOT/Dockerfile.cad-worker"
@@ -29,7 +29,7 @@ IGES_CEILING_BYTES=$((155 * MIB))
 HIER_FILE_LIMIT_BYTES=$((512 * MIB))
 HIER_MAX_K=16
 LOCK_COMMON_SHA=a99f6b8b7db3d2ebc0cc81bebccbd8282d7cd2fa71c1b3470355b110bdb2567e
-LOCK_OCP_SHA=72b833ac43ac4cdab8fbb694ed9b2954472f2c1ab09b4ebc32684bf2387147df
+LOCK_OCP_SHA=975fd1925c8780b5861a5beb405b9feaf1ace908d7679f745057799965b1a4b2
 BASE_DIGEST=sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 GO_TOOLCHAIN=go1.27.3
 LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
@@ -90,9 +90,9 @@ lock_check() {
     printf 'LOCK,file=scripts/cad-measure/requirements-common.txt,sha256=%s,expected=%s,result=fail\n' "$common_sha" "$LOCK_COMMON_SHA"; rc=1
   fi
   if [ "$ocp_sha" = "$LOCK_OCP_SHA" ]; then
-    printf 'LOCK,file=scripts/cad-measure/requirements-ocp-7.9.3.1.1.txt,sha256=%s,result=ok\n' "$ocp_sha"
+    printf 'LOCK,file=scripts/cad-measure/requirements-ocp-8.0.1.1.0.txt,sha256=%s,result=ok\n' "$ocp_sha"
   else
-    printf 'LOCK,file=scripts/cad-measure/requirements-ocp-7.9.3.1.1.txt,sha256=%s,expected=%s,result=fail\n' "$ocp_sha" "$LOCK_OCP_SHA"; rc=1
+    printf 'LOCK,file=scripts/cad-measure/requirements-ocp-8.0.1.1.0.txt,sha256=%s,expected=%s,result=fail\n' "$ocp_sha" "$LOCK_OCP_SHA"; rc=1
   fi
   have=$(grep -E '^[A-Za-z0-9]' "$SUBSET" | sed 's/==.*//' | sort | tr '\n' '+' | sed 's/+$//')
   want="cadquery-ocp-novtk+cadquery-ocp-proxy+numpy"
@@ -114,7 +114,9 @@ lock_check() {
 }
 
 inputs_short() {
-  shasum -a 256 "$DOCKERFILE" "$SUBSET" "$HELPER" | awk '{print $1}' | shasum -a 256 | cut -c1-12
+  shasum -a 256 "$DOCKERFILE" "$REPO_ROOT"/cmd/cad-worker/requirements-*.txt \
+    "$REPO_ROOT"/cmd/cad-worker/vtk* "$REPO_ROOT"/cmd/cad-worker/helper/* \
+    | awk '{print $1}' | shasum -a 256 | cut -c1-12
 }
 
 ensure_image() {
@@ -125,10 +127,9 @@ ensure_image() {
     return 0
   fi
   stage=$(mktemp -d "${TMPDIR:-/tmp}/cad-worker-build.XXXXXX")
-  mkdir -p "$stage/cmd/cad-worker/helper"
+  mkdir -p "$stage/cmd"
   cp "$DOCKERFILE" "$stage/Dockerfile.cad-worker"
-  cp "$SUBSET" "$stage/cmd/cad-worker/requirements-mesh.txt"
-  cp "$HELPER" "$stage/cmd/cad-worker/helper/cad-mesh"
+  cp -R "$REPO_ROOT/cmd/cad-worker" "$stage/cmd/cad-worker"
   cad_log "building $tag"
   if ! docker build -f "$stage/Dockerfile.cad-worker" --target engine -t "$tag" "$stage" >&2; then
     rm -rf "$stage"

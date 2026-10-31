@@ -146,7 +146,7 @@ module("OCP.Bnd", Bnd_Box=Box)
 module("OCP.TopAbs", TopAbs_FACE=0)
 module("OCP.TopExp", TopExp_Explorer=Explorer)
 module("OCP.TopLoc", TopLoc_Location=lambda: None)
-module("OCP.TopoDS", TopoDS=types.SimpleNamespace(Face_s=staticmethod(lambda x: x)))
+module("OCP.TopoDS", TopoDS=types.SimpleNamespace(Face=staticmethod(lambda x: x)))
 module("OCP.BRep", BRep_Tool=types.SimpleNamespace(Triangulation_s=staticmethod(triangulation)))
 module("OCP.IMeshData", IMeshData_Status=types.SimpleNamespace(**status))
 

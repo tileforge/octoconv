@@ -98,7 +98,7 @@ def face_survey(shape):
     explorer = TopExp_Explorer(shape, TopAbs_FACE)
     while explorer.More():
         faces += 1
-        triangulation = BRep_Tool.Triangulation_s(TopoDS.Face_s(explorer.Current()), TopLoc_Location())
+        triangulation = BRep_Tool.Triangulation_s(TopoDS.Face(explorer.Current()), TopLoc_Location())
         if triangulation is not None and triangulation.NbTriangles() > 0:
             meshed += 1
             triangles += triangulation.NbTriangles()

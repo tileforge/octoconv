@@ -758,7 +758,10 @@ def read_back(out_dir):
     from OCP.GProp import GProp_GProps
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_Reader
-    from OCP.TColStd import TColStd_SequenceOfAsciiString
+    try:
+        from OCP.TColStd import TColStd_SequenceOfAsciiString
+    except ImportError:
+        from OCP.collections import Sequence_TCollection_AsciiString as TColStd_SequenceOfAsciiString
     from OCP.TopAbs import TopAbs_SOLID
     from OCP.TopExp import TopExp_Explorer
 

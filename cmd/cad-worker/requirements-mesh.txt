@@ -74,8 +74,8 @@ numpy==2.4.6 \
     # via
     #   -r requirements-common.in
     #   ezdxf
-cadquery-ocp-novtk==7.9.3.1.1 \
-    --hash=sha256:0b566f9e00f0e4255996b2bcb18b580dc758f451fd2b7546542fae08261db535 \
-    --hash=sha256:860649d3d2c2d43eb2068ff604bce198dbebf402eedae496829d12de4107a2f5
-cadquery-ocp-proxy==7.9.3.1.1 \
-    --hash=sha256:ca4164ec4b54956d9fc3e68c67d555b5486cb963c2f71e18df005ba16b921c91
+cadquery-ocp-novtk==8.0.1.1.0 \
+    --hash=sha256:b29d3b11b2798cdcc7ab6cb5ddd0ecb741885f36626044c54814e4879b9e9729 \
+    --hash=sha256:ecc2a1788477c4edf7d262d0af98e8cfc1c4ee9aa2edfe6fda869ddccf3cb4ec
+cadquery-ocp-proxy==8.0.1.1.0 \
+    --hash=sha256:98c71bb60cfb651afe179b134ab88580fd75384fce0cc6d633f727002cd18abd
