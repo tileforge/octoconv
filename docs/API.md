@@ -41,8 +41,10 @@ really pings Postgres, Redis and S3.
 - Every create intake slot of the API process taken → `429` with `Retry-After` and
   `code: "intake_busy"` — the service's own capacity, not your budget; retry the request
   unchanged
-- Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
-  zip-bomb shape → `422`, rejected before anything touches storage
+- Unsupported pair, mismatched content, oversized declared dimensions, embedded macros for
+  operations other than `sanitize`, or a zip-bomb shape → `422`, rejected before anything
+  touches storage. For supported macro-enabled document formats, `sanitize` accepts the
+  upload and removes macros.
 - A ZIP-based upload whose central directory is past the bound `POST /v1/inspect` reads →
   `422` with `code: "invalid_request"` and the message "the archive's central directory is
   larger than this service reads; repackage the archive with fewer entries", rejected before

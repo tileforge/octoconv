@@ -32,16 +32,41 @@ docker compose run --rm createbucket
 > `minio.image` and `minio.mcImage`.
 >
 > A `minio_data` volume written by the old root-run image makes MinIO exit at startup with
-> `Unable to initialize backend: Unable to write to the backend`. Either keep the data and
-> hand the volume to the new user once (with the stack stopped):
+> `Unable to initialize backend: Unable to write to the backend`. First resolve its actual
+> volume name from the existing MinIO container, before removing any containers. This works
+> with a stopped container too. Use the same Compose project name and file options as your
+> stack for every command below, and keep the same Docker context and shell session:
 >
 > ```bash
-> docker run --rm -u 0 -v octoconv_minio_data:/data --entrypoint /bin/sh \
+> minio_container=$(docker compose ps -aq minio)
+> minio_volume=$(docker inspect \
+>   --format '{{range .Mounts}}{{if and (eq .Type "volume") (eq .Destination "/data")}}{{.Name}}{{end}}{{end}}' \
+>   "${minio_container:?No MinIO container found for this Compose project}")
+> docker volume inspect "${minio_volume:?No named volume mounted at /data}" \
+>   --format 'MinIO data volume: {{.Name}}'
+> ```
+>
+> Either keep the data and hand the volume to the new user once, with the stack stopped:
+>
+> ```bash
+> docker volume inspect "${minio_volume:?Resolve the MinIO volume first}" >/dev/null &&
+> docker compose stop &&
+> docker run --rm -u 0 -v "$minio_volume:/data" --entrypoint /bin/sh \
 >   cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 \
 >   -c 'chown -R 65532:65532 /data'
 > ```
 >
-> or drop the dev objects with `docker volume rm octoconv_minio_data`.
+> Or discard the MinIO dev objects by removing that volume. Remove the stack's containers
+> first so they no longer reference it; the other named volumes are retained:
+>
+> ```bash
+> docker volume inspect "${minio_volume:?Resolve the MinIO volume first}" >/dev/null &&
+> docker compose down &&
+> docker volume rm "$minio_volume"
+> ```
+>
+> After either option, run `docker compose up -d --wait postgres redis minio` and
+> `docker compose run --rm createbucket` again.
 >
 > The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to
 > `minio.dataOwnership.uid`/`gid` (65532 by default; the same values set the pod's `runAsUser`, `runAsGroup`
