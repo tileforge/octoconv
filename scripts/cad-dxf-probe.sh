@@ -151,7 +151,7 @@ lock_line() {
   hashes=$(grep -c 'hash=sha256:' "$DXF_LOCK" || true)
   packages=$(grep -E '^[A-Za-z0-9_.-]+==' "$DXF_LOCK" | awk '{print $1}' | paste -sd '+' -)
   if numpy_block "$MESH_LOCK" | cmp -s - <(numpy_block "$COMMON_LOCK"); then numpy=identical; fi
-  if [ "$hashes" != 179 ] || [ "$numpy" != identical ]; then
+  if [ "$hashes" != 194 ] || [ "$numpy" != identical ]; then
     printf 'LOCK,file=requirements-dxf.txt,cmp=identical,hashes=%s,numpy_block=%s,result=fail\n' "$hashes" "$numpy"
     return 1
   fi
