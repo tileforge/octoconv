@@ -1,3 +1,5 @@
-ezdxf==1.4.4
+ezdxf==1.4.5
+# NumPy 2.5 requires Python 3.12; the Bookworm images use Python 3.11.
 numpy==2.4.6
 pillow==13.0.0
+fonttools==4.68.0
