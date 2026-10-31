@@ -134,6 +134,11 @@ func liveHeapPeakValid(p livePeak) error {
 
 func liveHeapPeak(t *testing.T, call func()) livePeak {
 	t.Helper()
+	return liveHeapPeakWithSampling(t, call, true)
+}
+
+func liveHeapPeakWithSampling(t *testing.T, call func(), asyncSampling bool) livePeak {
+	t.Helper()
 	old := debug.SetGCPercent(1)
 	defer debug.SetGCPercent(old)
 	runtime.GC()
@@ -145,20 +150,24 @@ func liveHeapPeak(t *testing.T, call func()) livePeak {
 	topLive.Store(baseLive)
 	topAlloc.Store(baseAlloc)
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		own := newLiveHeapSamples()
-		for !stop.Load() {
-			live, alloc, _ := readLiveHeap(own)
-			if live > topLive.Load() {
-				topLive.Store(live)
+	if asyncSampling {
+		go func() {
+			defer close(done)
+			own := newLiveHeapSamples()
+			for !stop.Load() {
+				live, alloc, _ := readLiveHeap(own)
+				if live > topLive.Load() {
+					topLive.Store(live)
+				}
+				if alloc > topAlloc.Load() {
+					topAlloc.Store(alloc)
+				}
+				time.Sleep(liveHeapSampleEvery)
 			}
-			if alloc > topAlloc.Load() {
-				topAlloc.Store(alloc)
-			}
-			time.Sleep(liveHeapSampleEvery)
-		}
-	}()
+		}()
+	} else {
+		close(done)
+	}
 	var p livePeak
 	callTopLive, callTopAlloc := baseLive, baseAlloc
 	began := time.Now()
@@ -259,6 +268,39 @@ func TestLiveHeapPeakCollectsCompletedCalls(t *testing.T) {
 	}
 	if p.peak < 8<<20 || p.peak > (8<<20)+(256<<10) {
 		t.Errorf("one 8 MiB window: live peak %d B", p.peak)
+	}
+}
+
+func TestLiveHeapPeakRecordsCompletedCallBeforeCleanup(t *testing.T) {
+	if os.Getenv(analysisChildEnv) == "" {
+		runAnalysisChild(t)
+		return
+	}
+	var calls int
+	p := liveHeapPeakWithSampling(t, func() {
+		// Exactly one measured GC per call guarantees later calls run.
+		debug.SetGCPercent(-1)
+		calls++
+		if calls == 1 {
+			window := make([]byte, 8<<20)
+			runtime.GC()
+			runtime.KeepAlive(window)
+			return
+		}
+		// The final sample must not contain the first call's window.
+		runtime.GC()
+	}, false)
+	if p.calls < 2 {
+		t.Fatalf("%d calls: the final sample still belongs to the allocating call", p.calls)
+	}
+	if err := liveHeapPeakValid(p); err != nil {
+		t.Error(err)
+	}
+	if p.peak < 8<<20 {
+		t.Errorf("first call's 8 MiB window: live peak %d B", p.peak)
+	}
+	if p.heapAllocPeak < 8<<20 {
+		t.Errorf("first call's 8 MiB window: HeapAlloc peak %d B", p.heapAllocPeak)
 	}
 }
 
