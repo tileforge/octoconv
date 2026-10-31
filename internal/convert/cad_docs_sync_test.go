@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	formatsDocPath   = "../../docs/FORMATS.md"
 	errorCodesPath   = "../../docs/ERROR-CODES.md"
 	measurementsPath = "../../docs/MEASUREMENTS.md"
 )
@@ -36,8 +37,8 @@ func docRow(t *testing.T, doc, path, prefix string) string {
 	return ""
 }
 
-func TestREADMECADRowNamesEveryCADPair(t *testing.T) {
-	row := docRow(t, readDoc(t, readmePath), readmePath, "| `cad` |")
+func TestFormatsDocCADRowNamesEveryCADPair(t *testing.T) {
+	row := docRow(t, readDoc(t, formatsDocPath), formatsDocPath, "| `cad` |")
 	cells := strings.Split(row, "|")
 	if len(cells) < 4 {
 		t.Fatalf("the cad row has %d cells: %q", len(cells), row)
@@ -51,13 +52,13 @@ func TestREADMECADRowNamesEveryCADPair(t *testing.T) {
 			t.Fatalf("the registry has no %s pair for the cad engine", op)
 		}
 		if op != convert.OperationConvert && !strings.Contains(converts, "`"+op+"`") {
-			t.Errorf("the README cad row does not name the %s operation: %q", op, converts)
+			t.Errorf("the formats doc cad row does not name the %s operation: %q", op, converts)
 		}
 		for _, p := range pairs {
 			formats[p.From], formats[p.To] = true, true
 			for _, f := range []string{p.From, p.To} {
 				if !strings.Contains(converts, "`"+f+"`") {
-					t.Errorf("the README cad row does not name %s of the %s pair %s -> %s: %q", f, op, p.From, p.To, converts)
+					t.Errorf("the formats doc cad row does not name %s of the %s pair %s -> %s: %q", f, op, p.From, p.To, converts)
 				}
 			}
 		}
@@ -68,7 +69,7 @@ func TestREADMECADRowNamesEveryCADPair(t *testing.T) {
 			continue
 		}
 		if !formats[convert.NormalizeFormat(tok)] {
-			t.Errorf("the README cad row names %s, which no cad pair uses", tok)
+			t.Errorf("the formats doc cad row names %s, which no cad pair uses", tok)
 		}
 	}
 }
