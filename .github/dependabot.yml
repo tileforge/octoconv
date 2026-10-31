@@ -31,7 +31,9 @@ updates:
 
   - package-ecosystem: pip
     directory: /scripts/cad-measure
-    # These OCP/VTK pins define benchmark variants; update them with lock.sh.
+    # Version updates only: keep fixed OCP/VTK benchmark variants out of the schedule.
+    # Security PRs can still touch these files. Regenerate and validate them through
+    # lock.sh before merging; see scripts/cad-measure/README.md.
     exclude-paths:
       - "requirements-ocp-*.txt"
       - "requirements-vtk.txt"

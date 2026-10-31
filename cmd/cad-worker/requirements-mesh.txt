@@ -72,7 +72,7 @@ numpy==2.4.6 \
     --hash=sha256:f407cb6b8e9d6d8c626bc73c945db1706035af8fd632295547bf1c9e46d092d6 \
     --hash=sha256:f74a575920ab21fe304421a3fc28793d82e299cae9eccb37084e9fc7f3617c20
     # via
-    #   -r -
+    #   -r requirements-common.in
     #   ezdxf
 cadquery-ocp-novtk==7.9.3.1.1 \
     --hash=sha256:0b566f9e00f0e4255996b2bcb18b580dc758f451fd2b7546542fae08261db535 \
