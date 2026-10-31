@@ -33,6 +33,10 @@ Also reads `OCTOCONV_OUTPUT_DIR`, `OCTOCONV_CONVERT_TIMEOUT`, `OCTOCONV_POLL_INT
 **`cmd/mcp-http`** speaks streamable HTTP, for in-cluster deployment
 (`deploy/chart/octoconv/templates/deployment-mcp-http.yaml`, gated by `mcpHttp.enabled`):
 
+- The transport is stateless: requests use `POST`, initialization does not issue
+  `Mcp-Session-Id`, and `GET`/`DELETE` return `405`. Legacy incoming session IDs
+  still pass through the key-ownership checks below.
+
 - **Auth is per-request, not per-process.** The pod holds no API key. Every request carries
   `Authorization: ApiKey <key>`, rejected with `401` before any JSON-RPC code runs, and a
   session-key binding rejects (`403`) a request whose `Mcp-Session-Id` doesn't match the key

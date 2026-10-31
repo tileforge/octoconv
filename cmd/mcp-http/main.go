@@ -241,8 +241,8 @@ func (b *sessionBindings) middleware(next http.Handler) http.Handler {
 				return
 			}
 			if r.Method == http.MethodDelete {
-				// Session close: serve the DELETE (the SDK answers 204), then
-				// drop the binding.
+				// Drop the local binding after forwarding DELETE, including
+				// when the stateless SDK answers 405 (no server-side session).
 				next.ServeHTTP(w, r)
 				b.drop(sessionID)
 				return
