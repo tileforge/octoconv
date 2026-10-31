@@ -18,9 +18,17 @@ the next class. `TestPreviewDocMatchesTheCode` in `internal/convert` holds the f
 | 3D views | `iso` (the default), `front`, `back`, `left`, `right`, `top`, `bottom` | `view` |
 | DXF views | `top` only; any `view` on a DXF render is refused with 422 `opts_not_applicable` | `view` |
 | measurements | a second output with role `measurements`, written together with the PNG or not at all | docs/MEASUREMENTS.md |
+| dimensions | enabled by default for 3D renders; `dimensions: false` returns the original unannotated PNG | `dimensions` |
 | pixel judge | the PNG is checked to show the model on a white page before anything is uploaded | docs/MEASUREMENTS.md, PNG check |
 
 The full option table and where each option applies are in docs/CAD.md.
+
+The 3D framing and pixel judge above describe the model image before annotation. With dimensions enabled,
+the validated model image is uniformly reduced into an inset square occupying 70% of the output width,
+starting at 14% from the left and 16% from the top (rounded to pixels). The heading, extension lines,
+arrows and labels are composed around it; output size and background remain as requested. Labels use
+the embedded Go Regular font. The values and unit provenance match the measurements JSON. Dimensions
+along an axis hidden by the view, or spanning less than one pixel, appear only in the heading.
 
 ## Non-previewable input
 

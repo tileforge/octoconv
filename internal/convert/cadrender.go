@@ -1,9 +1,11 @@
 package convert
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -87,7 +89,7 @@ func (c CADRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPa
 			return err
 		}
 	}
-	triangles, _, err := judgeBinarySTL(renderInput)
+	triangles, meshBounds, err := judgeBinarySTL(renderInput)
 	if err != nil {
 		return fmt.Errorf("cad: %w", err)
 	}
@@ -127,6 +129,30 @@ func (c CADRenderConverter) ConvertWithStages(ctx context.Context, inPath, outPa
 	f.Close()
 	if err != nil {
 		return err
+	}
+
+	if *o.Dimensions {
+		f, _, err := OpenJobFile(outPath)
+		if err != nil {
+			return fmt.Errorf("cad: read model for dimensions: %w", err)
+		}
+		var facts CADPixelFacts
+		model, err := cadReadFrame(f, *o.Size, o.Background, &facts)
+		f.Close()
+		if err != nil {
+			return err
+		}
+		annotated, err := cadDimensionImage(model, meshBounds, doc, o)
+		if err != nil {
+			return fmt.Errorf("cad: annotate dimensions: %w", err)
+		}
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, annotated); err != nil {
+			return fmt.Errorf("cad: encode dimensions: %w", err)
+		}
+		if err := writeNewFile(outPath, encoded.Bytes(), 0o600); err != nil {
+			return fmt.Errorf("cad: write dimensions: %w", err)
+		}
 	}
 
 	body, err := json.Marshal(doc)

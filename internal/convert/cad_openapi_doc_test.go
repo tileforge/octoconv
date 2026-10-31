@@ -279,6 +279,12 @@ func TestCADOpenAPIMatchesTheCode(t *testing.T) {
 					t.Errorf("CADOpts.%s has default %q, the code resolves none", tag, d)
 				}
 			case reflect.Pointer:
+				if field.Type().Elem().Kind() == reflect.Bool {
+					if p["type"] != "boolean" || p["default"] != strconv.FormatBool(def.Elem().Bool()) {
+						t.Errorf("CADOpts.%s must be a boolean with default %t", tag, def.Elem().Bool())
+					}
+					break
+				}
 				if p["type"] != "integer" {
 					t.Errorf("CADOpts.%s type is %q, want integer", tag, p["type"])
 				}

@@ -97,6 +97,7 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 			"3D views":     {cadViews, []string{"`" + CADViewIso + "` (the default)"}},
 			"DXF views":    {previewDocSet("top", "view", "opts_not_applicable"), []string{"422"}},
 			"measurements": {previewDocSet(jobs.OutputRoleMeasurements), []string{"together"}},
+			"dimensions":   {previewDocSet("dimensions: " + strconv.FormatBool(!*CADOpts{}.Resolved().Dimensions)), []string{"enabled by default"}},
 			"pixel judge":  {map[string]bool{}, []string{"before anything is uploaded"}},
 		}
 		for prop, w := range want {

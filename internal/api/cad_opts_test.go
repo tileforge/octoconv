@@ -41,6 +41,10 @@ func TestCreateJobCADOptsRejections(t *testing.T) {
 		{"size on convert", `{"size":512}`, errcode.OptsNotApplicable},
 		{"background on convert", `{"background":"transparent"}`, errcode.OptsNotApplicable},
 		{"unit on convert", `{"assume_unit":"inch"}`, errcode.OptsNotApplicable},
+		{"dimensions on convert", `{"dimensions":true}`, errcode.OptsNotApplicable},
+		{"dimensions false on convert", `{"dimensions":false}`, errcode.OptsNotApplicable},
+		{"dimensions string", `{"dimensions":"true"}`, errcode.InvalidOptions},
+		{"dimensions null", `{"dimensions":null}`, errcode.InvalidOptions},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -62,6 +66,26 @@ func TestCreateJobCADOptsRejections(t *testing.T) {
 				t.Errorf("enqueueCalls = %d, want 0", q.enqueueCalls)
 			}
 		})
+	}
+}
+
+func TestCreateJobCADDimensionsStored(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+		raw := `{"dimensions":false}`
+		if enabled {
+			raw = `{"dimensions":true}`
+		}
+		rec := postCADRender(t, repo, store, q, "in.step", readCADFixture(t, "public/LM8UU.step"), raw)
+		if rec.Code != http.StatusAccepted && rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil {
+			t.Fatal("no job was created")
+		}
+		if want := map[string]any{"dimensions": enabled}; !reflect.DeepEqual(repo.created.Opts, want) {
+			t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, want)
+		}
 	}
 }
 
@@ -190,6 +214,8 @@ func TestCreateJobDXFRenderViewOrQualityIsOptsNotApplicable(t *testing.T) {
 		`{"quality":"fine"}`,
 		`{"size":512,"view":"iso"}`,
 		`{"background":"transparent","quality":"draft"}`,
+		`{"dimensions":true}`,
+		`{"dimensions":false}`,
 	} {
 		t.Run(opts, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}

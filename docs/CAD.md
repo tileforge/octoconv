@@ -47,12 +47,28 @@ draws a square PNG preview and writes the measurements document beside it (see O
 | `quality` | `draft`, `standard`, `fine` | `standard` |
 | `background` | `opaque`, `transparent` | `opaque` |
 | `assume_unit` | `mm`, `cm`, `m`, `inch`, `foot`, `micrometre` | `none` |
+| `dimensions` | `true`, `false` | `true` |
 
 `size` is the edge of the square PNG in pixels, an integer. `quality` is the tessellation density of a STEP or
 IGES model. `background` `opaque` is white #FFFFFF; `transparent` leaves the background at alpha 0.
 `assume_unit` names the unit of a file that declares none; its default `none` assumes nothing, and it never
 overrides a declared unit (docs/MEASUREMENTS.md, Unit sources). An unknown option, a value outside its set or
 a `size` outside the range is `invalid_options`.
+
+`dimensions` adds overall bounding-box dimension lines and a `Size: X × Y × Z unit` heading to a 3D
+preview. It is a boolean, not a string. Dimensions are enabled by default; use `{"dimensions":false}`
+for the original unannotated PNG. This changes the default appearance of 3D render jobs, including
+jobs whose stored options omit `dimensions`; existing stored images are unchanged.
+
+Values and units come from the same measurements document returned with the PNG, in X, Y, Z order.
+They describe the axis-aligned bounding box in the file's coordinates, not hole diameters or tolerances.
+Labels use two decimal places with a redundant trailing zero removed; very small or large values use
+four significant digits, with scientific notation when needed. Unknown units are labeled `units unspecified`; units
+supplied with `assume_unit` are labeled `assumed`. An STL is never silently treated as millimetres.
+In an orthographic view, hidden or subpixel axes have no dimension line but remain in the heading.
+Short dimensions use outward arrows; labels are moved apart to avoid overlap. If a separate label
+cannot fit clearly within the frame, its value remains in the heading.
+The annotation font is the embedded Go Regular font. DXF drawings retain their own dimension entities.
 
 ## Option applicability
 
@@ -61,9 +77,9 @@ a `size` outside the range is `invalid_options`.
 | `convert` | `step` | `quality` |
 | `convert` | `iges` | `quality` |
 | `convert` | `dxf` | — |
-| `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit` |
-| `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit` |
-| `render` | `stl` | `view`, `size`, `background`, `assume_unit` |
+| `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
+| `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
+| `render` | `stl` | `view`, `size`, `background`, `assume_unit`, `dimensions` |
 | `render` | `dxf` | `size`, `background`, `assume_unit` |
 
 A well-formed option outside this table for its operation and format is refused at create with 422
