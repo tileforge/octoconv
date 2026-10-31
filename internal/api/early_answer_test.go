@@ -791,14 +791,14 @@ func TestEveryAnswerClassBeforeTheBodyCutsTheBodyRead(t *testing.T) {
 	}
 }
 
-func TestEarlyAnswerIsStatedInTheReadme(t *testing.T) {
-	raw, err := os.ReadFile("../../README.md")
+func TestEarlyAnswerIsStatedInTheAPIDocs(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/API.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, section, ok := strings.Cut(string(raw), "**Status semantics**")
 	if !ok {
-		t.Fatal("README.md has no Status semantics section")
+		t.Fatal("docs/API.md has no Status semantics section")
 	}
 	section, _, _ = strings.Cut(section, "\n**")
 	flat := strings.Join(strings.Fields(section), " ")
@@ -809,7 +809,7 @@ func TestEarlyAnswerIsStatedInTheReadme(t *testing.T) {
 		"keeps the connection",
 	} {
 		if !strings.Contains(flat, phrase) {
-			t.Errorf("README.md Status semantics does not say %q", phrase)
+			t.Errorf("docs/API.md Status semantics does not say %q", phrase)
 		}
 	}
 }

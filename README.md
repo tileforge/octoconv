@@ -1,604 +1,130 @@
 # 🐙 OctoConv
 
-**An async, hardened file-conversion service in Go.** Upload a file over HTTP, get it back
-converted — with mandatory auth, per-client quotas, signed webhooks, and engines that run
-confined.
+Self-hosted file conversion for your services. Upload through one HTTP API,
+follow the job, and download the result — or receive a signed webhook.
 
+<p align="center">
+  <picture>
+    <source media="(max-width: 600px)" srcset="assets/readme/hero-mobile.svg">
+    <img src="assets/readme/hero.svg" width="100%"
+         alt="OctoConv converts PNG to WebP, DOCX to PDF, and MOV to MP4 through one asynchronous API.">
+  </picture>
+</p>
+
+[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)](go.mod)
 
-A client uploads a file through the REST API; OctoConv stores it in S3-compatible object
-storage, queues a job, and a worker runs an external conversion engine and writes the result
-back. PostgreSQL is the system of record for job state; Redis ([asynq][asynq]) is the queue
-broker. Each engine class has its own queue and its own worker deployment, so pools scale
-independently.
+[Quick start](#quick-start) · [Formats](docs/FORMATS.md) ·
+[API reference](docs/openapi.yaml) · [Documentation](docs/README.md)
 
-> [!NOTE]
-> OctoConv is built for service-to-service use inside one organization. Authentication,
-> quotas and isolation are real; public multi-tenancy and billing are deliberately not.
+## What it does
 
-**Contents** — [Why](#why-octoconv) · [Engines](#engines-and-operations) ·
-[Architecture](#architecture) · [Quick start](#quick-start) · [API](#api) ·
-[Quotas](#quotas-and-fairness) · [Sandboxing](#sandboxing-the-tex-engine) ·
-[Configuration](#configuration) · [Documentation](#documentation) · [MCP](#mcp-servers) ·
-[Roadmap](#roadmap)
+| Files | Operations |
+|---|---|
+| Images | Convert PNG, JPEG, WebP, HEIC and TIFF |
+| Documents & markup | Office → PDF, HTML → PDF, LaTeX → PDF, curated Pandoc conversions |
+| Audio & video | Transcribe speech, transcode video, extract audio and thumbnails |
+| Scans | OCR from images and PDFs into text, hOCR or ALTO |
+| CAD | STEP/IGES → STL, DXF → SVG/PDF, PNG previews with measurements |
+| Content inspection | Inspect supported files or rebuild them with the `sanitize` operation |
+
+3D CAD previews show dimensions by default. See [CAD options](docs/CAD.md) for
+views, transparency, size limits and `dimensions: false`.
+The live `GET /v1/formats` endpoint lists the supported format pairs and operations.
 
 ## Why OctoConv
 
-Most "convert my file" services are a thin wrapper around a CLI tool with no safety net, or
-a SaaS you don't control. OctoConv sits in between: a small, auditable Go service you
-self-host, designed around the failure modes that actually bite —
+- **One integration.** API keys, job status, progress events, presets and callbacks
+  work across the conversion engines. [MCP clients](docs/MCP.md) use the same API.
+- **Bounded processing.** Upload validation, per-client quotas, engine timeouts and
+  filesystem confinement limit what a submitted file can do.
+- **Recoverable jobs.** PostgreSQL records job state; a reconciler recovers stranded
+  work. Separate worker queues let each engine pool scale independently.
 
-- **A worker crashes mid-conversion.** A reconciler sweeps Postgres for stranded jobs and
-  recovers them idempotently, under a bounded retry cap.
-- **A webhook delivery silently drops** — a Redis blip, a restart between `MarkDone` and
-  enqueue. The reconciler catches that gap too, and delivers exactly once.
-- **A client lies about file type.** Every upload is sniffed by magic bytes and container
-  structure, never trusted by extension, before it reaches storage or an engine.
-- **A "PNG" is a 65535×65535 decompression bomb.** Declared dimensions — or, for office
-  documents, declared uncompressed ZIP size — are checked before any decoding happens.
-- **An engine hangs or forks.** Every invocation goes through a wrapper that puts the child
-  in its own process group and SIGKILLs the group on timeout — verified against a real
-  forking tree (LibreOffice's `oosplash` → `soffice.bin`), not assumed.
-- **A document is a program.** A `.tex` has macros, control flow and file input. The TeX
-  engine runs under a Landlock ruleset that grants the job's own directory and nothing else
-  — see [Sandboxing the TeX engine](#sandboxing-the-tex-engine).
-- **One client eats the cluster.** Per-client, per-engine caps on concurrency, daily bytes
-  and daily job count, rolled out through an observe-then-enforce mode.
+Built for service-to-service use inside an organization. Public multi-tenancy and
+billing are outside its scope. [Operations](docs/OPERATIONS.md) explains the
+security boundaries, recovery and deployment requirements.
 
-## Engines and operations
+## Setup
 
-Every job carries an **operation** as well as a format pair. `convert` is the default;
-`sanitize` rebuilds a file in its own format with active content stripped; `render` draws a
-CAD file as a PNG preview and adds its measurements as a second output with role
-`measurements` ([`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md)).
+You need **Go 1.27.3+**, **Docker with Compose**, and a Linux Docker host or VM
+with Landlock support. Workers refuse to start if required confinement is unavailable.
 
-| Class | Converts | Engine |
-|---|---|---|
-| `image` | `png` `jpg` `webp` `heic` `tiff`, any-to-any | [libvips][libvips] |
-| `document` | `docx` `xlsx` `pptx` `odt` `ods` `odp` → `pdf`; `docx`↔`odt`, `xlsx`↔`ods`, `pptx`↔`odp` | LibreOffice headless |
-| `html` | `html` → `pdf` | headless Chromium |
-| `audio` | `mp3` `wav` `m4a` `ogg` and video containers → `txt` `srt` `vtt` `json` | whisper.cpp |
-| `av` | `mov`/`avi`/`mkv`/`webm` → `mp4`; `mp4` → `webm`; audio extract; thumbnail | ffmpeg |
-| `ocr` | `jpg` `png` `tiff` `webp` `pdf` → `txt` `hocr` `alto` | Tesseract |
-| `pandoc` | `md` `rst` `org` `latex` `html` `docx` `epub`, across a curated allowlist | pandoc |
-| `probe` | `sanitize`: `pdf` `docx` `xlsx` `pptx` `jpg` `png` rebuilt in the same format, and `docm` `xlsm` `pptm` rebuilt into their macro-free extension; also serves `POST /v1/inspect` | in-process |
-| `tectonic` | `latex` → `pdf`, single file or multi-file project | [tectonic][tectonic] |
-| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres; `dxf` → `svg` `pdf`; `render`: `step` `iges` `stl` `dxf` → `png` | OCCT through cadquery-ocp; VTK for 3D previews; ezdxf and librsvg for DXF |
+From the repository root, start the image-conversion path:
 
-`GET /v1/formats` returns this table as the service itself sees it — derived from the
-converter registry, never hand-maintained.
+```bash
+cp .env.example .env
+# Set API_KEY_SALT to your own random value in .env before creating a key.
+docker compose up -d --wait postgres redis minio
+docker compose run --rm createbucket
 
-## Architecture
-
-```
-                 multipart upload                 asynq (Redis)
-Client ────────────────────────▶ API ───────────────────────────▶ Worker
-                                  │                                  │
-                                  ▼                                  ▼
-                            PostgreSQL                        external engine,
-                        (jobs, job_events,                  via a hardened process
-                         webhook_deliveries)                  wrapper (+ Landlock
-                                  │                            for tex)
-                                  │                                  │
-                                  │                                  ▼
-                                  │                          S3 / MinIO storage
-                                  ▼
-                          presigned download URL
-                          or signed webhook push
+set -a
+. ./.env
+set +a
+go run ./cmd/migrate
+docker compose up -d --build worker webhook-worker-1
+go run ./cmd/manage-clients create "demo"
+# Save the printed API key; it is shown only once.
+go run ./cmd/api
 ```
 
-A job row is written to Postgres **before** the task is enqueued, so a crash in between
-leaves an inspectable row rather than an orphaned message. Every status change goes through
-one guarded transition that locks the row, checks an allow-list of source statuses, and
-appends to an append-only event log in the same transaction.
-
-<details>
-<summary>Repository layout</summary>
-
-```
-cmd/
-  api/                — HTTP server: upload, inspect, status, presigned downloads
-  worker/             — image conversion (libvips)
-  document-worker/    — office documents (LibreOffice)
-  chromium-worker/    — HTML → PDF (headless Chromium)
-  audio-worker/       — audio transcription (whisper.cpp)
-  av-worker/          — video transcode/extract/thumbnail (ffmpeg)
-  ocr-worker/         — text extraction (Tesseract)
-  pandoc-worker/      — markup-family conversion (pandoc)
-  probe-worker/       — sanitize operation
-  tectonic-worker/    — LaTeX → PDF, Landlock-confined
-  cad-worker/         — STEP and IGES → STL (OCCT), DXF → SVG/PDF, PNG previews, Landlock-confined
-  webhook-worker/     — signed webhook delivery + reconciler sweep
-  mcp-server/         — stdio MCP server
-  mcp-http/           — streamable-HTTP MCP server for in-cluster use
-  manage-clients/     — operator CLI: API keys, quotas, in-flight jobs
-  manage-presets/     — operator CLI: named conversion presets
-  migrate/            — apply embedded SQL migrations
-internal/
-  api/                — routes, handlers, auth, rate limiting, SSRF guard, quota gate
-  convert/            — Converter interface + registry, hardened exec, engines
-  sandbox/            — Landlock ruleset construction and the exec-mode helper
-  jobs/               — job repository with guarded state transitions
-  queue/              — asynq task/queue definitions, retry schedules
-  worker/             — shared JobRunner: download → convert → upload → commit
-  reconciler/         — stranded-job and webhook-gap recovery
-  webhook/            — HMAC signing, delivery, dead-lettering
-  inspect/            — synchronous inspection and the findings vocabulary
-  mcpserver/          — MCP tool implementations, shared by both MCP binaries
-  cancel/ presets/ ratelimit/ errcode/ metrics/ storage/ auth/ clients/ db/
-  envcfg/ e2e/        — env parsing shared by every cmd; the live end-to-end suite
-deploy/chart/         — Helm chart with KEDA queue-depth autoscaling
-docs/                 — OpenAPI spec and reference docs
-```
-
-</details>
+The API runs locally so its download URLs use `localhost:9100`. This starts only
+the image worker and recovery service. See [local setup](docs/GETTING-STARTED.md)
+for other engines, the full Compose stack, ports and existing-volume migration.
 
 ## Quick start
 
-**Requires** Go 1.27.3+, Docker and Docker Compose.
-
-### 1. Start the infrastructure
+In a second terminal, use the key above to convert a checked-in sample:
 
 ```bash
-cp .env.example .env        # adjust ports/credentials if needed
-docker compose up -d
-```
-
-| Service | Host port | Notes |
-|---|---|---|
-| postgres | `5434` | `octo / octo-pass / octo_db` |
-| redis | `6379` | asynq broker |
-| minio | `9100` API, `9101` console | `minioadmin / minioadmin`, bucket auto-created |
-| api | `8090` | HTTP API |
-| engine workers | — | one service per engine class, each resource-limited, each running as `nobody` |
-| webhook-worker-1/2 | — | sole webhook consumer + reconciler sweeper |
-| asynqmon | `127.0.0.1:8980` | read-only queue dashboard |
-
-> [!NOTE]
-> MinIO runs from `cgr.dev/chainguard/minio`, pinned by digest (Docker Hub no longer serves
-> the official MinIO images). The image carries `mc`, which the bucket-creation job uses, and
-> the process runs as uid 65532. To bump the digest, follow the comment above the `minio`
-> service in `docker-compose.yml`; it updates both compose image lines and the chart's
-> `minio.image` and `minio.mcImage`.
->
-> A `minio_data` volume written by the old root-run image makes MinIO exit at startup with
-> `Unable to initialize backend: Unable to write to the backend`. Either keep the data and
-> hand the volume to the new user once (with the stack stopped):
->
-> ```bash
-> docker run --rm -u 0 -v octoconv_minio_data:/data --entrypoint /bin/sh \
->   cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 \
->   -c 'chown -R 65532:65532 /data'
-> ```
->
-> or drop the dev objects with `docker volume rm octoconv_minio_data`.
->
-> The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to
-> `minio.dataOwnership.uid`/`gid` (65532 by default; the same values set the pod's `runAsUser`, `runAsGroup`
-> and `fsGroup`) before the server starts. `minio.dataOwnership.migrate: false` removes that container, and
-> `minio.dataOwnership.image` (pinned by digest, needs GNU `chown`) replaces `minio.image` for it.
-
-> [!IMPORTANT]
-> The containerized `api` presigns URLs against the internal `minio:9000` endpoint, which
-> your host cannot reach. To download results from your machine, run `api` locally (step 3)
-> so links point at `localhost:9100`.
-
-### 2. Run migrations
-
-```bash
-set -a && . ./.env && set +a
-go run ./cmd/migrate
-```
-
-### 3. Start the services
-
-```bash
-docker compose up -d --build worker     # containerized image worker
-set -a && . ./.env && set +a
-go run ./cmd/api                        # HTTP API on :8090
-```
-
-Or fully containerized, subject to the presigned-URL caveat above:
-
-```bash
-docker compose up -d --build
-```
-
-### 4. Issue an API key
-
-```bash
-go run ./cmd/manage-clients create "my-service"
-# client id: <uuid>
-# api key (save now, shown once): <raw-key>
-```
-
-Keys are printed exactly once and never stored or logged in plaintext — only a salted
-SHA-256 hash lives in Postgres. Rotate without downtime through a second active slot:
-
-```bash
-go run ./cmd/manage-clients add-key <client-id>
-go run ./cmd/manage-clients revoke <client-id> <primary|secondary>
-```
-
-### 5. Convert something
-
-```bash
-curl -H "Authorization: ApiKey <raw-key>" \
-  -F file=@photo.png -F target=webp http://localhost:8090/v1/jobs
+export OCTOCONV_API_KEY='<your-api-key>'
+curl -sS http://localhost:8090/v1/jobs \
+  -H "Authorization: ApiKey $OCTOCONV_API_KEY" \
+  -F file=@internal/convert/testdata/ocr/text_sample.png \
+  -F target=webp
 # {"job_id":"...","status":"queued"}
-
-curl -H "Authorization: ApiKey <raw-key>" http://localhost:8090/v1/jobs/<job_id>
-# {"job_id":"...","status":"done","download_url":"..."}
 ```
 
-Add `-F callback_url=https://your-service/hooks/octoconv` to skip polling and receive a
-signed webhook on completion, or stream progress from `GET /v1/jobs/{id}/events`.
-
-## API
-
-Every `/v1/*` route requires `Authorization: ApiKey <raw-key>`. `GET /healthz` is public and
-really pings Postgres, Redis and S3.
-
-| Route | Purpose |
-|---|---|
-| `POST /v1/jobs` | Create a conversion job from a multipart upload |
-| `GET /v1/jobs` | List the caller's jobs, paginated |
-| `GET /v1/jobs/{id}` | Job status, and a presigned download URL once `done` |
-| `GET /v1/jobs/{id}/events` | Server-sent progress stream for one job |
-| `POST /v1/jobs/{id}/cancel` | Cancel a `queued` or `active` job |
-| `POST /v1/inspect` | Inspect a file synchronously — no job, no storage write |
-| `GET /v1/formats` | Supported operations and format pairs, from the live registry |
-| `/v1/presets` | Named conversion presets: create, list, show, update, deactivate |
-| `/v1/system/presets`, `/v1/system/usage` | Operator-only; non-operators get `404`, never `403` |
-
-**Status semantics**
-
-- Request line and headers together above 64 KiB, or more than 500 header values → `431` with a plain-text body, answered
-  before the key or the rate limit is checked; no `code`
-- No key, or an invalid/revoked one → `401`
-- A refusal sent before the request body is read (`401`, `429` and the other early answers)
-  comes with `Connection: close`: the server reads no more of the body, so send the retry on a
-  new connection
-- Any other answer sent before the request body is read, `2xx` included (for example
-  `GET /healthz` with a body), waits at most 500 ms for the rest of a body the route does not
-  read: a body that has not arrived by then is dropped and the connection closes after the
-  answer; one that arrives in time keeps the connection
-- A JSON request body (`POST` and `PUT` on `/v1/presets` and `/v1/system/presets`) has to
-  arrive in full within 1250 ms of the moment the server starts reading it: a body still
-  incomplete then is answered with `400` and `code: "invalid_request"`, and the connection
-  closes after the answer
-- A job belonging to another client, or one that doesn't exist → `404`; the API never
-  confirms the existence of jobs you don't own
-- Over the rate limit → `429` with `Retry-After` and `code: "rate_limited"`
-- Over quota → `429` with `Retry-After` and `code: "quota_exceeded"` — a consumption limit,
-  never an authorization boundary
-- Every create intake slot of the API process taken → `429` with `Retry-After` and
-  `code: "intake_busy"` — the service's own capacity, not your budget; retry the request
-  unchanged
-- Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
-  zip-bomb shape → `422`, rejected before anything touches storage
-- A ZIP-based upload whose central directory is past the bound `POST /v1/inspect` reads →
-  `422` with `code: "invalid_request"` and the message "the archive's central directory is
-  larger than this service reads; repackage the archive with fewer entries", rejected before
-  anything touches storage
-
-**Correlating a job with your own request.** Send your identifier as a
-`Correlation-Id` header on `POST /v1/jobs`. It comes back in the job status and in the
-webhook, and is written beside the `job_id` in every lifecycle log record, so a conversion
-can be followed from your side without a database session. At most 128 bytes of printable
-ASCII without spaces; anything else is `422` rather than truncated, because a value silently
-cut in half no longer matches what you searched for. Absent is not an error, and nothing is
-generated to replace it.
-
-> [!NOTE]
-> It is not a trace id and carries no tracing semantics. If OpenTelemetry is added later, it
-> links to this rather than replacing it.
-
-The HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml). Two things in it are held by
-tests rather than by care: its operation set is compared both ways against the live router,
-and every status a route can produce has a declared response — the handler's read from its
-source, the middleware's observed by driving the real router with requests that trip each
-rejection. The second is coverage, not equality: the spec may declare a response nothing
-produces. Response bodies and examples are maintained by hand,
-and the spec says which is which rather than promising an exactness nothing checks. Every
-machine-readable error code is frozen in [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
-
-<details>
-<summary>A LaTeX job can be a project, not just a file</summary>
-
-Repeat the `file` part. The first one is the document that gets typeset; the rest are
-materialised beside it under their own names, so `\input{preamble}`, `\bibliography{refs}`
-and `\includegraphics{fig.png}` resolve:
+Use the returned job ID to poll until `status` is `done`, then download from
+`download_url`:
 
 ```bash
-curl -H "Authorization: ApiKey <raw-key>" -F target=pdf -F source=latex \
-  -F file=@paper.tex -F file=@preamble.tex -F file=@refs.bib -F file=@fig.png \
-  http://localhost:8090/v1/jobs
+curl -sS "http://localhost:8090/v1/jobs/<job_id>" \
+  -H "Authorization: ApiKey $OCTOCONV_API_KEY"
+curl -L '<download_url>' -o result.webp
 ```
 
-Up to 32 parts, and the size limit applies to their **sum**, not to each — a thousand
-one-byte attachments would otherwise be a thousand uploads charged as one small job. An
-attachment named after a file the worker owns (`in.tex`, `out.pdf`) is refused rather than
-silently renamed, and every name is flattened to its base, so `../../etc/passwd` cannot name
-anything outside the job.
-
-</details>
-
-## Quotas and fairness
-
-Per-client, per-engine limits sit in front of `POST /v1/jobs`: **concurrent** (queued+active)
-jobs, **daily bytes** uploaded, and **daily job count**. Absent means unlimited; an explicit
-`max-concurrent 0` denies that engine to that client entirely.
-
-A pre-upload check rejects a request already over its limit, and an authoritative check
-under a per-(client, engine) lock decides admission once the body has arrived. The guarantee
-is **no over-admission**, not "nothing is uploaded" — a burst from one client can waste
-uploads that the authoritative check then rejects.
-
-```bash
-go run ./cmd/manage-clients set-limit <client-id> <engine> <max-concurrent|-> <max-daily-bytes|-> <max-daily-jobs|->
-go run ./cmd/manage-clients clear-limit <client-id> <engine>
-go run ./cmd/manage-clients show-limits <client-id>
-go run ./cmd/manage-clients set-mode <client-id> <observe|enforce>
-go run ./cmd/manage-clients list-inflight [<client-id>] [<older-than>]
-go run ./cmd/manage-clients cancel-job <job-id>
-```
-
-`-` is the token that writes NULL/unlimited — never a large sentinel number. `set-limit`
-rejects an `<engine>` that isn't a known class and prints the valid set, so a typo fails
-loudly instead of writing a limit no job can ever match:
-
-<!-- engine-classes: kept equal to convert.AllEngines() by
-     internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
-     the count is deliberately not written out, so a new engine cannot make this
-     paragraph false from a commit that never touches the README. -->
-`image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`, `cad`
-
-`clear-limit` and `show-limits` deliberately do not validate the engine — a row written
-before that check existed must still be listable and removable through the CLI.
-
-> [!TIP]
-> Every client starts in `observe`: limits are evaluated and each would-be rejection is
-> counted as `octoconv_quota_would_reject_total{client_id,engine,reason}`, but nothing is
-> rejected. Watch that counter for a full UTC day before `set-mode <client-id> enforce`.
-
-> [!WARNING]
-> `QUOTA_ENFORCEMENT_DISABLED=true` is the service-wide kill switch — verdicts are still
-> computed and counted, but nothing is rejected. An **empty or absent value does not disable
-> enforcement**; any unrecognized value is warned about at startup and leaves enforcement ON.
-
-<details>
-<summary>Why a stuck job can exhaust a client's budget — and what to do</summary>
-
-The daily cap counts **in-flight** (`queued`+`active`) jobs alongside the day's completed
-work, because an admitted job is already consuming the allowance it was admitted against. A
-job leaves that count only on a terminal transition, and a job that never reaches one holds
-part of its client's budget with no time bound — again on every subsequent UTC day.
-
-That is the price of the daily cap being real, not a defect. But stuck jobs normally clear
-through the reconciler's sweeper, and that sweeper runs inside **`cmd/webhook-worker`** under
-a fleet-wide advisory lock. **With every webhook-worker down, stranded jobs stop being
-recovered** — so "clients are running out of quota" can be a symptom of a stopped
-webhook-worker rather than of client traffic.
-
-```bash
-go run ./cmd/manage-clients list-inflight                # everything holding budget
-go run ./cmd/manage-clients list-inflight <client-id> 2h # one client, stuck 2h+
-go run ./cmd/manage-clients cancel-job <job-id>
-```
-
-Cancel through that command, never with a hand-written status update. `cancel-job` goes
-through the same guarded transition the client-facing cancel uses, which books the job's
-contribution to the daily rollup in the same transaction that frees its slot. A direct
-UPDATE frees the slot and never books the contribution — it repairs the quota and breaks its
-accounting at once, which is worse than the stuck job, because nothing looks wrong
-afterwards.
-
-Accounting notes: a canceled job is still charged the input bytes and job count it consumed,
-because a free cancel would make `create → cancel → create` an unbounded way around a daily
-cap. A job in flight across UTC midnight keeps counting on the new day. Its ledger row is
-written for the UTC day its terminal transaction *started*, since PostgreSQL's `now()` is
-transaction-start time — a known, accepted narrow window, not a refund path.
-
-</details>
-
-## Sandboxing the TeX engine
-
-A `.tex` is a program. `--untrusted` stops it from running shell commands and it does *not*
-stop it reading files — measured, not assumed, on a document that typeset the container's
-`/etc/hostname` into the PDF a client got back.
-
-So the engine runs under a [Landlock][landlock] ruleset that grants the job's own directory
-(read-write), the TeX bundle, the format cache and the system directories holding the binary
-(read-only), and nothing else — no `/etc`, no `/proc`, no mounted secret. It needs no
-capability and no privileged container: an unprivileged process restricts *itself*, and the
-restriction is inherited across `execve` and cannot be lifted.
-
-The engine gets the format **files** it needs, not the directory holding them: Landlock
-grants are recursive, so a cache pointed at `/etc/ssh` or a home directory would otherwise
-grant the credentials sitting beside the format. `TECTONIC_CACHE_DIR` is validated at
-startup for the same reason — it may not be a system directory, may not contain the
-directory jobs are materialised in, and must hold regular `*.fmt` files, since a symlink
-named `*.fmt` would grant whatever it points at. `.env.example` lists every refusal.
-
-> [!CAUTION]
-> On a kernel without Landlock the worker **exits at startup** rather than typesetting client
-> documents unconfined. Startup does not merely ask the kernel whether Landlock exists — a
-> policy can answer yes and then deny the ruleset — it **compiles a document** through the
-> real sandbox with the configured bundle and cache, so a host where the engine cannot run
-> confined fails once, at boot, instead of on every job. If that is deliberate, set
-> `TECTONIC_SANDBOX_DISABLED=true`: the only value that disables it, and one that logs what
-> it costs on every boot.
-
-**A second bound, on what the document costs rather than how long it takes.**
-`TECTONIC_ENGINE_CPU_SECONDS` caps the engine's CPU consumption through `RLIMIT_CPU`. The
-two are different quantities and only one of them is the document's fault: measured on the
-same document at a 2-CPU quota, an idle node gave 0.96s wall / 0.95s CPU, and a node
-oversubscribed 4× gave 3.67s wall / 1.08s CPU. Wall clock inflated fourfold while
-consumption did not move — so a wall deadline alone refuses documents for their neighbours'
-sins.
-
-Both bounds are kept because they catch different things. Exhausting the CPU budget is
-terminal: the document costs the same next time. The wall deadline still catches a process
-that is stuck rather than working, since one that sleeps forever consumes no CPU at all —
-and when it fires while the engine got less than half of one CPU, that is starvation and is
-retried, because the deadline said the attempt took too long, not that the document did.
-The budget is carried by the same helper that establishes the ruleset, so it applies even
-where the filesystem confinement is deliberately off.
-
-<details>
-<summary>Building the tex worker needs one extra step</summary>
-
-`Dockerfile.tectonic-worker` copies a 122 MiB TeX bundle out of the build context, and that
-file is a release asset rather than a committed one — so a fresh clone does not have it and
-the build fails with `"/deploy/tectonic-bundle/octoconv-bundle.ttb": not found`. Fetch it
-once, with `gh` authenticated against this repository:
-
-```bash
-scripts/tectonic-bundle-fetch.sh          # download and verify the digest
-scripts/tectonic-bundle-fetch.sh --check  # verify only
-```
-
-The digest is checked twice on purpose: by that script before the build starts, and again
-inside the image against the bytes that actually land there.
-
-</details>
-
-## Configuration
-
-Everything is environment-variable based. [`.env.example`](.env.example) is the full,
-documented list — including how each measured limit was derived.
-
-| Group | Variables |
-|---|---|
-| Infrastructure | `DATABASE_URL`, `DB_MAX_CONNS`, `REDIS_ADDR`, `S3_*`, `API_ADDR`, `HEALTH_ADDR`, `METRICS_ADDR` |
-| Auth & limits | `API_KEY_SALT`, `RATE_LIMIT_IP_RPM`, `RATE_LIMIT_CLIENT_RPM`, `OPERATOR_CLIENT_IDS`, `QUOTA_ENFORCEMENT_DISABLED` |
-| Upload guards | `MAX_UPLOAD_BYTES`, `MAX_IMAGE_PIXELS`, `MAX_DOCUMENT_UNCOMPRESSED_BYTES` |
-| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, `TECTONIC_ENGINE_CPU_SECONDS`, …). The image class predates the prefix: it is `WORKER_CONCURRENCY` and `ENGINE_TIMEOUT`, but `IMAGE_MAX_RETRY` |
-| Inspect | `INSPECT_MAX_UPLOAD_BYTES`, `INSPECT_MAX_WORK_BYTES`, `INSPECT_MAX_WORK_DURATION`, `INSPECT_MAX_CONCURRENT`, `RATE_LIMIT_INSPECT_RPM` |
-| Webhooks | `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PRESIGN_TTL`, `WEBHOOK_ALLOW_PRIVATE_IPS`, `WEBHOOK_ALLOW_INSECURE_HTTP` |
-| Lifecycle | `RECONCILER_*`, `JOBS_RETENTION`, `USAGE_RETENTION`, `STORAGE_TTL`, `SSE_*`, `PROGRESS_*` |
-
-> [!NOTE]
-> `callback_url` validation blocks loopback, RFC1918, link-local and cloud metadata
-> endpoints by default. `WEBHOOK_ALLOW_PRIVATE_IPS` opts into RFC1918 for internal-network
-> deployments; loopback and link-local stay blocked with no override.
-
-> [!NOTE]
-> Multipart parts larger than the API's in-memory budget are written to `TMPDIR`. The
-> chart mounts a disk-backed `emptyDir` there with a `sizeLimit` equal to the create
-> intake slots × `MAX_UPLOAD_BYTES` plus the inspect intake and analysis slots ×
-> `INSPECT_MAX_UPLOAD_BYTES`, and gives the api container equal `ephemeral-storage`
-> request and limit, so an overrun evicts the api pod rather than its neighbours.
-> `docker-compose.yml` only moves the spill out of the container's writable layer onto the
-> named volume `api_spill`, with no hard size: the chart is what bounds the disk.
-> A spill file outlives an api container that dies mid-request: the `emptyDir` lives as long
-> as the pod, and `api_spill` survives a recreate. So the api removes the regular
-> `multipart-<digits>` files directly in `TMPDIR` at startup, before it listens, and logs how
-> many it removed; `sizeLimit` only has to cover live intake slots.
+For completion notifications, submit an HTTPS `callback_url`; for live progress,
+subscribe to `GET /v1/jobs/{id}/events`. [HTTP API](docs/API.md) covers these routes,
+status codes and request limits.
 
 ## Documentation
 
-| Document | What's in it |
+| Start here | Details |
 |---|---|
-| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec; sync tests pin its route set to the live router and require every status a route can produce to be documented |
-| [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md) | Frozen list of every machine-readable error code, sync and async |
-| [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
-| [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |
-| [`docs/FINDINGS.md`](docs/FINDINGS.md) | The inspection findings vocabulary |
-| [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) | The measurements JSON contract that `render` jobs emit: schema, closed vocabularies, validation rules; what a DXF drawing shows and its known limits |
+| [Local setup](docs/GETTING-STARTED.md) | Startup, API keys, ports and full-stack prerequisites |
+| [Formats & operations](docs/FORMATS.md) | Conversion engines and supported routes |
+| [HTTP API](docs/API.md) · [OpenAPI](docs/openapi.yaml) | Requests, status semantics and integration contract |
+| [Operating OctoConv](docs/OPERATIONS.md) | Architecture, quotas, recovery, sandboxing and configuration |
+| [CAD](docs/CAD.md) · [Measurements](docs/MEASUREMENTS.md) | Preview options and geometry output |
+| [MCP integration](docs/MCP.md) | Local stdio and in-cluster HTTP servers |
+| [All documentation](docs/README.md) | Inspection, sanitization, typesetting and error codes |
 
-## MCP servers
+The optional [web workspace](https://github.com/tileforge/octoconv-ui) is a
+separate private repository. The API and workers run independently of it.
 
-Both expose the same tools — `convert_file`, `get_job_status`, `download_result`,
-`list_supported_formats`, `list_presets` — to any [Model Context Protocol][mcp] client. Each
-is a zero-privilege HTTP client of the public API: it holds a client API key, never a
-database, S3 or Redis credential.
-
-**`cmd/mcp-server`** speaks stdio, for a local agent:
+## Development
 
 ```bash
-go build -o octoconv-mcp ./cmd/mcp-server
+go build ./...
+go vet ./...
+go test ./... -timeout 25m
 ```
 
-```json
-{
-  "mcpServers": {
-    "octoconv": {
-      "command": "/path/to/octoconv-mcp",
-      "env": {
-        "OCTOCONV_BASE_URL": "http://localhost:8090",
-        "OCTOCONV_API_KEY": "<raw-key-from-manage-clients>"
-      }
-    }
-  }
-}
-```
+Tests that need external services are opt-in. See [scripts/ci-local.sh](scripts/ci-local.sh)
+for the broader checks and [AGENTS.md](AGENTS.md) for review rules. Keep API changes
+backward-compatible and include the relevant validation in your pull request.
 
-Also reads `OCTOCONV_OUTPUT_DIR`, `OCTOCONV_CONVERT_TIMEOUT`, `OCTOCONV_POLL_INTERVAL`, and
-`OCTOCONV_S3_DIAL_ADDR` for the operator-only case of redialing presigned downloads.
+## License
 
-**`cmd/mcp-http`** speaks streamable HTTP, for in-cluster deployment
-(`deploy/chart/octoconv/templates/deployment-mcp-http.yaml`, gated by `mcpHttp.enabled`):
-
-- **Auth is per-request, not per-process.** The pod holds no API key. Every request carries
-  `Authorization: ApiKey <key>`, rejected with `401` before any JSON-RPC code runs, and a
-  session-key binding rejects (`403`) a request whose `Mcp-Session-Id` doesn't match the key
-  that created it.
-- **Results are presigned-only** — HTTP mode never writes to the pod's filesystem.
-- **Config is `OCTOCONV_BASE_URL` + `MCP_HTTP_ADDR` only** (default `:8070`).
-- **ClusterIP only**, behind a NetworkPolicy that default-denies ingress except `:8070` from
-  within the release namespace. Reach it with
-  `kubectl -n octoconv port-forward svc/mcp-http 8070:8070`.
-
-## Frontend
-
-The optional web workspace is maintained separately in
-[**tileforge/octoconv-ui**](https://github.com/tileforge/octoconv-ui) (private).
-It has its own React/Vite build, tests, container and deployment examples.
-See that repository for setup and API upstream configuration.
-
-OctoConv's API, workers, Compose stack and Helm chart work without the UI or
-Node.js. Installing the web workspace is optional and does not change the API
-contract in [`docs/openapi.yaml`](docs/openapi.yaml).
-
-## Roadmap
-
-OctoConv ships in small, audited milestones. Each one closes with a live end-to-end
-verification pass, not just green unit tests. **v1.14 (Typesetting & Debt)** shipped
-2026-09-05.
-
-<details>
-<summary>Shipped milestones</summary>
-
-| Milestone | What landed |
-|---|---|
-| v1.0 Hardening MVP | Mandatory auth + rate limiting, signed webhooks with retry/dead-letter, retry classification, stranded-job reconciler, magic-byte validation, storage TTL, Prometheus + health |
-| v1.1 Tech Debt Cleanup | Opt-in RFC1918 webhooks, reconciler coverage for dropped deliveries, wall-clock soak test, image decompression-bomb guard |
-| v1.2 Document Engine | Office → PDF via LibreOffice, structural zip-bomb/macro validation, dedicated `document-worker` |
-| v1.3 Document Class v2 | Cross-format document pairs, OLE-CFB rejection, HTML/Chromium class, dedicated `webhook-worker` |
-| v1.4 CI, Presets & Debt | First CI workflow, named presets, registry-derived `GET /v1/formats` |
-| v1.5 MCP & Fidelity | stdio MCP server, veraPDF ISO-19005 validation, encrypted-vs-legacy OLE-CFB classification |
-| v1.6 Kubernetes & KEDA | Helm chart, KEDA queue-depth autoscaling, MCP over HTTP, operator-gated system presets |
-| v1.7 Audio Engine | Transcription via whisper.cpp |
-| v1.8 AV Engine | Transcode, audio extraction, thumbnails via ffmpeg |
-| v1.9–v1.12 | OCR and pandoc engine classes, SSE progress streaming, per-client quotas and fairness, job listing, retention |
-| v1.13 Inspect & Operations | Synchronous `POST /v1/inspect`, structured error codes, JobRunner consolidation, born-digital PDF routing, `sanitize` operation, `/v1/system/usage` |
-| v1.14 Typesetting & Debt | LaTeX → PDF via tectonic, multi-file projects, Landlock confinement of the engine's file reads |
-
-</details>
-
-**Planned**
-
-- Job pipelines crossing an engine boundary — `md → pdf` as pandoc → tectonic in one job
-- Kubernetes validation in CI (kind/k3d)
-- An `is_operator` column instead of the env allowlist
-- Trim/crop as validated closed-opts for video
-- Dependency-advisory tracking for pinned engine binaries
-
-[asynq]: https://github.com/hibiken/asynq
-[libvips]: https://www.libvips.org/
-[tectonic]: https://tectonic-typesetting.github.io/
-[landlock]: https://docs.kernel.org/userspace-api/landlock.html
-[mcp]: https://modelcontextprotocol.io
+[MIT](LICENSE).

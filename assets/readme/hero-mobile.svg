@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="440" viewBox="0 0 600 440" role="img" aria-labelledby="title desc">
+  <title id="title">OctoConv — one API for file conversion</title>
+  <desc id="desc">Supported examples: PNG to WebP, DOCX to PDF, and MOV to MP4 through one asynchronous API.</desc>
+  <rect width="600" height="440" rx="24" fill="#101A22"/>
+  <g id="message" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <text x="40" y="51" font-size="21" letter-spacing="1.5" fill="#79D5BC">SELF-HOSTED · ASYNC</text>
+    <text x="38" y="123" font-size="55" font-weight="700" fill="#F2F5F4">Files in</text>
+    <text x="38" y="184" font-size="55" font-weight="700" fill="#F2F5F4">Results out</text>
+  </g>
+  <line x1="40" y1="213" x2="560" y2="213" stroke="#32434E" stroke-width="1.5"/>
+  <g id="conversion-routes" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="27">
+    <text x="40" y="270" fill="#F2F5F4">photo.png</text>
+    <text x="352" y="270" fill="#79D5BC">photo.webp</text>
+    <path d="M287 261h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+    <text x="40" y="330" fill="#F2F5F4">report.docx</text>
+    <text x="352" y="330" fill="#79D5BC">report.pdf</text>
+    <path d="M287 321h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+    <text x="40" y="390" fill="#F2F5F4">clip.mov</text>
+    <text x="352" y="390" fill="#79D5BC">clip.mp4</text>
+    <path d="M287 381h35m-9-7 9 7-9 7" fill="none" stroke="#79D5BC" stroke-width="2"/>
+  </g>
+</svg>
