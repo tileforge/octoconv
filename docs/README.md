@@ -1,38 +1,42 @@
-# OctoConv API docs
+# OctoConv documentation
 
-`openapi.yaml` is an OpenAPI 3.1 spec describing the OctoConv HTTP API
-exactly as implemented in `internal/api/`.
+[Back to the project](../README.md).
 
-`ERROR-CODES.md` is the frozen, versioned list of every machine-readable
-error code the service can emit — both the synchronous 4xx/429 half and the
-asynchronous job-failure half. It is the migration target for the frontend
-and both MCP servers; publishing this list into `openapi.yaml` as an enum
-(ERRC-V2-02) is a separate, deferred step.
+## Get started
 
-`CAD.md` is the client entry point of the `cad` class: formats and aliases, operations and pairs, render
-options and where they apply, the two outputs, size ceilings, time limits, error codes and known limits.
-Tests in `internal/convert` and `internal/worker` hold every table in it equal to the code.
+- [Local setup](GETTING-STARTED.md): prerequisites, infrastructure, workers and API keys.
+- [Formats and operations](FORMATS.md): supported inputs, outputs and conversion engines.
+- [HTTP API](API.md): endpoints, request limits, errors and job correlation.
+- [OpenAPI 3.1](openapi.yaml): import into Yaak or use with your API tooling.
+- [MCP integration](MCP.md): stdio and streamable HTTP clients.
 
-`PREVIEW.md` is the preview contract: what a preview is (operation, format, sizes, background, framing,
-views, outputs) as fixed by the `cad` class, what happens on input that cannot be previewed, and the
-questions CAD did not decide, marked "not fixed" for the next class. A test holds the fixed values equal to
-the code.
+## File processing
 
-`MEASUREMENTS.md` is the contract for the measurements JSON of a CAD job (schema, closed vocabularies,
-validation rules). The `cad` engine's `render` operation emits it beside the PNG as the output with role
-`measurements`, and a test holds the document equal to the validator.
+| Document | Contract |
+|---|---|
+| [CAD](CAD.md) | Formats, previews, options, ceilings and known limits |
+| [Preview](PREVIEW.md) | Framing, sizes, backgrounds and output behavior |
+| [Measurements](MEASUREMENTS.md) | Geometry JSON schema and validation rules |
+| [Sanitization](SANITIZE.md) | What a same-format rebuild removes and retains |
+| [Typesetting](TYPESETTING.md) | TeX bundle, cache, confinement and measured limits |
+| [Inspection findings](FINDINGS.md) | Findings vocabulary and incomplete analysis |
+| [Error codes](ERROR-CODES.md) | Machine-readable synchronous and job-failure codes |
+| [Job search](JOB-SEARCH.md) | Filtering, pagination and supported search fields |
+
+## Operate and maintain
+
+- [Operations](OPERATIONS.md): architecture, quotas, recovery and configuration.
+- [Sandbox paths](SANDBOX-PATHS.md): measured filesystem access for each engine.
+- [Environment variables](../.env.example): configuration defaults and limit derivations.
+- [Helm chart](../deploy/chart/octoconv): Kubernetes deployment and KEDA scaling.
+- [Early milestones](HISTORY.md): historical record through v1.14.
+
+The documentation's route set, response coverage, engine list, limits and several
+format contracts are checked against code. OpenAPI response bodies and examples are
+maintained by hand; see [HTTP API](API.md) for the boundary of those checks.
 
 ## Import into Yaak
 
-Yaak -> **Import** -> **OpenAPI** -> select `docs/openapi.yaml`.
-
-## Auth
-
-Every `/v1/*` route requires an API key: `Authorization: ApiKey <key>`
-(the literal "ApiKey " prefix, then the raw key). `GET /healthz` is public.
-
-## Base URL
-
-The spec defines a `base_url` server variable, defaulting to
-`http://localhost:8090` (the local docker-compose deployment's `API_ADDR`).
-Override it in Yaak's environment settings to point at another deployment.
+Choose **Import → OpenAPI → `docs/openapi.yaml`**. The default base URL is
+`http://localhost:8090`; change the `base_url` server variable for your deployment.
+Every `/v1/*` request needs `Authorization: ApiKey <key>`. `GET /healthz` is public.

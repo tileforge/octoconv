@@ -672,24 +672,24 @@ func TestEveryBodyReadOutsideASlotIsASmallBody(t *testing.T) {
 
 func TestSmallBodyRuleIsStatedInTheContracts(t *testing.T) {
 	ms := smallBodyWindow(maxPresetBodyBytes).Milliseconds()
-	raw, err := os.ReadFile("../../README.md")
+	raw, err := os.ReadFile("../../docs/API.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, section, ok := strings.Cut(string(raw), "**Status semantics**")
 	if !ok {
-		t.Fatal("README.md has no Status semantics section")
+		t.Fatal("docs/API.md has no Status semantics section")
 	}
 	section, _, _ = strings.Cut(section, "\n**")
 	_, item, ok := strings.Cut(section, "\n- A JSON request body")
 	if !ok {
-		t.Errorf("README.md Status semantics has no item that starts with %q", "A JSON request body")
+		t.Errorf("docs/API.md Status semantics has no item that starts with %q", "A JSON request body")
 	} else {
 		item, _, _ = strings.Cut(item, "\n- ")
 		flat := "A JSON request body" + strings.Join(strings.Fields(item), " ")
 		for _, phrase := range []string{fmt.Sprintf("within %d ms", ms), "the connection closes"} {
 			if !strings.Contains(flat, phrase) {
-				t.Errorf("README.md Status semantics, item %q, does not say %q", flat, phrase)
+				t.Errorf("docs/API.md Status semantics, item %q, does not say %q", flat, phrase)
 			}
 		}
 	}
