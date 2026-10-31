@@ -994,7 +994,9 @@ components:
         The request line and headers together are longer than 64 KiB, the
         MaxHeaderBytes of every HTTP listener of the API process (net/http
         reads up to 64 KiB plus its own 4096-byte buffer slack, 69632 bytes,
-        and answers one byte more with 431). net/http writes this answer
+        and answers one byte more with 431), or the request exceeds 500 header
+        values. Repeated header lines count separately; comma-separated values
+        on one line count once, except Trailer declarations. net/http writes this answer
         itself, before routing, before the API key is checked and before any
         rate limit. The body is plain text, "431 Request Header Fields Too
         Large", and the server closes the connection. There is no error

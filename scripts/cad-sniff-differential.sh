@@ -52,7 +52,7 @@ TAG="$TAG_BEFORE"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cad-sniff-diff.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
-export GOTOOLCHAIN=go1.26.4
+export GOTOOLCHAIN=go1.27.3
 go build -o "$WORK/cad-sniff" ./scripts/cmd/cad-sniff
 
 ALL="$WORK/all.tsv"

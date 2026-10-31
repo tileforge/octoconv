@@ -1216,8 +1216,8 @@ func TestIntakeHeapFitsThePodMemoryLimit(t *testing.T) {
 				if with.max > term {
 					t.Errorf("%s %s+header block: one form holds up to %d bytes of live heap, more than %s(%d) = %d", path, base.name, with.max, termName, b, term)
 				}
-				if with.min-without.min < 512<<10 {
-					t.Errorf("%s %s+header block: the parsed header block holds %d bytes, less than 512 KiB: the measurement does not reach the server's header parse", path, base.name, with.min-without.min)
+				if with.min-without.min < headerPhaseFloor {
+					t.Errorf("%s %s+header block: the parsed header block holds %d bytes, less than 64 KiB: the measurement does not reach the server's header parse", path, base.name, with.min-without.min)
 				}
 			})
 		}
@@ -1599,8 +1599,8 @@ func TestIntakeHeapModelCoversTheRequestLine(t *testing.T) {
 				if limit > bound {
 					t.Errorf("%s %s: the sub-term %s = %d is above the request term %d", path, sh.name, limitName, limit, bound)
 				}
-				if sh.name == "header distinct-lf" && r.min-b.min < 512<<10 {
-					t.Errorf("%s %s: the parsed header block holds %d bytes (min - min), less than 512 KiB: the measurement does not reach the server's header parse", path, sh.name, r.min-b.min)
+				if sh.name == "header distinct-lf" && r.min-b.min < headerPhaseFloor {
+					t.Errorf("%s %s: the parsed header block holds %d bytes (min - min), less than 64 KiB: the measurement does not reach the server's header parse", path, sh.name, r.min-b.min)
 				}
 			})
 		}

@@ -5,7 +5,7 @@ converted — with mandatory auth, per-client quotas, signed webhooks, and engin
 confined.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](go.mod)
+[![Go Version](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go)](go.mod)
 
 A client uploads a file through the REST API; OctoConv stores it in S3-compatible object
 storage, queues a job, and a worker runs an external conversion engine and writes the result
@@ -136,7 +136,7 @@ docs/                 — OpenAPI spec and reference docs
 
 ## Quick start
 
-**Requires** Go 1.26+, Docker and Docker Compose.
+**Requires** Go 1.27.3+, Docker and Docker Compose.
 
 ### 1. Start the infrastructure
 
@@ -254,7 +254,7 @@ really pings Postgres, Redis and S3.
 
 **Status semantics**
 
-- Request line and headers together above 64 KiB → `431` with a plain-text body, answered
+- Request line and headers together above 64 KiB, or more than 500 header values → `431` with a plain-text body, answered
   before the key or the rate limit is checked; no `code`
 - No key, or an invalid/revoked one → `401`
 - A refusal sent before the request body is read (`401`, `429` and the other early answers)

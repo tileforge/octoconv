@@ -33,7 +33,7 @@ const (
 	preAuthConnBytes         = 64 << 10
 	headerKeyAlphabet        = "abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+.^_`|~"
 	preAuthTarget            = "/v1/jobs"
-	headerPhaseFloor         = 512 << 10
+	headerPhaseFloor         = 64 << 10
 	netHTTPRSTAvoidanceDelay = 500 * time.Millisecond
 )
 
@@ -127,7 +127,9 @@ func verifierHeaderKey(i int) string {
 
 func headerBlock(kind string, budget int) string {
 	var sb strings.Builder
-	for i := 0; ; i++ {
+	// Leave room for Host, authorization and the other fixed request headers.
+	const maxValues = apiMaxHeaderValues - 16
+	for i := 0; i < maxValues; i++ {
 		var line string
 		switch kind {
 		case "distinct-lf":
@@ -149,8 +151,16 @@ func headerBlock(kind string, budget int) string {
 		if sb.Len()+len(line) > budget {
 			return sb.String()
 		}
+		if i == maxValues-1 {
+			ending := "\n"
+			if strings.HasSuffix(line, "\r\n") {
+				ending = "\r\n"
+			}
+			line = strings.TrimSuffix(line, ending) + strings.Repeat("p", budget-sb.Len()-len(line)) + ending
+		}
 		sb.WriteString(line)
 	}
+	return sb.String()
 }
 
 func preAuthHead(target, block string) string {
@@ -250,6 +260,9 @@ func TestShippedServerConfig(t *testing.T) {
 	if s.MaxHeaderBytes != apiMaxHeaderBytes || apiMaxHeaderBytes != 65536 {
 		t.Errorf("MaxHeaderBytes %d, want apiMaxHeaderBytes %d (65536)", s.MaxHeaderBytes, apiMaxHeaderBytes)
 	}
+	if s.MaxHeaderValueCount != apiMaxHeaderValues || apiMaxHeaderValues != 500 {
+		t.Errorf("MaxHeaderValueCount %d, want apiMaxHeaderValues %d (500)", s.MaxHeaderValueCount, apiMaxHeaderValues)
+	}
 	if s.IdleTimeout != apiIdleTimeout || apiIdleTimeout != 120*time.Second {
 		t.Errorf("IdleTimeout %v, want apiIdleTimeout %v (120s)", s.IdleTimeout, apiIdleTimeout)
 	}
@@ -277,6 +290,36 @@ func TestShippedServerAnswersHeadersAboveTheLineWith431(t *testing.T) {
 	t.Logf("head %d bytes (headerReadLimit + 1): %d %q", len(above), status, body)
 	if status != http.StatusRequestHeaderFieldsTooLarge || body != "431 Request Header Fields Too Large" {
 		t.Errorf("head of headerReadLimit + 1 = %d bytes answered %d %q, want 431 %q", len(above), status, body, "431 Request Header Fields Too Large")
+	}
+}
+
+func TestShippedServerLimitsHeaderValues(t *testing.T) {
+	for _, listener := range []string{"Routes", "HealthRoutes"} {
+		for _, distinct := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/distinct=%v", listener, distinct), func(t *testing.T) {
+				ts := startShippedServer(t, listenerRouter(heapProbeServer(), listener))
+				for _, count := range []int{500, 501} {
+					var head strings.Builder
+					head.WriteString("GET /healthz HTTP/1.1\r\nHost: x\r\n")
+					for i := 1; i < count; i++ {
+						key := "X-Count"
+						if distinct {
+							key += fmt.Sprint(i)
+						}
+						fmt.Fprintf(&head, "%s: a,b\r\n", key)
+					}
+					head.WriteString("\r\n")
+					status, body := headStatus(t, ts.Listener.Addr().String(), head.String())
+					want := http.StatusOK
+					if count > 500 {
+						want = http.StatusRequestHeaderFieldsTooLarge
+					}
+					if status != want {
+						t.Errorf("%d values: status %d, want %d; body %.120q", count, status, want, body)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -663,8 +706,8 @@ func TestIntakeTestServersUseTheShippedConfig(t *testing.T) {
 		ts   *httptest.Server
 	}{{"newIntakeServer", intake}, {"serveBodyWindow", window}} {
 		cfg := c.ts.Config
-		if cfg.MaxHeaderBytes != apiMaxHeaderBytes || cfg.IdleTimeout != apiIdleTimeout || cfg.ReadHeaderTimeout != apiReadHeaderTimeout {
-			t.Errorf("%s: MaxHeaderBytes %d, IdleTimeout %v, ReadHeaderTimeout %v; want the shipped %d, %v, %v", c.name, cfg.MaxHeaderBytes, cfg.IdleTimeout, cfg.ReadHeaderTimeout, apiMaxHeaderBytes, apiIdleTimeout, apiReadHeaderTimeout)
+		if cfg.MaxHeaderValueCount != apiMaxHeaderValues || cfg.MaxHeaderBytes != apiMaxHeaderBytes || cfg.IdleTimeout != apiIdleTimeout || cfg.ReadHeaderTimeout != apiReadHeaderTimeout {
+			t.Errorf("%s: MaxHeaderBytes %d, MaxHeaderValueCount %d, IdleTimeout %v, ReadHeaderTimeout %v; want the shipped %d, %d, %v, %v", c.name, cfg.MaxHeaderBytes, cfg.MaxHeaderValueCount, cfg.IdleTimeout, cfg.ReadHeaderTimeout, apiMaxHeaderBytes, apiMaxHeaderValues, apiIdleTimeout, apiReadHeaderTimeout)
 		}
 	}
 }
@@ -720,8 +763,8 @@ func TestHeaderLimitAnswerIsDocumentedAndServed(t *testing.T) {
 		texts[path] = string(b)
 	}
 	for where, text := range texts {
-		if !strings.Contains(text, limit) || !strings.Contains(text, "431") {
-			t.Errorf("%s does not name 431 and the header limit %q", where, limit)
+		if !strings.Contains(text, limit) || !strings.Contains(text, "500 header values") || !strings.Contains(text, "431") {
+			t.Errorf("%s does not name 431, 500 header values and the byte limit %q", where, limit)
 		}
 	}
 }
