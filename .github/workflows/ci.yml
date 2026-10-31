@@ -31,7 +31,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           # Pinned to the exact version the local dev toolchain runs
           # (`helm version --short` -> v4.2.3): without pinning this input,
