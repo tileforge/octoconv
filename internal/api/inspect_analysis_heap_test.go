@@ -293,6 +293,9 @@ func TestLiveHeapPeakRecordsCompletedCallBeforeCleanup(t *testing.T) {
 	if p.calls < 2 {
 		t.Fatalf("%d calls: the final sample still belongs to the allocating call", p.calls)
 	}
+	if p.cycles != uint64(p.calls) {
+		t.Errorf("%d GC cycles over %d calls: cleanup cycles were included", p.cycles, p.calls)
+	}
 	if err := liveHeapPeakValid(p); err != nil {
 		t.Error(err)
 	}
