@@ -1,0 +1,13 @@
+{
+  "protocol_version": 1,
+  "artifacts": [
+    {
+      "role": "primary",
+      "ordinal": 0,
+      "format": "png",
+      "byte_size": 1234,
+      "content_type": "image/png",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

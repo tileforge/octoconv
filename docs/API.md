@@ -70,6 +70,7 @@ rejection. The second is coverage, not equality: the spec may declare a response
 produces. Response bodies and examples are maintained by hand,
 and the spec says which is which rather than promising an exactness nothing checks. Every
 machine-readable error code is frozen in [`docs/ERROR-CODES.md`](ERROR-CODES.md).
+Worker Protocol v1 is a different contract ([WORKER-PROTOCOL.md](WORKER-PROTOCOL.md)); it is not mounted on this API, it does not use Authorization: ApiKey, and its error codes are not in ERROR-CODES.md or openapi.yaml.
 
 <details>
 <summary>A LaTeX job can be a project, not just a file</summary>

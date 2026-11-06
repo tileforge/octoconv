@@ -1,0 +1,16 @@
+{
+  "protocol_version": 1,
+  "session_id": "00000000-0000-4000-8000-000000000020",
+  "session_token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pull_wait_seconds": 20,
+  "heartbeat_interval_seconds": 10,
+  "lease_seconds": 30,
+  "session_max_lifetime_seconds": 86400,
+  "max_message_bytes": 262144,
+  "file_link_max_ttl_seconds": 300,
+  "clock_skew_margin_seconds": 5,
+  "pull_rate_per_second": 2,
+  "progress_rate_per_second": 4,
+  "file_access": "direct",
+  "control": {"cancel_attempt_ids": [], "drain": false, "terminate": false}
+}

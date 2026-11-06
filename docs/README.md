@@ -22,6 +22,7 @@
 | [Inspection findings](FINDINGS.md) | Findings vocabulary and incomplete analysis |
 | [Error codes](ERROR-CODES.md) | Machine-readable synchronous and job-failure codes |
 | [Job search](JOB-SEARCH.md) | Filtering, pagination and supported search fields |
+| [Worker Protocol](WORKER-PROTOCOL.md) | External workers, not the client API |
 
 ## Operate and maintain
 
