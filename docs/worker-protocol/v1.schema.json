@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:octoconv:worker-protocol:v1",
+  "title": "OctoConv Worker Protocol v1",
+  "oneOf": [
+    { "$ref": "#/$defs/pullRequest" },
+    { "$ref": "#/$defs/pullAssignmentResponse" },
+    { "$ref": "#/$defs/completeRequest" },
+    { "$ref": "#/$defs/error" }
+  ],
+  "$defs": {
+    "extensions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "pullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "pull_request_id", "free_slots", "wait_seconds"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "pull_request_id": { "type": "string", "format": "uuid" },
+        "free_slots": { "type": "integer", "minimum": 0 },
+        "wait_seconds": { "type": "integer" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "pullAssignmentResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "assignments", "control"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "assignments": {
+          "type": "array",
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/assignment" }
+        },
+        "control": { "$ref": "#/$defs/control" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "completeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "artifacts"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "unauthorized",
+            "session_closed",
+            "manifest_mismatch",
+            "capability_denied",
+            "incompatible_protocol",
+            "invalid_message",
+            "unknown_field",
+            "invalid_progress",
+            "message_too_large",
+            "rate_limited",
+            "pull_conflict",
+            "complete_conflict",
+            "attempt_not_active",
+            "artifact_rejected"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cancel_attempt_ids", "drain", "terminate"],
+      "properties": {
+        "cancel_attempt_ids": {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" }
+        },
+        "drain": { "type": "boolean" },
+        "terminate": { "type": "boolean" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "step_id",
+        "attempt_id",
+        "capability_id",
+        "capability_version",
+        "attempt_deadline",
+        "lease_expires_at",
+        "limits",
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "job_id": { "type": "string", "format": "uuid" },
+        "step_id": { "type": "string", "format": "uuid" },
+        "attempt_id": { "type": "string", "format": "uuid" },
+        "capability_id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+        },
+        "capability_version": { "type": "integer", "minimum": 1 },
+        "attempt_deadline": { "type": "string", "format": "date-time" },
+        "lease_expires_at": { "type": "string", "format": "date-time" },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_output_bytes"],
+          "properties": {
+            "max_output_bytes": { "type": "integer", "minimum": 0 },
+            "extensions": { "$ref": "#/$defs/extensions" }
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fileLink" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fileLink" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "fileLink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "ordinal", "format", "href", "expires_at"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["source", "primary", "report", "preview", "thumbnail", "measurements"]
+        },
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "format": { "type": "string", "minLength": 1 },
+        "href": { "type": "string", "format": "uri" },
+        "expires_at": { "type": "string", "format": "date-time" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "ordinal", "format", "byte_size", "content_type", "sha256"],
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["primary", "report", "preview", "thumbnail", "measurements"]
+        },
+        "ordinal": { "type": "integer", "minimum": 0 },
+        "format": { "type": "string", "minLength": 1 },
+        "byte_size": { "type": "integer", "minimum": 0 },
+        "content_type": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    }
+  }
+}
