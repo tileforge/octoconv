@@ -345,6 +345,59 @@ Finite file access is the File access section. Every issued link stays inside th
 
 Draining and wakeup are dial-out behaviors. `control.drain` stops new pulls, lets in-flight work finish, and ends with session delete. `control.terminate` stops local work by `stopped`, not by `fail`. Wakeup means infrastructure scales a worker and that worker dials out. The core never opens a connection to the worker. Three missed heartbeats show the instance offline for display only and leave the session and the lease running. A missed heartbeat does not remove a capability from the catalog.
 
+## Migration
+
+The first migrated worker is the existing image worker. The command path is `cmd/worker`. It uses libvips, queue name `image`, task name `image:convert`, and capability `octoconv.convert.image` version `1`. An external author implements that capability from this specification. This document names the command and the capability only. It does not ask that author to import a Go module or to read an internal package.
+
+The Python operation is `octoconv.convert.imagepdf` version `1`, one PNG in and one single-page PDF out (assumption A6). No such repository exists. The proposed name, to be confirmed before Phase 85, is `tileforge/octoconv-worker-imagepdf` (assumption A2). This phase does not create the repository and does not pin Pillow, img2pdf, or any other library. The capability id does not depend on the repo name.
+
+The Phase 88 chain that does not need an archiver, a CAD feature, or a DAG is JPEG to PNG on the Go capability, then PNG to PDF on the Python capability. The Go input is `internal/convert/testdata/sanitize/exif_gps.jpg`. The Python single-step input is `internal/e2e/testdata/sample.png`. `png` to `png` is not a pair, so the chain cannot start from `sample.png`. The core binary stays unchanged when the new capability is attached: a catalog row, operator approval, and a separate deployment.
+
+Rejected as the first migrated class, and not specified here:
+
+| Class | Why it is not first |
+|---|---|
+| document | Office conversion, outside this image seam |
+| html | Does not continue from a libvips output |
+| pandoc | Not the pdf step of this chain |
+| cad | Deferred. This phase adds no CAD feature |
+| tectonic | Multi-input, not the single-file chain |
+| probe | A report plus a primary, not a single-file chain |
+| av | Long-running media, a poor first contract test |
+| audio | Long-running media, a poor first contract test |
+| ocr | Progress and long timeouts, a poor first contract test |
+| webhook deliver | Not a file conversion |
+
+### Dispatch owner
+
+Each job gets an immutable dispatch owner at admission: `legacy` or `protocol`.
+
+`legacy` is owned by the existing queue and reconciler. The protocol scheduler must not claim it. Pull does not assign a legacy-owned job.
+
+`protocol` is owned by the protocol scheduler. The legacy reconciler must not enqueue it. That is one skip for protocol-owned rows, not a new case per capability.
+
+`parent_id` is not `step_id`. A step is not a child job. Client `/v1` status enum, error codes, SSE, webhooks, and MCP stay. The one intentional client-visible change for the migrated image class is progress 100 when status becomes `done`.
+
+### Rollout
+
+This order is written now. Execution is later.
+
+1. This phase is spec only.
+2. Phases 82-84: the core understands both owners and still admits image as `legacy`.
+3. Phase 85: a protocol-capable image worker is deployed and receives nothing until the manifest is approved.
+4. The operator approves the image manifest.
+5. New image admissions flip to `protocol` and in-flight queue tasks drain.
+6. Scale the legacy image deployment to 0 only after the image queue pending, active, and retry depth is 0.
+7. The PromQL string does not change.
+
+Quote this PromQL exactly: `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`. The series name stays `octoconv_queue_depth`. The labels stay `queue` and `state`. There is no `job_id` label. During mixed mode a job has one owner, so it is counted in one place. `imagepdf` does not join queue `image` and does not get a ScaledObject in this milestone. Phase 86 may later feed protocol image counts into that same series: waiting as `pending`, leased or running as `active`, waiting for retry as `retry`.
+
+### Rollback
+
+Stop issuing new protocol attempts. Do not flip the owner of a job that has an active attempt. Do not enqueue the same job to the legacy queue while a protocol attempt exists. Jobs still queued with no active attempt can move back to `legacy` in one transaction that also enqueues the legacy task. An active protocol attempt finishes or expires under the lease rules. Only the protocol scheduler retries it if budget remains.
+
+This phase adds no migration SQL, no worker process, no Python tree, and no change to the Helm chart.
+
 ## Schema and examples
 
 [worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, `protocolOnlyRequest`, `heartbeatResponse`, `leaseResponse`, `progressRequest`, `failRequest`, `stoppedRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
