@@ -1,0 +1,4 @@
+{
+  "protocol_version": 1,
+  "control": {"cancel_attempt_ids": [], "drain": false, "terminate": false}
+}
