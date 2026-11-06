@@ -9,6 +9,12 @@
     { "$ref": "#/$defs/pullRequest" },
     { "$ref": "#/$defs/pullAssignmentResponse" },
     { "$ref": "#/$defs/completeRequest" },
+    { "$ref": "#/$defs/protocolOnlyRequest" },
+    { "$ref": "#/$defs/heartbeatResponse" },
+    { "$ref": "#/$defs/leaseResponse" },
+    { "$ref": "#/$defs/progressRequest" },
+    { "$ref": "#/$defs/failRequest" },
+    { "$ref": "#/$defs/stoppedRequest" },
     { "$ref": "#/$defs/error" }
   ],
   "$defs": {
@@ -102,6 +108,80 @@
           "type": "array",
           "items": { "$ref": "#/$defs/artifact" }
         },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "protocolOnlyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "heartbeatResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "control"],
+      "not": {
+        "anyOf": [
+          { "required": ["assignments"] },
+          { "required": ["session_id"] },
+          { "required": ["lease_expires_at"] }
+        ]
+      },
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "control": { "$ref": "#/$defs/control" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "leaseResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "lease_expires_at", "attempt_deadline", "control"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "lease_expires_at": { "type": "string", "format": "date-time" },
+        "attempt_deadline": { "type": "string", "format": "date-time" },
+        "control": { "$ref": "#/$defs/control" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "progressRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "percent"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "percent": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0, "maximum": 99 },
+            { "type": "null" }
+          ]
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "failRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "engine_code", "message"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "engine_code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "stoppedRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "reason"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "reason": { "type": "string", "enum": ["cancel", "terminate", "lease_lost"] },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
     },

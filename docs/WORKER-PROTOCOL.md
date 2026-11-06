@@ -105,7 +105,7 @@ A body the schema rejects as an unknown field is answered with the closed error 
 
 ## Methods
 
-Every method uses a JSON body, including success. There is no `204`. An empty pull is HTTP 200 with `assignments` empty, and that response is stored for dedup. This document fully specifies HELLO, the pull assignment, and the complete request. Later text adds transition rules for the other methods and does not rename these paths. `href` values exist on the assignment. This protocol has no method that mints a new `href`.
+Every method uses a JSON body, including success. There is no `204`. An empty pull is HTTP 200 with `assignments` empty, and that response is stored for dedup. This document fully specifies HELLO, the pull assignment, and the complete request. The State machine section states the transitions for pull, lease, progress, cancel, fail, complete, stopped, heartbeat, and session delete, and does not rename these paths. `href` values exist on the assignment. This protocol has no method that mints a new `href`.
 
 | Method | Purpose |
 |---|---|
@@ -272,9 +272,84 @@ Unknown stays null, never zero. `octoconv.convert.imagepdf` v1 reports null. A c
 
 Today's image class can finish `done` with a null percent. After migration, a protocol image job shows 100 only when status becomes `done`, never while `active`.
 
+## State machine
+
+These invariants keep their names. Process heartbeat is separate from attempt lease. The attempt deadline is fixed. Pull and completion are deduplicated. Fencing. Immutable artifacts. Atomic acceptance plus continuation intent. Finite file access. Draining and wakeup.
+
+Workers dial out. The core never opens a connection to the worker. Wakeup means a scaled worker dials out and pulls. The core does not start that process. No message carries Postgres, Redis, or shared S3 credentials. A normal job is one step. The envelope already carries `job_id`, `step_id`, and `attempt_id`, so a later second step does not need a new major version.
+
+| Call | Transition |
+|---|---|
+| Heartbeat | Proves the process is connected and returns `control`. No new lease. |
+| Pull | Assigns at most one attempt, or stores an empty `assignments` array. |
+| Lease | Renews under Bounds, or rejects with the row unchanged. |
+| Progress | Applies the percent rules. Percent 100 does not move the attempt. |
+| Fail | Reports an engine failure. The core decides retry. |
+| Complete | Asks the core to accept artifacts. The same raw body is the same effect. |
+| Stopped | Reports cancel, terminate, or a lost lease. Not an engine failure. |
+| `DELETE` session | Closes the session after the worker finishes draining. |
+
+### Heartbeat
+
+`POST /worker/v1/sessions/{id}/heartbeat` uses `protocolOnlyRequest`: `protocol_version`, and no other field except optional `extensions`. Success is `heartbeatResponse`: `protocol_version` and `control` only. That success MUST NOT include `assignments`, `session_id`, or a top-level `lease_expires_at`. Heartbeat does not include a new `lease_expires_at`. It does not move `attempt_deadline` or an existing file-link `expires_at`. Three missed heartbeats are display-only offline. They do not close the session and do not expire the lease.
+
+### Pull
+
+`POST /worker/v1/sessions/{id}/pull` assigns at most one attempt or returns an empty `assignments` array, and both results are stored. The request is `pullRequest`. The success is `pullAssignmentResponse`. A lost response is retried as the same `pull_request_id` and the same raw body. The core returns the stored assignment or the stored empty list. One attempt exists.
+
+### Lease
+
+`POST /worker/v1/attempts/{id}/lease` renews the attempt lease. The request is `protocolOnlyRequest`. Success is `leaseResponse`: `protocol_version`, top-level `lease_expires_at`, top-level `attempt_deadline`, and `control`. Renew follows the Bounds section. It does not move `attempt_deadline`, does not mint a new attempt token, and does not extend old links.
+
+### Progress
+
+`POST /worker/v1/attempts/{id}/progress` uses `progressRequest`. `percent` is an integer from 0 through 99, or JSON null. The schema rejects 100. The core answers `invalid_progress`. Stored progress is unchanged and the attempt stays active, including when that request is repeated. The rest of the percent rules are in Progress.
+
+### Fail
+
+`POST /worker/v1/attempts/{id}/fail` uses `failRequest`. It requires `engine_code` and `message`. `engine_code` is an engine-failure string. It is not a protocol error code. `fail` is an engine failure and the core decides retry.
+
+### Stopped and cancel
+
+`POST /worker/v1/attempts/{id}/stopped` uses `stoppedRequest`. `reason` is `cancel`, `terminate`, or `lease_lost`. `stopped` means the worker obeyed cancel, terminate, or lost the lease, and it is not an engine failure. The core MUST NOT burn the attempt budget for `stopped`.
+
+`control.cancel_attempt_ids` names attempts whose later `complete` is `attempt_not_active`. That `complete` changes no state. The worker reports the cancel with `stopped` and reason `cancel`. `control.terminate` causes `stopped` with reason `terminate`, not `fail`, so a drain does not burn the attempt budget. `control.drain` still means stop pulling, finish in-flight work, then `DELETE` the session. Drain does not turn those attempts into `fail`.
+
+### Session delete
+
+`DELETE /worker/v1/sessions/{id}` is how a worker finishes draining. The request is `protocolOnlyRequest`. Success for progress, fail, stopped, and session delete is `protocol_version` and `control`, the same closed shape as `heartbeatResponse`, with no top-level `lease_expires_at`. After session close, a pull is `session_closed` even when dedup rows were deleted. The session row remains the authority. Dedup rows MAY be deleted after close. Deleting them does not make a closed session accept a new pull.
+
+### Dedup
+
+The dedup digest is the SHA-256 of the exact raw request body after schema validation. The retry MUST be byte-identical. Different whitespace is a conflict. Do not use RFC 8785. A proxy that rewrites JSON is out of profile. The worker TLS session ends at the core origin.
+
+The pull key is the pair `worker_session_id` and `pull_request_id`, plus that digest. Empty pulls are stored. Rows live for the session and MAY be deleted after close. The same id and the same raw body return the stored response. Two in-flight pulls with the same id produce one assignment and one stored response. The same id and a different body is `pull_conflict` and changes no state. That is a payload conflict. No second attempt is created.
+
+The completion key is `job_id`, `step_id`, `attempt_id`, and the literal `complete`, plus the digest. The same id and the same raw body return the stored success even after the lease has ended, and accounting is not applied again. The same id and a different body is `complete_conflict` and changes no state. A lost completion response is retried as that same raw body.
+
+A new session does not release the previous session's leases and does not raise the owner cap.
+
+### Fencing
+
+The attempt token for attempt A presented to attempt B is `capability_denied` and B is unchanged. Renew when `server_now` is at or past `attempt_deadline` returns `attempt_not_active` and does not change the row. The inequality is `lease_expires_at` less than or equal to `attempt_deadline` less than or equal to `job_deadline`. Heartbeat and renew do not move `attempt_deadline`.
+
+### Acceptance
+
+Acceptance is specified and not implemented in this phase. The worker PUTs bytes, then `complete` lists the artifacts. The core HEADs each object, checks size and hash, copies to an immutable result key the PUT URL cannot write, then commits one database transaction that records acceptance, artifacts, accounting, the event, and continuation intent. A failed check is `artifact_rejected` and does not accept. This is exactly-once accepted effects, not exactly-once computation. A worker MAY run the conversion again.
+
+### Finite file access
+
+Finite file access is the File access section. Every issued link stays inside those clocks. Heartbeat does not move an existing file-link `expires_at`. Renew does not extend old links. Cancel, revoke, and complete issue no new links. Fencing a result does not replace that limit.
+
+### Draining and wakeup
+
+Draining and wakeup are dial-out behaviors. `control.drain` stops new pulls, lets in-flight work finish, and ends with session delete. `control.terminate` stops local work by `stopped`, not by `fail`. Wakeup means infrastructure scales a worker and that worker dials out. The core never opens a connection to the worker. Three missed heartbeats show the instance offline for display only and leave the session and the lease running. A missed heartbeat does not remove a capability from the catalog.
+
 ## Schema and examples
 
-[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
+[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, `protocolOnlyRequest`, `heartbeatResponse`, `leaseResponse`, `progressRequest`, `failRequest`, `stoppedRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
+
+`protocolOnlyRequest` is only `protocol_version`, plus optional `extensions`. It is the body for heartbeat, lease renew, and `DELETE` session. `heartbeatResponse` is `protocol_version` plus `control`. It does not match a body that has `assignments`, `session_id`, or a top-level `lease_expires_at`. `leaseResponse` adds top-level `lease_expires_at` and `attempt_deadline` plus `control`. `progressRequest` requires `percent`, an integer from 0 through 99 or JSON null, so that 100 fails validation. `failRequest` requires `engine_code` and `message`. `engine_code` is not a protocol error code. `stoppedRequest` requires `reason`, one of `cancel`, `terminate`, and `lease_lost`. These objects are closed. `additionalProperties` is not true on them. `extensions` stays the only open object.
 
 | Example | Role |
 |---|---|
