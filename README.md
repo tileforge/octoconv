@@ -108,6 +108,7 @@ status codes and request limits.
 | [Operating OctoConv](docs/OPERATIONS.md) | Architecture, quotas, recovery, sandboxing and configuration |
 | [CAD](docs/CAD.md) · [Measurements](docs/MEASUREMENTS.md) | Preview options and geometry output |
 | [MCP integration](docs/MCP.md) | Local stdio and in-cluster HTTP servers |
+| [Worker Protocol](docs/WORKER-PROTOCOL.md) | External workers dial out; not the client API |
 | [All documentation](docs/README.md) | Inspection, sanitization, typesetting and error codes |
 
 The optional [web workspace](https://github.com/tileforge/octoconv-ui) is a
