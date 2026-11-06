@@ -175,9 +175,37 @@ The tracer fixture lists one artifact: role `primary`, ordinal `0`, format `png`
 
 The same completion body retries a lost response. A different raw body for the same attempt is `complete_conflict` and changes no state. Accepting that completion is an exactly-once core effect. It is not exactly-once computation.
 
+## Manifest
+
+A capability id matches `^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$`: one lowercase letter, then lowercase letters or digits, then one or more dot-separated segments of the same shape. It is at most 128 characters. Version is a positive integer, not semver. One deployed worker class advertises one capability, not one capability per format pair.
+
+The operator installs the manifest out of band. HELLO sends `worker_id` and `manifest_sha256`. `manifest_sha256` is the SHA-256 of the exact installed manifest file bytes. The core compares `worker_id` and that digest to the approved row. A mismatch is `manifest_mismatch`. HELLO does not insert a capability and does not grant execution. The catalog row exists at zero replicas and survives a core restart. Self-registration does not grant execution.
+
+Together, HELLO and the manifest describe the worker id, the protocol version, the operations and formats, the capability version, the parameter schema, and the input and output counts and roles. A missing required field, or a required field whose type or constraint does not match the schema, is `invalid_message`. An unknown field outside `extensions` is `unknown_field`. `protocol_version` other than the integer 1 is `incompatible_protocol`.
+
+Selection at admission:
+
+- If the job or step already pins a capability version, use that pin.
+- Otherwise the approved map from operation, source format, and target format yields exactly one capability version.
+- Zero matches stay the existing client codes `unsupported_conversion` or `unsupported_operation`.
+- A second approved claim for the same triple is rejected at approval time, so request time sees zero or one. Do not add a client error code for an ambiguous catalog.
+- A heartbeat never selects a capability.
+
+`legacy` is present only when `engine` is one of `image`, `document`, `av`, `cad`, `archive`, `probe`, `html`, `audio`, `ocr`, `pandoc`, or `tectonic`. It is a closed object with `operation` and `engine`.
+
+The first capability is `octoconv.convert.image`, version `1`. `legacy` is operation `convert` and engine `image`. The client operation is `convert`. It has one input role `source` with min 1 and max 1, one output role `primary` with min 1 and max 1, and `parameter_schema` `{}`. Its formats are all 20 ordered pairs among `png`, `jpg`, `webp`, `heic`, and `tiff` where `from` differs from `to`. The list is not abbreviated. The fixture is [worker-protocol/examples/positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json).
+
+The second capability is `octoconv.convert.imagepdf`, version `1`. The client operation is `convert`. It has no `legacy` object, one pair `png` to `pdf`, one `source`, one `primary`, and `parameter_schema` `{}`. The fixture is [worker-protocol/examples/positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json).
+
+Wire output roles that later engines may use are `primary`, `report`, `preview`, `thumbnail`, and `measurements`. These two manifests declare only `primary`. Input role `source` is a protocol field. The current `job_inputs` table has no role column. This phase does not add one.
+
+A new capability must not add a compile-time engine case or a per-worker reconciler case. `jobs.engine` cannot store a new capability id until a later phase. Phase 83, not this phase, widens that check once with the single placeholder `external`. `external` is not a queue name. Routing, quotas, usage, list filters, and KEDA do not read `external`; they use `capability_id`. For a legacy-mapped image job the accounting key stays `image`. For `octoconv.convert.imagepdf` the accounting key is the capability id. Do not collapse those onto one sentinel. This phase adds no SQL migration.
+
+The schema branch is the closed `manifest` definition. `capabilities` is a required array of one closed capability: `id`, `version`, optional `legacy`, `client_operation`, `inputs`, `outputs`, `parameter_schema`, and `formats`. `parameter_schema` is a JSON object with `additionalProperties` true because it is an embedded JSON Schema, not a second protocol extension point. Protocol fields beside it remain closed. Each formats item is a closed object with `from` and `to` strings.
+
 ## Schema and examples
 
-[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. A valid message matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
+[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
 
 | Example | Role |
 |---|---|
@@ -186,6 +214,8 @@ The same completion body retries a lost response. A different raw body for the s
 | [positive/error-unknown-field.json](worker-protocol/examples/positive/error-unknown-field.json) | Valid error body for `unknown_field`, not a client error object |
 | [positive/pull-assignment.json](worker-protocol/examples/positive/pull-assignment.json) | One pull assignment response |
 | [positive/complete.json](worker-protocol/examples/positive/complete.json) | One complete request |
+| [positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json) | `octoconv.convert.image` manifest, 20 format pairs |
+| [positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json) | `octoconv.convert.imagepdf` manifest, png to pdf, no legacy engine |
 | [negative/pull-unknown-field.json](worker-protocol/examples/negative/pull-unknown-field.json) | A pull request plus top-level `priority` `1` |
 
 The negative file is invalid. The core MUST answer HTTP 400 with `code` `unknown_field`. The same `priority` key inside `extensions` is ignored, not rejected. There is no sibling expected-response file.

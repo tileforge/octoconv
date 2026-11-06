@@ -5,6 +5,7 @@
   "oneOf": [
     { "$ref": "#/$defs/helloRequest" },
     { "$ref": "#/$defs/helloResponse" },
+    { "$ref": "#/$defs/manifest" },
     { "$ref": "#/$defs/pullRequest" },
     { "$ref": "#/$defs/pullAssignmentResponse" },
     { "$ref": "#/$defs/completeRequest" },
@@ -225,6 +226,94 @@
         "content_type": { "type": "string", "minLength": 1 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilities"],
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/capability" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "client_operation", "inputs", "outputs", "parameter_schema", "formats"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+        },
+        "version": { "type": "integer", "minimum": 1 },
+        "legacy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "engine"],
+          "properties": {
+            "operation": { "type": "string", "minLength": 1 },
+            "engine": {
+              "type": "string",
+              "enum": ["image", "document", "av", "cad", "archive", "probe", "html", "audio", "ocr", "pandoc", "tectonic"]
+            }
+          }
+        },
+        "client_operation": { "type": "string", "minLength": 1 },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "min", "max"],
+            "properties": {
+              "role": { "type": "string", "enum": ["source"] },
+              "min": { "type": "integer", "minimum": 0 },
+              "max": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "min", "max"],
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": ["primary", "report", "preview", "thumbnail", "measurements"]
+              },
+              "min": { "type": "integer", "minimum": 0 },
+              "max": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "parameter_schema": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "formats": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "to"],
+            "properties": {
+              "from": { "type": "string", "minLength": 1 },
+              "to": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     }
   }
