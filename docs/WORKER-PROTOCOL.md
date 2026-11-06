@@ -203,6 +203,75 @@ A new capability must not add a compile-time engine case or a per-worker reconci
 
 The schema branch is the closed `manifest` definition. `capabilities` is a required array of one closed capability: `id`, `version`, optional `legacy`, `client_operation`, `inputs`, `outputs`, `parameter_schema`, and `formats`. `parameter_schema` is a JSON object with `additionalProperties` true because it is an embedded JSON Schema, not a second protocol extension point. Protocol fields beside it remain closed. Each formats item is a closed object with `from` and `to` strings.
 
+## File access
+
+Installation policy is a required enum: `direct` or `gateway`. Unset file access refuses process start. `gateway` selected in a binary that has no gateway refuses process start. There is no silent fallback to presigns.
+
+hrefs exist only on the assignment. Renew does not mint or extend them. A new link requires a new assignment message. No route, request body, response body, or schema branch issues a link apart from that assignment message.
+
+### direct
+
+`direct` is specified now and implemented in a later phase. Each input is an HTTPS presigned GET. Each attempt-scoped output is an HTTPS presigned PUT. The URL is method-locked and key-locked. The worker checks that the URL origin equals the origin in the assignment, that the scheme is HTTPS, and that it sends no `Authorization`. It follows no redirect.
+
+Effective lifetime is the minimum of `issued_at` plus `file_link_max_ttl`, the current `lease_expires_at`, the fixed `attempt_deadline`, and `job_deadline`. If that instant is not strictly after `server_now` plus `clock_skew_margin`, the core issues no link. Renewing a lease does not rewrite an already issued link. Cancel, revoke, and complete issue no new links.
+
+The URL is a bearer and can be reused until `expires_at`. A download that started before expiry continues. A late PUT can replace the object at that key. `direct` does not abort an in-progress GET and does not revoke bytes already downloaded.
+
+Object immutability is a core copy onto a key the PUT URL cannot write, taken after HEAD and hash checks and before the acceptance transaction. Bucket versioning and Object Lock are not the mechanism.
+
+`file_link_max_ttl` starting policy is 5 minutes, advertised as `file_link_max_ttl_seconds` 300. It MUST be finite, at least 1 second, and at most 604800 seconds. Do not use 15 minutes. The client download default of 15 minutes is a different clock and is not `file_link_max_ttl`.
+
+### gateway
+
+`gateway` is specified now and is not implemented in this phase. Every byte request presents the attempt token to the gateway. The gateway asks the core, allows no cache past that request, and aborts the stream when the attempt is no longer active. If it cannot reach the core, it fails closed. It still does not promise clawback of bytes the worker has already read.
+
+Rejected: presign-only with a revoke promise, and handing the worker S3 credentials.
+
+## Bounds
+
+The server clock is the only clock that orders leases and links. Timestamps are RFC3339 UTC. A deadline is expired when `server_now` is greater than or equal to `expires_at`. Workers use the HELLO advertisement, not a constant compiled from this table. Starting numbers are advertised policy, not measurements (assumption A3). Rows that need a measurement block release until that Phase 86 method passes. Do not invent an RTT in this spec.
+
+The published inequality is `lease_expires_at` less than or equal to `attempt_deadline`, which is less than or equal to `job_deadline`.
+
+| Name | Starting policy | Gate |
+|---|---|---|
+| `session_max_lifetime` | 24h, then a new HELLO | Policy. |
+| Heartbeat interval | 10s | Policy. Three missed intervals (30s) mark the instance offline for display only. That does not close the session and does not expire the lease. |
+| Reconnect | Same session token until close, lifetime, or revoke | A process restart is a new session. Old leases stay until their attempt deadline. |
+| `pull_wait` | 20s, then HTTP 200 and an empty `assignments` array | Phase 86 may lower it if a proxy cuts the poll. |
+| Pull rate | 2 requests per second per session | Excess is `rate_limited` and creates no attempt. One in-flight pull per free slot. A pull assigns at most one attempt. `free_slots` is a hint, not a batch size. |
+| Lease | The minimum of 30s and the time until `attempt_deadline` | Unmeasured. Phase 86 gate: on the intended remote network, p99 renew RTT is less than lease divided by 3 over a stated sample of 100 renewals, with zero false expiry; otherwise raise the lease before release. |
+| Renew | `lease_expires_at` is the minimum of `server_now` plus the lease and `attempt_deadline` | If `server_now` is already at or past `attempt_deadline`, respond `attempt_not_active` and leave the row unchanged. If the computed expiry is not strictly later than the current one, reject. Renew does not move `attempt_deadline`, does not mint a new attempt token, and does not extend old links. Running renew twice does not move the attempt deadline or rewrite links. |
+| Attempt deadline | Fixed at issue: the minimum of `job_deadline` and `issued_at` plus `attempt_budget` | Heartbeat and renew do not move it. |
+| Image `attempt_budget` | `ENGINE_TIMEOUT`, default 120s | Not a new number. Policy. |
+| Image attempts | 1 initial plus 4 extra, 5 total, from `IMAGE_MAX_RETRY=4` | Policy. |
+| Image backoff | Full jitter in the closed range from 0 to the minimum of 15s and 2s times 2 to the power n, where n is the number of failures already recorded | The `octoconv.convert.image` manifest carries that policy for protocol-owned image jobs. The core classifies retryable versus terminal. |
+| imagepdf `attempt_budget` | Unset in v1 | Phase 86 measures 30 runs of `internal/e2e/testdata/sample.png` on the reference host. Budget is the ceiling of p99 times 2, floor 10s, never above the job deadline. Release of that capability waits on the measurement. |
+| `unavailable_wait` | 15 minutes, operator-set | Not the legacy reconciler staleness threshold. Protocol jobs leave the backlog when the job deadline passes. Phase 86 proves a deadline expiry removes the job from the backlog series. |
+| Job deadline, one step | `created_at` plus `unavailable_wait` plus `attempt_budget` times `max_attempts_total` | Do not treat the existing `jobs.expires_at` column as this deadline. |
+| Control message | 256 KiB (262144 bytes), else `message_too_large` | File bytes never count. Phase 86 checks the committed fixtures fit, expecting well under 64 KiB. |
+| Progress messages | 4 per second per attempt | Excess is `rate_limited` and the attempt stays. |
+| `clock_skew_margin` | 5 seconds, advertised as `clock_skew_margin_seconds` | Policy. The core will not issue a link or a lease that would expire inside that margin. |
+| `file_link_max_ttl` | 5 minutes, advertised as `file_link_max_ttl_seconds` | Finite, at least 1 second, and at most 604800 seconds. Not 15 minutes. |
+
+## Progress
+
+Worker percent is an integer 0 through 99, or JSON null. Percent 100 is `invalid_progress`. Stored progress is unchanged and the attempt is not failed, including when that request is repeated. A repeated progress value of 100 still changes nothing. Within one attempt a lower percent is ignored. A new attempt clears client-visible progress to null before any tick. `stage`, `stage_index`, and `stage_count` are optional and are not a percent. `eta_seconds` is optional and null when unknown.
+
+Client statuses stay `awaiting_upload`, `queued`, `active`, `done`, `failed`, and `canceled`. Do not add protocol states to that enum.
+
+| Situation | Client status | Progress |
+|---|---|---|
+| Waiting for a worker | `queued` | unchanged |
+| Attempt assigned or running | `active` | null or 0 through 99 |
+| Core accepted success of the whole job | `done` | 100 |
+| Terminal failure | `failed` | last percent frozen, not forced to 100 |
+| Cancel | `canceled` | not redefined by this protocol |
+
+Unknown stays null, never zero. `octoconv.convert.imagepdf` v1 reports null. A chain must not invent a percent from the step index. That policy is Phase 87.
+
+Today's image class can finish `done` with a null percent. After migration, a protocol image job shows 100 only when status becomes `done`, never while `active`.
+
 ## Schema and examples
 
 [worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
