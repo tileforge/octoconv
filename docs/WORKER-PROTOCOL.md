@@ -6,7 +6,7 @@ This specification pull request is the Codex review gate before any runtime phas
 
 Project version v2.0 and Worker Protocol v1 are different numbers. Client `/v1` stays the client API. Workers dial out and pull. They hold no Postgres, Redis, or shared S3 credentials. They import no Go module. This surface is not MCP and not client `/v1`.
 
-The machine-readable contract is [worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) (JSON Schema draft 2020-12). Message examples are under [worker-protocol/examples/](worker-protocol/examples/). The conformance plan adds `worker-protocol/conformance.md`.
+The machine-readable contract is [worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) (JSON Schema draft 2020-12). Message examples are under [worker-protocol/examples/](worker-protocol/examples/). The conformance catalog is [worker-protocol/conformance.md](worker-protocol/conformance.md).
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
