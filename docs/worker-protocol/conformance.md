@@ -8,7 +8,7 @@ An independent author can execute the numbered scenarios later, without a runnin
 
 ## Scenarios
 
-1. Lost pull response: message `POST /worker/v1/sessions/{id}/pull` retried with the same `pull_request_id` and the same raw body. Expected: the stored assignment or the stored empty list, and one attempt exists. Unchanged: no second attempt and no second core effect. The stored assignment is [examples/positive/pull-assignment.json](examples/positive/pull-assignment.json).
+1. Lost pull response: message `POST /worker/v1/sessions/{id}/pull` retried with the same `pull_request_id` and the same raw body while the stored attempt is still active, including after the lease has lapsed. Expected: that stored assignment, and one attempt exists. Unchanged: the lease is not extended and no second attempt is created. The stored assignment is [examples/positive/pull-assignment.json](examples/positive/pull-assignment.json). An empty stored pull is scenario 4.
 
 2. Two in-flight pulls with the same id: message two concurrent `POST /worker/v1/sessions/{id}/pull` calls that share one `pull_request_id` and one raw body. Expected: one assignment and one stored response. Unchanged: no second attempt is created.
 
@@ -46,7 +46,7 @@ An independent author can execute the numbered scenarios later, without a runnin
 
 19. Retry progress starts unknown: message the first progress report on a retry attempt. Expected: client-visible progress is null, not the previous attempt's percent. Unchanged: the previous attempt's percent is not copied onto the new attempt.
 
-20. File-link expiry: message assignment of a file link. Expected: `expires_at` is the minimum of `issued_at` plus `file_link_max_ttl`, the current `lease_expires_at`, the fixed `attempt_deadline`, and `job_deadline`. A link whose expiry is not strictly after `server_now` plus `clock_skew_margin` is not issued. Unchanged: no link is written in the skew margin, and already issued links are not rewritten.
+20. File-link expiry: message assignment of a file link. Expected: `expires_at` is the minimum of `issued_at` plus `file_link_max_ttl`, the fixed `attempt_deadline`, and `job_deadline`. It is not capped by `lease_expires_at`. A link whose expiry is not strictly after `server_now` plus `clock_skew_margin` is not issued. Unchanged: no link is written in the skew margin, and already issued links are not rewritten. The assignment fixture's link expiry is later than its lease expiry.
 
 21. No further links: message cancel, identity revoke, or complete. Expected: the core issues no further links. Unchanged: no new `href` is minted.
 
@@ -63,3 +63,5 @@ An independent author can execute the numbered scenarios later, without a runnin
 27. Missed heartbeats: message three missed `POST /worker/v1/sessions/{id}/heartbeat` intervals. Expected: the instance is shown offline. Unchanged: the session stays open and the lease keeps running. Display-only offline does not set `control.terminate` and does not remove a capability.
 
 28. Terminate: message a heartbeat or other success whose `control.terminate` is true, then the worker's stopped report. Expected: `control.terminate` causes `stopped`, not `fail`. Unchanged: the attempt is not recorded as an engine failure.
+
+29. Inactive pull replay: message the same `pull_request_id` and the same raw body after the stored attempt is past `attempt_deadline`, canceled, or replaced. Expected: HTTP 409 `attempt_not_active`. Unchanged: no new attempt is issued and the lease is not extended. An empty stored pull still replays as empty. A stored completion success still replays after lease expiry.

@@ -50,7 +50,7 @@ Every success response carries `control`:
 
 `drain` means stop pulling, finish in-flight work, then `DELETE` the session. `terminate` means stop local work and send `stopped`, not `fail`. `draining` is `control.drain`, not an error code.
 
-A lost response is retried as the same `pull_request_id` and the same raw body, or as the same completion body. Workers follow no redirects. Responses include `Cache-Control: no-store`.
+A lost pull response is retried as the same `pull_request_id` and the same raw body. While that attempt is still active, the core returns the stored assignment and does not extend the lease. If the attempt is no longer active, the replay is `attempt_not_active` and issues no new attempt. A lost completion is retried as the same completion body and returns the stored success even after the lease has ended. Workers follow no redirects. Responses include `Cache-Control: no-store`.
 
 After HELLO, a session call sends `Authorization: Bearer` and the session token. A call under `/worker/v1/attempts/` also sends `Octoconv-Attempt` for that attempt. The pull and complete examples contain no session token. The HELLO success fixture's `session_token` is a placeholder, not a secret. Direct file requests send no `Authorization` and no attempt token. The `href` itself is the bearer until `expires_at`.
 
@@ -72,7 +72,7 @@ The client-certificate SAN is a URI `urn:octoconv:worker:` followed by the worke
 
 Later calls send `Authorization: Bearer` and the session token. The token is 32 bytes from a CSPRNG, encoded on the wire as 64 lowercase hex characters, stored only as a hash, and is not logged. The session row is the revoke switch. The fixture `session_token` is 64 `a` characters. That value is a placeholder, not a secret.
 
-Attempt-scoped calls also send header `Octoconv-Attempt`. That token is a distinct secret minted with the assignment. It authorizes only lease renew, progress, fail, complete, and stopped for that `attempt_id`. Those five are the attempt-scoped methods in the method table. Session-only calls reject an attempt token and change nothing. An attempt token for attempt A presented on attempt B is `capability_denied` and changes nothing on B.
+Attempt-scoped calls also send header `Octoconv-Attempt`. The assignment object carries that secret as `attempt_token`. It is 32 bytes from a CSPRNG, encoded on the wire as 64 lowercase hex characters, stored only as a hash, and is not logged. The core mints it with the assignment and does not send it in a response header. It authorizes only lease renew, progress, fail, complete, and stopped for that `attempt_id`. Those five are the attempt-scoped methods in the method table. Renew does not mint a new attempt token. Session-only calls reject an attempt token and change nothing. An attempt token for attempt A presented on attempt B is `capability_denied` and changes nothing on B. The fixture value is 64 `c` characters. That value is a placeholder, not a secret.
 
 hrefs exist only on the assignment. Renew does not mint or extend them. A new link requires a new assignment message. This profile has no route, request body, response body, or schema branch that mints or extends an `href`.
 
@@ -121,7 +121,7 @@ Every method uses a JSON body, including success. There is no `204`. An empty pu
 
 ### Pull request
 
-`POST /worker/v1/sessions/{id}/pull` requires `protocol_version`, `pull_request_id` (UUID), `free_slots` (integer, minimum 0), and `wait_seconds` (integer). The same `pull_request_id` with the same raw body returns the stored response. The same id with a different raw body is `pull_conflict` and changes no state.
+`POST /worker/v1/sessions/{id}/pull` requires `protocol_version`, `pull_request_id` (UUID), `free_slots` (integer, minimum 0), and `wait_seconds` (integer). While the stored attempt is still active, the same `pull_request_id` with the same raw body returns that stored assignment and does not extend the lease. If that attempt is no longer active, the same replay is `attempt_not_active` and issues no new attempt. An empty stored pull still returns the empty list. The same id with a different raw body is `pull_conflict` and changes no state.
 
 ## Errors
 
@@ -141,8 +141,8 @@ Protocol errors are a third vocabulary. The body is `code`, `message`, and `retr
 | `rate_limited` | 429 | Pull or progress exceeds the advertised rate. No attempt is created. A progress rejection leaves the attempt alive |
 | `pull_conflict` | 409 | The same `pull_request_id` was sent with a different raw body |
 | `complete_conflict` | 409 | The same attempt completion was sent with a different raw body. No state change |
-| `attempt_not_active` | 409 | Lease renew or a result arrived when the attempt is no longer the active one |
-| `artifact_rejected` | 409 | HEAD, size, or sha256 does not match the completion list |
+| `attempt_not_active` | 409 | The attempt is no longer active. This covers lease renew, a result, and a pull replay whose stored attempt is past `attempt_deadline`, canceled, or replaced |
+| `artifact_rejected` | 409 | Size or sha256 of the immutable copy does not match the completion list |
 
 Stable engine-failure strings travel inside `fail`. The core maps them onto the existing client allow-list. The migrated image class stays `engine_error`. Those strings are not protocol codes.
 
@@ -155,13 +155,14 @@ A pull success body contains `protocol_version`, `assignments`, and `control`. `
 | Field | Constraint |
 |---|---|
 | `job_id`, `step_id`, `attempt_id` | UUID strings |
+| `attempt_token` | 64 lowercase hex characters, delivered in this object. The tracer fixture is a placeholder, not a secret |
 | `capability_id` | Capability identifier. The tracer fixture uses `octoconv.convert.image` |
 | `capability_version` | Positive integer. The tracer fixture uses `1` |
 | `attempt_deadline`, `lease_expires_at` | RFC3339 UTC timestamps |
 | `limits.max_output_bytes` | Integer. The tracer fixture uses `104857600` |
 | `inputs`, `outputs` | Arrays of file links |
 
-Each file link has `role`, `ordinal`, `format`, `href`, and `expires_at`. `href` is a URI. The schema does not fix the host. The tracer fixture uses input role `source`, format `jpg`, and output role `primary`, format `png`, with `https://storage.example/presigned-get` and `https://storage.example/presigned-put`. Those hrefs have no query string and no object key. No session token appears in the fixture.
+Each file link has `role`, `ordinal`, `format`, `href`, and `expires_at`. `href` is a URI. The schema does not fix the host. The tracer fixture uses input role `source`, format `jpg`, and output role `primary`, format `png`, with `https://storage.example/presigned-get` and `https://storage.example/presigned-put`. Those hrefs have no query string and no object key. Each link `expires_at` in the fixture is `2026-11-06T12:02:00Z`, equal to `attempt_deadline` and later than `lease_expires_at`. No session token appears in the fixture. The `attempt_token` in that fixture is the placeholder described under Authentication.
 
 On the `direct` profile, the link is a bearer URL until `expires_at`. This slice does not promise to revoke bytes already downloaded and does not promise to abort an in-progress direct GET.
 
@@ -213,11 +214,11 @@ hrefs exist only on the assignment. Renew does not mint or extend them. A new li
 
 `direct` is specified now and implemented in a later phase. Each input is an HTTPS presigned GET. Each attempt-scoped output is an HTTPS presigned PUT. The URL is method-locked and key-locked. The worker checks that the URL origin equals the origin in the assignment, that the scheme is HTTPS, and that it sends no `Authorization`. It follows no redirect.
 
-Effective lifetime is the minimum of `issued_at` plus `file_link_max_ttl`, the current `lease_expires_at`, the fixed `attempt_deadline`, and `job_deadline`. If that instant is not strictly after `server_now` plus `clock_skew_margin`, the core issues no link. Renewing a lease does not rewrite an already issued link. Cancel, revoke, and complete issue no new links.
+Effective lifetime is the minimum of `issued_at` plus `file_link_max_ttl`, the fixed `attempt_deadline`, and `job_deadline`. It is not capped by `lease_expires_at`. The lease fences attempt-scoped JSON calls. An issued link stays usable until its own `expires_at`, including after a successful renew and after the lease has lapsed. If that instant is not strictly after `server_now` plus `clock_skew_margin`, the core issues no link. Renewing a lease does not rewrite an already issued link. Cancel, revoke, and complete issue no new links.
 
 The URL is a bearer and can be reused until `expires_at`. A download that started before expiry continues. A late PUT can replace the object at that key. `direct` does not abort an in-progress GET and does not revoke bytes already downloaded.
 
-Object immutability is a core copy onto a key the PUT URL cannot write, taken after HEAD and hash checks and before the acceptance transaction. Bucket versioning and Object Lock are not the mechanism.
+Object immutability is a core copy onto a key the PUT URL cannot write. The core checks size and SHA-256 on that copy, and only then opens the acceptance transaction. A later PUT to the staging key does not change the copy. Checking the staging object and then copying it is not sufficient. Bucket versioning and Object Lock are not the mechanism.
 
 `file_link_max_ttl` starting policy is 5 minutes, advertised as `file_link_max_ttl_seconds` 300. It MUST be finite, at least 1 second, and at most 604800 seconds. Do not use 15 minutes. The client download default of 15 minutes is a different clock and is not `file_link_max_ttl`.
 
@@ -252,7 +253,7 @@ The published inequality is `lease_expires_at` less than or equal to `attempt_de
 | Control message | 256 KiB (262144 bytes), else `message_too_large` | File bytes never count. Phase 86 checks the committed fixtures fit, expecting well under 64 KiB. |
 | Progress messages | 4 per second per attempt | Excess is `rate_limited` and the attempt stays. |
 | `clock_skew_margin` | 5 seconds, advertised as `clock_skew_margin_seconds` | Policy. The core will not issue a link or a lease that would expire inside that margin. |
-| `file_link_max_ttl` | 5 minutes, advertised as `file_link_max_ttl_seconds` | Finite, at least 1 second, and at most 604800 seconds. Not 15 minutes. |
+| `file_link_max_ttl` | 5 minutes, advertised as `file_link_max_ttl_seconds` | Finite, at least 1 second, and at most 604800 seconds. Not 15 minutes. Issued `expires_at` is the minimum of `issued_at` plus this cap, `attempt_deadline`, and `job_deadline`. The lease is not that cap. |
 
 ## Progress
 
@@ -295,7 +296,7 @@ Workers dial out. The core never opens a connection to the worker. Wakeup means 
 
 ### Pull
 
-`POST /worker/v1/sessions/{id}/pull` assigns at most one attempt or returns an empty `assignments` array, and both results are stored. The request is `pullRequest`. The success is `pullAssignmentResponse`. A lost response is retried as the same `pull_request_id` and the same raw body. The core returns the stored assignment or the stored empty list. One attempt exists.
+`POST /worker/v1/sessions/{id}/pull` assigns at most one attempt or returns an empty `assignments` array, and both results are stored. The request is `pullRequest`. The success is `pullAssignmentResponse`. A lost response is retried as the same `pull_request_id` and the same raw body. While the stored attempt is still active, including after the lease has lapsed, the core returns that assignment, does not extend the lease, and does not create a second attempt. If `server_now` is at or past `attempt_deadline`, or the attempt was canceled or replaced, the replay is `attempt_not_active` and issues no new attempt. An empty stored pull still returns the empty list.
 
 ### Lease
 
@@ -323,7 +324,7 @@ Workers dial out. The core never opens a connection to the worker. Wakeup means 
 
 The dedup digest is the SHA-256 of the exact raw request body after schema validation. The retry MUST be byte-identical. Different whitespace is a conflict. Do not use RFC 8785. A proxy that rewrites JSON is out of profile. The worker TLS session ends at the core origin.
 
-The pull key is the pair `worker_session_id` and `pull_request_id`, plus that digest. Empty pulls are stored. Rows live for the session and MAY be deleted after close. The same id and the same raw body return the stored response. Two in-flight pulls with the same id produce one assignment and one stored response. The same id and a different body is `pull_conflict` and changes no state. That is a payload conflict. No second attempt is created.
+The pull key is the pair `worker_session_id` and `pull_request_id`, plus that digest. Empty pulls are stored. Rows live for the session and MAY be deleted after close. While the stored attempt is still active, the same id and the same raw body return that assignment and do not extend the lease. If that attempt is no longer active, the replay is `attempt_not_active`, issues no new attempt, and does not replace the stored row. An empty stored pull still returns the empty list. Two in-flight pulls with the same id produce one assignment and one stored response. The same id and a different body is `pull_conflict` and changes no state. That is a payload conflict. No second attempt is created.
 
 The completion key is `job_id`, `step_id`, `attempt_id`, and the literal `complete`, plus the digest. The same id and the same raw body return the stored success even after the lease has ended, and accounting is not applied again. The same id and a different body is `complete_conflict` and changes no state. A lost completion response is retried as that same raw body.
 
@@ -335,7 +336,7 @@ The attempt token for attempt A presented to attempt B is `capability_denied` an
 
 ### Acceptance
 
-Acceptance is specified and not implemented in this phase. The worker PUTs bytes, then `complete` lists the artifacts. The core HEADs each object, checks size and hash, copies to an immutable result key the PUT URL cannot write, then commits one database transaction that records acceptance, artifacts, accounting, the event, and continuation intent. A failed check is `artifact_rejected` and does not accept. This is exactly-once accepted effects, not exactly-once computation. A worker MAY run the conversion again.
+Acceptance is specified and not implemented in this phase. The worker PUTs bytes, then `complete` lists the artifacts. The core copies each object onto an immutable result key the PUT URL cannot write. It then checks size and SHA-256 of that copy against the completion list. Only a matching copy is accepted. The core then commits one database transaction that records acceptance, artifacts, accounting, the event, and continuation intent. A mismatch is `artifact_rejected` and does not accept. A PUT that replaces the staging object after the copy does not change the accepted bytes. This is exactly-once accepted effects, not exactly-once computation. A worker MAY run the conversion again.
 
 ### Finite file access
 
@@ -409,7 +410,7 @@ This phase adds no migration SQL, no worker process, no Python tree, and no chan
 | [positive/hello-request.json](worker-protocol/examples/positive/hello-request.json) | HELLO request |
 | [positive/hello-response.json](worker-protocol/examples/positive/hello-response.json) | HELLO success, including the placeholder session token |
 | [positive/error-unknown-field.json](worker-protocol/examples/positive/error-unknown-field.json) | Valid error body for `unknown_field`, not a client error object |
-| [positive/pull-assignment.json](worker-protocol/examples/positive/pull-assignment.json) | One pull assignment response |
+| [positive/pull-assignment.json](worker-protocol/examples/positive/pull-assignment.json) | One pull assignment response, including the placeholder attempt token |
 | [positive/complete.json](worker-protocol/examples/positive/complete.json) | One complete request |
 | [positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json) | `octoconv.convert.image` manifest, 20 format pairs |
 | [positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json) | `octoconv.convert.imagepdf` manifest, png to pdf, no legacy engine |

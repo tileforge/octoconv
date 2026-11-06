@@ -235,6 +235,7 @@
         "job_id",
         "step_id",
         "attempt_id",
+        "attempt_token",
         "capability_id",
         "capability_version",
         "attempt_deadline",
@@ -247,6 +248,7 @@
         "job_id": { "type": "string", "format": "uuid" },
         "step_id": { "type": "string", "format": "uuid" },
         "attempt_id": { "type": "string", "format": "uuid" },
+        "attempt_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "capability_id": {
           "type": "string",
           "maxLength": 128,

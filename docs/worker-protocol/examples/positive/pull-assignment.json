@@ -5,6 +5,7 @@
       "job_id": "00000000-0000-4000-8000-000000000010",
       "step_id": "00000000-0000-4000-8000-000000000011",
       "attempt_id": "00000000-0000-4000-8000-000000000012",
+      "attempt_token": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "capability_id": "octoconv.convert.image",
       "capability_version": 1,
       "attempt_deadline": "2026-11-06T12:02:00Z",
@@ -16,7 +17,7 @@
           "ordinal": 0,
           "format": "jpg",
           "href": "https://storage.example/presigned-get",
-          "expires_at": "2026-11-06T12:00:30Z"
+          "expires_at": "2026-11-06T12:02:00Z"
         }
       ],
       "outputs": [
@@ -25,7 +26,7 @@
           "ordinal": 0,
           "format": "png",
           "href": "https://storage.example/presigned-put",
-          "expires_at": "2026-11-06T12:00:30Z"
+          "expires_at": "2026-11-06T12:02:00Z"
         }
       ]
     }
