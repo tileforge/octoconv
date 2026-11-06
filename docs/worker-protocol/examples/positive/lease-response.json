@@ -1,0 +1,6 @@
+{
+  "protocol_version": 1,
+  "lease_expires_at": "2026-11-06T12:00:30Z",
+  "attempt_deadline": "2026-11-06T12:02:00Z",
+  "control": {"cancel_attempt_ids": [], "drain": false, "terminate": false}
+}
