@@ -257,7 +257,7 @@ The published inequality is `lease_expires_at` less than or equal to `attempt_de
 
 ## Progress
 
-Worker percent is an integer 0 through 99, or JSON null. Percent 100 is `invalid_progress`. Stored progress is unchanged and the attempt is not failed, including when that request is repeated. A repeated progress value of 100 still changes nothing. Within one attempt a lower percent is ignored. A new attempt clears client-visible progress to null before any tick. `stage`, `stage_index`, and `stage_count` are optional and are not a percent. `eta_seconds` is optional and null when unknown.
+Worker percent is an integer 0 through 99, or JSON null. Percent 100 is `invalid_progress`. Stored progress is unchanged and the attempt is not failed, including when that request is repeated. A repeated progress value of 100 still changes nothing. Within one attempt a lower percent is ignored. A new attempt clears client-visible progress to null before any tick. `stage`, `stage_index`, `stage_count`, and `eta_seconds` are optional fields of `progressRequest`. They are not a percent, and omitting them leaves `percent` as the only progress value. `stage` is a string of at least one character. It is not the client CAD stage enum. `stage_index` and `stage_count` are integers of at least 1. `stage_index` counts from 1. When both are present, `stage_index` MUST NOT be greater than `stage_count`; the core answers `invalid_message`. `eta_seconds` is an integer of at least 0, or JSON null when unknown. Null is unknown and is not the same as zero.
 
 Client statuses stay `awaiting_upload`, `queued`, `active`, `done`, `failed`, and `canceled`. Do not add protocol states to that enum.
 
@@ -304,7 +304,7 @@ Workers dial out. The core never opens a connection to the worker. Wakeup means 
 
 ### Progress
 
-`POST /worker/v1/attempts/{id}/progress` uses `progressRequest`. `percent` is an integer from 0 through 99, or JSON null. The schema rejects 100. The core answers `invalid_progress`. Stored progress is unchanged and the attempt stays active, including when that request is repeated. The rest of the percent rules are in Progress.
+`POST /worker/v1/attempts/{id}/progress` uses `progressRequest`. `percent` is an integer from 0 through 99, or JSON null. The schema rejects 100. The core answers `invalid_progress`. Stored progress is unchanged and the attempt stays active, including when that request is repeated. Optional `stage`, `stage_index`, `stage_count`, and `eta_seconds` are defined on this object in the schema. The rest of the percent rules are in Progress.
 
 ### Fail
 
@@ -403,7 +403,7 @@ This phase adds no migration SQL, no worker process, no Python tree, and no chan
 
 [worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `manifest`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, `protocolOnlyRequest`, `heartbeatResponse`, `leaseResponse`, `progressRequest`, `failRequest`, `stoppedRequest`, and `error`. `capability` is the closed item inside `manifest`, not a second root branch. A valid document matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. The manifest document has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
 
-`protocolOnlyRequest` is only `protocol_version`, plus optional `extensions`. It is the body for heartbeat, lease renew, and `DELETE` session. `heartbeatResponse` is `protocol_version` plus `control`. It does not match a body that has `assignments`, `session_id`, or a top-level `lease_expires_at`. `leaseResponse` adds top-level `lease_expires_at` and `attempt_deadline` plus `control`. `progressRequest` requires `percent`, an integer from 0 through 99 or JSON null, so that 100 fails validation. `failRequest` requires `engine_code` and `message`. `engine_code` is not a protocol error code. `stoppedRequest` requires `reason`, one of `cancel`, `terminate`, and `lease_lost`. These objects are closed. `additionalProperties` is not true on them. `extensions` stays the only open object.
+`protocolOnlyRequest` is only `protocol_version`, plus optional `extensions`. It is the body for heartbeat, lease renew, and `DELETE` session. `heartbeatResponse` is `protocol_version` plus `control`. It does not match a body that has `assignments`, `session_id`, or a top-level `lease_expires_at`. `leaseResponse` adds top-level `lease_expires_at` and `attempt_deadline` plus `control`. `progressRequest` requires `percent`, an integer from 0 through 99 or JSON null, so that 100 fails validation. Optional properties are `stage` (string, at least one character), `stage_index` and `stage_count` (integers of at least 1), and `eta_seconds` (integer of at least 0, or JSON null). `failRequest` requires `engine_code` and `message`. `engine_code` is not a protocol error code. `stoppedRequest` requires `reason`, one of `cancel`, `terminate`, and `lease_lost`. These objects are closed. `additionalProperties` is not true on them. `extensions` stays the only open object.
 
 | Example | Role |
 |---|---|

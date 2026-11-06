@@ -161,6 +161,15 @@
             { "type": "null" }
           ]
         },
+        "stage": { "type": "string", "minLength": 1 },
+        "stage_index": { "type": "integer", "minimum": 1 },
+        "stage_count": { "type": "integer", "minimum": 1 },
+        "eta_seconds": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
     },
