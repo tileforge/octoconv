@@ -3,6 +3,8 @@
   "$id": "urn:octoconv:worker-protocol:v1",
   "title": "OctoConv Worker Protocol v1",
   "oneOf": [
+    { "$ref": "#/$defs/helloRequest" },
+    { "$ref": "#/$defs/helloResponse" },
     { "$ref": "#/$defs/pullRequest" },
     { "$ref": "#/$defs/pullAssignmentResponse" },
     { "$ref": "#/$defs/completeRequest" },
@@ -12,6 +14,55 @@
     "extensions": {
       "type": "object",
       "additionalProperties": true
+    },
+    "helloRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol_version", "worker_id", "manifest_sha256", "free_slots"],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "worker_id": { "type": "string", "format": "uuid" },
+        "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "free_slots": { "type": "integer", "minimum": 0 },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "helloResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "session_id",
+        "session_token",
+        "control",
+        "pull_wait_seconds",
+        "heartbeat_interval_seconds",
+        "lease_seconds",
+        "session_max_lifetime_seconds",
+        "max_message_bytes",
+        "file_link_max_ttl_seconds",
+        "clock_skew_margin_seconds",
+        "pull_rate_per_second",
+        "progress_rate_per_second",
+        "file_access"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "session_id": { "type": "string", "format": "uuid" },
+        "session_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "pull_wait_seconds": { "type": "integer", "minimum": 0 },
+        "heartbeat_interval_seconds": { "type": "integer", "minimum": 1 },
+        "lease_seconds": { "type": "integer", "minimum": 1 },
+        "session_max_lifetime_seconds": { "type": "integer", "minimum": 1 },
+        "max_message_bytes": { "type": "integer", "minimum": 1 },
+        "file_link_max_ttl_seconds": { "type": "integer", "minimum": 1, "maximum": 604800 },
+        "clock_skew_margin_seconds": { "type": "integer", "minimum": 0 },
+        "pull_rate_per_second": { "type": "integer", "minimum": 1 },
+        "progress_rate_per_second": { "type": "integer", "minimum": 1 },
+        "file_access": { "type": "string", "enum": ["direct", "gateway"] },
+        "control": { "$ref": "#/$defs/control" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
     },
     "pullRequest": {
       "type": "object",

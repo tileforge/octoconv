@@ -52,13 +52,60 @@ Every success response carries `control`:
 
 A lost response is retried as the same `pull_request_id` and the same raw body, or as the same completion body. Workers follow no redirects. Responses include `Cache-Control: no-store`.
 
-After HELLO, a session call sends `Authorization: Bearer` and the session token. A call under `/worker/v1/attempts/` also sends `Octoconv-Attempt` for that attempt. The examples contain no session token. Direct file requests send no `Authorization` and no attempt token. The `href` itself is the bearer until `expires_at`.
+After HELLO, a session call sends `Authorization: Bearer` and the session token. A call under `/worker/v1/attempts/` also sends `Octoconv-Attempt` for that attempt. The pull and complete examples contain no session token. The HELLO success fixture's `session_token` is a placeholder, not a secret. Direct file requests send no `Authorization` and no attempt token. The `href` itself is the bearer until `expires_at`.
 
 This protocol does not promise exactly-once worker computation. Only an accepted core effect is exactly once. A worker MAY run the conversion again. A repeated pull or completion with the same raw body is the same effect, not a second one. Dedup is SHA-256 of that exact raw body. Different whitespace is a different body. RFC 8785 is not used.
 
+## TLS
+
+TLS 1.3 is the minimum. Early data is disabled. Renegotiation is not used. There is no configuration flag that turns TLS off. Refusing TLS 1.2, including a middlebox that only offers 1.2, fails closed (assumption A1). Mixing the worker origin with the client API origin is forbidden.
+
+The required cipher is `TLS_AES_128_GCM_SHA256`. `TLS_AES_256_GCM_SHA384` and `TLS_CHACHA20_POLY1305_SHA256` MAY be offered. Certificate signatures and groups stay inside the [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) section 9.1 mandatory set: `rsa_pkcs1_sha256`, `rsa_pss_rsae_sha256`, `ecdsa_secp256r1_sha256`, and key exchange `secp256r1`. `X25519` MAY be offered. Implementations MUST NOT hand-roll a cipher list outside that set.
+
+HTTP/1.1 is required. HTTP/2 over TLS is allowed. `h2c` is forbidden. The leaf certificate DNS SAN MUST match the configured origin using the platform verifier. Trust anchors are an operator private CA bundle, not public WebPKI (assumption A5).
+
+## Authentication
+
+The only profile is a TLS 1.3 client certificate, a revocable session token, and a separate attempt token. Bearer-only authentication is rejected. A session token presented without the client certificate gets no access. mTLS without a session token is rejected, because a certificate checked only at handshake cannot be withdrawn for the rest of that connection. There is no plaintext switch.
+
+The client-certificate SAN is a URI `urn:octoconv:worker:` followed by the worker id, not SPIFFE (assumption A7). The URI MUST match the approved worker identity. A handshake with an unknown identity gets no session.
+
+Later calls send `Authorization: Bearer` and the session token. The token is 32 bytes from a CSPRNG, encoded on the wire as 64 lowercase hex characters, stored only as a hash, and is not logged. The session row is the revoke switch. The fixture `session_token` is 64 `a` characters. That value is a placeholder, not a secret.
+
+Attempt-scoped calls also send header `Octoconv-Attempt`. That token is a distinct secret minted with the assignment. It authorizes only lease renew, progress, fail, complete, and stopped for that `attempt_id`. Those five are the attempt-scoped methods in the method table. Session-only calls reject an attempt token and change nothing. An attempt token for attempt A presented on attempt B is `capability_denied` and changes nothing on B.
+
+hrefs exist only on the assignment. Renew does not mint or extend them. A new link requires a new assignment message. This profile has no route, request body, response body, or schema branch that mints or extends an `href`.
+
+Identity revoke denylists the certificate serial and closes every session for that identity. The next call returns `session_closed`. Rotation is an overlapping new certificate, then denylist the old serial. Session tokens are not rotated in place. A restarted process creates a new session and does not release old leases or bypass owner limits. Session close is durable. Dedup rows MAY be deleted after close, and a request after close is still `session_closed`.
+
+Credentials are not forwarded to another origin. `direct` file requests carry no `Authorization` and no attempt token. `gateway` uses the attempt token only against the gateway origin named in the assignment. Workers do not follow redirects, because a caller-supplied `Authorization` is not reliably stripped. Any 3xx is a worker-local outcome named `origin_rejected`; the body is not sent to the new URI. `origin_rejected` is not a core error-table row.
+
+### HELLO
+
+`POST /worker/v1/sessions` opens one session. The request fields are `protocol_version`, `worker_id` (UUID), `manifest_sha256` (64 lowercase hex digits), and `free_slots` (integer, minimum 0). The published request is [worker-protocol/examples/positive/hello-request.json](worker-protocol/examples/positive/hello-request.json).
+
+HELLO success fields are `session_id`, `session_token`, `protocol_version`, `control`, and every worker-facing advertisement below. Workers use the advertisement. The published success body is [worker-protocol/examples/positive/hello-response.json](worker-protocol/examples/positive/hello-response.json).
+
+| Field | Starting advertisement |
+|---|---|
+| `pull_wait_seconds` | 20 |
+| `heartbeat_interval_seconds` | 10 |
+| `lease_seconds` | 30 |
+| `session_max_lifetime_seconds` | 86400 |
+| `max_message_bytes` | 262144 |
+| `file_link_max_ttl_seconds` | 300 |
+| `clock_skew_margin_seconds` | 5 |
+| `pull_rate_per_second` | 2 |
+| `progress_rate_per_second` | 4 |
+| `file_access` | `direct` or `gateway` |
+
+`manifest_sha256` is the SHA-256 of the exact installed manifest file bytes. The Manifest section states how the core compares it. HELLO does not grant execution.
+
+A body the schema rejects as an unknown field is answered with the closed error object. [worker-protocol/examples/positive/error-unknown-field.json](worker-protocol/examples/positive/error-unknown-field.json) is a valid error body: `code` `unknown_field`, a short `message`, and `retryable` false. It is not the client shape that uses an `error` field.
+
 ## Methods
 
-Every method uses a JSON body, including success. There is no `204`. An empty pull is HTTP 200 with `assignments` empty, and that response is stored for dedup. This document fully specifies the pull assignment and the complete request. Later text adds transition rules for the other methods and does not rename these paths. `href` values exist on the assignment. This protocol has no method that mints a new `href`.
+Every method uses a JSON body, including success. There is no `204`. An empty pull is HTTP 200 with `assignments` empty, and that response is stored for dedup. This document fully specifies HELLO, the pull assignment, and the complete request. Later text adds transition rules for the other methods and does not rename these paths. `href` values exist on the assignment. This protocol has no method that mints a new `href`.
 
 | Method | Purpose |
 |---|---|
@@ -130,10 +177,13 @@ The same completion body retries a lost response. A different raw body for the s
 
 ## Schema and examples
 
-[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. A valid message matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`.
+[worker-protocol/v1.schema.json](worker-protocol/v1.schema.json) is one Draft 2020-12 document. `$schema` is `https://json-schema.org/draft/2020-12/schema`. `$id` is `urn:octoconv:worker-protocol:v1`. The root is `oneOf` these definitions: `helloRequest`, `helloResponse`, `pullRequest`, `pullAssignmentResponse`, `completeRequest`, and `error`. A valid message matches exactly one branch. `protocol_version` is `const` 1 on the request and success definitions. `error` requires `code`, `message`, and `retryable`, and has no `protocol_version`. No branch mints or replaces an `href`. `href` remains a field of the assignment file link.
 
 | Example | Role |
 |---|---|
+| [positive/hello-request.json](worker-protocol/examples/positive/hello-request.json) | HELLO request |
+| [positive/hello-response.json](worker-protocol/examples/positive/hello-response.json) | HELLO success, including the placeholder session token |
+| [positive/error-unknown-field.json](worker-protocol/examples/positive/error-unknown-field.json) | Valid error body for `unknown_field`, not a client error object |
 | [positive/pull-assignment.json](worker-protocol/examples/positive/pull-assignment.json) | One pull assignment response |
 | [positive/complete.json](worker-protocol/examples/positive/complete.json) | One complete request |
 | [negative/pull-unknown-field.json](worker-protocol/examples/negative/pull-unknown-field.json) | A pull request plus top-level `priority` `1` |
