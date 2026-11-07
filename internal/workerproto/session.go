@@ -151,11 +151,60 @@ func (r *Repo) RevokeIdentity(ctx context.Context, workerID uuid.UUID, serial *b
 		if err := insertDenylist(ctx, tx, workerID, serial, issuerSHA256); err != nil {
 			return err
 		}
+		sessionRows, err := tx.Query(ctx, `
+			SELECT id FROM worker_sessions
+			WHERE worker_id = $1
+			ORDER BY id
+			FOR UPDATE`, workerID)
+		if err != nil {
+			return fmt.Errorf("lock worker sessions: %w", err)
+		}
+		for sessionRows.Next() {
+		}
+		if err := sessionRows.Err(); err != nil {
+			sessionRows.Close()
+			return fmt.Errorf("lock worker sessions: %w", err)
+		}
+		sessionRows.Close()
 		if _, err := tx.Exec(ctx, `
 			UPDATE worker_sessions
 			SET closed_at = COALESCE(closed_at, now())
 			WHERE worker_id = $1`, workerID); err != nil {
 			return fmt.Errorf("close worker sessions: %w", err)
+		}
+		jobRows, err := tx.Query(ctx, `
+			SELECT DISTINCT h.job_id
+			FROM worker_slot_holds h
+			WHERE h.released_at IS NULL
+			  AND h.job_id IS NOT NULL
+			  AND h.session_id IN (SELECT id FROM worker_sessions WHERE worker_id = $1)
+			ORDER BY h.job_id`, workerID)
+		if err != nil {
+			return fmt.Errorf("list revoked jobs: %w", err)
+		}
+		var lockedJobs []uuid.UUID
+		for jobRows.Next() {
+			var jobID uuid.UUID
+			if err := jobRows.Scan(&jobID); err != nil {
+				jobRows.Close()
+				return fmt.Errorf("scan revoked job: %w", err)
+			}
+			lockedJobs = append(lockedJobs, jobID)
+		}
+		if err := jobRows.Err(); err != nil {
+			jobRows.Close()
+			return fmt.Errorf("list revoked jobs: %w", err)
+		}
+		jobRows.Close()
+		for _, jobID := range lockedJobs {
+			var locked uuid.UUID
+			err := tx.QueryRow(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID).Scan(&locked)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("lock revoked job: %w", err)
+			}
 		}
 		rows, err := tx.Query(ctx, `
 			UPDATE worker_slot_holds AS h

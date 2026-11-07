@@ -1366,6 +1366,104 @@ func TestProgressLocksTheJobBeforeTheHold(t *testing.T) {
 	}
 }
 
+func TestPullStopsWhenTheSessionEndsDuringWait(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{name: "closed", sql: `UPDATE worker_sessions SET closed_at = now() WHERE id = $1`},
+		{name: "expired", sql: `UPDATE worker_sessions SET expires_at = now() - interval '1 second' WHERE id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live := openHello(t)
+			deletePullFixtures(t, live.pool)
+			done := make(chan pullResp, 1)
+			go func() {
+				status, body, err := postBody(live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, pullBody(uuid.New(), 1, 5))
+				done <- pullResp{status: status, body: body, err: err}
+			}()
+			time.Sleep(150 * time.Millisecond)
+			if _, err := live.pool.Exec(context.Background(), tc.sql, live.sessionID); err != nil {
+				t.Fatal(err)
+			}
+			jobID := insertPullJob(t, live.pool, pullJob{})
+			select {
+			case got := <-done:
+				if got.err != nil {
+					t.Fatal(got.err)
+				}
+				if got.status != http.StatusUnauthorized || !bytes.Contains(got.body, []byte(`"session_closed"`)) {
+					t.Fatalf("status %d body %s", got.status, got.body)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("pull did not return")
+			}
+			if jobStatusOf(t, live.pool, jobID) != "queued" {
+				t.Fatal("ended session claimed the job")
+			}
+			var creds int
+			if err := live.pool.QueryRow(context.Background(), `
+				SELECT count(*) FROM worker_attempt_credentials WHERE session_id = $1`, live.sessionID).Scan(&creds); err != nil {
+				t.Fatal(err)
+			}
+			if creds != 0 {
+				t.Fatalf("credentials %d", creds)
+			}
+		})
+	}
+}
+
+func TestRevokeLocksTheJobBeforeTheHold(t *testing.T) {
+	live := openHello(t)
+	_, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	ctx := context.Background()
+	tx, err := live.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		var serialText, issuer string
+		if err := live.pool.QueryRow(context.Background(), `
+			SELECT cert_serial_decimal, issuer_sha256
+			FROM worker_sessions WHERE id = $1`, live.sessionID).Scan(&serialText, &issuer); err != nil {
+			done <- err
+			return
+		}
+		serial, ok := new(big.Int).SetString(serialText, 10)
+		if !ok {
+			done <- errors.New("certificate serial is not decimal")
+			return
+		}
+		done <- NewRepo(live.pool).RevokeIdentity(context.Background(), live.workerID, serial, issuer)
+	}()
+	waitForJobLock(t, live.pool)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM worker_slot_holds WHERE id = $1 FOR UPDATE`, attemptID); err != nil {
+		t.Fatalf("revoke locked the hold before the job: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("revoke did not finish")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "queued" || holdState(t, live.pool, attemptID) != "canceled" {
+		t.Fatal("revoke did not requeue")
+	}
+}
+
 func repullAfterFence(t *testing.T, live liveSession, attemptID, jobID uuid.UUID) uuid.UUID {
 	t.Helper()
 	if _, err := live.pool.Exec(context.Background(), `

@@ -794,8 +794,8 @@ func (h *Handler) servePull(ctx context.Context, sess storedSession, pullID uuid
 func (h *Handler) storeEmptyPull(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string) ([]byte, error) {
 	var body []byte
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT id FROM worker_sessions WHERE id = $1 FOR UPDATE`, sess.ID); err != nil {
-			return fmt.Errorf("lock session: %w", err)
+		if err := lockOpenSession(ctx, tx, sess.ID); err != nil {
+			return err
 		}
 		cancelIDs, err := canceledAttempts(ctx, tx, sess.ID)
 		if err != nil {
@@ -829,6 +829,22 @@ type pullStep struct {
 	done   bool
 	body   []byte
 	skipID uuid.UUID
+}
+
+func lockOpenSession(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID) error {
+	var closed, expired bool
+	err := tx.QueryRow(ctx, `
+		SELECT closed_at IS NOT NULL, expires_at <= now()
+		FROM worker_sessions
+		WHERE id = $1
+		FOR UPDATE`, sessionID).Scan(&closed, &expired)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (closed || expired)) {
+		return &pullStatus{status: http.StatusUnauthorized, code: "session_closed"}
+	}
+	if err != nil {
+		return fmt.Errorf("lock session: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) consumePullRate(ctx context.Context, sessionID uuid.UUID) (bool, error) {
@@ -875,8 +891,8 @@ func (h *Handler) consumePullRate(ctx context.Context, sessionID uuid.UUID) (boo
 func (h *Handler) pullCandidate(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string, freeSlots int64, skipped []uuid.UUID, reserved, storeEmpty bool) (pullStep, error) {
 	var step pullStep
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT id FROM worker_sessions WHERE id = $1 FOR UPDATE`, sess.ID); err != nil {
-			return fmt.Errorf("lock session: %w", err)
+		if err := lockOpenSession(ctx, tx, sess.ID); err != nil {
+			return err
 		}
 		if !reserved {
 			tag, err := tx.Exec(ctx, `
