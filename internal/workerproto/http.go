@@ -8,10 +8,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const maxMessageBytes = 262144
@@ -26,12 +29,14 @@ const (
 
 // Handler serves worker session routes.
 type Handler struct {
-	repo *Repo
+	repo               *Repo
+	jobsRepo           *jobs.Repo
+	imageAttemptBudget time.Duration
 }
 
-// NewHandler returns a handler bound to the catalog.
-func NewHandler(repo *Repo) *Handler {
-	return &Handler{repo: repo}
+// NewHandler returns a handler bound to the catalog and the image attempt budget.
+func NewHandler(repo *Repo, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration) *Handler {
+	return &Handler{repo: repo, jobsRepo: jobsRepo, imageAttemptBudget: imageAttemptBudget}
 }
 
 // Routes returns the worker router. It is not mounted on the client API.
@@ -42,6 +47,7 @@ func (h *Handler) Routes() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Post("/worker/v1/sessions", h.handleHello)
 	r.Post("/worker/v1/sessions/{id}/heartbeat", h.handleHeartbeat)
+	r.Post("/worker/v1/sessions/{id}/pull", h.handlePull)
 	r.Delete("/worker/v1/sessions/{id}", h.handleDelete)
 	r.Post("/worker/v1/attempts/{id}/lease", h.gateAttempt)
 	r.Post("/worker/v1/attempts/{id}/progress", h.gateAttempt)

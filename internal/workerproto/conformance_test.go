@@ -574,13 +574,226 @@ func TestMissingAttemptHeaderIsUnauthorized(t *testing.T) {
 func TestPullRouteIsUnregistered(t *testing.T) {
 	live := openHello(t)
 	before := readGateState(t, live.pool)
-	status, _, _ := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":1}`), nil)
-	if status != http.StatusNotFound {
-		t.Fatalf("pull status %d", status)
-	}
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":1}`), nil)
+	assertProtocolError(t, status, hdr, body, http.StatusBadRequest, "invalid_message")
 	if readGateState(t, live.pool) != before || before.attempts != 0 {
 		t.Fatal("pull created an attempt row")
 	}
+}
+
+func TestPullAssignsOneImageAttempt(t *testing.T) {
+	live := openHello(t)
+	ctx := context.Background()
+	_, err := live.pool.Exec(ctx, `
+		DELETE FROM jobs
+		WHERE options @> '{"test":"TestPullAssignsOneImageAttempt"}'`)
+	if err != nil {
+		t.Fatalf("clear fixture jobs: %v", err)
+	}
+	jobID := uuid.New()
+	_, err = live.pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline, options
+		) VALUES (
+			$1, 'convert', 'image', 'queued', 'png', 'jpg',
+			'protocol', 'octoconv.convert.image', 1, now() + interval '1 hour',
+			'{"test":"TestPullAssignsOneImageAttempt"}'
+		)`, jobID)
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = live.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, jobID)
+	})
+
+	var stepBefore *uuid.UUID
+	var deadline time.Time
+	err = live.pool.QueryRow(ctx, `SELECT step_id, protocol_deadline FROM jobs WHERE id = $1`, jobID).Scan(&stepBefore, &deadline)
+	if err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	if stepBefore != nil {
+		t.Fatal("step_id was set before the claim")
+	}
+
+	body := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"pull_request_id":  uuid.New().String(),
+		"free_slots":       1,
+		"wait_seconds":     0,
+	})
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	assignment := decodeOneAssignment(t, resp)
+	if _, ok := assignment["href"]; ok {
+		t.Fatal("assignment has an href")
+	}
+	if string(assignment["inputs"]) != "[]" || string(assignment["outputs"]) != "[]" {
+		t.Fatal("inputs or outputs are not empty arrays")
+	}
+	var limits struct {
+		MaxOutputBytes int `json:"max_output_bytes"`
+	}
+	if err := json.Unmarshal(assignment["limits"], &limits); err != nil {
+		t.Fatalf("limits: %v", err)
+	}
+	if limits.MaxOutputBytes != 100<<20 {
+		t.Fatalf("max_output_bytes %d", limits.MaxOutputBytes)
+	}
+	token, err := jsonString(assignment["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(token) != 64 || token != strings.ToLower(token) {
+		t.Fatalf("attempt_token %q", token)
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("attempt_token is not hex: %v", err)
+	}
+	wantHash, err := HashToken(token)
+	if err != nil {
+		t.Fatalf("hash token: %v", err)
+	}
+	if wantHash == token {
+		t.Fatal("token hash equals the wire token")
+	}
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepID, err := jsonUUID(assignment["step_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobGot, err := jsonUUID(assignment["job_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobGot != jobID {
+		t.Fatalf("assigned job %s", jobGot)
+	}
+	cred := readAttemptCredential(t, live.pool, attemptID)
+	if cred.tokenHash != wantHash {
+		t.Fatal("credential hash is not HashToken of the wire token")
+	}
+	var hold struct {
+		id       uuid.UUID
+		ownerKey string
+		state    string
+		released *time.Time
+		holdStep uuid.UUID
+	}
+	err = live.pool.QueryRow(ctx, `
+		SELECT id, owner_key, state, released_at, step_id
+		FROM worker_slot_holds WHERE id = $1`, attemptID).
+		Scan(&hold.id, &hold.ownerKey, &hold.state, &hold.released, &hold.holdStep)
+	if err != nil {
+		t.Fatalf("read hold: %v", err)
+	}
+	if hold.id != attemptID || hold.state != "active" || hold.released != nil || hold.ownerKey != live.workerID.String() || hold.holdStep != stepID {
+		t.Fatalf("hold %+v", hold)
+	}
+	var jobStatus, owner string
+	var attempts int
+	var progress *int16
+	var storedStep uuid.UUID
+	err = live.pool.QueryRow(ctx, `
+		SELECT status, attempts, progress_pct, step_id, dispatch_owner
+		FROM jobs WHERE id = $1`, jobID).Scan(&jobStatus, &attempts, &progress, &storedStep, &owner)
+	if err != nil {
+		t.Fatalf("read claimed job: %v", err)
+	}
+	if jobStatus != "active" || attempts != 0 || progress != nil || storedStep != stepID || owner != "protocol" {
+		t.Fatalf("job status=%s attempts=%d progress=%v step=%s owner=%s", jobStatus, attempts, progress, storedStep, owner)
+	}
+	leaseAt, err := jsonTime(assignment["lease_expires_at"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptAt, err := jsonTime(assignment["attempt_deadline"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaseAt.After(attemptAt) || attemptAt.After(deadline) {
+		t.Fatalf("lease %s attempt %s deadline %s", leaseAt, attemptAt, deadline)
+	}
+
+	second := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"pull_request_id":  uuid.New().String(),
+		"free_slots":       1,
+		"wait_seconds":     0,
+	})
+	status, hdr, resp = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, second, nil)
+	if status != http.StatusOK {
+		t.Fatalf("second pull status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	var again struct {
+		Assignments json.RawMessage `json:"assignments"`
+	}
+	if err := json.Unmarshal(resp, &again); err != nil {
+		t.Fatalf("decode second pull: %v", err)
+	}
+	if string(again.Assignments) != "[]" {
+		t.Fatalf("second pull assignments %s", again.Assignments)
+	}
+	var holds int
+	err = live.pool.QueryRow(ctx, `SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&holds)
+	if err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 1 {
+		t.Fatalf("holds %d", holds)
+	}
+}
+
+func decodeOneAssignment(t *testing.T, body []byte) map[string]json.RawMessage {
+	t.Helper()
+	var payload struct {
+		Assignments []map[string]json.RawMessage `json:"assignments"`
+		Control     struct {
+			CancelAttemptIDs []string `json:"cancel_attempt_ids"`
+			Drain            bool     `json:"drain"`
+			Terminate        bool     `json:"terminate"`
+		} `json:"control"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode pull: %v", err)
+	}
+	if len(payload.Assignments) != 1 {
+		t.Fatalf("assignments %d", len(payload.Assignments))
+	}
+	if payload.Control.CancelAttemptIDs == nil || len(payload.Control.CancelAttemptIDs) != 0 || payload.Control.Drain || payload.Control.Terminate {
+		t.Fatalf("control %+v", payload.Control)
+	}
+	return payload.Assignments[0]
+}
+
+func jsonString(raw json.RawMessage) (string, error) {
+	var value string
+	err := json.Unmarshal(raw, &value)
+	return value, err
+}
+
+func jsonUUID(raw json.RawMessage) (uuid.UUID, error) {
+	text, err := jsonString(raw)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return uuid.Parse(text)
+}
+
+func jsonTime(raw json.RawMessage) (time.Time, error) {
+	text, err := jsonString(raw)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339Nano, text)
 }
 
 func TestOversizedAttemptBodyWritesNothing(t *testing.T) {

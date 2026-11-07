@@ -246,6 +246,37 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	return jobID, nil
 }
 
+// ActivateProtocol marks a queued job active on a transaction that already
+// holds the row lock. Opening another transaction here deadlocks on that lock.
+func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.UUID) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusQueued {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusActive, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'active',
+		    started_at = COALESCE(started_at, now()),
+		    progress_pct = NULL,
+		    eta_seconds = NULL,
+		    step_id = $2
+		WHERE id = $1`, id, stepID); err != nil {
+		return fmt.Errorf("activate protocol job: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, StatusQueued, StatusActive); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
 // MarkActive transitions a job to active and stamps started_at, appending an
 // event. The transition allows queued->active AND active->active so asynq's
 // internal same-task retry re-entering the handler does not trip the illegal-

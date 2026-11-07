@@ -26,7 +26,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/tileforge/octoconv/internal/db"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 func TestSessionTokenIsHashed(t *testing.T) {
@@ -423,7 +425,7 @@ func listenWorker(t *testing.T, repo *Repo, ca *x509.Certificate, caKey *ecdsa.P
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{
-		Handler:           NewHandler(repo).Routes(),
+		Handler:           NewHandler(repo, jobs.NewRepo(repo.pool), 120*time.Second).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
