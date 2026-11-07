@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -479,4 +481,424 @@ func doJSON(t *testing.T, client *http.Client, method, url, token string, body [
 
 func urlWorker(id uuid.UUID) url.URL {
 	return url.URL{Scheme: "urn", Opaque: "octoconv:worker:" + id.String()}
+}
+
+func TestManifestMismatchInsertsNothing(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	fileBytes := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, fileBytes); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	before := catalogCounts(t, pool)
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
+	body := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        workerID.String(),
+		"manifest_sha256":  strings.Repeat("b", 64),
+		"free_slots":       1,
+	})
+	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", body, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusForbidden, "manifest_mismatch")
+	after := catalogCounts(t, pool)
+	if after != before || after.sessions != 0 {
+		t.Fatalf("catalog changed from %+v to %+v", before, after)
+	}
+}
+
+func TestHelloWorkerIDMismatch(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	fileBytes := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, fileBytes); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	sum := sha256.Sum256(fileBytes)
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
+	body := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        uuid.New().String(),
+		"manifest_sha256":  hex.EncodeToString(sum[:]),
+		"free_slots":       1,
+	})
+	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", body, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusUnauthorized, "unauthorized")
+	if n := sessionCount(t, pool, workerID); n != 0 {
+		t.Fatalf("sessions = %d", n)
+	}
+}
+
+func TestHelloUnknownField(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	fileBytes := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, fileBytes); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	sum := sha256.Sum256(fileBytes)
+	digest := hex.EncodeToString(sum[:])
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
+	unknown := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        workerID.String(),
+		"manifest_sha256":  digest,
+		"free_slots":       1,
+		"priority":         1,
+	})
+	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", unknown, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusBadRequest, "unknown_field")
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(respBody, &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(payload["message"]) != `"unknown field"` || string(payload["retryable"]) != "false" {
+		t.Fatal("unknown field body does not match the published fixture")
+	}
+	if _, ok := payload["error"]; ok {
+		t.Fatal("client error field is present")
+	}
+	if sessionCount(t, pool, workerID) != 0 {
+		t.Fatal("unknown field opened a session")
+	}
+
+	extended := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        workerID.String(),
+		"manifest_sha256":  digest,
+		"free_slots":       1,
+		"extensions":       map[string]any{"priority": 1},
+	})
+	status, _, _ = doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", extended, nil)
+	if status != http.StatusOK {
+		t.Fatalf("extensions status %d", status)
+	}
+	if sessionCount(t, pool, workerID) != 1 {
+		t.Fatal("extensions did not open a session")
+	}
+}
+
+func TestHelloProtocolVersionTwo(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	fileBytes := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, fileBytes); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	sum := sha256.Sum256(fileBytes)
+	digest := hex.EncodeToString(sum[:])
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
+	two := mustJSON(t, map[string]any{
+		"protocol_version": 2,
+		"worker_id":        workerID.String(),
+		"manifest_sha256":  digest,
+		"free_slots":       1,
+	})
+	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", two, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusBadRequest, "incompatible_protocol")
+	if sessionCount(t, pool, workerID) != 0 {
+		t.Fatal("protocol 2 opened a session")
+	}
+	fractional := []byte(`{"protocol_version":1.5,"worker_id":"` + workerID.String() + `","manifest_sha256":"` + digest + `","free_slots":1}`)
+	status, hdr, respBody = doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", fractional, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusBadRequest, "invalid_message")
+	if sessionCount(t, pool, workerID) != 0 {
+		t.Fatal("fractional protocol opened a session")
+	}
+}
+
+func TestSecondFormatClaimRollsBack(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	ctx := context.Background()
+	first := uuid.New()
+	second := uuid.New()
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errCh <- repo.Approve(ctx, first, claimManifest(t, "octoconv.convert.claima", "jpg", "png"))
+	}()
+	go func() {
+		defer wg.Done()
+		errCh <- repo.Approve(ctx, second, claimManifest(t, "octoconv.convert.claimb", "jpeg", "png"))
+	}()
+	wg.Wait()
+	close(errCh)
+	okN, conflictN := 0, 0
+	for err := range errCh {
+		switch {
+		case err == nil:
+			okN++
+		case errors.Is(err, ErrCapabilityConflict):
+			conflictN++
+		default:
+			t.Fatalf("approve: %v", err)
+		}
+	}
+	if okN != 1 || conflictN != 1 {
+		t.Fatalf("successes=%d conflicts=%d", okN, conflictN)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM worker_capability_formats
+		WHERE client_operation = 'convert' AND source_format = 'jpg' AND target_format = 'png'`,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count formats: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("jpg/png rows = %d", rows)
+	}
+	var winner uuid.UUID
+	var hash string
+	if err := pool.QueryRow(ctx, `SELECT worker_id, manifest_sha256 FROM worker_identities`).Scan(&winner, &hash); err != nil {
+		t.Fatalf("read winner: %v", err)
+	}
+	err := repo.Approve(ctx, uuid.New(), claimManifest(t, "octoconv.convert.claimc", "jpeg", "png"))
+	if !errors.Is(err, ErrCapabilityConflict) {
+		t.Fatalf("sequential jpeg claim: %v", err)
+	}
+	var hashAfter string
+	if err := pool.QueryRow(ctx, `SELECT manifest_sha256 FROM worker_identities WHERE worker_id = $1`, winner).Scan(&hashAfter); err != nil {
+		t.Fatalf("reread winner: %v", err)
+	}
+	if hashAfter != hash {
+		t.Fatal("conflicting approve changed the first manifest hash")
+	}
+	var identities int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_identities`).Scan(&identities); err != nil {
+		t.Fatalf("count identities: %v", err)
+	}
+	if identities != 1 {
+		t.Fatalf("identities = %d", identities)
+	}
+}
+
+func TestImagepdfApproveHasNoLegacyEngine(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	body := readPositiveFixture(t, "manifest-imagepdf.json")
+	ctx := context.Background()
+	if err := repo.Approve(ctx, workerID, body); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var legacyOp, legacyEngine *string
+	var formats int
+	if err := pool.QueryRow(ctx, `
+		SELECT c.legacy_operation, c.legacy_engine, count(f.source_format)
+		FROM worker_capabilities c
+		LEFT JOIN worker_capability_formats f
+		  ON f.capability_id = c.id AND f.capability_version = c.version
+		WHERE c.worker_id = $1
+		GROUP BY c.legacy_operation, c.legacy_engine`, workerID).Scan(&legacyOp, &legacyEngine, &formats); err != nil {
+		t.Fatalf("read capability: %v", err)
+	}
+	if legacyOp != nil || legacyEngine != nil || formats != 1 {
+		t.Fatalf("legacy op=%v engine=%v formats=%d", legacyOp, legacyEngine, formats)
+	}
+	var source, target string
+	if err := pool.QueryRow(ctx, `
+		SELECT source_format, target_format FROM worker_capability_formats`).Scan(&source, &target); err != nil {
+		t.Fatalf("read format: %v", err)
+	}
+	if source != "png" || target != "pdf" {
+		t.Fatalf("format %s -> %s", source, target)
+	}
+	if AccountingKey("", "octoconv.convert.imagepdf") != "octoconv.convert.imagepdf" {
+		t.Fatal("imagepdf accounting key is not the capability id")
+	}
+	if AccountingKey("image", "octoconv.convert.imagepdf") != "image" {
+		t.Fatal("image accounting key is not the legacy engine")
+	}
+	if err := repo.Approve(ctx, workerID, body); err != nil {
+		t.Fatalf("reapprove: %v", err)
+	}
+	var caps int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_capabilities WHERE worker_id = $1`, workerID).Scan(&caps); err != nil {
+		t.Fatalf("count capabilities: %v", err)
+	}
+	if caps != 1 {
+		t.Fatalf("capabilities = %d", caps)
+	}
+}
+
+func TestCompareInstalledDoesNotInsert(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	ctx := context.Background()
+	workerID := uuid.New()
+	body := readPositiveFixture(t, "manifest-imagepdf.json")
+	if err := repo.Approve(ctx, workerID, body); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var before int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_identities`).Scan(&before); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	empty, err := repo.CompareInstalled(ctx, t.TempDir())
+	if err != nil || len(empty.Mismatched) != 0 {
+		t.Fatalf("empty dir: %v %+v", err, empty)
+	}
+	var after int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_identities`).Scan(&after); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if after != before {
+		t.Fatalf("identities %d to %d", before, after)
+	}
+
+	dir := t.TempDir()
+	sub := filepath.Join(dir, workerID.String())
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "manifest.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var hashBefore string
+	if err := pool.QueryRow(ctx, `SELECT manifest_sha256 FROM worker_identities WHERE worker_id = $1`, workerID).Scan(&hashBefore); err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	mismatch, err := repo.CompareInstalled(ctx, dir)
+	if err != nil {
+		t.Fatalf("compare: %v", err)
+	}
+	if len(mismatch.Mismatched) != 1 || mismatch.Mismatched[0] != workerID {
+		t.Fatal("hash mismatch was not recorded")
+	}
+	var hashAfter string
+	if err := pool.QueryRow(ctx, `SELECT manifest_sha256 FROM worker_identities WHERE worker_id = $1`, workerID).Scan(&hashAfter); err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if hashAfter != hashBefore {
+		t.Fatal("compare updated manifest_sha256")
+	}
+
+	missingID := uuid.New()
+	missingDir := t.TempDir()
+	missingSub := filepath.Join(missingDir, missingID.String())
+	if err := os.Mkdir(missingSub, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(missingSub, "manifest.json"), body, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	none, err := repo.CompareInstalled(ctx, missingDir)
+	if err != nil || len(none.Mismatched) != 0 {
+		t.Fatalf("missing row: %v %+v", err, none)
+	}
+	var inserted bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM worker_identities WHERE worker_id = $1)`, missingID).Scan(&inserted); err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if inserted {
+		t.Fatal("compare inserted a catalog row")
+	}
+
+	bad := t.TempDir()
+	if err := os.Mkdir(filepath.Join(bad, "not-a-uuid"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := repo.CompareInstalled(ctx, bad); err == nil {
+		t.Fatal("non-uuid child was accepted")
+	}
+}
+
+type catalogSnapshot struct {
+	identities int
+	caps       int
+	formats    int
+	sessions   int
+}
+
+func catalogCounts(t *testing.T, pool *pgxpool.Pool) catalogSnapshot {
+	t.Helper()
+	var snap catalogSnapshot
+	err := pool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM worker_identities),
+			(SELECT count(*) FROM worker_capabilities),
+			(SELECT count(*) FROM worker_capability_formats),
+			(SELECT count(*) FROM worker_sessions)`).Scan(&snap.identities, &snap.caps, &snap.formats, &snap.sessions)
+	if err != nil {
+		t.Fatalf("catalog counts: %v", err)
+	}
+	return snap
+}
+
+func sessionCount(t *testing.T, pool *pgxpool.Pool, workerID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(), `SELECT count(*) FROM worker_sessions WHERE worker_id = $1`, workerID).Scan(&n)
+	if err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	return n
+}
+
+func assertProtocolError(t *testing.T, status int, hdr http.Header, body []byte, wantStatus int, code string) {
+	t.Helper()
+	if status != wantStatus {
+		t.Fatalf("status %d, want %d", status, wantStatus)
+	}
+	assertNoStoreJSON(t, hdr)
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if string(got["code"]) != `"`+code+`"` {
+		t.Fatalf("code %s", got["code"])
+	}
+	if _, ok := got["error"]; ok {
+		t.Fatal("response has an error field")
+	}
+	if string(got["retryable"]) != "false" {
+		t.Fatal("retryable is not false")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return body
+}
+
+func claimManifest(t *testing.T, id, from, to string) []byte {
+	t.Helper()
+	return mustJSON(t, map[string]any{
+		"capabilities": []any{
+			map[string]any{
+				"id":               id,
+				"version":          1,
+				"client_operation": "convert",
+				"inputs":           []any{map[string]any{"role": "source", "min": 1, "max": 1}},
+				"outputs":          []any{map[string]any{"role": "primary", "min": 1, "max": 1}},
+				"parameter_schema": map[string]any{},
+				"formats":          []any{map[string]any{"from": from, "to": to}},
+			},
+		},
+	})
 }
