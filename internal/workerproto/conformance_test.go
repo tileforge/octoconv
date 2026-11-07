@@ -29,6 +29,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 func TestRevokeOnLiveConnection(t *testing.T) {
@@ -190,9 +192,18 @@ func TestRevokeDoesNotZeroSlotHold(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 	after := readHold(t, pool, holdID)
-	if after != before {
-		t.Fatal("slot hold changed")
+	if after.id != before.id || after.ownerKey != before.ownerKey || after.sessionID != before.sessionID || after.releasedAt == nil {
+		t.Fatal("slot hold was removed")
 	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM worker_slot_holds WHERE id = $1`, holdID).Scan(&state); err != nil {
+		t.Fatalf("read hold state: %v", err)
+	}
+	if state != "canceled" {
+		t.Fatalf("hold state %s", state)
+	}
+	status, hdr, respBody := client.exchange(http.MethodPost, "/worker/v1/attempts/"+holdID.String()+"/complete", opened.token, []byte(`{"protocol_version":1}`), nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusUnauthorized, "session_closed")
 	var closed bool
 	if err := pool.QueryRow(ctx, `
 		SELECT closed_at IS NOT NULL FROM worker_sessions WHERE id = $1`, opened.sessionID).Scan(&closed); err != nil {
@@ -1726,6 +1737,290 @@ func TestProgressRateLimit(t *testing.T) {
 	assertRateLimited(t, status, hdr, resp)
 	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 4 {
 		t.Fatalf("progress %v", p)
+	}
+}
+
+func TestScenario11CancelThenComplete(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatalf("set client: %v", err)
+	}
+	repo := jobs.NewRepo(live.pool)
+	if err := repo.Cancel(context.Background(), jobID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	var released *time.Time
+	var state string
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT state, released_at FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&state, &released); err != nil {
+		t.Fatalf("read hold: %v", err)
+	}
+	if state != "canceled" || released == nil {
+		t.Fatalf("hold state %s released %v", state, released)
+	}
+	if ids := heartbeatCancelIDs(t, live); len(ids) != 1 || ids[0] != attemptID.String() {
+		t.Fatalf("cancel list %v", ids)
+	}
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if jobStatusOf(t, live.pool, jobID) != "canceled" {
+		t.Fatal("job left canceled")
+	}
+	rows, jobCount := usageSnapshot(t, live.pool, clientID)
+	if rows != 1 || jobCount != 1 {
+		t.Fatalf("usage rows=%d jobs=%d", rows, jobCount)
+	}
+	if err := repo.Cancel(context.Background(), jobID); err == nil {
+		t.Fatal("second cancel succeeded")
+	}
+	if _, jobCount = usageSnapshot(t, live.pool, clientID); jobCount != 1 {
+		t.Fatal("second cancel recorded usage")
+	}
+}
+
+func TestScenario29ReplayAfterCancel(t *testing.T) {
+	live := openHello(t)
+	emptyID := uuid.New()
+	empty := pullBody(emptyID, 0, 0)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, empty, nil)
+	if status != http.StatusOK {
+		t.Fatalf("empty pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	status, _, again := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, empty, nil)
+	if status != http.StatusOK || !bytes.Equal(resp, again) {
+		t.Fatalf("empty replay status %d: %s", status, again)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	pullID := uuid.New()
+	body := pullBody(pullID, 1, 0)
+	status, _, resp = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := readAttemptSnap(t, live.pool, attemptID)
+	if err := jobs.NewRepo(live.pool).Cancel(context.Background(), jobID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, attemptID).lease != before.lease || holdCount(t, live.pool, jobID) != 1 {
+		t.Fatal("replay after cancel changed the attempt")
+	}
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds SET attempt_deadline = now() WHERE id = $1`, attemptID); err != nil {
+		t.Fatalf("move deadline: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	status, hdr, resp = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, attemptID).lease != before.lease || holdCount(t, live.pool, jobID) != 1 {
+		t.Fatal("replay after the deadline changed the lease")
+	}
+}
+
+func TestRevokeRequeuesForAnotherWorker(t *testing.T) {
+	ln := startWorkerListener(t)
+	manifest := imageLegacyManifest(t, "octoconv.convert.image", "png", "jpg")
+	first := ln.hello(t, manifest)
+	_, attemptID, jobID := insertActiveAttempt(t, first, 60, 120)
+	var stepID uuid.UUID
+	if err := ln.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	revokeSession(t, ln.repo, first)
+	if jobStatusOf(t, ln.pool, jobID) != "queued" || holdState(t, ln.pool, attemptID) != "canceled" || failedHolds(t, ln.pool, stepID) != 0 {
+		t.Fatal("revoke did not return the job to the queue")
+	}
+	if _, err := ln.pool.Exec(context.Background(), `
+		DELETE FROM worker_capability_formats WHERE capability_id = 'octoconv.convert.image'`); err != nil {
+		t.Fatalf("delete formats: %v", err)
+	}
+	if _, err := ln.pool.Exec(context.Background(), `
+		DELETE FROM worker_capabilities WHERE worker_id = $1`, first.workerID); err != nil {
+		t.Fatalf("delete capability: %v", err)
+	}
+	second := ln.hello(t, manifest)
+	status, resp := pullOnce(t, second, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	gotStep, err := jsonUUID(assignment["step_id"])
+	if err != nil || gotStep != stepID {
+		t.Fatalf("step %s", resp)
+	}
+	gotAttempt, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || gotAttempt == attemptID {
+		t.Fatalf("attempt %s", resp)
+	}
+
+	exhausted := ln.hello(t, imageLegacyManifest(t, "octoconv.convert.imageb", "jpg", "png"))
+	_, holdID, exhaustedJob := insertActiveAttempt(t, exhausted, 60, 120)
+	var exhaustedStep uuid.UUID
+	if err := ln.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, exhaustedJob).Scan(&exhaustedStep); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		insertSlotHold(t, ln.pool, slotHold{
+			owner: uuid.New().String(), sessionID: exhausted.sessionID, jobID: &exhaustedJob, stepID: &exhaustedStep, state: "failed", released: true,
+		})
+	}
+	revokeSession(t, ln.repo, exhausted)
+	if jobStatusOf(t, ln.pool, exhaustedJob) != "failed" || jobErrorCode(t, ln.pool, exhaustedJob) != "reconciler_exhausted" || holdState(t, ln.pool, holdID) != "canceled" {
+		t.Fatal("five failed holds did not exhaust the revoked job")
+	}
+
+	late := ln.hello(t, imageLegacyManifest(t, "octoconv.convert.imagec", "webp", "png"))
+	_, lateHold, lateJob := insertActiveAttempt(t, late, 60, 120)
+	if _, err := ln.pool.Exec(context.Background(), `UPDATE jobs SET protocol_deadline = now() - interval '1 second' WHERE id = $1`, lateJob); err != nil {
+		t.Fatalf("move deadline: %v", err)
+	}
+	revokeSession(t, ln.repo, late)
+	if jobStatusOf(t, ln.pool, lateJob) != "failed" || jobErrorCode(t, ln.pool, lateJob) != "reconciler_exhausted" || holdState(t, ln.pool, lateHold) != "canceled" {
+		t.Fatal("a passed deadline did not exhaust the revoked job")
+	}
+}
+
+func TestCancelStoppedAckClearsHeartbeat(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatalf("set client: %v", err)
+	}
+	if err := jobs.NewRepo(live.pool).Cancel(context.Background(), jobID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if _, jobsCount := usageSnapshot(t, live.pool, clientID); jobsCount != 1 {
+		t.Fatal("cancel did not record usage")
+	}
+	if ids := heartbeatCancelIDs(t, live); len(ids) != 1 || ids[0] != attemptID.String() {
+		t.Fatalf("cancel list %v", ids)
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"cancel"}`))
+	if status != http.StatusOK {
+		t.Fatalf("stopped status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if ids := heartbeatCancelIDs(t, live); len(ids) != 0 {
+		t.Fatalf("cancel list %v", ids)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "canceled" || holdState(t, live.pool, attemptID) != "stopped" {
+		t.Fatal("stopped changed the canceled job")
+	}
+	if _, jobsCount := usageSnapshot(t, live.pool, clientID); jobsCount != 1 {
+		t.Fatal("stopped recorded usage")
+	}
+}
+
+func TestManualRetryAfterFiveFailuresThenPull(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	stepID := uuid.New()
+	jobID := insertPullJob(t, live.pool, pullJob{clientID: &clientID, status: "failed", stepID: &stepID})
+	if _, err := live.pool.Exec(context.Background(), `
+		INSERT INTO job_inputs (job_id, ordinal, object_key, size_bytes)
+		VALUES ($1, 0, 'uploads/retry/0-in.png', 10)`, jobID); err != nil {
+		t.Fatalf("insert input: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		insertSlotHold(t, live.pool, slotHold{
+			owner: uuid.New().String(), sessionID: live.sessionID, jobID: &jobID, stepID: &stepID, state: "failed", released: true,
+		})
+	}
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if failedHolds(t, live.pool, stepID) != 5 {
+		t.Fatal("empty pull inserted a hold")
+	}
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET released_at = now() - interval '1 second'
+		WHERE step_id = $1 AND state = 'failed'`, stepID); err != nil {
+		t.Fatalf("age failed holds: %v", err)
+	}
+	if err := jobs.NewRepo(live.pool).ManualRetry(context.Background(), jobID); err != nil {
+		t.Fatalf("manual retry: %v", err)
+	}
+	var storedStep uuid.UUID
+	var retried *time.Time
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT step_id, manual_retry_at FROM jobs WHERE id = $1`, jobID).Scan(&storedStep, &retried); err != nil {
+		t.Fatalf("read retry: %v", err)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "queued" || retried == nil || storedStep != stepID || failedHolds(t, live.pool, stepID) != 5 {
+		t.Fatal("manual retry changed the failed history or the step")
+	}
+	time.Sleep(1100 * time.Millisecond)
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull after retry status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	gotStep, err := jsonUUID(assignment["step_id"])
+	if err != nil || gotStep != stepID {
+		t.Fatalf("step %s", resp)
+	}
+	if _, err := jsonUUID(assignment["attempt_id"]); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func heartbeatCancelIDs(t *testing.T, live liveSession) []string {
+	t.Helper()
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("heartbeat status %d: %s", status, resp)
+	}
+	var payload struct {
+		Control struct {
+			IDs []string `json:"cancel_attempt_ids"`
+		} `json:"control"`
+	}
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if payload.Control.IDs == nil {
+		t.Fatal("cancel list is null")
+	}
+	return payload.Control.IDs
+}
+
+func holdCount(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&n); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	return n
+}
+
+func revokeSession(t *testing.T, repo *Repo, live liveSession) {
+	t.Helper()
+	var serialText, issuer string
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT cert_serial_decimal, issuer_sha256
+		FROM worker_sessions WHERE id = $1`, live.sessionID).Scan(&serialText, &issuer); err != nil {
+		t.Fatalf("read session cert: %v", err)
+	}
+	serial, ok := new(big.Int).SetString(serialText, 10)
+	if !ok {
+		t.Fatal("certificate serial is not decimal")
+	}
+	if err := repo.RevokeIdentity(context.Background(), live.workerID, serial, issuer); err != nil {
+		t.Fatalf("revoke: %v", err)
 	}
 }
 

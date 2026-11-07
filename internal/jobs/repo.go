@@ -339,7 +339,9 @@ func (r *Repo) RequeueProtocol(ctx context.Context, id uuid.UUID, notBefore time
 		if err := tx.QueryRow(ctx, `
 			SELECT
 				(SELECT count(*) FROM worker_slot_holds h
-				 WHERE h.step_id = j.step_id AND h.state = 'failed') < 5
+				 WHERE h.step_id = j.step_id
+				   AND h.state = 'failed'
+				   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
 				AND j.protocol_deadline > now()
 			FROM jobs j WHERE j.id = $1`, id).Scan(&retry); err != nil {
 			return err
@@ -370,7 +372,9 @@ func (r *Repo) QueueAfterStop(ctx context.Context, tx pgx.Tx, id uuid.UUID) erro
 	if err := tx.QueryRow(ctx, `
 		SELECT j.status,
 		       (SELECT count(*) FROM worker_slot_holds h
-		        WHERE h.step_id = j.step_id AND h.state = 'failed') < 5
+		        WHERE h.step_id = j.step_id
+		          AND h.state = 'failed'
+		          AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
 		       AND COALESCE(j.protocol_deadline > now(), false)
 		FROM jobs j WHERE j.id = $1 FOR UPDATE`, id).Scan(&status, &retry); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -526,11 +530,62 @@ func (r *Repo) markFailed(ctx context.Context, id uuid.UUID, code, message strin
 // for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
+		var owner string
+		if err := tx.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, id).Scan(&owner); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
+		if owner == "protocol" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE worker_slot_holds
+				SET state = 'canceled', released_at = now()
+				WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+				return fmt.Errorf("fence canceled hold: %w", err)
+			}
+		}
 		return r.recordUsage(ctx, tx, id, StatusCanceled, 0)
+	})
+}
+
+var errManualRetryRefused = errors.New("manual retry refused")
+
+// ManualRetry queues a failed protocol job again when its deadline, inputs, and quota allow it.
+func (r *Repo) ManualRetry(ctx context.Context, id uuid.UUID) error {
+	return r.transition(ctx, id, StatusQueued, []string{StatusFailed}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
+		var eligible bool
+		var clientID *uuid.UUID
+		var engine string
+		var inputBytes int64
+		if err := tx.QueryRow(ctx, `
+			SELECT
+				j.dispatch_owner = 'protocol'
+					AND COALESCE(j.protocol_deadline > now(), false)
+					AND NOT EXISTS (
+						SELECT 1 FROM worker_slot_holds h
+						WHERE h.job_id = j.id AND h.released_at IS NULL
+					)
+					AND EXISTS (SELECT 1 FROM job_inputs i WHERE i.job_id = j.id),
+				j.client_id,
+				j.engine,
+				COALESCE((SELECT sum(size_bytes) FROM job_inputs WHERE job_id = j.id), 0)
+			FROM jobs j
+			WHERE j.id = $1`, id).Scan(&eligible, &clientID, &engine, &inputBytes); err != nil {
+			return err
+		}
+		if !eligible || clientID == nil {
+			return errManualRetryRefused
+		}
+		if err := admitLocked(ctx, tx, *clientID, engine, inputBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', progress_pct = NULL, eta_seconds = NULL, manual_retry_at = now()
+			WHERE id = $1`, id)
+		return err
 	})
 }
 

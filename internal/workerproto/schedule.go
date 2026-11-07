@@ -578,8 +578,11 @@ func (h *Handler) retryTimeout(ctx context.Context, jobID uuid.UUID, stepID *uui
 	if stepID != nil {
 		var failed int
 		if err := h.repo.pool.QueryRow(ctx, `
-			SELECT count(*) FROM worker_slot_holds
-			WHERE step_id = $1 AND state = 'failed'`, *stepID).Scan(&failed); err != nil {
+			SELECT count(*) FROM worker_slot_holds h
+			JOIN jobs j ON j.id = $2
+			WHERE h.step_id = $1
+			  AND h.state = 'failed'
+			  AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)`, *stepID, jobID).Scan(&failed); err != nil {
 			return err
 		}
 		n = failed + 1
@@ -958,7 +961,9 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		  AND (
 		      step_id IS NULL OR (
 		          SELECT count(*) FROM worker_slot_holds h
-		          WHERE h.step_id = jobs.step_id AND h.state = 'failed'
+		          WHERE h.step_id = jobs.step_id
+		            AND h.state = 'failed'
+		            AND (jobs.manual_retry_at IS NULL OR h.released_at > jobs.manual_retry_at)
 		      ) < 5
 		  )
 		ORDER BY created_at, id

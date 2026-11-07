@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -155,8 +157,83 @@ func (r *Repo) RevokeIdentity(ctx context.Context, workerID uuid.UUID, serial *b
 			WHERE worker_id = $1`, workerID); err != nil {
 			return fmt.Errorf("close worker sessions: %w", err)
 		}
+		rows, err := tx.Query(ctx, `
+			UPDATE worker_slot_holds AS h
+			SET state = 'canceled', released_at = now()
+			WHERE h.released_at IS NULL
+			  AND h.session_id IN (SELECT id FROM worker_sessions WHERE worker_id = $1)
+			RETURNING h.job_id`, workerID)
+		if err != nil {
+			return fmt.Errorf("fence revoked holds: %w", err)
+		}
+		seen := map[uuid.UUID]struct{}{}
+		var jobIDs []uuid.UUID
+		for rows.Next() {
+			var jobID *uuid.UUID
+			if err := rows.Scan(&jobID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan revoked hold: %w", err)
+			}
+			if jobID == nil {
+				continue
+			}
+			if _, ok := seen[*jobID]; ok {
+				continue
+			}
+			seen[*jobID] = struct{}{}
+			jobIDs = append(jobIDs, *jobID)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("list revoked holds: %w", err)
+		}
+		rows.Close()
+		for _, jobID := range jobIDs {
+			if err := r.requeueRevokedJob(ctx, tx, jobID); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
+}
+
+func (r *Repo) requeueRevokedJob(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) error {
+	var status string
+	var retry bool
+	err := tx.QueryRow(ctx, `
+		SELECT j.status,
+		       (SELECT count(*) FROM worker_slot_holds h
+		        WHERE h.step_id = j.step_id
+		          AND h.state = 'failed'
+		          AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
+		       AND COALESCE(j.protocol_deadline > now(), false)
+		FROM jobs j
+		WHERE j.id = $1
+		FOR UPDATE`, jobID).Scan(&status, &retry)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock revoked job: %w", err)
+	}
+	if status != jobs.StatusActive {
+		return nil
+	}
+	if !retry {
+		return jobs.NewRepo(r.pool).FailProtocolIn(ctx, tx, jobID, "reconciler_exhausted", "protocol budget exhausted")
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL
+		WHERE id = $1`, jobID); err != nil {
+		return fmt.Errorf("requeue revoked job: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, jobID, jobs.StatusActive, jobs.StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
 }
 
 // DenylistSerial denylists one certificate and closes only sessions opened with that serial.
