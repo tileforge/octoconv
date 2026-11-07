@@ -496,3 +496,164 @@ func allSessions(t *testing.T, pool *pgxpool.Pool) int {
 	}
 	return n
 }
+
+func TestAttemptTokenOnWrongAttempt(t *testing.T) {
+	live := openHello(t)
+	tokenA, hashA, _, hashB, attemptA, attemptB := insertAttemptPair(t, live)
+	beforeA := readAttemptCredential(t, live.pool, attemptA)
+	beforeB := readAttemptCredential(t, live.pool, attemptB)
+	if beforeA.tokenHash != hashA || beforeB.tokenHash != hashB {
+		t.Fatal("stored attempt hash is not the minted hash")
+	}
+	before := readGateState(t, live.pool)
+	for _, path := range attemptPaths(live.addr, attemptB) {
+		header := make(http.Header)
+		header.Set("Octoconv-Attempt", tokenA)
+		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), header)
+		assertProtocolError(t, status, hdr, body, http.StatusForbidden, "capability_denied")
+		if readAttemptCredential(t, live.pool, attemptA) != beforeA || readAttemptCredential(t, live.pool, attemptB) != beforeB {
+			t.Fatal("wrong attempt token changed a credential")
+		}
+		if readGateState(t, live.pool) != before {
+			t.Fatal("wrong attempt token wrote gate state")
+		}
+	}
+}
+
+func TestMatchingAttemptTokenWritesNothing(t *testing.T) {
+	live := openHello(t)
+	_, _, tokenB, _, _, attemptB := insertAttemptPair(t, live)
+	beforeB := readAttemptCredential(t, live.pool, attemptB)
+	before := readGateState(t, live.pool)
+	for _, path := range attemptPaths(live.addr, attemptB) {
+		header := make(http.Header)
+		header.Set("Octoconv-Attempt", tokenB)
+		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), header)
+		assertProtocolError(t, status, hdr, body, http.StatusConflict, "attempt_not_active")
+		if readAttemptCredential(t, live.pool, attemptB) != beforeB {
+			t.Fatal("matching attempt token changed the credential")
+		}
+		if readGateState(t, live.pool) != before {
+			t.Fatal("matching attempt token wrote a lease, hold, or job")
+		}
+	}
+}
+
+func TestMissingAttemptHeaderIsUnauthorized(t *testing.T) {
+	live := openHello(t)
+	_, _, _, _, _, attemptB := insertAttemptPair(t, live)
+	beforeB := readAttemptCredential(t, live.pool, attemptB)
+	path := attemptPaths(live.addr, attemptB)[0]
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), nil)
+	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "unauthorized")
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(payload["code"]) == `"capability_denied"` {
+		t.Fatal("missing attempt header was capability_denied")
+	}
+	if readAttemptCredential(t, live.pool, attemptB) != beforeB {
+		t.Fatal("missing attempt header changed the credential")
+	}
+}
+
+func TestPullRouteIsUnregistered(t *testing.T) {
+	live := openHello(t)
+	before := readGateState(t, live.pool)
+	status, _, _ := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("pull status %d", status)
+	}
+	if readGateState(t, live.pool) != before || before.attempts != 0 {
+		t.Fatal("pull created an attempt row")
+	}
+}
+
+func TestOversizedAttemptBodyWritesNothing(t *testing.T) {
+	live := openHello(t)
+	_, _, tokenB, _, _, attemptB := insertAttemptPair(t, live)
+	beforeB := readAttemptCredential(t, live.pool, attemptB)
+	header := make(http.Header)
+	header.Set("Octoconv-Attempt", tokenB)
+	body := bytes.Repeat([]byte("x"), maxMessageBytes+1)
+	status, hdr, respBody := doJSON(t, live.client, http.MethodPost, attemptPaths(live.addr, attemptB)[0], live.token, body, header)
+	assertProtocolError(t, status, hdr, respBody, http.StatusRequestEntityTooLarge, "message_too_large")
+	if readAttemptCredential(t, live.pool, attemptB) != beforeB {
+		t.Fatal("oversized attempt body changed the credential")
+	}
+}
+
+func attemptPaths(addr string, attemptID uuid.UUID) []string {
+	base := "https://" + addr + "/worker/v1/attempts/" + attemptID.String() + "/"
+	return []string{base + "lease", base + "progress", base + "fail", base + "complete", base + "stopped"}
+}
+
+func insertAttemptPair(t *testing.T, live liveSession) (string, string, string, string, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	tokenA, hashA, err := NewSessionToken()
+	if err != nil {
+		t.Fatalf("mint attempt: %v", err)
+	}
+	tokenB, hashB, err := NewSessionToken()
+	if err != nil {
+		t.Fatalf("mint attempt: %v", err)
+	}
+	attemptA := uuid.New()
+	attemptB := uuid.New()
+	insertAttemptCredential(t, live.pool, attemptA, live.sessionID, hashA, "octoconv.convert.image", 1)
+	insertAttemptCredential(t, live.pool, attemptB, live.sessionID, hashB, "octoconv.convert.image", 1)
+	return tokenA, hashA, tokenB, hashB, attemptA, attemptB
+}
+
+type attemptCredential struct {
+	tokenHash string
+	sessionID uuid.UUID
+	capID     string
+	capVer    int
+}
+
+func insertAttemptCredential(t *testing.T, pool *pgxpool.Pool, attemptID, sessionID uuid.UUID, tokenHash, capabilityID string, version int) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO worker_attempt_credentials (
+			attempt_id, token_hash, session_id, capability_id, capability_version
+		) VALUES ($1, $2, $3, $4, $5)`,
+		attemptID, tokenHash, sessionID, capabilityID, version)
+	if err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+}
+
+func readAttemptCredential(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID) attemptCredential {
+	t.Helper()
+	var row attemptCredential
+	err := pool.QueryRow(context.Background(), `
+		SELECT token_hash, session_id, capability_id, capability_version
+		FROM worker_attempt_credentials WHERE attempt_id = $1`, attemptID).
+		Scan(&row.tokenHash, &row.sessionID, &row.capID, &row.capVer)
+	if err != nil {
+		t.Fatalf("read attempt: %v", err)
+	}
+	return row
+}
+
+type gateState struct {
+	attempts int
+	holds    int
+	jobs     int
+}
+
+func readGateState(t *testing.T, pool *pgxpool.Pool) gateState {
+	t.Helper()
+	var state gateState
+	err := pool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM worker_attempt_credentials),
+			(SELECT count(*) FROM worker_slot_holds),
+			(SELECT count(*) FROM jobs)`).Scan(&state.attempts, &state.holds, &state.jobs)
+	if err != nil {
+		t.Fatalf("read gate state: %v", err)
+	}
+	return state
+}
