@@ -128,12 +128,58 @@ func (r *Repo) identityExists(ctx context.Context, workerID uuid.UUID) (bool, er
 }
 
 // RevokeIdentity denylists the certificate and closes every session for that worker.
-func (r *Repo) RevokeIdentity(context.Context, uuid.UUID, *big.Int, string) error {
-	return nil
+func (r *Repo) RevokeIdentity(ctx context.Context, workerID uuid.UUID, serial *big.Int, issuerSHA256 string) error {
+	if err := validateDenial(workerID, serial, issuerSHA256); err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := insertDenylist(ctx, tx, workerID, serial, issuerSHA256); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE worker_sessions
+			SET closed_at = COALESCE(closed_at, now())
+			WHERE worker_id = $1`, workerID); err != nil {
+			return fmt.Errorf("close worker sessions: %w", err)
+		}
+		return nil
+	})
 }
 
 // DenylistSerial denylists one certificate and closes only sessions opened with that serial.
-func (r *Repo) DenylistSerial(context.Context, uuid.UUID, *big.Int, string) error {
+func (r *Repo) DenylistSerial(ctx context.Context, workerID uuid.UUID, serial *big.Int, issuerSHA256 string) error {
+	if err := validateDenial(workerID, serial, issuerSHA256); err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := insertDenylist(ctx, tx, workerID, serial, issuerSHA256); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE worker_sessions
+			SET closed_at = COALESCE(closed_at, now())
+			WHERE worker_id = $1
+			  AND cert_serial_decimal = $2
+			  AND issuer_sha256 = $3`, workerID, serial.String(), issuerSHA256); err != nil {
+			return fmt.Errorf("close certificate sessions: %w", err)
+		}
+		return nil
+	})
+}
+
+func validateDenial(workerID uuid.UUID, serial *big.Int, issuerSHA256 string) error {
+	if workerID == uuid.Nil || serial == nil || issuerSHA256 == "" {
+		return errors.New("deny certificate: missing certificate")
+	}
+	return nil
+}
+
+func insertDenylist(ctx context.Context, tx pgx.Tx, workerID uuid.UUID, serial *big.Int, issuerSHA256 string) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO worker_certificate_denylist (issuer_sha256, serial_decimal, worker_id)
+		VALUES ($1, $2, $3)`, issuerSHA256, serial.String(), workerID); err != nil {
+		return fmt.Errorf("insert denylist: %w", err)
+	}
 	return nil
 }
 
