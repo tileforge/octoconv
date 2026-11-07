@@ -95,6 +95,29 @@ func TestJobsRepoUsesMainPool(t *testing.T) {
 	}
 }
 
+func TestProtocolReconcileStartsWithTheAPI(t *testing.T) {
+	src := readMainSource(t)
+	start := strings.Index(src, "workerproto.StartProtocolReconciler(")
+	enabled := strings.Index(src, "if enabled {")
+	if start < 0 || enabled < 0 || start > enabled {
+		t.Fatal("protocol reconciler must start with the API, outside the worker listener block")
+	}
+	if strings.Contains(src[enabled:], "StartProtocolReconciler") {
+		t.Fatal("protocol reconciler is gated on ParseListenerEnv")
+	}
+	lineEnd := strings.Index(src[start:], "\n")
+	if lineEnd < 0 {
+		t.Fatal("protocol reconciler call is missing its line ending")
+	}
+	call := src[start : start+lineEnd]
+	if !strings.Contains(call, "engineTimeoutsFromEnv()[convert.EngineImage]") || !strings.Contains(call, "0x70726F74") {
+		t.Fatalf("protocol reconciler call is %s", call)
+	}
+	if strings.Contains(src, "0x6F63746F") {
+		t.Fatal("API process uses the legacy sweeper advisory key")
+	}
+}
+
 func TestEveryAPIListenerIsBuiltByTheConstructor(t *testing.T) {
 	src := readMainSource(t)
 	literals := strings.Count(src, "&http.Server{")

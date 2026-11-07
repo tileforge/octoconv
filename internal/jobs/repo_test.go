@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -776,6 +777,21 @@ func TestFindStale(t *testing.T) {
 		t.Fatalf("MarkActive freshActive: %v", err)
 	}
 
+	protocolID := uuid.New()
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, created_at
+		) VALUES (
+			$1, $2, 'convert', 'image', 'queued', 'png', 'jpg',
+			'protocol', now() - interval '1 hour'
+		)`, protocolID, clientID); err != nil {
+		t.Fatalf("insert protocol job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, protocolID)
+	})
+
 	stale, err := r.FindStale(ctx, 90*time.Second, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("FindStale: %v", err)
@@ -795,6 +811,16 @@ func TestFindStale(t *testing.T) {
 	}
 	if _, ok := got[freshActive]; ok {
 		t.Fatalf("freshActive should not be stale: %+v", stale)
+	}
+	if _, ok := got[protocolID]; ok {
+		t.Fatalf("protocol job should not be stale: %+v", stale)
+	}
+	var owner string
+	if err := r.pool.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, protocolID).Scan(&owner); err != nil {
+		t.Fatalf("read protocol owner: %v", err)
+	}
+	if owner != "protocol" {
+		t.Fatalf("dispatch_owner = %s", owner)
 	}
 }
 
@@ -1528,4 +1554,132 @@ func readJobPin(t *testing.T, r *Repo, id uuid.UUID) jobPinRow {
 		t.Fatalf("read pin: %v", err)
 	}
 	return got
+}
+
+func TestManualRetryRechecksThenQueues(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM job_inputs WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM client_usage_daily WHERE client_id = $1`, clientID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM client_limits WHERE client_id = $1`, clientID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE client_id = $1`, clientID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM clients WHERE id = $1`, clientID)
+	})
+
+	legacy := insertRetryJob(t, r, clientID, "legacy", true, false)
+	if err := r.ManualRetry(ctx, legacy); err == nil || jobStatusOfTest(t, r, legacy) != StatusFailed {
+		t.Fatal("legacy retry changed the job")
+	}
+	past := insertRetryJob(t, r, clientID, "protocol", false, true)
+	if err := r.ManualRetry(ctx, past); err == nil || jobStatusOfTest(t, r, past) != StatusFailed {
+		t.Fatal("expired retry changed the job")
+	}
+	held := insertRetryJob(t, r, clientID, "protocol", true, true)
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO worker_slot_holds (id, owner_key, session_id, job_id, state)
+		VALUES ($1, 'retry-owner', $2, $3, 'active')`, uuid.New(), uuid.New(), held); err != nil {
+		t.Fatalf("insert hold: %v", err)
+	}
+	if err := r.ManualRetry(ctx, held); err == nil || jobStatusOfTest(t, r, held) != StatusFailed {
+		t.Fatal("held retry changed the job")
+	}
+	bare := insertRetryJob(t, r, clientID, "protocol", true, false)
+	if err := r.ManualRetry(ctx, bare); err == nil || jobStatusOfTest(t, r, bare) != StatusFailed {
+		t.Fatal("retry without an input changed the job")
+	}
+
+	blocked := insertRetryJob(t, r, clientID, "protocol", true, true)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO client_limits (client_id, engine, max_concurrent)
+		VALUES ($1, 'image', 0)`, clientID); err != nil {
+		t.Fatalf("insert limit: %v", err)
+	}
+	if err := r.ManualRetry(ctx, blocked); !errors.Is(err, ErrConcurrencyLimit) || jobStatusOfTest(t, r, blocked) != StatusFailed {
+		t.Fatalf("quota retry error = %v", err)
+	}
+	var usage int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM client_usage_daily WHERE client_id = $1`, clientID).Scan(&usage); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if usage != 0 {
+		t.Fatalf("usage rows %d", usage)
+	}
+
+	if _, err := r.pool.Exec(ctx, `DELETE FROM client_limits WHERE client_id = $1`, clientID); err != nil {
+		t.Fatalf("clear limit: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE clients SET enforcement_mode = 'observe' WHERE id = $1`, clientID); err != nil {
+		t.Fatalf("clear enforcement: %v", err)
+	}
+	ready := insertRetryJob(t, r, clientID, "protocol", true, true)
+	var stepBefore uuid.UUID
+	if err := r.pool.QueryRow(ctx, `SELECT step_id FROM jobs WHERE id = $1`, ready).Scan(&stepBefore); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if err := r.ManualRetry(ctx, ready); err != nil {
+		t.Fatalf("manual retry: %v", err)
+	}
+	var status string
+	var progress *int16
+	var eta *int
+	var retried *time.Time
+	var stepAfter uuid.UUID
+	var deadlineOK bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT status, progress_pct, eta_seconds, manual_retry_at, step_id,
+		       protocol_deadline > now()
+		FROM jobs WHERE id = $1`, ready).Scan(&status, &progress, &eta, &retried, &stepAfter, &deadlineOK); err != nil {
+		t.Fatalf("read retried job: %v", err)
+	}
+	if status != StatusQueued || progress != nil || eta != nil || retried == nil || stepAfter != stepBefore || !deadlineOK {
+		t.Fatalf("status %s progress %v eta %v retried %v deadline %v", status, progress, eta, retried, deadlineOK)
+	}
+	var holds int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, ready).Scan(&holds); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 0 {
+		t.Fatalf("holds %d", holds)
+	}
+}
+
+func insertRetryJob(t *testing.T, r *Repo, clientID uuid.UUID, owner string, future bool, withInput bool) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	step := uuid.New()
+	_, err := r.pool.Exec(context.Background(), `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline, step_id,
+			options, progress_pct, eta_seconds
+		) VALUES (
+			$1, $2, 'convert', 'image', 'failed', 'png', 'jpg',
+			$3, 'octoconv.convert.image', 1,
+			CASE WHEN $4 THEN now() + interval '1 hour' ELSE now() - interval '1 second' END,
+			$5, '{}', 10, 3
+		)`, id, clientID, owner, future, step)
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if withInput {
+		if _, err := r.pool.Exec(context.Background(), `
+			INSERT INTO job_inputs (job_id, ordinal, object_key, size_bytes)
+			VALUES ($1, 0, 'uploads/retry/0-in.png', 10)`, id); err != nil {
+			t.Fatalf("insert input: %v", err)
+		}
+	}
+	return id
+}
+
+func jobStatusOfTest(t *testing.T, r *Repo, id uuid.UUID) string {
+	t.Helper()
+	var status string
+	if err := r.pool.QueryRow(context.Background(), `SELECT status FROM jobs WHERE id = $1`, id).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	return status
 }

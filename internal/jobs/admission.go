@@ -252,6 +252,15 @@ func (r *Repo) SetQuotaEnforcementDisabled(disabled bool) {
 // PostgreSQL's advisory-lock key spaces for the one-bigint form and the
 // two-int form are entirely separate, so the two locks are structurally
 // incapable of colliding even in principle -- not merely tuned to avoid it.
+// LockClientEngine takes the admission advisory lock for one client and engine.
+func LockClientEngine(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine string) error {
+	k1, k2 := quotaLockKeys(clientID, engine)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, k1, k2); err != nil {
+		return fmt.Errorf("lock client engine: %w", err)
+	}
+	return nil
+}
+
 func quotaLockKeys(clientID uuid.UUID, engine string) (int32, int32) {
 	h1 := fnv.New32a()
 	_, _ = h1.Write([]byte(clientID.String()))

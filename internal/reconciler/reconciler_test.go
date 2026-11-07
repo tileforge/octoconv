@@ -3,6 +3,8 @@ package reconciler
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -350,6 +352,18 @@ func testConfig() Config {
 		ActiveStaleAfter: 5 * time.Minute,
 		SweepInterval:    10 * time.Millisecond,
 		MaxRecoveries:    3,
+	}
+}
+
+func TestSweepSwitchHasNoProtocolCase(t *testing.T) {
+	src, err := os.ReadFile("reconciler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{`case "protocol"`, `case "external"`, "case protocol:", "case external:"} {
+		if strings.Contains(string(src), label) {
+			t.Fatalf("sweep switch contains %s", label)
+		}
 	}
 }
 

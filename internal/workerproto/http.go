@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const maxMessageBytes = 262144
@@ -26,12 +30,14 @@ const (
 
 // Handler serves worker session routes.
 type Handler struct {
-	repo *Repo
+	repo               *Repo
+	jobsRepo           *jobs.Repo
+	imageAttemptBudget time.Duration
 }
 
-// NewHandler returns a handler bound to the catalog.
-func NewHandler(repo *Repo) *Handler {
-	return &Handler{repo: repo}
+// NewHandler returns a handler bound to the catalog and the image attempt budget.
+func NewHandler(repo *Repo, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration) *Handler {
+	return &Handler{repo: repo, jobsRepo: jobsRepo, imageAttemptBudget: imageAttemptBudget}
 }
 
 // Routes returns the worker router. It is not mounted on the client API.
@@ -42,12 +48,13 @@ func (h *Handler) Routes() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Post("/worker/v1/sessions", h.handleHello)
 	r.Post("/worker/v1/sessions/{id}/heartbeat", h.handleHeartbeat)
+	r.Post("/worker/v1/sessions/{id}/pull", h.handlePull)
 	r.Delete("/worker/v1/sessions/{id}", h.handleDelete)
-	r.Post("/worker/v1/attempts/{id}/lease", h.gateAttempt)
-	r.Post("/worker/v1/attempts/{id}/progress", h.gateAttempt)
-	r.Post("/worker/v1/attempts/{id}/fail", h.gateAttempt)
-	r.Post("/worker/v1/attempts/{id}/complete", h.gateAttempt)
-	r.Post("/worker/v1/attempts/{id}/stopped", h.gateAttempt)
+	r.Post("/worker/v1/attempts/{id}/lease", h.handleLease)
+	r.Post("/worker/v1/attempts/{id}/progress", h.handleProgress)
+	r.Post("/worker/v1/attempts/{id}/fail", h.handleFail)
+	r.Post("/worker/v1/attempts/{id}/complete", h.handleComplete)
+	r.Post("/worker/v1/attempts/{id}/stopped", h.handleStopped)
 	return r
 }
 
@@ -225,7 +232,16 @@ func (h *Handler) finishSession(w http.ResponseWriter, r *http.Request, closeSes
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: freshControl()})
+	control := freshControl()
+	if !closeSession {
+		ids, err := h.canceledAttemptIDs(r.Context(), sess.ID)
+		if err != nil {
+			writeCode(w, http.StatusInternalServerError, "invalid_message")
+			return
+		}
+		control.CancelAttemptIDs = ids
+	}
+	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: control})
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (storedSession, bool) {
@@ -286,47 +302,40 @@ func (h *Handler) authenticateSession(w http.ResponseWriter, r *http.Request) (s
 	return sess, true
 }
 
-func (h *Handler) gateAttempt(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authenticateSession(w, r); !ok {
-		return
-	}
-	if !discardLimitedBody(w, r) {
-		return
+func (h *Handler) authenticateAttempt(w http.ResponseWriter, r *http.Request) (storedSession, uuid.UUID, bool) {
+	sess, ok := h.authenticateSession(w, r)
+	if !ok {
+		return storedSession{}, uuid.Nil, false
 	}
 	raw := r.Header.Get("Octoconv-Attempt")
 	if raw == "" {
 		writeCode(w, http.StatusUnauthorized, "unauthorized")
-		return
+		return storedSession{}, uuid.Nil, false
 	}
 	attemptID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		writeCode(w, http.StatusForbidden, "capability_denied")
-		return
+		return storedSession{}, uuid.Nil, false
 	}
 	presented, err := HashToken(raw)
 	if err != nil {
 		writeCode(w, http.StatusForbidden, "capability_denied")
-		return
+		return storedSession{}, uuid.Nil, false
 	}
-	stored, found, err := h.repo.attemptTokenHash(r.Context(), attemptID)
+	var stored string
+	var sessionID uuid.UUID
+	err = h.repo.pool.QueryRow(r.Context(), `
+		SELECT token_hash, session_id
+		FROM worker_attempt_credentials WHERE attempt_id = $1`, attemptID).Scan(&stored, &sessionID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (presented != stored || sessionID != sess.ID)) {
+		writeCode(w, http.StatusForbidden, "capability_denied")
+		return storedSession{}, uuid.Nil, false
+	}
 	if err != nil {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
-		return
+		return storedSession{}, uuid.Nil, false
 	}
-	if !found || presented != stored {
-		writeCode(w, http.StatusForbidden, "capability_denied")
-		return
-	}
-	writeCode(w, http.StatusConflict, "attempt_not_active")
-}
-
-func discardLimitedBody(w http.ResponseWriter, r *http.Request) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxMessageBytes)
-	if _, err := io.Copy(io.Discard, r.Body); err != nil {
-		writeDecodeError(w, err)
-		return false
-	}
-	return true
+	return sess, attemptID, true
 }
 
 func peerLeaf(w http.ResponseWriter, r *http.Request) (*x509.Certificate, bool) {
@@ -419,7 +428,7 @@ func freshControl() controlWire {
 }
 
 func writeCode(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, wireError{Code: code, Message: messageFor(code), Retryable: false})
+	writeJSON(w, status, wireError{Code: code, Message: messageFor(code), Retryable: code == "rate_limited"})
 }
 
 func messageFor(code string) string {
@@ -440,6 +449,14 @@ func messageFor(code string) string {
 		return "capability denied"
 	case "attempt_not_active":
 		return "attempt not active"
+	case "pull_conflict":
+		return "pull conflict"
+	case "rate_limited":
+		return "rate limited"
+	case "invalid_progress":
+		return "invalid progress"
+	case "artifact_rejected":
+		return "artifact rejected"
 	default:
 		return "invalid message"
 	}

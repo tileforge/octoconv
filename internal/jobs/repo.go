@@ -18,6 +18,11 @@ import (
 // ErrNotFound is returned when a job does not exist.
 var ErrNotFound = errors.New("job not found")
 
+// ErrProtocolBudget is returned when a protocol retry would be the sixth
+// counted failure or the protocol deadline has passed. The caller's
+// transaction is rolled back.
+var ErrProtocolBudget = errors.New("protocol budget exhausted")
+
 // detailActionRecovery is the job_events.detail->>'action' tag written by
 // RequeueStale and read back by RecoveryCount. Both MUST reference this
 // single constant (never a literal string) so the tag can never drift out of
@@ -246,6 +251,218 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	return jobID, nil
 }
 
+// ActivateProtocol marks a queued job active on a transaction that already
+// holds the row lock. Opening another transaction here deadlocks on that lock.
+func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.UUID) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusQueued {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusActive, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'active',
+		    started_at = COALESCE(started_at, now()),
+		    progress_pct = NULL,
+		    eta_seconds = NULL,
+		    step_id = $2
+		WHERE id = $1`, id, stepID); err != nil {
+		return fmt.Errorf("activate protocol job: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, StatusQueued, StatusActive); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
+// FailProtocol marks a protocol job failed and records daily usage.
+func (r *Repo) FailProtocol(ctx context.Context, id uuid.UUID, code, message string) error {
+	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		return r.FailProtocolIn(ctx, tx, id, code, message)
+	})
+}
+
+// FailProtocolIn is FailProtocol for a caller that already holds tx.
+// The caller must not open another transaction around it.
+func (r *Repo) FailProtocolIn(ctx context.Context, tx pgx.Tx, id uuid.UUID, code, message string) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusQueued && status != StatusActive {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusFailed, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3
+		WHERE id = $1`, id, code, message); err != nil {
+		return fmt.Errorf("fail protocol job: %w", err)
+	}
+	if err := r.recordUsage(ctx, tx, id, StatusFailed, 0); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, 'failed', NULL)`, id, status); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET state = 'failed', released_at = now()
+		WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+		return fmt.Errorf("release hold: %w", err)
+	}
+	return nil
+}
+
+// RequeueProtocol returns an active protocol job to the queue after a retryable failure.
+// notBefore zero means Postgres now(). A sixth counted failure rolls back and returns ErrProtocolBudget.
+func (r *Repo) RequeueProtocol(ctx context.Context, id uuid.UUID, notBefore time.Time) error {
+	return r.transition(ctx, id, StatusQueued, []string{StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			UPDATE worker_slot_holds
+			SET state = 'failed', released_at = now()
+			WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+			return err
+		}
+		var retry bool
+		if err := tx.QueryRow(ctx, `
+			SELECT
+				(SELECT count(*) FROM worker_slot_holds h
+				 WHERE h.step_id = j.step_id
+				   AND h.state = 'failed'
+				   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
+				AND j.protocol_deadline > now()
+			FROM jobs j WHERE j.id = $1`, id).Scan(&retry); err != nil {
+			return err
+		}
+		if !retry {
+			return ErrProtocolBudget
+		}
+		if notBefore.IsZero() {
+			_, err := tx.Exec(ctx, `
+				UPDATE jobs
+				SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL
+				WHERE id = $1`, id)
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL
+			WHERE id = $1`, id, notBefore)
+		return err
+	})
+}
+
+// RequeueProtocolIn queues an active protocol job on tx.
+// notBefore maps the counted failed holds to the new not_before. A zero time means Postgres now().
+// ErrProtocolBudget leaves that hold update on tx for the caller to fail or roll back.
+func (r *Repo) RequeueProtocolIn(ctx context.Context, tx pgx.Tx, id uuid.UUID, notBefore func(failed int) (time.Time, error)) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusActive {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusQueued, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET state = 'failed', released_at = now()
+		WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+		return err
+	}
+	var failed int
+	var retry bool
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM worker_slot_holds h
+			 WHERE h.step_id = j.step_id
+			   AND h.state = 'failed'
+			   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)),
+			(SELECT count(*) FROM worker_slot_holds h
+			 WHERE h.step_id = j.step_id
+			   AND h.state = 'failed'
+			   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
+			AND j.protocol_deadline > now()
+		FROM jobs j WHERE j.id = $1`, id).Scan(&failed, &retry); err != nil {
+		return err
+	}
+	if !retry {
+		return ErrProtocolBudget
+	}
+	when, err := notBefore(failed)
+	if err != nil {
+		return err
+	}
+	if when.IsZero() {
+		if _, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL
+			WHERE id = $1`, id); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL
+		WHERE id = $1`, id, when); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, status, StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
+// QueueAfterStop queues an active protocol job when its failed-hold count is below 5
+// and the protocol deadline remains. It does not change slot holds.
+func (r *Repo) QueueAfterStop(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
+	var status string
+	var retry bool
+	if err := tx.QueryRow(ctx, `
+		SELECT j.status,
+		       (SELECT count(*) FROM worker_slot_holds h
+		        WHERE h.step_id = j.step_id
+		          AND h.state = 'failed'
+		          AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
+		       AND COALESCE(j.protocol_deadline > now(), false)
+		FROM jobs j WHERE j.id = $1 FOR UPDATE`, id).Scan(&status, &retry); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusActive || !retry {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL
+		WHERE id = $1`, id); err != nil {
+		return fmt.Errorf("requeue stopped job: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, StatusActive, StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
 // MarkActive transitions a job to active and stamps started_at, appending an
 // event. The transition allows queued->active AND active->active so asynq's
 // internal same-task retry re-entering the handler does not trip the illegal-
@@ -377,11 +594,62 @@ func (r *Repo) markFailed(ctx context.Context, id uuid.UUID, code, message strin
 // for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
+		var owner string
+		if err := tx.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, id).Scan(&owner); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err
 		}
+		if owner == "protocol" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE worker_slot_holds
+				SET state = 'canceled', released_at = now()
+				WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+				return fmt.Errorf("fence canceled hold: %w", err)
+			}
+		}
 		return r.recordUsage(ctx, tx, id, StatusCanceled, 0)
+	})
+}
+
+var errManualRetryRefused = errors.New("manual retry refused")
+
+// ManualRetry queues a failed protocol job again when its deadline, inputs, and quota allow it.
+func (r *Repo) ManualRetry(ctx context.Context, id uuid.UUID) error {
+	return r.transition(ctx, id, StatusQueued, []string{StatusFailed}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
+		var eligible bool
+		var clientID *uuid.UUID
+		var engine string
+		var inputBytes int64
+		if err := tx.QueryRow(ctx, `
+			SELECT
+				j.dispatch_owner = 'protocol'
+					AND COALESCE(j.protocol_deadline > now(), false)
+					AND NOT EXISTS (
+						SELECT 1 FROM worker_slot_holds h
+						WHERE h.job_id = j.id AND h.released_at IS NULL
+					)
+					AND EXISTS (SELECT 1 FROM job_inputs i WHERE i.job_id = j.id),
+				j.client_id,
+				j.engine,
+				COALESCE((SELECT sum(size_bytes) FROM job_inputs WHERE job_id = j.id), 0)
+			FROM jobs j
+			WHERE j.id = $1`, id).Scan(&eligible, &clientID, &engine, &inputBytes); err != nil {
+			return err
+		}
+		if !eligible || clientID == nil {
+			return errManualRetryRefused
+		}
+		if err := admitLocked(ctx, tx, *clientID, engine, inputBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', progress_pct = NULL, eta_seconds = NULL, manual_retry_at = now()
+			WHERE id = $1`, id)
+		return err
 	})
 }
 
@@ -515,8 +783,9 @@ func (r *Repo) FindStale(ctx context.Context, queuedStaleAfter, activeStaleAfter
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, status, engine FROM jobs
-		WHERE (status = 'queued' AND created_at < $1)
-		   OR (status = 'active' AND started_at < $2)`,
+		WHERE dispatch_owner = 'legacy'
+		  AND ((status = 'queued' AND created_at < $1)
+		    OR (status = 'active' AND started_at < $2))`,
 		queuedCutoff, activeCutoff,
 	)
 	if err != nil {
