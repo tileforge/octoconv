@@ -719,8 +719,9 @@ func (r *Repo) FindStale(ctx context.Context, queuedStaleAfter, activeStaleAfter
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, status, engine FROM jobs
-		WHERE (status = 'queued' AND created_at < $1)
-		   OR (status = 'active' AND started_at < $2)`,
+		WHERE dispatch_owner = 'legacy'
+		  AND ((status = 'queued' AND created_at < $1)
+		    OR (status = 'active' AND started_at < $2))`,
 		queuedCutoff, activeCutoff,
 	)
 	if err != nil {

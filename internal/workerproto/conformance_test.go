@@ -2024,6 +2024,90 @@ func revokeSession(t *testing.T, repo *Repo, live liveSession) {
 	}
 }
 
+func TestScenario26OwnersStayDisjoint(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	legacyID := uuid.New()
+	protocolID := uuid.New()
+	ctx := context.Background()
+	if _, err := live.pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline,
+			step_id, created_at, options
+		) VALUES (
+			$1, $2, 'convert', 'image', 'queued', 'png', 'jpg',
+			'legacy', 'octoconv.convert.image', 1, now() + interval '1 hour',
+			$3, now() - interval '2 hours', '{"test":"protocol-pull"}'
+		)`, legacyID, clientID, uuid.New()); err != nil {
+		t.Fatalf("insert legacy job: %v", err)
+	}
+	if _, err := live.pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline,
+			step_id, created_at, options
+		) VALUES (
+			$1, $2, 'convert', 'image', 'queued', 'png', 'jpg',
+			'protocol', 'octoconv.convert.image', 1, now() + interval '1 hour',
+			$3, now() - interval '1 hour', '{"test":"protocol-pull"}'
+		)`, protocolID, clientID, uuid.New()); err != nil {
+		t.Fatalf("insert protocol job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = live.pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE job_id = ANY($1)`, []uuid.UUID{legacyID, protocolID})
+		_, _ = live.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = ANY($1)`, []uuid.UUID{legacyID, protocolID})
+	})
+
+	stale, err := jobs.NewRepo(live.pool).FindStale(ctx, time.Second, time.Second)
+	if err != nil {
+		t.Fatalf("FindStale: %v", err)
+	}
+	var sawLegacy, sawProtocol bool
+	for _, job := range stale {
+		if job.ID == legacyID {
+			sawLegacy = true
+		}
+		if job.ID == protocolID {
+			sawProtocol = true
+		}
+	}
+	if !sawLegacy || sawProtocol {
+		t.Fatal("FindStale mixed the two owners")
+	}
+
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	var payload struct {
+		Assignments []map[string]json.RawMessage `json:"assignments"`
+	}
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("decode pull: %v", err)
+	}
+	for _, assignment := range payload.Assignments {
+		got, err := jsonUUID(assignment["job_id"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == legacyID {
+			t.Fatal("pull returned the legacy job")
+		}
+	}
+
+	var legacyOwner, protocolOwner string
+	if err := live.pool.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, legacyID).Scan(&legacyOwner); err != nil {
+		t.Fatal(err)
+	}
+	if err := live.pool.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, protocolID).Scan(&protocolOwner); err != nil {
+		t.Fatal(err)
+	}
+	if legacyOwner != "legacy" || protocolOwner != "protocol" {
+		t.Fatalf("owners %s %s", legacyOwner, protocolOwner)
+	}
+}
+
 func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
 	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
 }

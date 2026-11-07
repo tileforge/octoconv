@@ -777,6 +777,21 @@ func TestFindStale(t *testing.T) {
 		t.Fatalf("MarkActive freshActive: %v", err)
 	}
 
+	protocolID := uuid.New()
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, created_at
+		) VALUES (
+			$1, $2, 'convert', 'image', 'queued', 'png', 'jpg',
+			'protocol', now() - interval '1 hour'
+		)`, protocolID, clientID); err != nil {
+		t.Fatalf("insert protocol job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, protocolID)
+	})
+
 	stale, err := r.FindStale(ctx, 90*time.Second, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("FindStale: %v", err)
@@ -796,6 +811,16 @@ func TestFindStale(t *testing.T) {
 	}
 	if _, ok := got[freshActive]; ok {
 		t.Fatalf("freshActive should not be stale: %+v", stale)
+	}
+	if _, ok := got[protocolID]; ok {
+		t.Fatalf("protocol job should not be stale: %+v", stale)
+	}
+	var owner string
+	if err := r.pool.QueryRow(ctx, `SELECT dispatch_owner FROM jobs WHERE id = $1`, protocolID).Scan(&owner); err != nil {
+		t.Fatalf("read protocol owner: %v", err)
+	}
+	if owner != "protocol" {
+		t.Fatalf("dispatch_owner = %s", owner)
 	}
 }
 
