@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -1222,6 +1223,196 @@ func TestPullSkipsClientAtMaxConcurrent(t *testing.T) {
 	if jobStatusOf(t, live.pool, older) != "queued" || jobFailed(t, live.pool, older) {
 		t.Fatal("over-cap job was claimed or failed")
 	}
+}
+
+func TestPullPassesJobsWhoseClientsAreAtCap(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	capped := insertClient(t, live.pool)
+	other := insertClient(t, live.pool)
+	setMaxConcurrent(t, live.pool, capped, 0)
+	for i := 0; i < 33; i++ {
+		insertPullJob(t, live.pool, pullJob{clientID: &capped, createdAt: time.Now().Add(-time.Hour)})
+	}
+	want := insertPullJob(t, live.pool, pullJob{clientID: &other})
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != want {
+		t.Fatalf("assignment %s", resp)
+	}
+}
+
+func TestFencedFailLeavesTheReplacement(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatalf("set client: %v", err)
+	}
+	replacement := repullAfterFence(t, live, attemptID, jobID)
+	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+	err := h.failLiveAttempt(context.Background(), live.sessionID, attemptID, "engine_error", "late")
+	if !errors.Is(err, errAttemptInactive) {
+		t.Fatalf("fail: %v", err)
+	}
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"late"}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if jobStatusOf(t, live.pool, jobID) != "active" || holdState(t, live.pool, replacement) != "active" {
+		t.Fatal("fenced fail changed the replacement")
+	}
+	if rows, n := usageSnapshot(t, live.pool, clientID); rows != 0 || n != 0 {
+		t.Fatalf("usage rows=%d jobs=%d", rows, n)
+	}
+}
+
+func TestFencedTimeoutLeavesTheReplacement(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	restoreJitter(t)
+	_, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	replacement := repullAfterFence(t, live, attemptID, jobID)
+	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+	err := h.requeueLiveAttempt(context.Background(), live.sessionID, attemptID, "timed out")
+	if !errors.Is(err, errAttemptInactive) {
+		t.Fatalf("timeout: %v", err)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "active" || holdState(t, live.pool, replacement) != "active" {
+		t.Fatal("fenced timeout changed the replacement")
+	}
+}
+
+func TestStopLocksTheJobBeforeTheHold(t *testing.T) {
+	live := openHello(t)
+	_, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	ctx := context.Background()
+	tx, err := live.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+		done <- h.stopAttempt(ctx, live.sessionID, attemptID, "terminate")
+	}()
+	waitForJobLock(t, live.pool)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM worker_slot_holds WHERE id = $1 FOR UPDATE`, attemptID); err != nil {
+		t.Fatalf("stop locked the hold before the job: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop did not finish")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "queued" || holdState(t, live.pool, attemptID) != "stopped" {
+		t.Fatal("stop did not requeue")
+	}
+}
+
+func TestProgressLocksTheJobBeforeTheHold(t *testing.T) {
+	live := openHello(t)
+	_, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	ctx := context.Background()
+	tx, err := live.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+		_, err := h.storeProgress(ctx, live.sessionID, attemptID, parsedProgress{percent: 10})
+		done <- err
+	}()
+	waitForJobLock(t, live.pool)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM worker_slot_holds WHERE id = $1 FOR UPDATE`, attemptID); err != nil {
+		t.Fatalf("progress locked the hold before the job: %v", err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("progress did not finish")
+	}
+	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 10 {
+		t.Fatalf("progress %v", p)
+	}
+}
+
+func repullAfterFence(t *testing.T, live liveSession, attemptID, jobID uuid.UUID) uuid.UUID {
+	t.Helper()
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET state = 'failed', released_at = now()
+		WHERE id = $1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE jobs
+		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL
+		WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	got, err := jsonUUID(assignment["job_id"])
+	if err != nil || got != jobID {
+		t.Fatalf("pull %s", resp)
+	}
+	next, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || next == attemptID {
+		t.Fatalf("attempt %s", resp)
+	}
+	return next
+}
+
+func waitForJobLock(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		if err := pool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock'
+			  AND query LIKE '%SELECT id FROM jobs WHERE id%'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("did not wait on the job lock")
 }
 
 func TestPullDrainsQueuedPairUnderClientCap(t *testing.T) {

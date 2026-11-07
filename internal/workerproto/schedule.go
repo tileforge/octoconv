@@ -258,7 +258,11 @@ func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusBadRequest, code)
 		return
 	}
-	limited, err := h.storeProgress(r.Context(), attemptID, parsed)
+	limited, err := h.storeProgress(r.Context(), sess.ID, attemptID, parsed)
+	if errors.Is(err, errAttemptInactive) {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
 	if err != nil {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
@@ -304,24 +308,20 @@ func (h *Handler) handleFail(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusBadRequest, "invalid_message")
 		return
 	}
-	jobID, stepID, err := h.attemptJob(r.Context(), attemptID)
-	if err != nil {
-		writeCode(w, http.StatusInternalServerError, "invalid_message")
-		return
-	}
 	if req.EngineCode == "timeout" {
-		if err := h.retryTimeout(r.Context(), jobID, stepID, req.Message); err != nil {
-			writeCode(w, http.StatusInternalServerError, "invalid_message")
-			return
+		err = h.requeueLiveAttempt(r.Context(), sess.ID, attemptID, req.Message)
+	} else {
+		code := "engine_error"
+		if _, ok := terminalEngineCodes[req.EngineCode]; ok {
+			code = req.EngineCode
 		}
-		h.writeControl(w, r, sess.ID)
+		err = h.failLiveAttempt(r.Context(), sess.ID, attemptID, code, req.Message)
+	}
+	if errors.Is(err, errAttemptInactive) {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
 		return
 	}
-	code := "engine_error"
-	if _, ok := terminalEngineCodes[req.EngineCode]; ok {
-		code = req.EngineCode
-	}
-	if err := h.jobsRepo.FailProtocol(r.Context(), jobID, code, req.Message); err != nil {
+	if err != nil {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
@@ -467,9 +467,15 @@ func optionalInt(raw json.RawMessage, min int) (*int, string) {
 	return &n, ""
 }
 
-func (h *Handler) storeProgress(ctx context.Context, attemptID uuid.UUID, parsed parsedProgress) (bool, error) {
+func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.UUID, parsed parsedProgress) (bool, error) {
 	var limited bool
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if _, err := lockReportingJob(ctx, tx, attemptID, sessionID); err != nil {
+			return err
+		}
+		if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
+			return err
+		}
 		err := tx.QueryRow(ctx, `
 			WITH locked AS (
 				SELECT id, progress_window_started, progress_in_window
@@ -562,56 +568,127 @@ func (h *Handler) storeProgress(ctx context.Context, attemptID uuid.UUID, parsed
 	return limited, err
 }
 
-func (h *Handler) attemptJob(ctx context.Context, attemptID uuid.UUID) (uuid.UUID, *uuid.UUID, error) {
-	var jobID uuid.UUID
-	var stepID *uuid.UUID
-	err := h.repo.pool.QueryRow(ctx, `
-		SELECT job_id, step_id FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&jobID, &stepID)
-	if err != nil {
-		return uuid.Nil, nil, fmt.Errorf("read attempt job: %w", err)
-	}
-	return jobID, stepID, nil
-}
-
-func (h *Handler) retryTimeout(ctx context.Context, jobID uuid.UUID, stepID *uuid.UUID, message string) error {
-	n := 1
-	if stepID != nil {
-		var failed int
-		if err := h.repo.pool.QueryRow(ctx, `
-			SELECT count(*) FROM worker_slot_holds h
-			JOIN jobs j ON j.id = $2
-			WHERE h.step_id = $1
-			  AND h.state = 'failed'
-			  AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)`, *stepID, jobID).Scan(&failed); err != nil {
+func (h *Handler) failLiveAttempt(ctx context.Context, sessionID, attemptID uuid.UUID, code, message string) error {
+	return pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		jobID, err := lockReportingJob(ctx, tx, attemptID, sessionID)
+		if err != nil {
 			return err
 		}
-		n = failed + 1
-	}
-	delay, err := attemptJitter(n)
-	if err != nil {
+		if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
+			return err
+		}
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+			return err
+		}
+		if status != jobs.StatusQueued && status != jobs.StatusActive {
+			return errAttemptInactive
+		}
+		return h.jobsRepo.FailProtocolIn(ctx, tx, jobID, code, message)
+	})
+}
+
+func (h *Handler) requeueLiveAttempt(ctx context.Context, sessionID, attemptID uuid.UUID, message string) error {
+	return pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		jobID, err := lockReportingJob(ctx, tx, attemptID, sessionID)
+		if err != nil {
+			return err
+		}
+		if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
+			return err
+		}
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+			return err
+		}
+		if status != jobs.StatusActive {
+			return errAttemptInactive
+		}
+		err = h.jobsRepo.RequeueProtocolIn(ctx, tx, jobID, func(failed int) (time.Time, error) {
+			delay, err := attemptJitter(failed)
+			if err != nil {
+				return time.Time{}, err
+			}
+			if delay <= 0 {
+				return time.Time{}, nil
+			}
+			return time.Now().Add(time.Duration(delay) * time.Second), nil
+		})
+		if errors.Is(err, jobs.ErrProtocolBudget) {
+			return h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "reconciler_exhausted", message)
+		}
 		return err
+	})
+}
+
+func lockReportingJob(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID) (uuid.UUID, error) {
+	var jobID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT job_id FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2 AND job_id IS NOT NULL`, attemptID, sessionID).Scan(&jobID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, errAttemptInactive
 	}
-	var notBefore time.Time
-	if delay > 0 {
-		notBefore = time.Now().Add(time.Duration(delay) * time.Second)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("read attempt job: %w", err)
 	}
-	err = h.jobsRepo.RequeueProtocol(ctx, jobID, notBefore)
-	if errors.Is(err, jobs.ErrProtocolBudget) {
-		return h.jobsRepo.FailProtocol(ctx, jobID, "reconciler_exhausted", message)
+	var locked uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, errAttemptInactive
 	}
-	return err
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("lock job: %w", err)
+	}
+	err = tx.QueryRow(ctx, `
+		SELECT job_id FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2
+		FOR UPDATE`, attemptID, sessionID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, errAttemptInactive
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("lock attempt: %w", err)
+	}
+	if locked != jobID {
+		return uuid.Nil, errAttemptInactive
+	}
+	return jobID, nil
+}
+
+func reportingAttemptLive(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID) error {
+	var live bool
+	err := tx.QueryRow(ctx, `
+		SELECT
+			h.state = 'active'
+			AND h.released_at IS NULL
+			AND COALESCE(h.attempt_deadline > now(), false)
+			AND COALESCE(h.lease_expires_at > now(), false)
+			AND NOT EXISTS (
+				SELECT 1 FROM jobs j
+				WHERE j.id = h.job_id AND j.status IN ('canceled', 'failed', 'done')
+			)
+		FROM worker_slot_holds h
+		WHERE h.id = $1 AND h.session_id = $2`, attemptID, sessionID).Scan(&live)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
+		return errAttemptInactive
+	}
+	if err != nil {
+		return fmt.Errorf("read attempt: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) stopAttempt(ctx context.Context, sessionID, attemptID uuid.UUID, reason string) error {
 	return pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		jobID, err := lockReportingJob(ctx, tx, attemptID, sessionID)
+		if err != nil {
+			return err
+		}
 		var state string
-		var released *time.Time
-		var jobID uuid.UUID
-		err := tx.QueryRow(ctx, `
-			SELECT state, released_at, job_id
-			FROM worker_slot_holds
-			WHERE id = $1 AND session_id = $2
-			FOR UPDATE`, attemptID, sessionID).Scan(&state, &released, &jobID)
+		err = tx.QueryRow(ctx, `
+			SELECT state FROM worker_slot_holds
+			WHERE id = $1 AND session_id = $2`, attemptID, sessionID).Scan(&state)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errAttemptInactive
 		}
@@ -625,12 +702,8 @@ func (h *Handler) stopAttempt(ctx context.Context, sessionID, attemptID uuid.UUI
 			}
 			return nil
 		}
-		live, err := h.attemptOpen(ctx, attemptID, sessionID, true)
-		if err != nil {
+		if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
 			return err
-		}
-		if !live {
-			return errAttemptInactive
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE worker_slot_holds
@@ -715,7 +788,41 @@ func (h *Handler) servePull(ctx context.Context, sess storedSession, pullID uuid
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("pull skipped too many jobs")
+	return h.storeEmptyPull(ctx, sess, pullID, bodyHash)
+}
+
+func (h *Handler) storeEmptyPull(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string) ([]byte, error) {
+	var body []byte
+	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT id FROM worker_sessions WHERE id = $1 FOR UPDATE`, sess.ID); err != nil {
+			return fmt.Errorf("lock session: %w", err)
+		}
+		cancelIDs, err := canceledAttempts(ctx, tx, sess.ID)
+		if err != nil {
+			return err
+		}
+		encoded, err := encodeWire(emptyPull(cancelIDs))
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE worker_request_dedup
+			SET response_body = $3, attempt_id = NULL
+			WHERE session_id = $1 AND dedup_key = $2 AND response_body IS NULL`,
+			sess.ID, pullID.String(), encoded)
+		if err != nil {
+			return fmt.Errorf("store pull: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return errDedupLost
+		}
+		body = encoded
+		return nil
+	})
+	if errors.Is(err, errDedupLost) {
+		return h.replayPull(ctx, sess.ID, pullID, bodyHash, time.Now())
+	}
+	return body, err
 }
 
 type pullStep struct {
@@ -938,6 +1045,12 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if skipped == nil {
 		skipped = []uuid.UUID{}
 	}
+	engine := ""
+	filterCap := false
+	if legacyEngine != nil && *legacyEngine != "" {
+		engine = *legacyEngine
+		filterCap = true
+	}
 	budgetSeconds := int64(h.imageAttemptBudget / time.Second)
 	var jobID uuid.UUID
 	var storedStep *uuid.UUID
@@ -966,9 +1079,23 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		            AND (jobs.manual_retry_at IS NULL OR h.released_at > jobs.manual_retry_at)
 		      ) < 5
 		  )
+		  AND (
+		      NOT $5 OR NOT EXISTS (
+		          SELECT 1 FROM client_limits cl
+		          WHERE cl.client_id = jobs.client_id
+		            AND cl.engine = $6
+		            AND cl.max_concurrent IS NOT NULL
+		            AND (
+		                SELECT count(*) FROM jobs AS peer
+		                WHERE peer.client_id = jobs.client_id
+		                  AND peer.engine = $6
+		                  AND peer.status = 'active'
+		            ) >= cl.max_concurrent
+		      )
+		  )
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped).Scan(
+		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped, filterCap, engine).Scan(
 		&jobID, &storedStep, &clientID, &attemptDeadline, &leaseExpires, &leaseOK)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !leaseOK) {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil

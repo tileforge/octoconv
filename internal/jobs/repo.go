@@ -364,6 +364,70 @@ func (r *Repo) RequeueProtocol(ctx context.Context, id uuid.UUID, notBefore time
 	})
 }
 
+// RequeueProtocolIn queues an active protocol job on tx.
+// notBefore maps the counted failed holds to the new not_before. A zero time means Postgres now().
+// ErrProtocolBudget leaves that hold update on tx for the caller to fail or roll back.
+func (r *Repo) RequeueProtocolIn(ctx context.Context, tx pgx.Tx, id uuid.UUID, notBefore func(failed int) (time.Time, error)) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusActive {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusQueued, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET state = 'failed', released_at = now()
+		WHERE job_id = $1 AND released_at IS NULL`, id); err != nil {
+		return err
+	}
+	var failed int
+	var retry bool
+	if err := tx.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM worker_slot_holds h
+			 WHERE h.step_id = j.step_id
+			   AND h.state = 'failed'
+			   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)),
+			(SELECT count(*) FROM worker_slot_holds h
+			 WHERE h.step_id = j.step_id
+			   AND h.state = 'failed'
+			   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at)) < 5
+			AND j.protocol_deadline > now()
+		FROM jobs j WHERE j.id = $1`, id).Scan(&failed, &retry); err != nil {
+		return err
+	}
+	if !retry {
+		return ErrProtocolBudget
+	}
+	when, err := notBefore(failed)
+	if err != nil {
+		return err
+	}
+	if when.IsZero() {
+		if _, err := tx.Exec(ctx, `
+			UPDATE jobs
+			SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL
+			WHERE id = $1`, id); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL
+		WHERE id = $1`, id, when); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, status, StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
 // QueueAfterStop queues an active protocol job when its failed-hold count is below 5
 // and the protocol deadline remains. It does not change slot holds.
 func (r *Repo) QueueAfterStop(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
