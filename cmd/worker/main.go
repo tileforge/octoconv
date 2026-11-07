@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
@@ -71,20 +73,70 @@ func main() {
 	}
 	cancelPreflight()
 
-	pool, err := db.Connect(ctx)
-	if err != nil {
-		log.Fatalf("postgres: %v", err)
+	if err := dispatch(ctx); err != nil {
+		log.Fatalf("worker: %v", err)
 	}
-	defer pool.Close()
+}
 
-	store, err := storage.New(ctx)
+func dispatch(ctx context.Context) error {
+	dial, err := loadProtocolDial()
 	if err != nil {
-		log.Fatalf("storage: %v", err)
+		return err
+	}
+	if dial.ready {
+		log.Printf("🐙 image protocol worker starting")
+		return runProtocol(ctx, dial)
+	}
+	return runLegacy(ctx)
+}
+
+var (
+	legacyConnect  func(context.Context) (*pgxpool.Pool, error)
+	legacyStorage  func(context.Context) (*storage.Client, error)
+	legacyQueue    func() (*queue.Client, error)
+	legacyRedis    func(*redis.Options) *redis.Client
+	legacyRedisOpt func() (asynq.RedisClientOpt, error)
+	legacyServe    func(map[string]int, string, *asynq.ServeMux) error
+)
+
+func runLegacy(ctx context.Context) error {
+	connect := db.Connect
+	if legacyConnect != nil {
+		connect = legacyConnect
+	}
+	newStorage := storage.New
+	if legacyStorage != nil {
+		newStorage = legacyStorage
+	}
+	newQueue := queue.NewClient
+	if legacyQueue != nil {
+		newQueue = legacyQueue
+	}
+	newRedis := redis.NewClient
+	if legacyRedis != nil {
+		newRedis = legacyRedis
+	}
+	redisOptFn := queue.RedisOpt
+	if legacyRedisOpt != nil {
+		redisOptFn = legacyRedisOpt
 	}
 
-	redisOpt, err := queue.RedisOpt()
+	pool, err := connect(ctx)
 	if err != nil {
-		log.Fatalf("redis: %v", err)
+		return fmt.Errorf("postgres: %w", err)
+	}
+	if pool != nil {
+		defer pool.Close()
+	}
+
+	store, err := newStorage(ctx)
+	if err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+
+	redisOpt, err := redisOptFn()
+	if err != nil {
+		return fmt.Errorf("redis: %w", err)
 	}
 
 	// D-04 (Plan 03): run the job:cancel Subscriber against the SAME
@@ -93,20 +145,24 @@ func main() {
 	// received cancel cancels the exact in-flight attempt this worker is
 	// running for that job id (no-op otherwise, D-04). Bound to the process
 	// signal ctx so Run returns promptly on shutdown (T-39-09).
-	cancelRDB := redis.NewClient(&redis.Options{Addr: redisOpt.Addr})
-	defer cancelRDB.Close()
-	go cancel.NewSubscriber(cancelRDB, cancel.Default).Run(ctx)
+	cancelRDB := newRedis(&redis.Options{Addr: redisOpt.Addr})
+	if cancelRDB != nil {
+		defer cancelRDB.Close()
+		go cancel.NewSubscriber(cancelRDB, cancel.Default).Run(ctx)
+	}
 
 	// Webhook delivery now lives solely in cmd/webhook-worker (D-03/D-07);
 	// image-worker neither delivers nor signs webhooks, so no signing secret
 	// is read here and webhookRepo/deliverer are passed as nil — inert for
 	// HandleImageConvert, which never touches h.webhookRepo/h.deliverer/
 	// h.signingSecret.
-	qc, err := queue.NewClient()
+	qc, err := newQueue()
 	if err != nil {
-		log.Fatalf("queue client: %v", err)
+		return fmt.Errorf("queue client: %w", err)
 	}
-	defer qc.Close()
+	if qc != nil {
+		defer qc.Close()
+	}
 
 	repo := jobs.NewRepo(pool)
 
@@ -129,11 +185,16 @@ func main() {
 	// constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeImageConvert, worker.NewRunner(h, worker.ImageDescriptor).Handle)
+	task := queue.TypeImageConvert
+	mux.HandleFunc(task, worker.NewRunner(h, worker.ImageDescriptor).Handle)
+	queues := map[string]int{queue.QueueImage: 4}
+	if legacyServe != nil {
+		return legacyServe(queues, task, mux)
+	}
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("WORKER_CONCURRENCY", 4),
-		Queues:         map[string]int{queue.QueueImage: 4},
+		Queues:         queues,
 		RetryDelayFunc: queue.RetryDelayFunc,
 		// Pattern 2: asynq defaults ShutdownTimeout to 8s, silently capping
 		// the graceful window regardless of the pod's
@@ -152,7 +213,7 @@ func main() {
 
 	log.Printf("🐙 worker starting (queue=%s)", queue.QueueImage)
 	if err := srv.Start(mux); err != nil {
-		log.Fatalf("worker: %v", err)
+		return fmt.Errorf("worker: %w", err)
 	}
 
 	// Prometheus /metrics is served on its own localhost-only listener,
@@ -185,6 +246,7 @@ func main() {
 		log.Printf("metrics graceful shutdown failed: %v", err)
 	}
 	log.Println("bye 👋")
+	return nil
 }
 
 func envInt(key string, def int) int {
