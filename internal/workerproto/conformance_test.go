@@ -3627,6 +3627,61 @@ func TestArtifactExtensionsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestRenewDuringCopyStillCompletes(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("renew-during-copy")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET lease_expires_at = clock_timestamp() + interval '4 seconds'
+		WHERE id = $1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	started, release := live.store.pauseNextCopy()
+	defer release()
+	body := completeBody(t, "jpg", "image/jpeg", payload)
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, respBody, err := postAttemptErr(live.client, attemptPaths(live.addr, attemptID)[3], live.token, token, body)
+		done <- result{status: code, body: respBody, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("copy did not start")
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	if status != http.StatusOK {
+		t.Fatalf("renew status %d: %s", status, resp)
+	}
+	release()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.status != http.StatusOK {
+			t.Fatalf("complete status %d: %s", got.status, got.body)
+		}
+		assertControlOnly(t, got.body)
+	case <-time.After(5 * time.Second):
+		t.Fatal("complete did not finish")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "done" || outputCount(t, live.pool, jobID) != 1 || doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("renewed complete did not accept")
+	}
+}
+
 func TestCompleteExpiresDuringCopy(t *testing.T) {
 	live := openHello(t)
 	cases := []struct {

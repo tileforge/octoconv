@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -560,7 +561,10 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 	}
 	var body []byte
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		jobID, err := lockReportingJob(ctx, tx, attemptID, sess.ID)
+		if err := lockAttemptIO(ctx, tx, attemptID); err != nil {
+			return err
+		}
+		jobID, err := readAttemptJob(ctx, tx, attemptID, sess.ID)
 		if err != nil {
 			return err
 		}
@@ -578,16 +582,10 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err != nil {
 			return fmt.Errorf("read attempt step: %w", err)
 		}
-		hash, stored, found, err := readStoredComplete(ctx, tx, sess.ID, completeDedupKey(jobID, stepID, attemptID))
-		if err != nil {
+		key := completeDedupKey(jobID, stepID, attemptID)
+		handled, err := takeStoredComplete(ctx, tx, sess.ID, key, bodyHash, &body)
+		if handled || err != nil {
 			return err
-		}
-		if found {
-			if hash == bodyHash {
-				body = stored
-				return nil
-			}
-			return &completeFailure{status: http.StatusConflict, code: "complete_conflict"}
 		}
 		if status != jobs.StatusActive {
 			return &completeFailure{status: http.StatusConflict, code: "attempt_not_active"}
@@ -598,42 +596,40 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if !listed || art.Format != target || art.ContentType != convert.MIMEType(art.Format) {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
-		src := storage.AttemptOutputKey(attemptID, 0)
-		dst := storage.AcceptedOutputKey(jobID, attemptID, 0, art.SHA256)
 		size, kind := integerToken(art.ByteSize)
 		if kind != numOK {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
-		err = h.store.Copy(ctx, src, dst)
-		if errors.Is(err, storage.ErrNotFound) {
-			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
-		}
+		src := storage.AttemptOutputKey(attemptID, 0)
+		dst := storage.AcceptedOutputKey(jobID, attemptID, 0, art.SHA256)
+		gotSize, err := h.copyMatched(ctx, tx, src, dst, art.SHA256, size)
 		if err != nil {
-			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+			return err
 		}
-		gotSize, err := h.store.ObjectSize(ctx, dst)
-		if errors.Is(err, storage.ErrNotFound) {
-			return h.rejectCopied(ctx, tx, dst)
+		if _, err := lockReportingJob(ctx, tx, attemptID, sess.ID); err != nil {
+			if rmErr := h.removeUnnamedCopy(ctx, tx, dst); rmErr != nil {
+				return rmErr
+			}
+			return err
 		}
+		handled, err = takeStoredComplete(ctx, tx, sess.ID, key, bodyHash, &body)
 		if err != nil {
-			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+			if rmErr := h.removeUnnamedCopy(ctx, tx, dst); rmErr != nil {
+				return rmErr
+			}
+			return err
 		}
-		if gotSize > int64(100<<20) || gotSize != size {
-			return h.rejectCopied(ctx, tx, dst)
+		if handled {
+			return nil
 		}
-		rc, err := h.store.Download(ctx, dst)
-		if errors.Is(err, storage.ErrNotFound) {
-			return h.rejectCopied(ctx, tx, dst)
+		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+			return fmt.Errorf("read job: %w", err)
 		}
-		if err != nil {
-			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
-		}
-		sum, err := hashReader(rc)
-		if err != nil {
-			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
-		}
-		if sum != art.SHA256 {
-			return h.rejectCopied(ctx, tx, dst)
+		if status != jobs.StatusActive {
+			if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+				return err
+			}
+			return &completeFailure{status: http.StatusConflict, code: "attempt_not_active"}
 		}
 		if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dst); err != nil {
 			return err
@@ -661,13 +657,87 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256, response_body)
 			VALUES ($1, $2, $3, $4)`,
-			sess.ID, completeDedupKey(jobID, stepID, attemptID), bodyHash, encoded); err != nil {
+			sess.ID, key, bodyHash, encoded); err != nil {
 			return fmt.Errorf("store complete: %w", err)
 		}
 		body = encoded
 		return nil
 	})
 	return body, err
+}
+
+func lockAttemptIO(ctx context.Context, tx pgx.Tx, attemptID uuid.UUID) error {
+	sum := sha256.Sum256(attemptID[:])
+	key1 := int32(binary.BigEndian.Uint32(sum[:4]))
+	key2 := int32(binary.BigEndian.Uint32(sum[4:8]))
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, key1, key2); err != nil {
+		return fmt.Errorf("lock attempt: %w", err)
+	}
+	return nil
+}
+
+func readAttemptJob(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID) (uuid.UUID, error) {
+	var jobID uuid.UUID
+	err := tx.QueryRow(ctx, `
+		SELECT job_id FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2 AND job_id IS NOT NULL`, attemptID, sessionID).Scan(&jobID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, errAttemptInactive
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("read attempt job: %w", err)
+	}
+	return jobID, nil
+}
+
+func takeStoredComplete(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID, key, bodyHash string, body *[]byte) (bool, error) {
+	hash, stored, found, err := readStoredComplete(ctx, tx, sessionID, key)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	if hash != bodyHash {
+		return true, &completeFailure{status: http.StatusConflict, code: "complete_conflict"}
+	}
+	*body = stored
+	return true, nil
+}
+
+func (h *Handler) copyMatched(ctx context.Context, tx pgx.Tx, src, dst, sha string, size int64) (int64, error) {
+	err := h.store.Copy(ctx, src, dst)
+	if errors.Is(err, storage.ErrNotFound) {
+		return 0, &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+	}
+	if err != nil {
+		return 0, &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+	}
+	gotSize, err := h.store.ObjectSize(ctx, dst)
+	if errors.Is(err, storage.ErrNotFound) {
+		return 0, h.rejectCopied(ctx, tx, dst)
+	}
+	if err != nil {
+		return 0, &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+	}
+	if gotSize > int64(100<<20) || gotSize != size {
+		return 0, h.rejectCopied(ctx, tx, dst)
+	}
+	rc, err := h.store.Download(ctx, dst)
+	if errors.Is(err, storage.ErrNotFound) {
+		return 0, h.rejectCopied(ctx, tx, dst)
+	}
+	if err != nil {
+		return 0, &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+	}
+	sum, err := hashReader(rc)
+	if err != nil {
+		return 0, &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+	}
+	if sum != sha {
+		return 0, h.rejectCopied(ctx, tx, dst)
+	}
+	return gotSize, nil
 }
 
 func (h *Handler) attemptLiveNow(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID, dst string) error {
