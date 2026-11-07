@@ -407,7 +407,39 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 		writeDecodeError(w, err)
 		return
 	}
-	body, err := h.acceptComplete(r.Context(), sess, attemptID, raw, arts)
+	rawSum := sha256.Sum256(raw)
+	bodyHash := hex.EncodeToString(rawSum[:])
+	stored, err := h.storedComplete(r.Context(), sess.ID, attemptID, bodyHash)
+	if err != nil {
+		var fail *completeFailure
+		if errors.As(err, &fail) {
+			writeCode(w, fail.status, fail.code)
+			return
+		}
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if stored != nil {
+		writeStored(w, stored)
+		return
+	}
+	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !live {
+		_, ok, err := h.loadCompleteKey(r.Context(), attemptID, sess.ID)
+		if err != nil {
+			writeCode(w, http.StatusInternalServerError, "invalid_message")
+			return
+		}
+		if !ok {
+			writeCode(w, http.StatusConflict, "attempt_not_active")
+			return
+		}
+	}
+	body, err := h.acceptComplete(r.Context(), sess, attemptID, bodyHash, arts)
 	var fail *completeFailure
 	if errors.As(err, &fail) {
 		writeCode(w, fail.status, fail.code)
@@ -431,7 +463,67 @@ type completeFailure struct {
 
 func (e *completeFailure) Error() string { return e.code }
 
-func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemptID uuid.UUID, raw []byte, arts []completeArtifact) ([]byte, error) {
+type queryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func completeDedupKey(jobID, stepID, attemptID uuid.UUID) string {
+	return jobID.String() + "/" + stepID.String() + "/" + attemptID.String() + "/complete"
+}
+
+func (h *Handler) loadCompleteKey(ctx context.Context, attemptID, sessionID uuid.UUID) (string, bool, error) {
+	var jobID, stepID uuid.UUID
+	err := h.repo.pool.QueryRow(ctx, `
+		SELECT job_id, step_id
+		FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2
+		  AND job_id IS NOT NULL
+		  AND step_id IS NOT NULL`, attemptID, sessionID).Scan(&jobID, &stepID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read complete key: %w", err)
+	}
+	return completeDedupKey(jobID, stepID, attemptID), true, nil
+}
+
+func (h *Handler) storedComplete(ctx context.Context, sessionID, attemptID uuid.UUID, bodyHash string) ([]byte, error) {
+	key, ok, err := h.loadCompleteKey(ctx, attemptID, sessionID)
+	if err != nil || !ok {
+		return nil, err
+	}
+	hash, stored, found, err := readStoredComplete(ctx, h.repo.pool, sessionID, key)
+	if err != nil || !found {
+		return nil, err
+	}
+	if hash != bodyHash {
+		return nil, &completeFailure{status: http.StatusConflict, code: "complete_conflict"}
+	}
+	return stored, nil
+}
+
+func readStoredComplete(ctx context.Context, q queryRower, sessionID uuid.UUID, key string) (string, []byte, bool, error) {
+	var hash *string
+	var response []byte
+	err := q.QueryRow(ctx, `
+		SELECT body_sha256, response_body
+		FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, sessionID, key).Scan(&hash, &response)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && response == nil) {
+		return "", nil, false, nil
+	}
+	if err != nil {
+		return "", nil, false, fmt.Errorf("read complete: %w", err)
+	}
+	storedHash := ""
+	if hash != nil {
+		storedHash = *hash
+	}
+	return storedHash, response, true, nil
+}
+
+func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemptID uuid.UUID, bodyHash string, arts []completeArtifact) ([]byte, error) {
 	listed := len(arts) == 1 && artifactListed(arts[0])
 	var art completeArtifact
 	if listed {
@@ -446,6 +538,27 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		var status, target string
 		if err := tx.QueryRow(ctx, `SELECT status, target_format FROM jobs WHERE id = $1`, jobID).Scan(&status, &target); err != nil {
 			return fmt.Errorf("read job: %w", err)
+		}
+		var stepID uuid.UUID
+		err = tx.QueryRow(ctx, `
+			SELECT step_id FROM worker_slot_holds
+			WHERE id = $1 AND session_id = $2`, attemptID, sess.ID).Scan(&stepID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errAttemptInactive
+		}
+		if err != nil {
+			return fmt.Errorf("read attempt step: %w", err)
+		}
+		hash, stored, found, err := readStoredComplete(ctx, tx, sess.ID, completeDedupKey(jobID, stepID, attemptID))
+		if err != nil {
+			return err
+		}
+		if found {
+			if hash == bodyHash {
+				body = stored
+				return nil
+			}
+			return &completeFailure{status: http.StatusConflict, code: "complete_conflict"}
 		}
 		if status != jobs.StatusActive {
 			return &completeFailure{status: http.StatusConflict, code: "attempt_not_active"}
@@ -493,12 +606,6 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if sum != art.SHA256 {
 			return h.rejectCopied(ctx, tx, dst)
 		}
-		var stepID uuid.UUID
-		if err := tx.QueryRow(ctx, `
-			SELECT step_id FROM worker_slot_holds
-			WHERE id = $1 AND session_id = $2`, attemptID, sess.ID).Scan(&stepID); err != nil {
-			return fmt.Errorf("read attempt step: %w", err)
-		}
 		if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
 			Ordinal:     0,
 			ObjectKey:   dst,
@@ -519,12 +626,10 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err != nil {
 			return err
 		}
-		rawSum := sha256.Sum256(raw)
-		key := jobID.String() + "/" + stepID.String() + "/" + attemptID.String() + "/complete"
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256, response_body)
 			VALUES ($1, $2, $3, $4)`,
-			sess.ID, key, hex.EncodeToString(rawSum[:]), encoded); err != nil {
+			sess.ID, completeDedupKey(jobID, stepID, attemptID), bodyHash, encoded); err != nil {
 			return fmt.Errorf("store complete: %w", err)
 		}
 		body = encoded

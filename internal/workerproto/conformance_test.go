@@ -3308,7 +3308,8 @@ func TestCompleteAcceptsCopiedPrimary(t *testing.T) {
 
 func TestConcurrentCompleteKeepsTheFirstCopy(t *testing.T) {
 	live := openHello(t)
-	jobID := insertPullJob(t, live.pool, pullJob{})
+	clientID := insertClient(t, live.pool)
+	jobID := insertPullJob(t, live.pool, pullJob{clientID: &clientID})
 	status, resp := pullOnce(t, live, 1)
 	if status != http.StatusOK {
 		t.Fatalf("pull status %d: %s", status, resp)
@@ -3348,30 +3349,30 @@ func TestConcurrentCompleteKeepsTheFirstCopy(t *testing.T) {
 	}
 	live.store.put(staging, []byte("replaced-staging"))
 	release()
-	sawOK := false
-	sawInactive := false
-	for range 2 {
+	var first []byte
+	for i := range 2 {
 		select {
 		case got := <-results:
 			if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if got.status == http.StatusOK {
-				sawOK = true
-				assertControlOnly(t, got.body)
+			if got.status != http.StatusOK {
+				t.Fatalf("status %d body %s", got.status, got.body)
+			}
+			assertControlOnly(t, got.body)
+			if i == 0 {
+				first = got.body
 				continue
 			}
-			if got.status == http.StatusConflict && bytes.Contains(got.body, []byte(`"attempt_not_active"`)) {
-				sawInactive = true
-				continue
+			if !bytes.Equal(first, got.body) {
+				t.Fatalf("replay %s stored %s", got.body, first)
 			}
-			t.Fatalf("status %d body %s", got.status, got.body)
 		case <-time.After(10 * time.Second):
 			t.Fatal("complete did not finish")
 		}
 	}
-	if !sawOK || !sawInactive {
-		t.Fatalf("ok %v inactive %v", sawOK, sawInactive)
+	if doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("done usage")
 	}
 	sum := sha256.Sum256(original)
 	wantKey := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(sum[:]))
@@ -3576,6 +3577,119 @@ func TestCompleteCorrectedBodySucceeds(t *testing.T) {
 	}
 	if doneUsageCount(t, live.pool, clientID) != 1 || jobStatusOf(t, live.pool, jobID) != "done" {
 		t.Fatal("corrected complete did not record one done job")
+	}
+}
+
+func TestScenario09CompleteReplayAfterLease(t *testing.T) {
+	live := openHello(t)
+	expiredToken, expiredAttempt, expiredJob := insertActiveAttempt(t, live, -30, 120)
+	copies := live.store.copyCount()
+	late := completeBody(t, "jpg", "image/jpeg", []byte("too-late"))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, expiredAttempt)[3], expiredToken, late)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if live.store.copyCount() != copies || outputCount(t, live.pool, expiredJob) != 0 || jobStatusOf(t, live.pool, expiredJob) != "active" {
+		t.Fatal("expired lease copied an artifact")
+	}
+
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	payload := []byte("replay-bytes")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	body := completeBody(t, "jpg", "image/jpeg", payload)
+	gets, puts := live.store.signerCounts()
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, body)
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("done usage")
+	}
+	copies = live.store.copyCount()
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET lease_expires_at = now() - interval '1 second'
+		WHERE id = $1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	status, _, again := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, body)
+	if status != http.StatusOK || !bytes.Equal(resp, again) {
+		t.Fatalf("replay status %d: %s", status, again)
+	}
+	gotGets, gotPuts := live.store.signerCounts()
+	if doneUsageCount(t, live.pool, clientID) != 1 || live.store.copyCount() != copies || gotGets != gets || gotPuts != puts {
+		t.Fatal("replay charged usage or signed again")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "done" || outputCount(t, live.pool, jobID) != 1 {
+		t.Fatal("replay changed the completed job")
+	}
+}
+
+func TestScenario10CompleteConflict(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, stepID := claimLiveImage(t, live, clientID)
+	payload := []byte("conflict-bytes")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	first := completeBody(t, "jpg", "image/jpeg", payload)
+	path := attemptPaths(live.addr, attemptID)[3]
+	status, _, resp := postAttempt(t, live, path, token, first)
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	key := jobID.String() + "/" + stepID.String() + "/" + attemptID.String() + "/complete"
+	var stored []byte
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT response_body FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, live.sessionID, key).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, resp) {
+		t.Fatalf("stored %q response %q", stored, resp)
+	}
+	var objectKey string
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT object_key FROM job_outputs WHERE job_id = $1`, jobID).Scan(&objectKey); err != nil {
+		t.Fatal(err)
+	}
+	second := append(append([]byte(nil), first...), ' ')
+	status, hdr, conflict := postAttempt(t, live, path, token, second)
+	assertProtocolError(t, status, hdr, conflict, http.StatusConflict, "complete_conflict")
+	var message struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(conflict, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Message != "complete conflict" {
+		t.Fatalf("message %q", message.Message)
+	}
+	var after []byte
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT response_body FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, live.sessionID, key).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	var afterKey string
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT object_key FROM job_outputs WHERE job_id = $1`, jobID).Scan(&afterKey); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, after) || afterKey != objectKey || doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("conflict changed the stored success")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "done" || outputCount(t, live.pool, jobID) != 1 {
+		t.Fatal("conflict changed the completed job")
+	}
+	copies := live.store.copyCount()
+	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("close status %d: %s", status, resp)
+	}
+	status, hdr, resp = postAttempt(t, live, path, token, first)
+	assertProtocolError(t, status, hdr, resp, http.StatusUnauthorized, "session_closed")
+	if live.store.copyCount() != copies || outputCount(t, live.pool, jobID) != 1 || doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("closed session accepted the stored complete")
 	}
 }
 

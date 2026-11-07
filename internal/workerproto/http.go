@@ -468,6 +468,8 @@ func messageFor(code string) string {
 		return "invalid progress"
 	case "artifact_rejected":
 		return "artifact rejected"
+	case "complete_conflict":
+		return "complete conflict"
 	default:
 		return "invalid message"
 	}
