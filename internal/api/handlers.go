@@ -25,6 +25,7 @@ import (
 	"github.com/tileforge/octoconv/internal/logfmt"
 	"github.com/tileforge/octoconv/internal/presets"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/workerproto"
 )
 
 const (
@@ -581,6 +582,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	var pinID string
 	var pinVersion int
+	var pinSchema []byte
+	var legacyMatch bool
 	if s.catalog != nil {
 		match, found, err := s.catalog.Lookup(ctx, operation, detected, target)
 		if err != nil {
@@ -599,6 +602,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		if found && match.LegacyOperation == operation {
 			pinID = match.CapabilityID
 			pinVersion = match.CapabilityVersion
+			pinSchema = match.ParameterSchema
+			legacyMatch = true
 		}
 	}
 
@@ -1050,6 +1055,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := json.Unmarshal(normalizedRaw, &normalizedOpts); err != nil {
 			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
+			return
+		}
+	}
+
+	if legacyMatch {
+		instance := map[string]any{}
+		if normalizedOpts != nil {
+			instance = normalizedOpts
+		}
+		if err := workerproto.ValidateParameters(pinSchema, instance); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 			return
 		}
 	}

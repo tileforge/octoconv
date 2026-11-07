@@ -186,6 +186,54 @@ func TestNoLegacyCatalogRowDoesNotCreateJob(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
+func TestCatalogSchemaAcceptsEmptyObject(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(legacyImageCatalog(`{}`))
+
+	rec := postCreate(t, srv, "in.png", "webp")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if !store.uploaded || store.uploadCalls == 0 {
+		t.Fatal("schema {} must still upload")
+	}
+	if repo.created == nil || repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %+v, want octoconv.convert.image v1", repo.created)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
+		t.Fatalf("enqueueCalls = %d, want the image queue", q.enqueueCalls)
+	}
+}
+
+func TestCatalogSchemaRejectsBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(legacyImageCatalog(`{"type":"object","required":["n"],"additionalProperties":true}`))
+
+	rec := postCreate(t, srv, "in.png", "webp")
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidOptions)
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func legacyImageCatalog(schema string) *fakeCatalog {
+	return &fakeCatalog{
+		found: true,
+		match: workerproto.Match{
+			CapabilityID:      "octoconv.convert.image",
+			CapabilityVersion: 1,
+			ClientOperation:   convert.OperationConvert,
+			LegacyOperation:   convert.OperationConvert,
+			LegacyEngine:      convert.EngineImage,
+			ParameterSchema:   []byte(schema),
+		},
+	}
+}
+
 func TestCatalogEngineMismatchIsInternal(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
