@@ -25,6 +25,7 @@ type memStore struct {
 	getTTL     time.Duration
 	putTTL     time.Duration
 	copies     int
+	copyDelay  time.Duration
 	removes    []string
 	copyErr    error
 	removeErr  error
@@ -83,6 +84,18 @@ func (m *memStore) PresignPut(ctx context.Context, key string, ttl time.Duration
 }
 
 func (m *memStore) Copy(ctx context.Context, srcKey, dstKey string) error {
+	m.mu.Lock()
+	delay := m.copyDelay
+	m.mu.Unlock()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 	m.mu.Lock()
 	if m.copyErr != nil {
 		err := m.copyErr
@@ -211,6 +224,12 @@ func (m *memStore) setCopyErr(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.copyErr = err
+}
+
+func (m *memStore) setCopyDelay(delay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.copyDelay = delay
 }
 
 func (m *memStore) setSize(key string, size int64) {

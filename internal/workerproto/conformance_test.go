@@ -3580,6 +3580,59 @@ func TestCompleteCorrectedBodySucceeds(t *testing.T) {
 	}
 }
 
+func TestCompleteExpiresDuringCopy(t *testing.T) {
+	live := openHello(t)
+	cases := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "lease",
+			sql: `UPDATE worker_slot_holds
+				SET lease_expires_at = clock_timestamp() + interval '4 seconds'
+				WHERE id = $1`,
+		},
+		{
+			name: "deadline",
+			sql: `UPDATE worker_slot_holds
+				SET attempt_deadline = clock_timestamp() + interval '4 seconds'
+				WHERE id = $1`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+			payload := []byte("late-copy-" + tc.name)
+			staging := storage.AttemptOutputKey(attemptID, 0)
+			live.store.put(staging, payload)
+			if _, err := live.pool.Exec(context.Background(), tc.sql, attemptID); err != nil {
+				t.Fatal(err)
+			}
+			live.store.setCopyDelay(5 * time.Second)
+			t.Cleanup(func() { live.store.setCopyDelay(0) })
+			copies := live.store.copyCount()
+			body := completeBody(t, "jpg", "image/jpeg", payload)
+			status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, body)
+			assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+			sum := sha256.Sum256(payload)
+			dst := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(sum[:]))
+			if _, ok := live.store.get(dst); ok {
+				t.Fatal("expired complete left the accepted object")
+			}
+			if live.store.copyCount() != copies+1 {
+				t.Fatalf("copies %d after %d", live.store.copyCount(), copies)
+			}
+			if outputCount(t, live.pool, jobID) != 0 || jobStatusOf(t, live.pool, jobID) != "active" {
+				t.Fatal("expired complete published the job")
+			}
+			got, ok := live.store.get(staging)
+			if !ok || !bytes.Equal(got, payload) {
+				t.Fatal("expired complete removed staging")
+			}
+		})
+	}
+}
+
 func TestScenario09CompleteReplayAfterLease(t *testing.T) {
 	live := openHello(t)
 	expiredToken, expiredAttempt, expiredJob := insertActiveAttempt(t, live, -30, 120)

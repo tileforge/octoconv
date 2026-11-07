@@ -628,6 +628,9 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if sum != art.SHA256 {
 			return h.rejectCopied(ctx, tx, dst)
 		}
+		if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dst); err != nil {
+			return err
+		}
 		if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
 			Ordinal:     0,
 			ObjectKey:   dst,
@@ -660,17 +663,46 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 	return body, err
 }
 
+func (h *Handler) attemptLiveNow(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID, dst string) error {
+	var live bool
+	err := tx.QueryRow(ctx, `
+		SELECT state = 'active'
+			AND released_at IS NULL
+			AND attempt_deadline > clock_timestamp()
+			AND lease_expires_at > clock_timestamp()
+		FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2`, attemptID, sessionID).Scan(&live)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("read attempt: %w", err)
+	}
+	if err == nil && live {
+		return nil
+	}
+	if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+		return err
+	}
+	return errAttemptInactive
+}
+
 func (h *Handler) rejectCopied(ctx context.Context, tx pgx.Tx, dst string) error {
+	if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+		return err
+	}
+	return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+}
+
+func (h *Handler) removeUnnamedCopy(ctx context.Context, tx pgx.Tx, dst string) error {
 	var named bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM job_outputs WHERE object_key = $1)`, dst).Scan(&named); err != nil {
 		return fmt.Errorf("read output key: %w", err)
 	}
-	if !named {
-		if err := h.store.Remove(ctx, dst); err != nil {
-			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
-		}
+	if named {
+		return nil
 	}
-	return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+	if err := h.store.Remove(ctx, dst); err != nil {
+		return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+	}
+	return nil
 }
 
 func artifactListed(art completeArtifact) bool {
