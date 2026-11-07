@@ -84,6 +84,19 @@ func TestRevokeOnLiveConnection(t *testing.T) {
 	if !exists || !closed {
 		t.Fatal("revoked session row did not stay closed")
 	}
+	status, hdr, respBody = client.exchange(http.MethodPost, "/worker/v1/sessions", "", body, nil)
+	assertProtocolError(t, status, hdr, respBody, http.StatusUnauthorized, "session_closed")
+	var openSessions, sessions int
+	if err := pool.QueryRow(ctx, `
+		SELECT
+			count(*) FILTER (WHERE closed_at IS NULL),
+			count(*)
+		FROM worker_sessions`).Scan(&openSessions, &sessions); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if openSessions != 0 || sessions != 1 {
+		t.Fatalf("open sessions = %d, sessions = %d", openSessions, sessions)
+	}
 	var attempts int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM worker_attempt_credentials`).Scan(&attempts); err != nil {
 		t.Fatalf("count attempts: %v", err)

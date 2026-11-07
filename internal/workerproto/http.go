@@ -147,6 +147,15 @@ func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	denied, err := h.repo.serialDenied(r.Context(), issuerSHA256(leaf), serial)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if denied {
+		writeCode(w, http.StatusUnauthorized, "session_closed")
+		return
+	}
 	wire, tokenHash, err := NewSessionToken()
 	if err != nil {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
