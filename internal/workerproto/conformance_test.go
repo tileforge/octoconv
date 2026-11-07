@@ -3384,6 +3384,201 @@ func TestConcurrentCompleteKeepsTheFirstCopy(t *testing.T) {
 	}
 }
 
+func claimLiveImage(t *testing.T, live liveSession, clientID uuid.UUID) (string, uuid.UUID, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatal(err)
+	}
+	var stepID uuid.UUID
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT step_id FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&stepID); err != nil {
+		t.Fatal(err)
+	}
+	return token, attemptID, jobID, stepID
+}
+
+func completeDedupRows(t *testing.T, pool *pgxpool.Pool, sessionID, jobID, stepID, attemptID uuid.UUID) int {
+	t.Helper()
+	key := jobID.String() + "/" + stepID.String() + "/" + attemptID.String() + "/complete"
+	var n int
+	err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, sessionID, key).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func completeArtifacts(t *testing.T, arts ...map[string]any) []byte {
+	t.Helper()
+	return mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"artifacts":        arts,
+	})
+}
+
+func primaryArtifact(format, contentType, sha string, ordinal, size int) map[string]any {
+	return map[string]any{
+		"role":         "primary",
+		"ordinal":      ordinal,
+		"format":       format,
+		"content_type": contentType,
+		"sha256":       sha,
+		"byte_size":    size,
+	}
+}
+
+func TestCompleteMismatchWritesNothing(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	payload := []byte("staged-bytes")
+	goodSum := sha256.Sum256(payload)
+	badSum := sha256.Sum256([]byte("staged-byte!"))
+	goodSHA := hex.EncodeToString(goodSum[:])
+	badSHA := hex.EncodeToString(badSum[:])
+	token, attemptID, jobID, stepID := claimLiveImage(t, live, clientID)
+	rows, usageJobs := usageSnapshot(t, live.pool, clientID)
+	path := attemptPaths(live.addr, attemptID)[3]
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_message")
+	if bytes.Contains(resp, []byte("artifact_rejected")) {
+		t.Fatalf("body %s", resp)
+	}
+	status, hdr, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"extra":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "unknown_field")
+	outputs := outputCount(t, live.pool, jobID)
+	dedup := completeDedupRows(t, live.pool, live.sessionID, jobID, stepID, attemptID)
+	if outputs != 0 || dedup != 0 {
+		t.Fatal("malformed complete wrote a result")
+	}
+	gotRows, gotJobs := usageSnapshot(t, live.pool, clientID)
+	if gotRows != rows || gotJobs != usageJobs || jobStatusOf(t, live.pool, jobID) != "active" {
+		t.Fatal("malformed complete changed the job")
+	}
+
+	jpg := func(sha string, ordinal, size int) map[string]any {
+		return primaryArtifact("jpg", "image/jpeg", sha, ordinal, size)
+	}
+	sidecar := jpg(goodSHA, 0, len(payload))
+	sidecar["role"] = "sidecar"
+	png := primaryArtifact("png", "image/png", goodSHA, 0, len(payload))
+	wrongType := jpg(goodSHA, 0, len(payload))
+	wrongType["content_type"] = "image/png"
+	cases := []struct {
+		name    string
+		body    []byte
+		stage   bool
+		claimed string
+	}{
+		{name: "missing object", body: completeBody(t, "jpg", "image/jpeg", payload)},
+		{
+			name:    "size differs",
+			body:    completeArtifacts(t, jpg(goodSHA, 0, len(payload)+1)),
+			stage:   true,
+			claimed: goodSHA,
+		},
+		{
+			name:    "sha differs",
+			body:    completeArtifacts(t, jpg(badSHA, 0, len(payload))),
+			stage:   true,
+			claimed: badSHA,
+		},
+		{name: "role", body: completeArtifacts(t, sidecar), stage: true},
+		{
+			name:  "two artifacts",
+			body:  completeArtifacts(t, jpg(goodSHA, 0, len(payload)), jpg(goodSHA, 0, len(payload))),
+			stage: true,
+		},
+		{name: "ordinal", body: completeArtifacts(t, jpg(goodSHA, 1, len(payload))), stage: true},
+		{name: "format", body: completeArtifacts(t, png), stage: true},
+		{name: "content type", body: completeArtifacts(t, wrongType), stage: true},
+		{name: "byte size ceiling", body: completeArtifacts(t, jpg(goodSHA, 0, (100<<20)+1)), stage: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			token, attemptID, jobID, stepID := claimLiveImage(t, live, clientID)
+			staging := storage.AttemptOutputKey(attemptID, 0)
+			if tc.stage {
+				live.store.put(staging, payload)
+			}
+			copies := live.store.copyCount()
+			rows, usageJobs := usageSnapshot(t, live.pool, clientID)
+			status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, tc.body)
+			assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
+			if outputCount(t, live.pool, jobID) != 0 || jobStatusOf(t, live.pool, jobID) != "active" {
+				t.Fatal("rejected complete published an output")
+			}
+			gotRows, gotJobs := usageSnapshot(t, live.pool, clientID)
+			if gotRows != rows || gotJobs != usageJobs {
+				t.Fatalf("usage rows %d jobs %d", gotRows, gotJobs)
+			}
+			if completeDedupRows(t, live.pool, live.sessionID, jobID, stepID, attemptID) != 0 {
+				t.Fatal("rejected complete stored a success")
+			}
+			if tc.stage {
+				got, ok := live.store.get(staging)
+				if !ok || !bytes.Equal(got, payload) {
+					t.Fatal("staging object is gone")
+				}
+			}
+			if tc.claimed == "" {
+				if live.store.copyCount() != copies {
+					t.Fatalf("copies %d", live.store.copyCount())
+				}
+				return
+			}
+			if live.store.copyCount() != copies+1 {
+				t.Fatalf("copies %d", live.store.copyCount())
+			}
+			if _, ok := live.store.get(storage.AcceptedOutputKey(jobID, attemptID, 0, tc.claimed)); ok {
+				t.Fatal("rejected destination is still stored")
+			}
+		})
+	}
+}
+
+func TestCompleteCorrectedBodySucceeds(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	payload := []byte("corrected-ok")
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	live.store.put(staging, payload)
+	goodSum := sha256.Sum256(payload)
+	badSum := sha256.Sum256([]byte("corrected-no"))
+	goodSHA := hex.EncodeToString(goodSum[:])
+	badSHA := hex.EncodeToString(badSum[:])
+	wrong := completeArtifacts(t, primaryArtifact("jpg", "image/jpeg", badSHA, 0, len(payload)))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, wrong)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
+	if outputCount(t, live.pool, jobID) != 0 {
+		t.Fatal("rejected complete published an output")
+	}
+	corrected := completeBody(t, "jpg", "image/jpeg", payload)
+	if bytes.Equal(wrong, corrected) {
+		t.Fatal("corrected body matches the rejected body")
+	}
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, corrected)
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	var objectKey string
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT object_key FROM job_outputs WHERE job_id = $1`, jobID).Scan(&objectKey); err != nil {
+		t.Fatal(err)
+	}
+	if objectKey != storage.AcceptedOutputKey(jobID, attemptID, 0, goodSHA) || outputCount(t, live.pool, jobID) != 1 {
+		t.Fatalf("output %s count %d", objectKey, outputCount(t, live.pool, jobID))
+	}
+	if doneUsageCount(t, live.pool, clientID) != 1 || jobStatusOf(t, live.pool, jobID) != "done" {
+		t.Fatal("corrected complete did not record one done job")
+	}
+}
+
 func TestScenario20FileLinkExpiry(t *testing.T) {
 	live := openHello(t)
 	jobID := insertPullJob(t, live.pool, pullJob{})
