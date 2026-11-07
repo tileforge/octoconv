@@ -425,7 +425,7 @@ func freshControl() controlWire {
 }
 
 func writeCode(w http.ResponseWriter, status int, code string) {
-	writeJSON(w, status, wireError{Code: code, Message: messageFor(code), Retryable: false})
+	writeJSON(w, status, wireError{Code: code, Message: messageFor(code), Retryable: code == "rate_limited"})
 }
 
 func messageFor(code string) string {
@@ -448,6 +448,8 @@ func messageFor(code string) string {
 		return "attempt not active"
 	case "pull_conflict":
 		return "pull conflict"
+	case "rate_limited":
+		return "rate limited"
 	default:
 		return "invalid message"
 	}

@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 type pullRequest struct {
@@ -116,112 +118,139 @@ func (h *Handler) servePull(ctx context.Context, sess storedSession, pullID uuid
 		wait = 20
 	}
 	deadline := time.Now().Add(time.Duration(wait) * time.Second)
-	if wait == 0 {
-		body, err := h.claimAndStore(ctx, sess, pullID, bodyHash, freeSlots)
+	limited, err := h.consumePullRate(ctx, sess.ID)
+	if err != nil {
+		return nil, err
+	}
+	if limited {
+		return nil, &pullStatus{status: http.StatusTooManyRequests, code: "rate_limited"}
+	}
+	skipped := []uuid.UUID{}
+	reserved := false
+	for len(skipped) < 32 {
+		storeEmpty := wait == 0 || freeSlots == 0 || !time.Now().Before(deadline)
+		step, err := h.pullCandidate(ctx, sess, pullID, bodyHash, freeSlots, skipped, reserved, storeEmpty)
 		if errors.Is(err, errDedupLost) {
 			return h.replayPull(ctx, sess.ID, pullID, bodyHash, deadline)
 		}
-		return body, err
-	}
-	owned, err := h.reservePull(ctx, sess.ID, pullID, bodyHash)
-	if err != nil {
-		return nil, err
-	}
-	if !owned {
-		return h.replayPull(ctx, sess.ID, pullID, bodyHash, deadline)
-	}
-	for {
-		wire, attemptID, err := h.claimOnceTx(ctx, sess, freeSlots)
 		if err != nil {
 			return nil, err
 		}
-		if attemptID != uuid.Nil || freeSlots == 0 || !time.Now().Before(deadline) {
-			body, err := encodeWire(wire)
+		if step.done {
+			return step.body, nil
+		}
+		reserved = true
+		if step.skipID != uuid.Nil {
+			skipped = append(skipped, step.skipID)
+			continue
+		}
+		if err := sleepPull(ctx, pullPause(deadline)); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("pull skipped too many jobs")
+}
+
+type pullStep struct {
+	done   bool
+	body   []byte
+	skipID uuid.UUID
+}
+
+func (h *Handler) consumePullRate(ctx context.Context, sessionID uuid.UUID) (bool, error) {
+	var limited bool
+	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			WITH locked AS (
+				SELECT id, pull_window_started, pulls_in_window
+				FROM worker_sessions
+				WHERE id = $1
+				FOR UPDATE
+			)
+			UPDATE worker_sessions AS s
+			SET pull_window_started = CASE
+					WHEN l.pull_window_started IS NOT NULL
+					 AND l.pull_window_started > now() - interval '1 second'
+					 AND l.pulls_in_window >= 2 THEN s.pull_window_started
+					WHEN l.pull_window_started IS NULL
+					  OR l.pull_window_started <= now() - interval '1 second' THEN now()
+					ELSE s.pull_window_started
+				END,
+				pulls_in_window = CASE
+					WHEN l.pull_window_started IS NOT NULL
+					 AND l.pull_window_started > now() - interval '1 second'
+					 AND l.pulls_in_window >= 2 THEN s.pulls_in_window
+					WHEN l.pull_window_started IS NULL
+					  OR l.pull_window_started <= now() - interval '1 second' THEN 1
+					ELSE s.pulls_in_window + 1
+				END
+			FROM locked AS l
+			WHERE s.id = l.id
+			RETURNING (
+				l.pull_window_started IS NOT NULL
+				AND l.pull_window_started > now() - interval '1 second'
+				AND l.pulls_in_window >= 2
+			)`, sessionID).Scan(&limited)
+	})
+	if err != nil {
+		return false, fmt.Errorf("pull rate: %w", err)
+	}
+	return limited, nil
+}
+
+func (h *Handler) pullCandidate(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string, freeSlots int64, skipped []uuid.UUID, reserved, storeEmpty bool) (pullStep, error) {
+	var step pullStep
+	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT id FROM worker_sessions WHERE id = $1 FOR UPDATE`, sess.ID); err != nil {
+			return fmt.Errorf("lock session: %w", err)
+		}
+		if !reserved {
+			tag, err := tx.Exec(ctx, `
+				INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (session_id, dedup_key) DO NOTHING`,
+				sess.ID, pullID.String(), bodyHash)
 			if err != nil {
-				return nil, err
+				return fmt.Errorf("reserve pull: %w", err)
 			}
-			if err := h.finishPull(ctx, sess.ID, pullID, attemptID, body); err != nil {
-				return nil, err
+			if tag.RowsAffected() == 0 {
+				return errDedupLost
 			}
-			return body, nil
 		}
-		remaining := time.Until(deadline)
-		pause := 25 * time.Millisecond
-		if remaining < pause {
-			pause = remaining
-		}
-		if err := sleepPull(ctx, pause); err != nil {
-			return nil, err
-		}
-	}
-}
-
-func (h *Handler) claimAndStore(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string, freeSlots int64) ([]byte, error) {
-	var body []byte
-	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (session_id, dedup_key) DO NOTHING`,
-			sess.ID, pullID.String(), bodyHash)
-		if err != nil {
-			return fmt.Errorf("reserve pull: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return errDedupLost
-		}
-		wire, attemptID, err := h.claimOnce(ctx, tx, sess, freeSlots)
+		decision, err := h.claimOnce(ctx, tx, sess, freeSlots, skipped)
 		if err != nil {
 			return err
 		}
-		encoded, err := encodeWire(wire)
+		if decision.skipID != uuid.Nil {
+			step.skipID = decision.skipID
+			return nil
+		}
+		if decision.attemptID == uuid.Nil && !decision.emptyNow && !storeEmpty {
+			return nil
+		}
+		encoded, err := encodeWire(decision.wire)
 		if err != nil {
 			return err
 		}
-		if err := writePullResponse(ctx, tx, sess.ID, pullID, attemptID, encoded); err != nil {
+		if err := writePullResponse(ctx, tx, sess.ID, pullID, decision.attemptID, encoded); err != nil {
 			return err
 		}
-		body = encoded
+		step.done = true
+		step.body = encoded
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	return step, err
+}
+
+func pullPause(deadline time.Time) time.Duration {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0
 	}
-	return body, nil
-}
-
-func (h *Handler) reservePull(ctx context.Context, sessionID, pullID uuid.UUID, bodyHash string) (bool, error) {
-	var owned bool
-	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (session_id, dedup_key) DO NOTHING`,
-			sessionID, pullID.String(), bodyHash)
-		if err != nil {
-			return fmt.Errorf("reserve pull: %w", err)
-		}
-		owned = tag.RowsAffected() == 1
-		return nil
-	})
-	return owned, err
-}
-
-func (h *Handler) claimOnceTx(ctx context.Context, sess storedSession, freeSlots int64) (pullWire, uuid.UUID, error) {
-	var wire pullWire
-	var attemptID uuid.UUID
-	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		var err error
-		wire, attemptID, err = h.claimOnce(ctx, tx, sess, freeSlots)
-		return err
-	})
-	return wire, attemptID, err
-}
-
-func (h *Handler) finishPull(ctx context.Context, sessionID, pullID, attemptID uuid.UUID, body []byte) error {
-	return pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		return writePullResponse(ctx, tx, sessionID, pullID, attemptID, body)
-	})
+	if remaining < 25*time.Millisecond {
+		return remaining
+	}
+	return 25 * time.Millisecond
 }
 
 func (h *Handler) replayPull(ctx context.Context, sessionID, pullID uuid.UUID, bodyHash string, deadline time.Time) ([]byte, error) {
@@ -298,31 +327,58 @@ func (h *Handler) attemptActive(ctx context.Context, attemptID uuid.UUID) (bool,
 	return active, nil
 }
 
-func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, freeSlots int64) (pullWire, uuid.UUID, error) {
+type claimDecision struct {
+	wire      pullWire
+	attemptID uuid.UUID
+	skipID    uuid.UUID
+	emptyNow  bool
+}
+
+func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, freeSlots int64, skipped []uuid.UUID) (claimDecision, error) {
 	cancelIDs, err := canceledAttempts(ctx, tx, sess.ID)
 	if err != nil {
-		return pullWire{}, uuid.Nil, err
+		return claimDecision{}, err
 	}
 	if freeSlots == 0 {
-		return emptyPull(cancelIDs), uuid.Nil, nil
+		return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
 	}
 	var capabilityID string
 	var capabilityVersion int
+	var legacyEngine *string
 	err = tx.QueryRow(ctx, `
-		SELECT id, version FROM worker_capabilities WHERE worker_id = $1`, sess.WorkerID).Scan(&capabilityID, &capabilityVersion)
+		SELECT id, version, legacy_engine FROM worker_capabilities WHERE worker_id = $1`, sess.WorkerID).
+		Scan(&capabilityID, &capabilityVersion, &legacyEngine)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return emptyPull(cancelIDs), uuid.Nil, nil
+		return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
 	}
 	if err != nil {
-		return pullWire{}, uuid.Nil, fmt.Errorf("read capability: %w", err)
+		return claimDecision{}, fmt.Errorf("read capability: %w", err)
+	}
+	var maxSlots int
+	if err := tx.QueryRow(ctx, `
+		SELECT max_slots FROM worker_identities WHERE worker_id = $1 FOR UPDATE`, sess.WorkerID).Scan(&maxSlots); err != nil {
+		return claimDecision{}, fmt.Errorf("lock identity: %w", err)
+	}
+	var held int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM worker_slot_holds
+		WHERE owner_key = $1 AND released_at IS NULL`, sess.WorkerID.String()).Scan(&held); err != nil {
+		return claimDecision{}, fmt.Errorf("count slots: %w", err)
+	}
+	if held >= maxSlots || capabilityID == "octoconv.convert.imagepdf" {
+		return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
+	}
+	if skipped == nil {
+		skipped = []uuid.UUID{}
 	}
 	budgetSeconds := int64(h.imageAttemptBudget / time.Second)
 	var jobID uuid.UUID
 	var storedStep *uuid.UUID
+	var clientID *uuid.UUID
 	var attemptDeadline, leaseExpires time.Time
 	var leaseOK bool
 	err = tx.QueryRow(ctx, `
-		SELECT id, step_id,
+		SELECT id, step_id, client_id,
 		       LEAST(protocol_deadline, now() + make_interval(secs => $3)),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3))),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3)))
@@ -334,18 +390,34 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		  AND capability_version = $2
 		  AND (not_before IS NULL OR not_before <= now())
 		  AND protocol_deadline > now()
+		  AND NOT (id = ANY($4))
+		  AND (
+		      step_id IS NULL OR (
+		          SELECT count(*) FROM worker_slot_holds h
+		          WHERE h.step_id = jobs.step_id AND h.state = 'failed'
+		      ) < 5
+		  )
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds).Scan(
-		&jobID, &storedStep, &attemptDeadline, &leaseExpires, &leaseOK)
+		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped).Scan(
+		&jobID, &storedStep, &clientID, &attemptDeadline, &leaseExpires, &leaseOK)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !leaseOK) {
-		return emptyPull(cancelIDs), uuid.Nil, nil
+		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
 	if err != nil {
-		return pullWire{}, uuid.Nil, fmt.Errorf("claim job: %w", err)
+		return claimDecision{}, fmt.Errorf("claim job: %w", err)
+	}
+	if clientID != nil && legacyEngine != nil && *legacyEngine != "" {
+		skip, err := h.clientAtCap(ctx, tx, *clientID, *legacyEngine, jobID)
+		if err != nil {
+			return claimDecision{}, err
+		}
+		if skip {
+			return claimDecision{skipID: jobID}, nil
+		}
 	}
 	if _, err := tx.Exec(ctx, `SAVEPOINT claim_attempt`); err != nil {
-		return pullWire{}, uuid.Nil, fmt.Errorf("claim savepoint: %w", err)
+		return claimDecision{}, fmt.Errorf("claim savepoint: %w", err)
 	}
 	stepID := uuid.New()
 	if storedStep != nil {
@@ -354,14 +426,14 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	attemptID := uuid.New()
 	token, tokenHash, err := NewSessionToken()
 	if err != nil {
-		return pullWire{}, uuid.Nil, err
+		return claimDecision{}, err
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO worker_attempt_credentials (
 			attempt_id, token_hash, session_id, capability_id, capability_version
 		) VALUES ($1, $2, $3, $4, $5)`,
 		attemptID, tokenHash, sess.ID, capabilityID, capabilityVersion); err != nil {
-		return pullWire{}, uuid.Nil, fmt.Errorf("insert attempt credential: %w", err)
+		return claimDecision{}, fmt.Errorf("insert attempt credential: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO worker_slot_holds (
@@ -375,33 +447,59 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			if _, rollErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT claim_attempt`); rollErr != nil {
-				return pullWire{}, uuid.Nil, fmt.Errorf("rollback claim: %w", rollErr)
+				return claimDecision{}, fmt.Errorf("rollback claim: %w", rollErr)
 			}
-			return emptyPull(cancelIDs), uuid.Nil, nil
+			return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
 		}
-		return pullWire{}, uuid.Nil, fmt.Errorf("insert slot hold: %w", err)
+		return claimDecision{}, fmt.Errorf("insert slot hold: %w", err)
 	}
 	if err := h.jobsRepo.ActivateProtocol(ctx, tx, jobID, stepID); err != nil {
-		return pullWire{}, uuid.Nil, err
+		return claimDecision{}, err
 	}
-	wire := pullWire{
-		ProtocolVersion: 1,
-		Assignments: []assignmentWire{{
-			JobID:             jobID.String(),
-			StepID:            stepID.String(),
-			AttemptID:         attemptID.String(),
-			AttemptToken:      token,
-			CapabilityID:      capabilityID,
-			CapabilityVersion: capabilityVersion,
-			AttemptDeadline:   attemptDeadline.UTC().Format(time.RFC3339Nano),
-			LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
-			Limits:            assignmentLimits{MaxOutputBytes: 100 << 20},
-			Inputs:            []struct{}{},
-			Outputs:           []struct{}{},
-		}},
-		Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
+	return claimDecision{
+		attemptID: attemptID,
+		wire: pullWire{
+			ProtocolVersion: 1,
+			Assignments: []assignmentWire{{
+				JobID:             jobID.String(),
+				StepID:            stepID.String(),
+				AttemptID:         attemptID.String(),
+				AttemptToken:      token,
+				CapabilityID:      capabilityID,
+				CapabilityVersion: capabilityVersion,
+				AttemptDeadline:   attemptDeadline.UTC().Format(time.RFC3339Nano),
+				LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
+				Limits:            assignmentLimits{MaxOutputBytes: 100 << 20},
+				Inputs:            []struct{}{},
+				Outputs:           []struct{}{},
+			}},
+			Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
+		},
+	}, nil
+}
+
+func (h *Handler) clientAtCap(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine string, jobID uuid.UUID) (bool, error) {
+	var maxConcurrent *int
+	err := tx.QueryRow(ctx, `
+		SELECT max_concurrent FROM client_limits
+		WHERE client_id = $1 AND engine = $2`, clientID, engine).Scan(&maxConcurrent)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && maxConcurrent == nil) {
+		return false, nil
 	}
-	return wire, attemptID, nil
+	if err != nil {
+		return false, fmt.Errorf("read client limit: %w", err)
+	}
+	if err := jobs.LockClientEngine(ctx, tx, clientID, engine); err != nil {
+		return false, err
+	}
+	var active int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM jobs
+		WHERE client_id = $1 AND engine = $2 AND status = 'active' AND id <> $3`,
+		clientID, engine, jobID).Scan(&active); err != nil {
+		return false, fmt.Errorf("count active jobs: %w", err)
+	}
+	return active >= *maxConcurrent, nil
 }
 
 func emptyPull(cancelIDs []string) pullWire {

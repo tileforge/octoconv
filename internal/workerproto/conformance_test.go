@@ -574,7 +574,7 @@ func TestMissingAttemptHeaderIsUnauthorized(t *testing.T) {
 	}
 }
 
-func TestPullRouteIsUnregistered(t *testing.T) {
+func TestPullIncompleteBodyWritesNothing(t *testing.T) {
 	live := openHello(t)
 	before := readGateState(t, live.pool)
 	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":1}`), nil)
@@ -1109,6 +1109,280 @@ func TestScenario17PullUnknownField(t *testing.T) {
 	}
 }
 
+func TestPullFreeSlotsZeroStoresEmpty(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	pullID := uuid.New()
+	body := pullBody(pullID, 0, 0)
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	assertEmptyPull(t, resp)
+	if readGateState(t, live.pool) != (gateState{}) {
+		t.Fatal("free_slots 0 inserted an attempt")
+	}
+	if jobStatusOf(t, live.pool, jobID) != "queued" {
+		t.Fatal("job left queued")
+	}
+	status, hdr, again := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("replay status %d: %s", status, again)
+	}
+	assertNoStoreJSON(t, hdr)
+	if !bytes.Equal(resp, again) {
+		t.Fatalf("replay changed the empty pull\n%s\n%s", resp, again)
+	}
+	if readGateState(t, live.pool) != (gateState{}) || jobStatusOf(t, live.pool, jobID) != "queued" {
+		t.Fatal("replay stored an attempt")
+	}
+}
+
+func TestPullOwnerCapStoresEmpty(t *testing.T) {
+	live := openHello(t)
+	var slots int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT max_slots FROM worker_identities WHERE worker_id = $1`, live.workerID).Scan(&slots); err != nil {
+		t.Fatalf("read max_slots: %v", err)
+	}
+	if slots != 4 {
+		t.Fatalf("HELLO free_slots changed max_slots to %d", slots)
+	}
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_identities SET max_slots = 1 WHERE worker_id = $1`, live.workerID); err != nil {
+		t.Fatalf("set max_slots: %v", err)
+	}
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	holdID := insertSlotHold(t, live.pool, slotHold{owner: live.workerID.String(), sessionID: live.sessionID})
+	status, resp := pullOnce(t, live, 4)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "queued" || countHolds(t, live.pool, jobID) != 0 {
+		t.Fatal("full owner cap claimed the job")
+	}
+	if unreleasedHolds(t, live.pool, live.workerID.String()) != 1 {
+		t.Fatal("owner cap inserted a second hold")
+	}
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds SET owner_key = $2 WHERE id = $1`, holdID, uuid.New().String()); err != nil {
+		t.Fatalf("move hold: %v", err)
+	}
+	status, resp = pullOnce(t, live, 4)
+	if status != http.StatusOK {
+		t.Fatalf("second pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != jobID {
+		t.Fatalf("assignment %s", resp)
+	}
+}
+
+func TestPullTwoSessionsShareOwnerCap(t *testing.T) {
+	live := openHello(t)
+	other := helloAgain(t, live)
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_identities SET max_slots = 1 WHERE worker_id = $1`, live.workerID); err != nil {
+		t.Fatalf("set max_slots: %v", err)
+	}
+	older := insertPullJob(t, live.pool, pullJob{createdAt: time.Now().Add(-time.Minute)})
+	younger := insertPullJob(t, live.pool, pullJob{})
+	assertOneAssignment(t, live.pool, []uuid.UUID{older, younger}, pullTogether([]liveSession{live, other}, 4))
+}
+
+func TestPullSkipsClientAtMaxConcurrent(t *testing.T) {
+	live := openHello(t)
+	capped := insertClient(t, live.pool)
+	other := insertClient(t, live.pool)
+	setMaxConcurrent(t, live.pool, capped, 1)
+	insertPullJob(t, live.pool, pullJob{clientID: &capped, status: "active", owner: "legacy"})
+	older := insertPullJob(t, live.pool, pullJob{clientID: &capped, createdAt: time.Now().Add(-time.Minute)})
+	newer := insertPullJob(t, live.pool, pullJob{clientID: &other})
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != newer {
+		t.Fatalf("assignment %s", resp)
+	}
+	if jobStatusOf(t, live.pool, older) != "queued" || jobFailed(t, live.pool, older) {
+		t.Fatal("over-cap job was claimed or failed")
+	}
+}
+
+func TestPullDrainsQueuedPairUnderClientCap(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	setMaxConcurrent(t, live.pool, clientID, 1)
+	older := insertPullJob(t, live.pool, pullJob{clientID: &clientID, createdAt: time.Now().Add(-time.Minute)})
+	younger := insertPullJob(t, live.pool, pullJob{clientID: &clientID})
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("first pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != older {
+		t.Fatalf("first assignment %s", resp)
+	}
+	if jobStatusOf(t, live.pool, younger) != "queued" {
+		t.Fatal("younger job was claimed with the older one")
+	}
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("second pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, live.pool, younger) != "queued" || jobFailed(t, live.pool, younger) {
+		t.Fatal("second pull failed the younger job")
+	}
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET status = 'done' WHERE id = $1`, older); err != nil {
+		t.Fatalf("finish older: %v", err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("third pull status %d: %s", status, resp)
+	}
+	got, ok = pullAssignmentID(t, resp)
+	if !ok || got != younger {
+		t.Fatalf("third assignment %s", resp)
+	}
+	if usageRows(t, live.pool, clientID) != 0 {
+		t.Fatal("pull inserted client_usage_daily")
+	}
+}
+
+func TestPullTwoWorkersShareClientCap(t *testing.T) {
+	// worker_capabilities is unique on (id, version) and formats are unique per pair,
+	// so two approved image workers cannot both own octoconv.convert.image v1.
+	ln := startWorkerListener(t)
+	first := ln.hello(t, imageLegacyManifest(t, "octoconv.convert.image", "png", "jpg"))
+	second := ln.hello(t, imageLegacyManifest(t, "octoconv.convert.imageb", "jpg", "png"))
+	clientID := insertClient(t, ln.pool)
+	setMaxConcurrent(t, ln.pool, clientID, 1)
+	older := insertPullJob(t, ln.pool, pullJob{
+		clientID:   &clientID,
+		capability: "octoconv.convert.image",
+		createdAt:  time.Now().Add(-time.Minute),
+	})
+	younger := insertPullJob(t, ln.pool, pullJob{
+		clientID:   &clientID,
+		capability: "octoconv.convert.imageb",
+	})
+	assertOneAssignment(t, ln.pool, []uuid.UUID{older, younger}, pullTogether([]liveSession{first, second}, 1))
+}
+
+func TestPullRateLimitStoresNoAttempt(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	third := uuid.New()
+	for i := 0; i < 2; i++ {
+		status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, pullBody(uuid.New(), 0, 0), nil)
+		if status != http.StatusOK {
+			t.Fatalf("pull %d status %d: %s", i, status, resp)
+		}
+		assertEmptyPull(t, resp)
+	}
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, pullBody(third, 0, 0), nil)
+	assertRateLimited(t, status, hdr, resp)
+	var dedup int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_request_dedup WHERE session_id = $1 AND dedup_key = $2`,
+		live.sessionID, third.String()).Scan(&dedup); err != nil {
+		t.Fatalf("count dedup: %v", err)
+	}
+	if dedup != 0 || readGateState(t, live.pool) != (gateState{}) || jobStatusOf(t, live.pool, jobID) != "queued" {
+		t.Fatal("rate limit stored a dedup row or an attempt")
+	}
+}
+
+func TestPullDoesNotClaimLegacyOrImagepdf(t *testing.T) {
+	ln := startWorkerListener(t)
+	image := ln.hello(t, readPositiveFixture(t, "manifest-image.json"))
+	imagepdf := ln.hello(t, readPositiveFixture(t, "manifest-imagepdf.json"))
+	legacyID := insertPullJob(t, ln.pool, pullJob{owner: "legacy"})
+	pdfID := insertPullJob(t, ln.pool, pullJob{capability: "octoconv.convert.imagepdf"})
+	status, resp := pullOnce(t, image, 1)
+	if status != http.StatusOK {
+		t.Fatalf("image pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if strings.Contains(string(resp), legacyID.String()) || strings.Contains(string(resp), pdfID.String()) {
+		t.Fatalf("image pull returned %s", resp)
+	}
+	status, resp = pullOnce(t, imagepdf, 1)
+	if status != http.StatusOK {
+		t.Fatalf("imagepdf pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, ln.pool, legacyID) != "queued" || dispatchOwner(t, ln.pool, legacyID) != "legacy" {
+		t.Fatal("legacy job changed")
+	}
+	if jobStatusOf(t, ln.pool, pdfID) != "queued" || dispatchOwner(t, ln.pool, pdfID) != "protocol" {
+		t.Fatal("imagepdf job changed")
+	}
+}
+
+func TestPullDoesNotWriteUsage(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	if _, err := live.pool.Exec(context.Background(), `
+		INSERT INTO client_usage_daily (client_id, engine, day, status, job_count)
+		VALUES ($1, 'image', CURRENT_DATE, 'done', 3)`, clientID); err != nil {
+		t.Fatalf("insert usage: %v", err)
+	}
+	jobID := insertPullJob(t, live.pool, pullJob{clientID: &clientID})
+	body := pullBody(uuid.New(), 1, 0)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != jobID {
+		t.Fatalf("assignment %s", resp)
+	}
+	if rows, jobs := usageSnapshot(t, live.pool, clientID); rows != 1 || jobs != 3 {
+		t.Fatalf("claim wrote usage rows=%d jobs=%d", rows, jobs)
+	}
+	status, _, again := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK || !bytes.Equal(resp, again) {
+		t.Fatalf("replay status %d: %s", status, again)
+	}
+	if rows, jobs := usageSnapshot(t, live.pool, clientID); rows != 1 || jobs != 3 {
+		t.Fatalf("replay wrote usage rows=%d jobs=%d", rows, jobs)
+	}
+}
+
+func TestPullFiveFailedHoldsStayQueued(t *testing.T) {
+	live := openHello(t)
+	failedStep := uuid.New()
+	stoppedStep := uuid.New()
+	failedJob := insertPullJob(t, live.pool, pullJob{stepID: &failedStep, createdAt: time.Now().Add(-time.Minute)})
+	stoppedJob := insertPullJob(t, live.pool, pullJob{stepID: &stoppedStep})
+	for i := 0; i < 5; i++ {
+		insertSlotHold(t, live.pool, slotHold{
+			owner: uuid.New().String(), sessionID: live.sessionID, jobID: &failedJob, stepID: &failedStep, state: "failed", released: true,
+		})
+		insertSlotHold(t, live.pool, slotHold{
+			owner: uuid.New().String(), sessionID: live.sessionID, jobID: &stoppedJob, stepID: &stoppedStep, state: "stopped", released: true,
+		})
+	}
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	got, ok := pullAssignmentID(t, resp)
+	if !ok || got != stoppedJob {
+		t.Fatalf("assignment %s", resp)
+	}
+	if jobStatusOf(t, live.pool, failedJob) != "queued" {
+		t.Fatal("five failed holds were claimed")
+	}
+}
+
 func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
 	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
 }
@@ -1188,4 +1462,370 @@ func postBody(client *http.Client, method, rawURL, token string, body []byte) (i
 		return resp.StatusCode, nil, err
 	}
 	return resp.StatusCode, respBody, nil
+}
+
+type workerListener struct {
+	pool  *pgxpool.Pool
+	repo  *Repo
+	ca    *x509.Certificate
+	caKey *ecdsa.PrivateKey
+	addr  string
+}
+
+func startWorkerListener(t *testing.T) workerListener {
+	t.Helper()
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	ca, caKey := mintTestCA(t)
+	return workerListener{
+		pool: pool, repo: repo, ca: ca, caKey: caKey,
+		addr: listenWorker(t, repo, ca, caKey),
+	}
+}
+
+func (l workerListener) hello(t *testing.T, manifest []byte) liveSession {
+	t.Helper()
+	workerID := uuid.New()
+	if err := l.repo.Approve(context.Background(), workerID, manifest); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	client := workerHTTPClient(t, l.ca, mintClientCert(t, l.ca, l.caKey, workerID))
+	status, _, resp := doJSON(t, client, http.MethodPost, "https://"+l.addr+"/worker/v1/sessions", "", helloBody(workerID, manifestDigest(manifest), 1), nil)
+	if status != http.StatusOK {
+		t.Fatalf("HELLO status %d: %s", status, resp)
+	}
+	sessionID, token := decodeHello(t, resp)
+	return liveSession{
+		pool: l.pool, workerID: workerID, sessionID: sessionID,
+		token: token, addr: l.addr, client: client, manifest: manifest,
+	}
+}
+
+func helloAgain(t *testing.T, live liveSession) liveSession {
+	t.Helper()
+	status, _, resp := doJSON(t, live.client, http.MethodPost, "https://"+live.addr+"/worker/v1/sessions", "", helloBody(live.workerID, manifestDigest(live.manifest), 1), nil)
+	if status != http.StatusOK {
+		t.Fatalf("HELLO status %d: %s", status, resp)
+	}
+	sessionID, token := decodeHello(t, resp)
+	next := live
+	next.sessionID = sessionID
+	next.token = token
+	return next
+}
+
+func imageLegacyManifest(t *testing.T, id, from, to string) []byte {
+	t.Helper()
+	return mustJSON(t, map[string]any{
+		"capabilities": []any{
+			map[string]any{
+				"id":               id,
+				"version":          1,
+				"legacy":           map[string]any{"operation": "convert", "engine": "image"},
+				"client_operation": "convert",
+				"inputs":           []any{map[string]any{"role": "source", "min": 1, "max": 1}},
+				"outputs":          []any{map[string]any{"role": "primary", "min": 1, "max": 1}},
+				"parameter_schema": map[string]any{},
+				"formats":          []any{map[string]any{"from": from, "to": to}},
+			},
+		},
+	})
+}
+
+type pullJob struct {
+	clientID   *uuid.UUID
+	capability string
+	status     string
+	owner      string
+	stepID     *uuid.UUID
+	createdAt  time.Time
+}
+
+func insertPullJob(t *testing.T, pool *pgxpool.Pool, job pullJob) uuid.UUID {
+	t.Helper()
+	if job.status == "" {
+		job.status = "queued"
+	}
+	if job.owner == "" {
+		job.owner = "protocol"
+	}
+	if job.createdAt.IsZero() {
+		job.createdAt = time.Now()
+	}
+	var capability any
+	var version any
+	if job.owner == "protocol" {
+		if job.capability == "" {
+			job.capability = "octoconv.convert.image"
+		}
+		capability = job.capability
+		version = 1
+	}
+	id := uuid.New()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline,
+			step_id, options, created_at
+		) VALUES (
+			$1, $2, 'convert', 'image', $3, 'png', 'jpg',
+			$4, $5, $6, CASE WHEN $4 = 'protocol' THEN now() + interval '1 hour' ELSE NULL END,
+			$7, '{"test":"protocol-pull"}', $8
+		)`, id, job.clientID, job.status, job.owner, capability, version, job.stepID, job.createdAt)
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE job_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, id)
+	})
+	return id
+}
+
+func insertClient(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(context.Background(), `INSERT INTO clients (id, name) VALUES ($1, $2)`, id, "pull-cap-"+id.String()); err != nil {
+		t.Fatalf("insert client: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE client_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM client_usage_daily WHERE client_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM client_limits WHERE client_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM clients WHERE id = $1`, id)
+	})
+	return id
+}
+
+func setMaxConcurrent(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID, n int) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO client_limits (client_id, engine, max_concurrent)
+		VALUES ($1, 'image', $2)`, clientID, n)
+	if err != nil {
+		t.Fatalf("insert client limit: %v", err)
+	}
+}
+
+type slotHold struct {
+	owner     string
+	sessionID uuid.UUID
+	jobID     *uuid.UUID
+	stepID    *uuid.UUID
+	state     string
+	released  bool
+}
+
+func insertSlotHold(t *testing.T, pool *pgxpool.Pool, hold slotHold) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	var releasedAt any
+	if hold.released {
+		releasedAt = time.Now()
+	}
+	var state any
+	if hold.state != "" {
+		state = hold.state
+	}
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO worker_slot_holds (
+			id, owner_key, session_id, job_id, step_id, state, released_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		id, hold.owner, hold.sessionID, hold.jobID, hold.stepID, state, releasedAt)
+	if err != nil {
+		t.Fatalf("insert hold: %v", err)
+	}
+	return id
+}
+
+func pullOnce(t *testing.T, live liveSession, freeSlots int) (int, []byte) {
+	t.Helper()
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, pullBody(uuid.New(), freeSlots, 0), nil)
+	return status, resp
+}
+
+type pullResp struct {
+	status int
+	body   []byte
+	err    error
+}
+
+func pullTogether(sessions []liveSession, freeSlots int) []pullResp {
+	out := make([]pullResp, len(sessions))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range sessions {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			s := sessions[i]
+			out[i].status, out[i].body, out[i].err = postBody(s.client, http.MethodPost, s.sessionURL()+"/pull", s.token, pullBody(uuid.New(), freeSlots, 0))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	return out
+}
+
+func assertOneAssignment(t *testing.T, pool *pgxpool.Pool, jobIDs []uuid.UUID, results []pullResp) {
+	t.Helper()
+	assigned := 0
+	empty := 0
+	for _, result := range results {
+		if result.err != nil {
+			t.Fatalf("pull: %v", result.err)
+		}
+		if result.status != http.StatusOK {
+			t.Fatalf("pull status %d: %s", result.status, result.body)
+		}
+		if _, ok := pullAssignmentID(t, result.body); ok {
+			assigned++
+			continue
+		}
+		assertEmptyPull(t, result.body)
+		empty++
+	}
+	if assigned != 1 || empty != 1 {
+		t.Fatalf("assigned %d empty %d", assigned, empty)
+	}
+	if countJobStatus(t, pool, jobIDs, "queued") != 1 || countJobStatus(t, pool, jobIDs, "active") != 1 {
+		t.Fatal("jobs were not one queued and one active")
+	}
+	var holds int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds
+		WHERE job_id = ANY($1) AND released_at IS NULL`, jobIDs).Scan(&holds); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 1 {
+		t.Fatalf("unreleased holds %d", holds)
+	}
+}
+
+func assertEmptyPull(t *testing.T, body []byte) {
+	t.Helper()
+	var payload struct {
+		ProtocolVersion int               `json:"protocol_version"`
+		Assignments     []json.RawMessage `json:"assignments"`
+		Control         struct {
+			CancelAttemptIDs []string `json:"cancel_attempt_ids"`
+			Drain            bool     `json:"drain"`
+			Terminate        bool     `json:"terminate"`
+		} `json:"control"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode pull: %v", err)
+	}
+	if payload.ProtocolVersion != 1 || len(payload.Assignments) != 0 {
+		t.Fatalf("pull %s", body)
+	}
+	if payload.Control.CancelAttemptIDs == nil || len(payload.Control.CancelAttemptIDs) != 0 || payload.Control.Drain || payload.Control.Terminate {
+		t.Fatalf("control %+v", payload.Control)
+	}
+}
+
+func pullAssignmentID(t *testing.T, body []byte) (uuid.UUID, bool) {
+	t.Helper()
+	var payload struct {
+		Assignments []map[string]json.RawMessage `json:"assignments"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode pull: %v", err)
+	}
+	if len(payload.Assignments) == 0 {
+		return uuid.Nil, false
+	}
+	if len(payload.Assignments) != 1 {
+		t.Fatalf("assignments %d: %s", len(payload.Assignments), body)
+	}
+	id, err := jsonUUID(payload.Assignments[0]["job_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, true
+}
+
+func assertRateLimited(t *testing.T, status int, hdr http.Header, body []byte) {
+	t.Helper()
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status %d: %s", status, body)
+	}
+	assertNoStoreJSON(t, hdr)
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if string(got["code"]) != `"rate_limited"` || string(got["retryable"]) != "true" {
+		t.Fatalf("body %s", body)
+	}
+	if _, ok := got["error"]; ok {
+		t.Fatal("response has an error field")
+	}
+}
+
+func jobStatusOf(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) string {
+	t.Helper()
+	var status string
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM jobs WHERE id = $1`, id).Scan(&status); err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	return status
+}
+
+func jobFailed(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) bool {
+	t.Helper()
+	var code *string
+	if err := pool.QueryRow(context.Background(), `SELECT error_code FROM jobs WHERE id = $1`, id).Scan(&code); err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	return code != nil
+}
+
+func dispatchOwner(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) string {
+	t.Helper()
+	var owner string
+	if err := pool.QueryRow(context.Background(), `SELECT dispatch_owner FROM jobs WHERE id = $1`, id).Scan(&owner); err != nil {
+		t.Fatalf("read job: %v", err)
+	}
+	return owner
+}
+
+func countJobStatus(t *testing.T, pool *pgxpool.Pool, ids []uuid.UUID, status string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM jobs WHERE id = ANY($1) AND status = $2`, ids, status).Scan(&n); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	return n
+}
+
+func unreleasedHolds(t *testing.T, pool *pgxpool.Pool, owner string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds WHERE owner_key = $1 AND released_at IS NULL`, owner).Scan(&n); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	return n
+}
+
+func usageRows(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) int {
+	t.Helper()
+	rows, _ := usageSnapshot(t, pool, clientID)
+	return rows
+}
+
+func usageSnapshot(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) (int, int) {
+	t.Helper()
+	var rows int
+	var jobs int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)::int, COALESCE(sum(job_count), 0)::int
+		FROM client_usage_daily WHERE client_id = $1`, clientID).Scan(&rows, &jobs); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	return rows, jobs
 }
