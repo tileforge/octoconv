@@ -24,9 +24,10 @@ const failedHoldBudgetSQL = `
 	   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at))`
 
 // StartProtocolReconciler runs the lease pass until ctx is canceled.
-// imageAttemptBudget is the image engine timeout the caller already loaded.
-// This loop does not read ENGINE_TIMEOUT and does not mint attempt deadlines.
-func StartProtocolReconciler(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration) error {
+func StartProtocolReconciler(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration, advisoryKey int64) error {
+	if advisoryKey != protocolAdvisoryKey {
+		return fmt.Errorf("protocol advisory key")
+	}
 	if imageAttemptBudget < 0 {
 		return fmt.Errorf("image attempt budget is negative")
 	}

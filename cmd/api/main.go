@@ -312,6 +312,16 @@ func main() {
 	workerCatalog := workerproto.NewRepo(pool)
 	srv.SetCapabilityCatalog(workerCatalog)
 
+	reconcileDone := make(chan struct{})
+	go func() {
+		defer close(reconcileDone)
+		log.Printf("protocol reconciler starting")
+		err := workerproto.StartProtocolReconciler(ctx, pool, jobsRepo, engineTimeoutsFromEnv()[convert.EngineImage], 0x70726F74)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("protocol reconciler: %v", err)
+		}
+	}()
+
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {
 		addr = ":8090"
@@ -420,6 +430,10 @@ func main() {
 	// Shutdown call shares shutdownCtx.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	select {
+	case <-reconcileDone:
+	case <-shutdownCtx.Done():
+	}
 	if workerSrv != nil {
 		if err := workerSrv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("worker graceful shutdown failed: %v", err)
