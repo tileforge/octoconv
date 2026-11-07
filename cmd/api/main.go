@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
 	"strconv"
 	"syscall"
 	"time"
@@ -534,8 +533,8 @@ func workerLeafAllowsOrigin(certPath, origin string) error {
 	if err != nil {
 		return fmt.Errorf("parse server certificate: %w", err)
 	}
-	if slices.Contains(cert.DNSNames, origin) {
-		return nil
+	if err := cert.VerifyHostname(origin); err != nil {
+		return fmt.Errorf("origin %q: %w", origin, err)
 	}
-	return fmt.Errorf("origin %q is not a DNS SAN", origin)
+	return nil
 }
