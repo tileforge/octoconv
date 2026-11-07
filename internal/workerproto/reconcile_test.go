@@ -182,7 +182,7 @@ func TestProtocolPassDeletesOnlyStaleReservations(t *testing.T) {
 func runProtocolPass(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	restoreJitter(t)
-	if err := protocolPass(context.Background(), pool, jobs.NewRepo(pool)); err != nil {
+	if err := protocolPass(context.Background(), pool, jobs.NewRepo(pool), newMemStore()); err != nil {
 		t.Fatalf("protocol pass: %v", err)
 	}
 }

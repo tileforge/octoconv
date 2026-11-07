@@ -25,6 +25,7 @@ type memStore struct {
 	removes    []string
 	copyErr    error
 	removeErr  error
+	onRemove   func(string) error
 	sizes      map[string]int64
 	downloads  int
 	pause      *copyPause
@@ -123,12 +124,19 @@ func (m *memStore) Download(ctx context.Context, key string) (io.ReadCloser, err
 
 func (m *memStore) Remove(ctx context.Context, key string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.removes = append(m.removes, key)
-	if m.removeErr != nil {
-		return m.removeErr
+	hook := m.onRemove
+	err := m.removeErr
+	m.mu.Unlock()
+	if err != nil {
+		return err
 	}
+	m.mu.Lock()
 	delete(m.objects, key)
+	m.mu.Unlock()
+	if hook != nil {
+		return hook(key)
+	}
 	return nil
 }
 
@@ -158,6 +166,30 @@ func (m *memStore) downloadCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.downloads
+}
+
+func (m *memStore) removedKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.removes...)
+}
+
+func (m *memStore) resetRemoves() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removes = nil
+}
+
+func (m *memStore) setOnRemove(fn func(string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRemove = fn
+}
+
+func (m *memStore) setRemoveErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.removeErr = err
 }
 
 func (m *memStore) setCopyErr(err error) {

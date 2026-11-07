@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3279,9 +3280,8 @@ func TestCompleteAcceptsCopiedPrimary(t *testing.T) {
 	if !ok || !bytes.Equal(got, payload) {
 		t.Fatalf("accepted bytes %q present %v", got, ok)
 	}
-	staged, ok := live.store.get(staging)
-	if !ok || !bytes.Equal(staged, payload) {
-		t.Fatal("staging key was removed")
+	if _, ok := live.store.get(staging); ok {
+		t.Fatal("staging key remained after accept")
 	}
 	var state string
 	var released bool
@@ -3932,4 +3932,345 @@ func TestFileLinkInsideSkewStoresEmpty(t *testing.T) {
 	if gotGets != gets || gotPuts != puts {
 		t.Fatalf("signer counts %d %d after %d %d", gets, puts, gotGets, gotPuts)
 	}
+}
+
+func TestStagingStaysUntilRelease(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	payload := []byte("staged-bytes")
+	badSum := sha256.Sum256([]byte("staged-byte!"))
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	input := storage.InputKey(jobID, 0, "in.png")
+	live.store.put(staging, payload)
+	live.store.put(input, []byte("input-bytes"))
+	body := completeArtifacts(t, primaryArtifact("jpg", "image/jpeg", hex.EncodeToString(badSum[:]), 0, len(payload)))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, body)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
+	got, ok := live.store.get(staging)
+	if !ok || !bytes.Equal(got, payload) {
+		t.Fatal("mismatch removed staging")
+	}
+	passProtocol(t, live)
+	got, ok = live.store.get(staging)
+	if !ok || !bytes.Equal(got, payload) {
+		t.Fatal("unreleased hold lost staging")
+	}
+	got, ok = live.store.get(input)
+	if !ok || !bytes.Equal(got, []byte("input-bytes")) {
+		t.Fatal("unreleased hold lost the input")
+	}
+	var released bool
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT released_at IS NOT NULL FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&released); err != nil {
+		t.Fatal(err)
+	}
+	if released {
+		t.Fatal("mismatch released the hold")
+	}
+}
+
+func TestFailDeletesStagingAfterRelease(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatal(err)
+	}
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	input := storage.InputKey(jobID, 0, "in.png")
+	live.store.put(staging, []byte("fail-staging"))
+	live.store.put(input, []byte("fail-input"))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"engine failed"}`))
+	if status != http.StatusOK {
+		t.Fatalf("fail status %d: %s", status, resp)
+	}
+	if _, ok := live.store.get(staging); ok {
+		t.Fatal("released fail left staging")
+	}
+	got, ok := live.store.get(input)
+	if !ok || !bytes.Equal(got, []byte("fail-input")) {
+		t.Fatal("fail removed the input")
+	}
+	if holdState(t, live.pool, attemptID) != "failed" || jobStatusOf(t, live.pool, jobID) != "failed" {
+		t.Fatal("fail did not fail the hold and the job")
+	}
+}
+
+func TestReleasedHoldSweepDeletesStaging(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	payload := []byte("accepted-bytes")
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	input := storage.InputKey(jobID, 0, "in.png")
+	live.store.put(staging, payload)
+	live.store.put(input, []byte("kept-input"))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeBody(t, "jpg", "image/jpeg", payload))
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	if _, ok := live.store.get(staging); ok {
+		t.Fatal("accept left staging")
+	}
+	sum := sha256.Sum256(payload)
+	accepted := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(sum[:]))
+	got, ok := live.store.get(accepted)
+	if !ok || !bytes.Equal(got, payload) {
+		t.Fatal("accept lost the copied bytes")
+	}
+	got, ok = live.store.get(input)
+	if !ok || !bytes.Equal(got, []byte("kept-input")) {
+		t.Fatal("accept removed the input")
+	}
+
+	token, attemptID, jobID, _ = claimLiveImage(t, live, clientID)
+	failedPayload := []byte("remove-fails")
+	failedStaging := storage.AttemptOutputKey(attemptID, 0)
+	live.store.put(failedStaging, failedPayload)
+	live.store.setRemoveErr(errors.New("disk"))
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeBody(t, "jpg", "image/jpeg", failedPayload))
+	if status != http.StatusOK {
+		t.Fatalf("complete during remove failure %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "done" {
+		t.Fatal("remove failure rolled the job back")
+	}
+	got, ok = live.store.get(failedStaging)
+	if !ok || !bytes.Equal(got, failedPayload) {
+		t.Fatal("failed remove deleted staging")
+	}
+	live.store.setRemoveErr(nil)
+
+	_, attemptID, jobID = insertActiveAttempt(t, live, 60, 120)
+	sqlStaging := storage.AttemptOutputKey(attemptID, 0)
+	sqlInput := storage.InputKey(jobID, 0, "in.png")
+	sqlAccepted := storage.AcceptedOutputKey(jobID, attemptID, 0, strings.Repeat("ab", 32))
+	sqlOutput := storage.OutputKey(jobID, 0, "out.jpg")
+	live.store.put(sqlStaging, []byte("sql-staging"))
+	live.store.put(sqlInput, []byte("sql-input"))
+	live.store.put(sqlAccepted, []byte("sql-accepted"))
+	live.store.put(sqlOutput, []byte("sql-output"))
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds SET released_at = now() WHERE id = $1`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	live.store.resetRemoves()
+	passProtocol(t, live)
+	if _, ok := live.store.get(sqlStaging); ok {
+		t.Fatal("released hold kept staging")
+	}
+	for _, item := range []struct {
+		key  string
+		want string
+	}{
+		{sqlInput, "sql-input"},
+		{sqlAccepted, "sql-accepted"},
+		{sqlOutput, "sql-output"},
+	} {
+		got, ok = live.store.get(item.key)
+		if !ok || !bytes.Equal(got, []byte(item.want)) {
+			t.Fatalf("sweep removed %s", item.key)
+		}
+	}
+	if !removedHas(live.store.removedKeys(), sqlStaging) {
+		t.Fatal("sweep skipped the released staging key")
+	}
+	for _, key := range []string{sqlInput, sqlAccepted, sqlOutput} {
+		if removedHas(live.store.removedKeys(), key) {
+			t.Fatalf("sweep removed %s", key)
+		}
+	}
+	if removed, attempted := stagingColumns(t, live.pool, attemptID); removed || attempted {
+		t.Fatal("a future deadline was retired")
+	}
+
+	openID := uuid.New()
+	insertStagingHold(t, live.pool, openID, false, 3600)
+	openStaging := storage.AttemptOutputKey(openID, 0)
+	live.store.put(openStaging, []byte("still-open"))
+
+	retireOtherStaging(t, live.pool)
+	straddleID := uuid.New()
+	insertStagingHold(t, live.pool, straddleID, true, 3600)
+	straddlePayload := []byte("straddle")
+	straddleKey := storage.AttemptOutputKey(straddleID, 0)
+	live.store.put(straddleKey, straddlePayload)
+	live.store.setOnRemove(func(key string) error {
+		live.store.setOnRemove(nil)
+		live.store.put(key, straddlePayload)
+		_, err := live.pool.Exec(context.Background(), `
+			UPDATE worker_slot_holds
+			SET attempt_deadline = now() - interval '1 second'
+			WHERE id = $1`, straddleID)
+		return err
+	})
+	live.store.resetRemoves()
+	passProtocol(t, live)
+	if removed, attempted := stagingColumns(t, live.pool, straddleID); removed || attempted {
+		t.Fatal("straddle retired the hold")
+	}
+	got, ok = live.store.get(straddleKey)
+	if !ok || !bytes.Equal(got, straddlePayload) {
+		t.Fatal("straddle lost the restored bytes")
+	}
+	if !removedHas(live.store.removedKeys(), straddleKey) {
+		t.Fatal("straddle hold was not named")
+	}
+	passProtocol(t, live)
+	if removed, attempted := stagingColumns(t, live.pool, straddleID); !removed || attempted {
+		t.Fatal("the next pass did not retire the past deadline")
+	}
+	if _, ok := live.store.get(straddleKey); ok {
+		t.Fatal("the next pass left staging")
+	}
+
+	retireOtherStaging(t, live.pool)
+	batch := insertStagingHoldBatch(t, live.pool, live.store, 40, -30, []byte("batch"))
+	sorted := append([]uuid.UUID(nil), batch...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return bytes.Compare(sorted[i][:], sorted[j][:]) < 0
+	})
+	live.store.resetRemoves()
+	passProtocol(t, live)
+	assertStagingBatch(t, live, sorted[:32], true)
+	assertStagingBatch(t, live, sorted[32:], false)
+	passProtocol(t, live)
+	assertStagingBatch(t, live, batch, true)
+	for _, id := range batch {
+		if _, attempted := stagingColumns(t, live.pool, id); attempted {
+			t.Fatalf("successful remove recorded an attempt %s", id)
+		}
+	}
+	live.store.resetRemoves()
+	passProtocol(t, live)
+	for _, id := range batch {
+		if removedHas(live.store.removedKeys(), storage.AttemptOutputKey(id, 0)) {
+			t.Fatalf("third pass removed %s", id)
+		}
+	}
+	got, ok = live.store.get(openStaging)
+	if !ok || !bytes.Equal(got, []byte("still-open")) {
+		t.Fatal("unreleased hold lost staging")
+	}
+
+	retireOtherStaging(t, live.pool)
+	rotated := insertStagingHoldBatch(t, live.pool, live.store, 33, -30, []byte("rotate"))
+	sorted = append([]uuid.UUID(nil), rotated...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return bytes.Compare(sorted[i][:], sorted[j][:]) < 0
+	})
+	latest := sorted[len(sorted)-1]
+	live.store.setRemoveErr(errors.New("full"))
+	live.store.resetRemoves()
+	passProtocol(t, live)
+	if removedHas(live.store.removedKeys(), storage.AttemptOutputKey(latest, 0)) {
+		t.Fatal("the later hold was in the failing batch")
+	}
+	for _, id := range sorted[:32] {
+		removed, attempted := stagingColumns(t, live.pool, id)
+		got, ok = live.store.get(storage.AttemptOutputKey(id, 0))
+		if removed || !attempted || !ok || !bytes.Equal(got, []byte("rotate")) {
+			t.Fatalf("failing remove retired %s removed %v attempted %v", id, removed, attempted)
+		}
+	}
+	if removed, attempted := stagingColumns(t, live.pool, latest); removed || attempted {
+		t.Fatal("the later hold was stamped by the failing batch")
+	}
+	live.store.setRemoveErr(nil)
+	passProtocol(t, live)
+	removed, _ := stagingColumns(t, live.pool, latest)
+	if _, ok := live.store.get(storage.AttemptOutputKey(latest, 0)); ok || !removed {
+		t.Fatal("the later hold survived the next pass")
+	}
+}
+
+func passProtocol(t *testing.T, live liveSession) {
+	t.Helper()
+	restoreJitter(t)
+	if err := protocolPass(context.Background(), live.pool, jobs.NewRepo(live.pool), live.store); err != nil {
+		t.Fatalf("protocol pass: %v", err)
+	}
+}
+
+func retireOtherStaging(t *testing.T, pool *pgxpool.Pool, keep ...uuid.UUID) {
+	t.Helper()
+	if keep == nil {
+		keep = []uuid.UUID{}
+	}
+	_, err := pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET staging_removed_at = now()
+		WHERE released_at IS NOT NULL
+		  AND staging_removed_at IS NULL
+		  AND NOT (id = ANY($1))`, keep)
+	if err != nil {
+		t.Fatalf("retire other staging: %v", err)
+	}
+}
+
+func insertStagingHold(t *testing.T, pool *pgxpool.Pool, id uuid.UUID, released bool, deadlineSecs int) {
+	t.Helper()
+	var releasedAt any
+	if released {
+		releasedAt = time.Now()
+	}
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO worker_slot_holds (
+			id, owner_key, session_id, state,
+			released_at, lease_expires_at, attempt_deadline
+		) VALUES (
+			$1, $2, $3, 'active',
+			$4, now(), now() + make_interval(secs => $5)
+		)`, id, "staging-"+id.String(), uuid.New(), releasedAt, deadlineSecs)
+	if err != nil {
+		t.Fatalf("insert staging hold: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE id = $1`, id)
+	})
+}
+
+func insertStagingHoldBatch(t *testing.T, pool *pgxpool.Pool, store *memStore, n, deadlineSecs int, payload []byte) []uuid.UUID {
+	t.Helper()
+	ids := make([]uuid.UUID, n)
+	for i := range ids {
+		ids[i] = uuid.New()
+		insertStagingHold(t, pool, ids[i], true, deadlineSecs)
+		store.put(storage.AttemptOutputKey(ids[i], 0), payload)
+	}
+	return ids
+}
+
+func stagingColumns(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) (removed, attempted bool) {
+	t.Helper()
+	var removedAt, attemptedAt *time.Time
+	err := pool.QueryRow(context.Background(), `
+		SELECT staging_removed_at, staging_attempted_at
+		FROM worker_slot_holds WHERE id = $1`, id).Scan(&removedAt, &attemptedAt)
+	if err != nil {
+		t.Fatalf("read staging columns: %v", err)
+	}
+	return removedAt != nil, attemptedAt != nil
+}
+
+func assertStagingBatch(t *testing.T, live liveSession, ids []uuid.UUID, gone bool) {
+	t.Helper()
+	for _, id := range ids {
+		removed, _ := stagingColumns(t, live.pool, id)
+		_, present := live.store.get(storage.AttemptOutputKey(id, 0))
+		if removed != gone || present == gone {
+			t.Fatalf("hold %s removed %v present %v", id, removed, present)
+		}
+	}
+}
+
+func removedHas(keys []string, key string) bool {
+	for _, item := range keys {
+		if item == key {
+			return true
+		}
+	}
+	return false
 }

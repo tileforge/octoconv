@@ -350,6 +350,7 @@ func (h *Handler) handleFail(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
+	h.deleteStagingIfReleased(r.Context(), attemptID, sess.ID)
 	h.writeControl(w, r, sess.ID)
 }
 
@@ -386,6 +387,7 @@ func (h *Handler) handleStopped(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
+	h.deleteStagingIfReleased(r.Context(), attemptID, sess.ID)
 	h.writeControl(w, r, sess.ID)
 }
 
@@ -453,7 +455,27 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
+	h.deleteStaging(r.Context(), attemptID)
 	writeStored(w, body)
+}
+
+func (h *Handler) deleteStagingIfReleased(ctx context.Context, attemptID, sessionID uuid.UUID) {
+	var released bool
+	err := h.repo.pool.QueryRow(ctx, `
+		SELECT released_at IS NOT NULL
+		FROM worker_slot_holds
+		WHERE id = $1 AND session_id = $2`, attemptID, sessionID).Scan(&released)
+	if err != nil || !released {
+		return
+	}
+	h.deleteStaging(ctx, attemptID)
+}
+
+func (h *Handler) deleteStaging(ctx context.Context, attemptID uuid.UUID) {
+	if h.store == nil {
+		return
+	}
+	_ = h.store.Remove(ctx, storage.AttemptOutputKey(attemptID, 0))
 }
 
 type completeFailure struct {

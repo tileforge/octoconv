@@ -316,7 +316,7 @@ func main() {
 	go func() {
 		defer close(reconcileDone)
 		log.Printf("protocol reconciler starting")
-		err := workerproto.StartProtocolReconciler(ctx, pool, jobsRepo, engineTimeoutsFromEnv()[convert.EngineImage], 0x70726F74)
+		err := workerproto.StartProtocolReconciler(ctx, pool, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage], 0x70726F74)
 		if err != nil && ctx.Err() == nil {
 			log.Printf("protocol reconciler: %v", err)
 		}
