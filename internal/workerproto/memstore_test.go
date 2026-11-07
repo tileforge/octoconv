@@ -25,6 +25,8 @@ type memStore struct {
 	removes    []string
 	copyErr    error
 	removeErr  error
+	sizes      map[string]int64
+	downloads  int
 	pause      *copyPause
 }
 
@@ -99,11 +101,20 @@ func (m *memStore) ObjectSize(ctx context.Context, key string) (int64, error) {
 	if !ok {
 		return 0, storage.ErrNotFound
 	}
+	if size, overridden := m.sizes[key]; overridden {
+		return size, nil
+	}
 	return int64(len(payload)), nil
 }
 
 func (m *memStore) Download(ctx context.Context, key string) (io.ReadCloser, error) {
-	payload, ok := m.get(key)
+	m.mu.Lock()
+	m.downloads++
+	payload, ok := m.objects[key]
+	if ok {
+		payload = append([]byte(nil), payload...)
+	}
+	m.mu.Unlock()
 	if !ok {
 		return nil, storage.ErrNotFound
 	}
@@ -141,6 +152,27 @@ func (m *memStore) copyCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.copies
+}
+
+func (m *memStore) downloadCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.downloads
+}
+
+func (m *memStore) setCopyErr(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.copyErr = err
+}
+
+func (m *memStore) setSize(key string, size int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sizes == nil {
+		m.sizes = map[string]int64{}
+	}
+	m.sizes[key] = size
 }
 
 func (m *memStore) signerCounts() (int, int) {

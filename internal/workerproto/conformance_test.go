@@ -3693,6 +3693,116 @@ func TestScenario10CompleteConflict(t *testing.T) {
 	}
 }
 
+func TestCompleteStorageOutageRetries(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, stepID := claimLiveImage(t, live, clientID)
+	payload := []byte("outage-bytes")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	live.store.setCopyErr(errors.New("disk"))
+	body := completeBody(t, "jpg", "image/jpeg", payload)
+	path := attemptPaths(live.addr, attemptID)[3]
+	status, hdr, resp := postAttempt(t, live, path, token, body)
+	assertProtocolError(t, status, hdr, resp, http.StatusInternalServerError, "invalid_message")
+	if jobStatusOf(t, live.pool, jobID) != "active" || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("outage changed the active job")
+	}
+	if outputCount(t, live.pool, jobID) != 0 || completeDedupRows(t, live.pool, live.sessionID, jobID, stepID, attemptID) != 0 {
+		t.Fatal("outage stored a result")
+	}
+	live.store.setCopyErr(nil)
+	status, _, resp = postAttempt(t, live, path, token, body)
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "done" || doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("retried complete did not finish")
+	}
+
+	token, attemptID, jobID, _ = claimLiveImage(t, live, clientID)
+	payload = []byte("huge-meta")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	sum := sha256.Sum256(payload)
+	dst := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(sum[:]))
+	live.store.setSize(dst, int64(100<<20)+1)
+	downloads := live.store.downloadCount()
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeBody(t, "jpg", "image/jpeg", payload))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
+	if live.store.downloadCount() != downloads {
+		t.Fatal("oversized destination was downloaded")
+	}
+	if _, ok := live.store.get(dst); ok || outputCount(t, live.pool, jobID) != 0 {
+		t.Fatal("oversized destination was kept")
+	}
+}
+
+func TestAcceptLocksTheJobBeforeTheHold(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	payload := []byte("lock-bytes")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	if jobStatusOf(t, live.pool, jobID) != "active" || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("job was not active before complete")
+	}
+	ctx := context.Background()
+	tx, err := live.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan result, 1)
+	body := completeBody(t, "jpg", "image/jpeg", payload)
+	path := attemptPaths(live.addr, attemptID)[3]
+	go func() {
+		code, respBody, err := postAttemptErr(live.client, path, live.token, token, body)
+		done <- result{status: code, body: respBody, err: err}
+	}()
+	waitForJobLock(t, live.pool)
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '1s'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT id FROM worker_slot_holds WHERE id = $1 FOR UPDATE`, attemptID); err != nil {
+		t.Fatalf("accept locked the hold before the job: %v", err)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "active" || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("progress changed before accept committed")
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.status != http.StatusOK {
+			t.Fatalf("complete status %d: %s", got.status, got.body)
+		}
+		assertControlOnly(t, got.body)
+	case <-time.After(10 * time.Second):
+		t.Fatal("complete did not finish")
+	}
+	var state string
+	var released bool
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT state, released_at IS NOT NULL FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&state, &released); err != nil {
+		t.Fatal(err)
+	}
+	progress := jobProgress(t, live.pool, jobID)
+	if state != "active" || !released || jobStatusOf(t, live.pool, jobID) != "done" || progress == nil || *progress != 100 {
+		t.Fatalf("hold %s released %v progress %v", state, released, progress)
+	}
+}
+
 func TestScenario20FileLinkExpiry(t *testing.T) {
 	live := openHello(t)
 	jobID := insertPullJob(t, live.pool, pullJob{})
