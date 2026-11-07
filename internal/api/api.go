@@ -16,6 +16,7 @@ import (
 	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/presets"
+	"github.com/tileforge/octoconv/internal/workerproto"
 )
 
 // Repo is the subset of the jobs repository the API depends on.
@@ -201,6 +202,9 @@ type Server struct {
 	// NewServer's signature stays stable for existing callers
 	// (handlers_test.go, cmd/api/main.go).
 	cancelPublisher CancelPublisher
+	// catalog is nil until SetCapabilityCatalog. A nil catalog does not
+	// change registry admission or the image enqueue.
+	catalog CapabilityCatalog
 	// jobsListDefaultPageSize / jobsListMaxPageSize are the D-06 page-size
 	// knobs for GET /v1/jobs: the default page size used when ?limit is
 	// absent/unparseable, and the hard ceiling ?limit clamps to (never
@@ -273,6 +277,19 @@ func (s *Server) inspectRateLimit() func(http.Handler) http.Handler {
 // case.
 func (s *Server) SetCancelPublisher(p CancelPublisher) {
 	s.cancelPublisher = p
+}
+
+// CapabilityCatalog is the approved capability lookup consulted after the
+// conversion registry has already chosen an engine.
+type CapabilityCatalog interface {
+	Lookup(ctx context.Context, operation, source, target string) (workerproto.Match, bool, error)
+}
+
+// SetCapabilityCatalog installs the catalog used by job create. Nil leaves
+// create on the registry path with no capability pin. NewServer does not
+// take this dependency.
+func (s *Server) SetCapabilityCatalog(catalog CapabilityCatalog) {
+	s.catalog = catalog
 }
 
 // Config configures a Server.
