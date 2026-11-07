@@ -3,12 +3,14 @@ package workerproto
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"time"
 
@@ -184,12 +186,57 @@ func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
-	sess, attemptID, ok := h.authenticateAttempt(w, r)
-	if !ok {
-		return
+type failRequest struct {
+	ProtocolVersion json.Number     `json:"protocol_version"`
+	EngineCode      string          `json:"engine_code"`
+	Message         string          `json:"message"`
+	Extensions      json.RawMessage `json:"extensions"`
+}
+
+type stoppedRequest struct {
+	ProtocolVersion json.Number     `json:"protocol_version"`
+	Reason          string          `json:"reason"`
+	Extensions      json.RawMessage `json:"extensions"`
+}
+
+var terminalEngineCodes = map[string]struct{}{
+	"engine_error":          {},
+	"invalid_options":       {},
+	"duration_exceeded":     {},
+	"timecode_out_of_range": {},
+	"resolution_exceeded":   {},
+	"no_video_stream":       {},
+	"too_many_pages":        {},
+	"page_too_large":        {},
+	"image_too_large":       {},
+	"unsupported_language":  {},
+	"unsupported_target":    {},
+	"input_too_large":       {},
+	"output_too_large":      {},
+	"reconciler_exhausted":  {},
+	"unsupported_package":   {},
+	"cad_too_complex":       {},
+	"cad_unreadable":        {},
+	"cad_empty_result":      {},
+	"cad_mesh_timeout":      {},
+}
+
+var attemptJitter = randomAttemptDelay
+
+func randomAttemptDelay(n int) (int, error) {
+	span := 15
+	if n >= 0 && n < 3 {
+		span = 2 << n
 	}
-	raw, ok := readMessage(w, r)
+	value, err := rand.Int(rand.Reader, big.NewInt(int64(span)+1))
+	if err != nil {
+		return 0, err
+	}
+	return int(value.Int64()), nil
+}
+
+func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, raw, ok := h.readAttemptBody(w, r)
 	if !ok {
 		return
 	}
@@ -206,27 +253,119 @@ func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusConflict, "attempt_not_active")
 		return
 	}
+	parsed, code := parseProgress(req)
+	if code != "" {
+		writeCode(w, http.StatusBadRequest, code)
+		return
+	}
+	limited, err := h.storeProgress(r.Context(), attemptID, parsed)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if limited {
+		writeCode(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
 	h.writeControl(w, r, sess.ID)
 }
 
-func (h *Handler) handleFail(w http.ResponseWriter, r *http.Request) {
-	h.rejectClosedAttempt(w, r)
-}
-
-func (h *Handler) handleStopped(w http.ResponseWriter, r *http.Request) {
-	h.rejectClosedAttempt(w, r)
-}
-
-func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
-	h.rejectClosedAttempt(w, r)
-}
-
-func (h *Handler) rejectClosedAttempt(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) readAttemptBody(w http.ResponseWriter, r *http.Request) (storedSession, uuid.UUID, []byte, bool) {
 	sess, attemptID, ok := h.authenticateAttempt(w, r)
+	if !ok {
+		return storedSession{}, uuid.Nil, nil, false
+	}
+	raw, ok := readMessage(w, r)
+	if !ok {
+		return storedSession{}, uuid.Nil, nil, false
+	}
+	return sess, attemptID, raw, true
+}
+
+func (h *Handler) handleFail(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, raw, ok := h.readAttemptBody(w, r)
 	if !ok {
 		return
 	}
-	raw, ok := readMessage(w, r)
+	var req failRequest
+	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
+		return
+	}
+	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !live {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
+	if req.EngineCode == "" || req.Message == "" {
+		writeCode(w, http.StatusBadRequest, "invalid_message")
+		return
+	}
+	jobID, stepID, err := h.attemptJob(r.Context(), attemptID)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if req.EngineCode == "timeout" {
+		if err := h.retryTimeout(r.Context(), jobID, stepID, req.Message); err != nil {
+			writeCode(w, http.StatusInternalServerError, "invalid_message")
+			return
+		}
+		h.writeControl(w, r, sess.ID)
+		return
+	}
+	code := "engine_error"
+	if _, ok := terminalEngineCodes[req.EngineCode]; ok {
+		code = req.EngineCode
+	}
+	if err := h.jobsRepo.FailProtocol(r.Context(), jobID, code, req.Message); err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	h.writeControl(w, r, sess.ID)
+}
+
+func (h *Handler) handleStopped(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, raw, ok := h.readAttemptBody(w, r)
+	if !ok {
+		return
+	}
+	var req stoppedRequest
+	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
+		return
+	}
+	if req.Reason != "cancel" && req.Reason != "terminate" && req.Reason != "lease_lost" {
+		if req.Reason == "" {
+			live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+			if err != nil {
+				writeCode(w, http.StatusInternalServerError, "invalid_message")
+				return
+			}
+			if !live {
+				writeCode(w, http.StatusConflict, "attempt_not_active")
+				return
+			}
+		}
+		writeCode(w, http.StatusBadRequest, "invalid_message")
+		return
+	}
+	err := h.stopAttempt(r.Context(), sess.ID, attemptID, req.Reason)
+	if errors.Is(err, errAttemptInactive) {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	h.writeControl(w, r, sess.ID)
+}
+
+func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, raw, ok := h.readAttemptBody(w, r)
 	if !ok {
 		return
 	}
@@ -243,7 +382,7 @@ func (h *Handler) rejectClosedAttempt(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusConflict, "attempt_not_active")
 		return
 	}
-	writeCode(w, http.StatusConflict, "attempt_not_active")
+	writeCode(w, http.StatusConflict, "artifact_rejected")
 }
 
 func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID uuid.UUID) {
@@ -253,6 +392,251 @@ func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID
 		return
 	}
 	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: controlWire{CancelAttemptIDs: ids, Drain: false, Terminate: false}})
+}
+
+type parsedProgress struct {
+	unknown    bool
+	percent    int
+	stage      *string
+	stageIndex *int
+	stageCount *int
+	eta        *int
+	etaNull    bool
+}
+
+func parseProgress(req progressRequest) (parsedProgress, string) {
+	var parsed parsedProgress
+	if len(req.Percent) == 0 {
+		return parsed, "invalid_message"
+	}
+	if string(req.Percent) == "null" {
+		parsed.unknown = true
+	} else {
+		var n int
+		if err := json.Unmarshal(req.Percent, &n); err != nil || n < 0 || n > 99 {
+			if err == nil && n == 100 {
+				return parsed, "invalid_progress"
+			}
+			return parsed, "invalid_message"
+		}
+		parsed.percent = n
+	}
+	if len(req.Stage) != 0 {
+		if string(req.Stage) == "null" {
+			return parsed, "invalid_message"
+		}
+		var stage string
+		if err := json.Unmarshal(req.Stage, &stage); err != nil || stage == "" {
+			return parsed, "invalid_message"
+		}
+		parsed.stage = &stage
+	}
+	index, code := optionalInt(req.StageIndex, 1)
+	if code != "" {
+		return parsed, code
+	}
+	count, code := optionalInt(req.StageCount, 1)
+	if code != "" {
+		return parsed, code
+	}
+	parsed.stageIndex = index
+	parsed.stageCount = count
+	if index != nil && count != nil && *index > *count {
+		return parsed, "invalid_message"
+	}
+	if len(req.ETASeconds) != 0 && string(req.ETASeconds) == "null" {
+		parsed.etaNull = true
+	} else if len(req.ETASeconds) != 0 {
+		eta, code := optionalInt(req.ETASeconds, 0)
+		if code != "" {
+			return parsed, code
+		}
+		parsed.eta = eta
+	}
+	return parsed, ""
+}
+
+func optionalInt(raw json.RawMessage, min int) (*int, string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, ""
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err != nil || n < min {
+		return nil, "invalid_message"
+	}
+	return &n, ""
+}
+
+func (h *Handler) storeProgress(ctx context.Context, attemptID uuid.UUID, parsed parsedProgress) (bool, error) {
+	var limited bool
+	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `
+			WITH locked AS (
+				SELECT id, progress_window_started, progress_in_window
+				FROM worker_slot_holds
+				WHERE id = $1
+				FOR UPDATE
+			)
+			UPDATE worker_slot_holds AS h
+			SET progress_window_started = CASE
+					WHEN l.progress_window_started IS NOT NULL
+					 AND l.progress_window_started > now() - interval '1 second'
+					 AND l.progress_in_window >= 4 THEN h.progress_window_started
+					WHEN l.progress_window_started IS NULL
+					  OR l.progress_window_started <= now() - interval '1 second' THEN now()
+					ELSE h.progress_window_started
+				END,
+				progress_in_window = CASE
+					WHEN l.progress_window_started IS NOT NULL
+					 AND l.progress_window_started > now() - interval '1 second'
+					 AND l.progress_in_window >= 4 THEN h.progress_in_window
+					WHEN l.progress_window_started IS NULL
+					  OR l.progress_window_started <= now() - interval '1 second' THEN 1
+					ELSE h.progress_in_window + 1
+				END
+			FROM locked AS l
+			WHERE h.id = l.id
+			RETURNING (
+				l.progress_window_started IS NOT NULL
+				AND l.progress_window_started > now() - interval '1 second'
+				AND l.progress_in_window >= 4
+			)`, attemptID).Scan(&limited)
+		if err != nil {
+			return fmt.Errorf("progress rate: %w", err)
+		}
+		if limited {
+			return nil
+		}
+		var jobID uuid.UUID
+		var current *int16
+		var stage *string
+		var stageIndex, stageCount, eta *int
+		err = tx.QueryRow(ctx, `
+			SELECT job_id, progress_percent, stage, stage_index, stage_count, eta_seconds
+			FROM worker_slot_holds WHERE id = $1`, attemptID).
+			Scan(&jobID, &current, &stage, &stageIndex, &stageCount, &eta)
+		if err != nil {
+			return fmt.Errorf("read progress: %w", err)
+		}
+		percent := current
+		unknown := false
+		if parsed.unknown {
+			percent = nil
+			unknown = true
+		} else if current == nil || parsed.percent >= int(*current) {
+			value := int16(parsed.percent)
+			percent = &value
+		}
+		if parsed.stage != nil {
+			stage = parsed.stage
+		}
+		if parsed.stageIndex != nil {
+			stageIndex = parsed.stageIndex
+		}
+		if parsed.stageCount != nil {
+			stageCount = parsed.stageCount
+		}
+		if parsed.etaNull {
+			eta = nil
+		} else if parsed.eta != nil {
+			eta = parsed.eta
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE worker_slot_holds
+			SET progress_percent = $2, progress_unknown = $3,
+			    stage = $4, stage_index = $5, stage_count = $6, eta_seconds = $7
+			WHERE id = $1`, attemptID, percent, unknown, stage, stageIndex, stageCount, eta); err != nil {
+			return fmt.Errorf("store progress: %w", err)
+		}
+		if !parsed.unknown && (current == nil || parsed.percent >= int(*current)) {
+			if _, err := tx.Exec(ctx, `
+				UPDATE jobs
+				SET progress_pct = $2, progress_updated_at = now()
+				WHERE id = $1 AND status = 'active'
+				  AND (progress_pct IS NULL OR progress_pct <= $2)`, jobID, parsed.percent); err != nil {
+				return fmt.Errorf("store job progress: %w", err)
+			}
+		}
+		return nil
+	})
+	return limited, err
+}
+
+func (h *Handler) attemptJob(ctx context.Context, attemptID uuid.UUID) (uuid.UUID, *uuid.UUID, error) {
+	var jobID uuid.UUID
+	var stepID *uuid.UUID
+	err := h.repo.pool.QueryRow(ctx, `
+		SELECT job_id, step_id FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&jobID, &stepID)
+	if err != nil {
+		return uuid.Nil, nil, fmt.Errorf("read attempt job: %w", err)
+	}
+	return jobID, stepID, nil
+}
+
+func (h *Handler) retryTimeout(ctx context.Context, jobID uuid.UUID, stepID *uuid.UUID, message string) error {
+	n := 1
+	if stepID != nil {
+		var failed int
+		if err := h.repo.pool.QueryRow(ctx, `
+			SELECT count(*) FROM worker_slot_holds
+			WHERE step_id = $1 AND state = 'failed'`, *stepID).Scan(&failed); err != nil {
+			return err
+		}
+		n = failed + 1
+	}
+	delay, err := attemptJitter(n)
+	if err != nil {
+		return err
+	}
+	var notBefore time.Time
+	if delay > 0 {
+		notBefore = time.Now().Add(time.Duration(delay) * time.Second)
+	}
+	err = h.jobsRepo.RequeueProtocol(ctx, jobID, notBefore)
+	if errors.Is(err, jobs.ErrProtocolBudget) {
+		return h.jobsRepo.FailProtocol(ctx, jobID, "reconciler_exhausted", message)
+	}
+	return err
+}
+
+func (h *Handler) stopAttempt(ctx context.Context, sessionID, attemptID uuid.UUID, reason string) error {
+	return pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		var state string
+		var released *time.Time
+		var jobID uuid.UUID
+		err := tx.QueryRow(ctx, `
+			SELECT state, released_at, job_id
+			FROM worker_slot_holds
+			WHERE id = $1 AND session_id = $2
+			FOR UPDATE`, attemptID, sessionID).Scan(&state, &released, &jobID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errAttemptInactive
+		}
+		if err != nil {
+			return err
+		}
+		if reason == "cancel" && state == "canceled" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE worker_slot_holds SET state = 'stopped' WHERE id = $1`, attemptID); err != nil {
+				return err
+			}
+			return nil
+		}
+		live, err := h.attemptOpen(ctx, attemptID, sessionID, true)
+		if err != nil {
+			return err
+		}
+		if !live {
+			return errAttemptInactive
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE worker_slot_holds
+			SET state = 'stopped', released_at = now()
+			WHERE id = $1`, attemptID); err != nil {
+			return err
+		}
+		return h.jobsRepo.QueueAfterStop(ctx, tx, jobID)
+	})
 }
 
 func protocolFields(w http.ResponseWriter, version json.Number, ext json.RawMessage) bool {

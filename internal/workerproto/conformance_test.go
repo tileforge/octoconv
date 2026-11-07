@@ -1492,6 +1492,243 @@ func TestLapsedLeaseRejectsProgress(t *testing.T) {
 	}
 }
 
+func TestScenario18Progress100(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	body := []byte(`{"protocol_version":1,"percent":100}`)
+	for i := 0; i < 2; i++ {
+		status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, body)
+		assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_progress")
+	}
+	if readAttemptSnap(t, live.pool, attemptID) != before || jobStatusOf(t, live.pool, jobID) != "active" || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("percent 100 changed the attempt")
+	}
+}
+
+func TestProgressUnknownStaysNull(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	path := attemptPaths(live.addr, attemptID)[1]
+	status, _, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":null}`))
+	if status != http.StatusOK {
+		t.Fatalf("null progress status %d: %s", status, resp)
+	}
+	percent, unknown := holdProgress(t, live.pool, attemptID)
+	if percent != nil || !unknown || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("null progress stored a number")
+	}
+	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":10,"stage":"ink"}`))
+	if status != http.StatusOK {
+		t.Fatalf("progress status %d: %s", status, resp)
+	}
+	percent, unknown = holdProgress(t, live.pool, attemptID)
+	if percent == nil || *percent != 10 || unknown || jobProgress(t, live.pool, jobID) == nil || *jobProgress(t, live.pool, jobID) != 10 {
+		t.Fatal("percent 10 was not stored")
+	}
+	if jobStage(t, live.pool, jobID) != nil || holdStage(t, live.pool, attemptID) != "ink" {
+		t.Fatal("stage was written on the job")
+	}
+	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":5}`))
+	if status != http.StatusOK {
+		t.Fatalf("lower progress status %d: %s", status, resp)
+	}
+	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 10 {
+		t.Fatal("lower percent replaced the stored progress")
+	}
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":10,"stage_index":3,"stage_count":2}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_message")
+	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 10 {
+		t.Fatal("invalid stage indexes changed progress")
+	}
+}
+
+func TestScenario19RetryClearsProgress(t *testing.T) {
+	live := openHello(t)
+	restoreJitter(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET progress_pct = 40 WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("set progress: %v", err)
+	}
+	var stepID uuid.UUID
+	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"timeout","message":"timed out"}`))
+	if status != http.StatusOK {
+		t.Fatalf("fail status %d: %s", status, resp)
+	}
+	if jobProgress(t, live.pool, jobID) != nil || jobStatusOf(t, live.pool, jobID) != "queued" {
+		t.Fatal("timeout left the old progress")
+	}
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	gotJob, err := jsonUUID(assignment["job_id"])
+	if err != nil || gotJob != jobID {
+		t.Fatalf("pull %s", resp)
+	}
+	gotStep, err := jsonUUID(assignment["step_id"])
+	if err != nil || gotStep != stepID {
+		t.Fatalf("step %s", resp)
+	}
+	gotAttempt, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || gotAttempt == attemptID {
+		t.Fatalf("attempt %s", resp)
+	}
+	nextToken, err := jsonString(assignment["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, gotAttempt)[1], nextToken, []byte(`{"protocol_version":1,"percent":25}`))
+	if status != http.StatusOK {
+		t.Fatalf("progress status %d: %s", status, resp)
+	}
+	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 25 {
+		t.Fatalf("progress %v", p)
+	}
+}
+
+func TestFailTimeoutRequeues(t *testing.T) {
+	live := openHello(t)
+	restoreJitter(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatalf("set client: %v", err)
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"timeout","message":"timed out"}`))
+	if status != http.StatusOK {
+		t.Fatalf("fail status %d: %s", status, resp)
+	}
+	var code *string
+	var notBefore *time.Time
+	var state string
+	var released *time.Time
+	var statusText string
+	err := live.pool.QueryRow(context.Background(), `
+		SELECT j.status, j.error_code, j.not_before, h.state, h.released_at
+		FROM jobs j JOIN worker_slot_holds h ON h.job_id = j.id
+		WHERE j.id = $1`, jobID).Scan(&statusText, &code, &notBefore, &state, &released)
+	if err != nil {
+		t.Fatalf("read retry: %v", err)
+	}
+	if statusText != "queued" || code != nil || notBefore == nil || state != "failed" || released == nil {
+		t.Fatalf("status %s code %v not_before %v hold %s released %v", statusText, code, notBefore, state, released)
+	}
+	if usageRows(t, live.pool, clientID) != 0 {
+		t.Fatal("timeout recorded usage")
+	}
+}
+
+func TestFailAllowListIsTerminal(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
+		t.Fatalf("set client: %v", err)
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"engine failed"}`))
+	if status != http.StatusOK {
+		t.Fatalf("fail status %d: %s", status, resp)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "failed" || jobErrorCode(t, live.pool, jobID) != "engine_error" || holdState(t, live.pool, attemptID) != "failed" {
+		t.Fatal("allow-list code was not stored")
+	}
+	rows, jobs := usageSnapshot(t, live.pool, clientID)
+	if rows != 1 || jobs != 1 {
+		t.Fatalf("usage rows=%d jobs=%d", rows, jobs)
+	}
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"again"}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if _, jobs := usageSnapshot(t, live.pool, clientID); jobs != 1 {
+		t.Fatal("second fail recorded usage")
+	}
+	otherToken, otherID, otherJob := insertActiveAttempt(t, live, 60, 120)
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, otherID)[2], otherToken, []byte(`{"protocol_version":1,"engine_code":"nope","message":"unknown"}`))
+	if status != http.StatusOK {
+		t.Fatalf("unknown code status %d: %s", status, resp)
+	}
+	if jobStatusOf(t, live.pool, otherJob) != "failed" || jobErrorCode(t, live.pool, otherJob) != "engine_error" {
+		t.Fatal("unknown engine code was not stored as engine_error")
+	}
+}
+
+func TestStoppedTerminateDoesNotBurnBudget(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	var stepID uuid.UUID
+	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if failedHolds(t, live.pool, stepID) != 0 {
+		t.Fatal("failed holds were not zero")
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"terminate"}`))
+	if status != http.StatusOK {
+		t.Fatalf("stopped status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "queued" || failedHolds(t, live.pool, stepID) != 0 || holdState(t, live.pool, attemptID) != "stopped" {
+		t.Fatal("terminate burned the budget or left the job active")
+	}
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	gotStep, err := jsonUUID(assignment["step_id"])
+	if err != nil || gotStep != stepID {
+		t.Fatalf("step %s", resp)
+	}
+	gotAttempt, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || gotAttempt == attemptID {
+		t.Fatalf("attempt %s", resp)
+	}
+}
+
+func TestActiveCompleteWritesNothing(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
+	if readAttemptSnap(t, live.pool, attemptID) != before || jobStatusOf(t, live.pool, jobID) != "active" || outputCount(t, live.pool, jobID) != 0 {
+		t.Fatal("complete wrote the attempt")
+	}
+	idleToken, idleHash, err := NewSessionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idleID := uuid.New()
+	insertAttemptCredential(t, live.pool, idleID, live.sessionID, idleHash, "octoconv.convert.image", 1)
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, idleID)[3], idleToken, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if outputCount(t, live.pool, jobID) != 0 {
+		t.Fatal("inactive complete wrote an output")
+	}
+}
+
+func TestProgressRateLimit(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	path := attemptPaths(live.addr, attemptID)[1]
+	for i := 1; i <= 4; i++ {
+		body := []byte(`{"protocol_version":1,"percent":` + strconv.Itoa(i) + `}`)
+		status, _, resp := postAttempt(t, live, path, token, body)
+		if status != http.StatusOK {
+			t.Fatalf("progress %d status %d: %s", i, status, resp)
+		}
+	}
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":5}`))
+	assertRateLimited(t, status, hdr, resp)
+	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 4 {
+		t.Fatalf("progress %v", p)
+	}
+}
+
 func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
 	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
 }
@@ -2000,6 +2237,116 @@ func assertLeaseResponse(t *testing.T, body []byte, lease, deadline time.Time) {
 		t.Fatalf("body lease %s deadline %s", gotLease, gotDeadline)
 	}
 	assertEmptyCancelList(t, payload["control"])
+}
+
+func restoreJitter(t *testing.T) {
+	t.Helper()
+	prev := attemptJitter
+	attemptJitter = func(int) (int, error) { return 0, nil }
+	t.Cleanup(func() { attemptJitter = prev })
+}
+
+func assertControlOnly(t *testing.T, body []byte) {
+	t.Helper()
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode control body: %v", err)
+	}
+	if _, ok := payload["lease_expires_at"]; ok || len(payload) != 2 || string(payload["protocol_version"]) != "1" {
+		t.Fatalf("body %s", body)
+	}
+	assertEmptyCancelList(t, payload["control"])
+}
+
+func jobProgress(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) *int {
+	t.Helper()
+	var n *int16
+	if err := pool.QueryRow(context.Background(), `SELECT progress_pct FROM jobs WHERE id = $1`, id).Scan(&n); err != nil {
+		t.Fatalf("read progress: %v", err)
+	}
+	if n == nil {
+		return nil
+	}
+	v := int(*n)
+	return &v
+}
+
+func holdProgress(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID) (*int, bool) {
+	t.Helper()
+	var n *int16
+	var unknown bool
+	err := pool.QueryRow(context.Background(), `
+		SELECT progress_percent, COALESCE(progress_unknown, false)
+		FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&n, &unknown)
+	if err != nil {
+		t.Fatalf("read hold progress: %v", err)
+	}
+	if n == nil {
+		return nil, unknown
+	}
+	v := int(*n)
+	return &v, unknown
+}
+
+func jobStage(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) *string {
+	t.Helper()
+	var stage *string
+	if err := pool.QueryRow(context.Background(), `SELECT stage FROM jobs WHERE id = $1`, id).Scan(&stage); err != nil {
+		t.Fatalf("read job stage: %v", err)
+	}
+	return stage
+}
+
+func holdStage(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID) string {
+	t.Helper()
+	var stage *string
+	if err := pool.QueryRow(context.Background(), `SELECT stage FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&stage); err != nil {
+		t.Fatalf("read hold stage: %v", err)
+	}
+	if stage == nil {
+		return ""
+	}
+	return *stage
+}
+
+func jobErrorCode(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) string {
+	t.Helper()
+	var code *string
+	if err := pool.QueryRow(context.Background(), `SELECT error_code FROM jobs WHERE id = $1`, id).Scan(&code); err != nil {
+		t.Fatalf("read error code: %v", err)
+	}
+	if code == nil {
+		return ""
+	}
+	return *code
+}
+
+func holdState(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(context.Background(), `SELECT state FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&state); err != nil {
+		t.Fatalf("read hold state: %v", err)
+	}
+	return state
+}
+
+func failedHolds(t *testing.T, pool *pgxpool.Pool, stepID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds WHERE step_id = $1 AND state = 'failed'`, stepID).Scan(&n); err != nil {
+		t.Fatalf("count failed holds: %v", err)
+	}
+	return n
+}
+
+func outputCount(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM job_outputs WHERE job_id = $1`, jobID).Scan(&n); err != nil {
+		t.Fatalf("count outputs: %v", err)
+	}
+	return n
 }
 
 func usageSnapshot(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) (int, int) {

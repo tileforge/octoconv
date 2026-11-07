@@ -4,10 +4,10 @@
 // Exactly-once, by construction, not by a separate idempotency key: this
 // write is deliberately NON-idempotent (a repeated call adds another
 // increment, see the ON CONFLICT arm below) and safe to be so ONLY because
-// it is always invoked from inside Repo.transition's apply closure, on the
-// SAME pgx.Tx that already holds `SELECT ... FOR UPDATE` on the jobs row and
-// has already checked the source status against transition's allow-list
-// (D-06). A second terminal transition for the same job can never commit —
+// it is always invoked from inside Repo.transition's apply closure, or from
+// FailProtocolIn after that method has checked the job is queued or active,
+// on the SAME pgx.Tx that already holds `SELECT ... FOR UPDATE` on the jobs
+// row (D-06). A second terminal transition for the same job can never commit —
 // the allow-list rejects it before apply ever runs — so recordUsage can
 // never be invoked twice for one job's transition to done/failed. There is
 // no dedupe key on client_usage_daily and none is needed; do not add a

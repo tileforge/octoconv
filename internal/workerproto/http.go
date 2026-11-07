@@ -453,6 +453,10 @@ func messageFor(code string) string {
 		return "pull conflict"
 	case "rate_limited":
 		return "rate limited"
+	case "invalid_progress":
+		return "invalid progress"
+	case "artifact_rejected":
+		return "artifact rejected"
 	default:
 		return "invalid message"
 	}
