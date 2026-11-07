@@ -1495,12 +1495,17 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if !inputOK {
 		return claimDecision{skipID: jobID}, nil
 	}
-	ttl := time.Until(linkExpires).Truncate(time.Second)
-	if ttl < time.Second {
+	if _, ok := linkSignTTL(linkExpires); !ok {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
 	if _, err := tx.Exec(ctx, `SAVEPOINT claim_attempt`); err != nil {
 		return claimDecision{}, fmt.Errorf("claim savepoint: %w", err)
+	}
+	rollbackClaim := func() error {
+		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT claim_attempt`); err != nil {
+			return fmt.Errorf("rollback claim: %w", err)
+		}
+		return nil
 	}
 	stepID := uuid.New()
 	if storedStep != nil {
@@ -1529,8 +1534,8 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		leaseExpires, attemptDeadline); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			if _, rollErr := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT claim_attempt`); rollErr != nil {
-				return claimDecision{}, fmt.Errorf("rollback claim: %w", rollErr)
+			if err := rollbackClaim(); err != nil {
+				return claimDecision{}, err
 			}
 			return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
 		}
@@ -1539,11 +1544,25 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if err := h.jobsRepo.ActivateProtocol(ctx, tx, jobID, stepID); err != nil {
 		return claimDecision{}, err
 	}
-	getURL, err := h.store.PresignGet(ctx, inputKey, ttl)
+	getTTL, ok := linkSignTTL(linkExpires)
+	if !ok {
+		if err := rollbackClaim(); err != nil {
+			return claimDecision{}, err
+		}
+		return claimDecision{wire: emptyPull(cancelIDs)}, nil
+	}
+	getURL, err := h.store.PresignGet(ctx, inputKey, getTTL)
 	if err != nil {
 		return claimDecision{}, fmt.Errorf("presign input: %w", err)
 	}
-	putURL, err := h.store.PresignPut(ctx, storage.AttemptOutputKey(attemptID, 0), ttl)
+	putTTL, ok := linkSignTTL(linkExpires)
+	if !ok {
+		if err := rollbackClaim(); err != nil {
+			return claimDecision{}, err
+		}
+		return claimDecision{wire: emptyPull(cancelIDs)}, nil
+	}
+	putURL, err := h.store.PresignPut(ctx, storage.AttemptOutputKey(attemptID, 0), putTTL)
 	if err != nil {
 		return claimDecision{}, fmt.Errorf("presign output: %w", err)
 	}
@@ -1572,6 +1591,18 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
 		},
 	}, nil
+}
+
+func linkSignTTL(deadline time.Time) (time.Duration, bool) {
+	now := time.Now()
+	if !deadline.After(now.Add(5 * time.Second)) {
+		return 0, false
+	}
+	ttl := deadline.Sub(now).Truncate(time.Second)
+	if ttl < time.Second {
+		return 0, false
+	}
+	return ttl, true
 }
 
 func oneJobInput(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) (string, string, bool, error) {

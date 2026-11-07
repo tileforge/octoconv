@@ -3934,6 +3934,84 @@ func TestFileLinkInsideSkewStoresEmpty(t *testing.T) {
 	}
 }
 
+func TestLinkSignTTLRefusesTheSkewMargin(t *testing.T) {
+	if _, ok := linkSignTTL(time.Now().Add(5 * time.Second)); ok {
+		t.Fatal("deadline at the skew margin was signed")
+	}
+	if _, ok := linkSignTTL(time.Now().Add(5*time.Second - time.Millisecond)); ok {
+		t.Fatal("deadline inside the skew margin was signed")
+	}
+	ttl, ok := linkSignTTL(time.Now().Add(30 * time.Second))
+	if !ok || ttl < 29*time.Second || ttl > 30*time.Second || ttl%time.Second != 0 {
+		t.Fatalf("ttl %s ok %v", ttl, ok)
+	}
+}
+
+func TestFileLinkTTLFollowsTheDeadline(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	live.store.setGetDelay(1500 * time.Millisecond)
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	if pullAssignmentIDMust(t, resp) != jobID {
+		t.Fatalf("assignment %s", resp)
+	}
+	deadline, err := jsonString(assignment["attempt_deadline"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs, outputs []fileLink
+	if err := json.Unmarshal(assignment["inputs"], &inputs); err != nil || len(inputs) != 1 {
+		t.Fatalf("inputs %s", assignment["inputs"])
+	}
+	if err := json.Unmarshal(assignment["outputs"], &outputs); err != nil || len(outputs) != 1 {
+		t.Fatalf("outputs %s", assignment["outputs"])
+	}
+	if inputs[0].ExpiresAt != deadline || outputs[0].ExpiresAt != deadline {
+		t.Fatalf("expires %s %s deadline %s", inputs[0].ExpiresAt, outputs[0].ExpiresAt, deadline)
+	}
+	getTTL, putTTL := live.store.signTTLs()
+	if getTTL < putTTL+time.Second || putTTL < 5*time.Second {
+		t.Fatalf("get ttl %s put ttl %s", getTTL, putTTL)
+	}
+	if jobStatusOf(t, live.pool, jobID) != "active" || holdCount(t, live.pool, jobID) != 1 {
+		t.Fatal("delayed sign did not claim")
+	}
+}
+
+func TestLateSignRollsBackInsideSkew(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE jobs SET protocol_deadline = now() + interval '9 seconds' WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	live.store.setGetDelay(5 * time.Second)
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "queued" || holdCount(t, live.pool, jobID) != 0 {
+		t.Fatal("late sign left a hold")
+	}
+	gets, puts := live.store.signerCounts()
+	if gets != 1 || puts != 0 {
+		t.Fatalf("signer counts get %d put %d", gets, puts)
+	}
+	var creds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_attempt_credentials WHERE session_id = $1`, live.sessionID).Scan(&creds); err != nil {
+		t.Fatal(err)
+	}
+	if creds != 0 {
+		t.Fatalf("credentials %d", creds)
+	}
+}
+
 func TestStagingStaysUntilRelease(t *testing.T) {
 	live := openHello(t)
 	clientID := insertClient(t, live.pool)

@@ -21,6 +21,9 @@ type memStore struct {
 	objects    map[string][]byte
 	presignGet int
 	presignPut int
+	getDelay   time.Duration
+	getTTL     time.Duration
+	putTTL     time.Duration
 	copies     int
 	removes    []string
 	copyErr    error
@@ -55,14 +58,26 @@ func fileLinkURL(method, key string) string {
 
 func (m *memStore) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	m.mu.Lock()
+	delay := m.getDelay
 	m.presignGet++
+	m.getTTL = ttl
 	m.mu.Unlock()
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
+	}
 	return fileLinkURL("GET", key), nil
 }
 
 func (m *memStore) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
 	m.mu.Lock()
 	m.presignPut++
+	m.putTTL = ttl
 	m.mu.Unlock()
 	return fileLinkURL("PUT", key), nil
 }
@@ -211,6 +226,18 @@ func (m *memStore) signerCounts() (int, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.presignGet, m.presignPut
+}
+
+func (m *memStore) setGetDelay(delay time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.getDelay = delay
+}
+
+func (m *memStore) signTTLs() (time.Duration, time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.getTTL, m.putTTL
 }
 
 func (m *memStore) pauseNextCopy() (<-chan struct{}, func()) {
