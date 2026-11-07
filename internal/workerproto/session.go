@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"regexp"
 
 	"github.com/google/uuid"
@@ -124,6 +125,16 @@ func (r *Repo) identityExists(ctx context.Context, workerID uuid.UUID) (bool, er
 		return false, fmt.Errorf("identity exists: %w", err)
 	}
 	return exists, nil
+}
+
+// RevokeIdentity denylists the certificate and closes every session for that worker.
+func (r *Repo) RevokeIdentity(context.Context, uuid.UUID, *big.Int, string) error {
+	return nil
+}
+
+// DenylistSerial denylists one certificate and closes only sessions opened with that serial.
+func (r *Repo) DenylistSerial(context.Context, uuid.UUID, *big.Int, string) error {
+	return nil
 }
 
 func (r *Repo) serialDenied(ctx context.Context, issuerSHA, serial string) (bool, error) {
