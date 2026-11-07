@@ -211,6 +211,17 @@ services:
       PANDOC_MAX_INPUT_BYTES: "3145728"
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
+      # Worker protocol listener (D-02). All seven are set together. There is
+      # no TLS-off flag: a missing PEM refuses process start instead of
+      # serving this port in plaintext. Host key files must be mode 0444
+      # because the image runs as nobody.
+      WORKER_ADDR: ":8443"
+      WORKER_ORIGIN: worker.octoconv.local
+      WORKER_TLS_CERT: /etc/octoconv/worker-tls/server.crt
+      WORKER_TLS_KEY: /etc/octoconv/worker-tls/server.key
+      WORKER_CLIENT_CA: /etc/octoconv/worker-tls/ca.pem
+      WORKER_MANIFEST_DIR: /etc/octoconv/worker-manifests
+      WORKER_FILE_ACCESS: direct
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
       # omitted here. Both default to false (safe) when unset, and this is
       # the production SSRF guard for callback_url -- it must stay
@@ -219,8 +230,11 @@ services:
     ports:
       - "8090:8090"
       - "8091:8091"
+      - "8443:8443"
     volumes:
       - api_spill:/var/tmp/octoconv
+      - ./deploy/worker-tls:/etc/octoconv/worker-tls:ro
+      - ./deploy/worker-manifests:/etc/octoconv/worker-manifests:ro
     # D-06b (Phase 58): api's FIRST resource limit ever, mirroring worker's
     # own deploy.resources.limits shape below verbatim (this compose file's
     # only limit syntax -- not `mem_limit`/`cpus` top-level keys). Compose is

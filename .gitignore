@@ -7,6 +7,7 @@
 __pycache__/
 *.pyc
 deploy/tectonic-bundle/octoconv-bundle.ttb
+deploy/worker-tls/*.key
 # cmd-binaries: every cmd/<name> built with `go build -o <name> ./cmd/<name>`
 # lands here, in the repository root. The list is held equal to cmd/ by
 # internal/repohygiene -- it was one line (/tectonic-worker) added after one
