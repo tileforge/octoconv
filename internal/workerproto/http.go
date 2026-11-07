@@ -1,6 +1,7 @@
 package workerproto
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -32,12 +33,22 @@ const (
 type Handler struct {
 	repo               *Repo
 	jobsRepo           *jobs.Repo
+	store              objectStore
 	imageAttemptBudget time.Duration
 }
 
-// NewHandler returns a handler bound to the catalog and the image attempt budget.
-func NewHandler(repo *Repo, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration) *Handler {
-	return &Handler{repo: repo, jobsRepo: jobsRepo, imageAttemptBudget: imageAttemptBudget}
+type objectStore interface {
+	PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error)
+	PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error)
+	Copy(ctx context.Context, srcKey, dstKey string) error
+	ObjectSize(ctx context.Context, key string) (int64, error)
+	Download(ctx context.Context, key string) (io.ReadCloser, error)
+	Remove(ctx context.Context, key string) error
+}
+
+// NewHandler returns a handler bound to the catalog, the object store, and the image attempt budget.
+func NewHandler(repo *Repo, jobsRepo *jobs.Repo, store objectStore, imageAttemptBudget time.Duration) *Handler {
+	return &Handler{repo: repo, jobsRepo: jobsRepo, store: store, imageAttemptBudget: imageAttemptBudget}
 }
 
 // Routes returns the worker router. It is not mounted on the client API.

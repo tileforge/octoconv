@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 func TestRevokeOnLiveConnection(t *testing.T) {
@@ -618,6 +619,12 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
+	_, err = live.pool.Exec(ctx, `
+		INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes)
+		VALUES ($1, 0, $2, 'in.png', 'png', 4)`, jobID, storage.InputKey(jobID, 0, "in.png"))
+	if err != nil {
+		t.Fatalf("insert input: %v", err)
+	}
 	t.Cleanup(func() {
 		_, _ = live.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, jobID)
 	})
@@ -646,9 +653,6 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	assignment := decodeOneAssignment(t, resp)
 	if _, ok := assignment["href"]; ok {
 		t.Fatal("assignment has an href")
-	}
-	if string(assignment["inputs"]) != "[]" || string(assignment["outputs"]) != "[]" {
-		t.Fatal("inputs or outputs are not empty arrays")
 	}
 	var limits struct {
 		MaxOutputBytes int `json:"max_output_bytes"`
@@ -680,6 +684,7 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertAssignmentLinks(t, assignment, storage.InputKey(jobID, 0, "in.png"), attemptID, "jpg")
 	stepID, err := jsonUUID(assignment["step_id"])
 	if err != nil {
 		t.Fatal(err)
@@ -1254,7 +1259,7 @@ func TestFencedFailLeavesTheReplacement(t *testing.T) {
 		t.Fatalf("set client: %v", err)
 	}
 	replacement := repullAfterFence(t, live, attemptID, jobID)
-	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
 	err := h.failLiveAttempt(context.Background(), live.sessionID, attemptID, "engine_error", "late")
 	if !errors.Is(err, errAttemptInactive) {
 		t.Fatalf("fail: %v", err)
@@ -1275,7 +1280,7 @@ func TestFencedTimeoutLeavesTheReplacement(t *testing.T) {
 	restoreJitter(t)
 	_, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
 	replacement := repullAfterFence(t, live, attemptID, jobID)
-	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
 	err := h.requeueLiveAttempt(context.Background(), live.sessionID, attemptID, "timed out")
 	if !errors.Is(err, errAttemptInactive) {
 		t.Fatalf("timeout: %v", err)
@@ -1299,7 +1304,7 @@ func TestStopLocksTheJobBeforeTheHold(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
 		done <- h.stopAttempt(ctx, live.sessionID, attemptID, "terminate")
 	}()
 	waitForJobLock(t, live.pool)
@@ -1339,7 +1344,7 @@ func TestProgressLocksTheJobBeforeTheHold(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), 120*time.Second)
+		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
 		_, err := h.storeProgress(ctx, live.sessionID, attemptID, parsedProgress{percent: 10})
 		done <- err
 	}()
@@ -2081,7 +2086,8 @@ func TestActiveCompleteWritesNothing(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, []byte(`{"protocol_version":1}`))
+	missing := completeBody(t, "jpg", "image/jpeg", []byte("missing-object"))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, missing)
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "artifact_rejected")
 	if readAttemptSnap(t, live.pool, attemptID) != before || jobStatusOf(t, live.pool, jobID) != "active" || outputCount(t, live.pool, jobID) != 0 {
 		t.Fatal("complete wrote the attempt")
@@ -2092,7 +2098,7 @@ func TestActiveCompleteWritesNothing(t *testing.T) {
 	}
 	idleID := uuid.New()
 	insertAttemptCredential(t, live.pool, idleID, live.sessionID, idleHash, "octoconv.convert.image", 1)
-	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, idleID)[3], idleToken, []byte(`{"protocol_version":1}`))
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, idleID)[3], idleToken, missing)
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if outputCount(t, live.pool, jobID) != 0 {
 		t.Fatal("inactive complete wrote an output")
@@ -2140,7 +2146,7 @@ func TestScenario11CancelThenComplete(t *testing.T) {
 	if ids := heartbeatCancelIDs(t, live); len(ids) != 1 || ids[0] != attemptID.String() {
 		t.Fatalf("cancel list %v", ids)
 	}
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeBody(t, "jpg", "image/jpeg", []byte("canceled")))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if jobStatusOf(t, live.pool, jobID) != "canceled" {
 		t.Fatal("job left canceled")
@@ -2304,11 +2310,6 @@ func TestManualRetryAfterFiveFailuresThenPull(t *testing.T) {
 	clientID := insertClient(t, live.pool)
 	stepID := uuid.New()
 	jobID := insertPullJob(t, live.pool, pullJob{clientID: &clientID, status: "failed", stepID: &stepID})
-	if _, err := live.pool.Exec(context.Background(), `
-		INSERT INTO job_inputs (job_id, ordinal, object_key, size_bytes)
-		VALUES ($1, 0, 'uploads/retry/0-in.png', 10)`, jobID); err != nil {
-		t.Fatalf("insert input: %v", err)
-	}
 	for i := 0; i < 5; i++ {
 		insertSlotHold(t, live.pool, slotHold{
 			owner: uuid.New().String(), sessionID: live.sessionID, jobID: &jobID, stepID: &stepID, state: "failed", released: true,
@@ -2601,6 +2602,7 @@ func (l workerListener) hello(t *testing.T, manifest []byte) liveSession {
 	return liveSession{
 		pool: l.pool, workerID: workerID, sessionID: sessionID,
 		token: token, addr: l.addr, client: client, manifest: manifest,
+		store: listenerStore(l.addr),
 	}
 }
 
@@ -2677,6 +2679,14 @@ func insertPullJob(t *testing.T, pool *pgxpool.Pool, job pullJob) uuid.UUID {
 		)`, id, job.clientID, job.status, job.owner, capability, version, job.stepID, job.createdAt)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
+	}
+	if job.owner == "protocol" {
+		_, err = pool.Exec(context.Background(), `
+			INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes)
+			VALUES ($1, 0, $2, 'in.png', 'png', 4)`, id, storage.InputKey(id, 0, "in.png"))
+		if err != nil {
+			t.Fatalf("insert input: %v", err)
+		}
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE job_id = $1`, id)
@@ -3115,4 +3125,255 @@ func usageSnapshot(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) (int, i
 		t.Fatalf("read usage: %v", err)
 	}
 	return rows, jobs
+}
+
+func doneUsageCount(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COALESCE(sum(job_count), 0)::int
+		FROM client_usage_daily WHERE client_id = $1 AND status = 'done'`, clientID).Scan(&n); err != nil {
+		t.Fatalf("read done usage: %v", err)
+	}
+	return n
+}
+
+type fileLink struct {
+	Role      string `json:"role"`
+	Ordinal   int    `json:"ordinal"`
+	Format    string `json:"format"`
+	Href      string `json:"href"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+func assertAssignmentLinks(t *testing.T, assignment map[string]json.RawMessage, inputKey string, attemptID uuid.UUID, target string) {
+	t.Helper()
+	var inputs, outputs []fileLink
+	if err := json.Unmarshal(assignment["inputs"], &inputs); err != nil {
+		t.Fatalf("inputs: %v", err)
+	}
+	if err := json.Unmarshal(assignment["outputs"], &outputs); err != nil {
+		t.Fatalf("outputs: %v", err)
+	}
+	if len(inputs) != 1 || len(outputs) != 1 {
+		t.Fatalf("inputs %d outputs %d", len(inputs), len(outputs))
+	}
+	assertFileLink(t, inputs[0], "source", "png", "GET", inputKey)
+	assertFileLink(t, outputs[0], "primary", target, "PUT", storage.AttemptOutputKey(attemptID, 0))
+	if inputs[0].ExpiresAt == "" || inputs[0].ExpiresAt != outputs[0].ExpiresAt {
+		t.Fatalf("expires %q %q", inputs[0].ExpiresAt, outputs[0].ExpiresAt)
+	}
+}
+
+func assertFileLink(t *testing.T, link fileLink, role, format, method, key string) {
+	t.Helper()
+	if link.Role != role || link.Ordinal != 0 || link.Format != format {
+		t.Fatalf("link %+v", link)
+	}
+	parsed, err := url.Parse(link.Href)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "files.test" || parsed.Query().Get("method") != method || parsed.Query().Get("key") != key {
+		t.Fatalf("href %s", link.Href)
+	}
+}
+
+func completeBody(t *testing.T, format, contentType string, payload []byte) []byte {
+	t.Helper()
+	sum := sha256.Sum256(payload)
+	return mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"artifacts": []any{
+			map[string]any{
+				"role":         "primary",
+				"ordinal":      0,
+				"format":       format,
+				"content_type": contentType,
+				"sha256":       hex.EncodeToString(sum[:]),
+				"byte_size":    len(payload),
+			},
+		},
+	})
+}
+
+func postAttemptErr(client *http.Client, rawURL, sessionToken, attemptToken string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPost, rawURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	req.Header.Set("Octoconv-Attempt", attemptToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+func TestCompleteAcceptsCopiedPrimary(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	jobID := insertPullJob(t, live.pool, pullJob{clientID: &clientID})
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(assignment["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("primary-bytes")
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	live.store.put(staging, payload)
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeBody(t, "jpg", "image/jpeg", payload))
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "done" || jobProgress(t, live.pool, jobID) == nil || *jobProgress(t, live.pool, jobID) != 100 {
+		t.Fatalf("job %s progress %v", jobStatusOf(t, live.pool, jobID), jobProgress(t, live.pool, jobID))
+	}
+	var finished bool
+	if err := live.pool.QueryRow(context.Background(), `SELECT finished_at IS NOT NULL FROM jobs WHERE id = $1`, jobID).Scan(&finished); err != nil {
+		t.Fatal(err)
+	}
+	if !finished {
+		t.Fatal("finished_at is null")
+	}
+	var ordinal int
+	var objectKey, filename, format, contentType, role string
+	var size int64
+	err = live.pool.QueryRow(context.Background(), `
+		SELECT ordinal, object_key, filename, format, size_bytes, content_type, role
+		FROM job_outputs WHERE job_id = $1`, jobID).Scan(&ordinal, &objectKey, &filename, &format, &size, &contentType, &role)
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	wantKey := storage.AcceptedOutputKey(jobID, attemptID, 0, digest)
+	if ordinal != 0 || objectKey != wantKey || filename != "out.jpg" || format != "jpg" || size != int64(len(payload)) || contentType != "image/jpeg" || role != "primary" {
+		t.Fatalf("output ordinal=%d key=%s filename=%s format=%s size=%d type=%s role=%s", ordinal, objectKey, filename, format, size, contentType, role)
+	}
+	if outputCount(t, live.pool, jobID) != 1 {
+		t.Fatal("output count")
+	}
+	got, ok := live.store.get(wantKey)
+	if !ok || !bytes.Equal(got, payload) {
+		t.Fatalf("accepted bytes %q present %v", got, ok)
+	}
+	staged, ok := live.store.get(staging)
+	if !ok || !bytes.Equal(staged, payload) {
+		t.Fatal("staging key was removed")
+	}
+	var state string
+	var released bool
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT state, released_at IS NOT NULL FROM worker_slot_holds WHERE id = $1`, attemptID).Scan(&state, &released); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || !released {
+		t.Fatalf("hold state %s released %v", state, released)
+	}
+	if doneUsageCount(t, live.pool, clientID) != 1 {
+		t.Fatal("done usage")
+	}
+	var events int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM job_events
+		WHERE job_id = $1 AND from_status = 'active' AND to_status = 'done'`, jobID).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("events %d", events)
+	}
+}
+
+func TestConcurrentCompleteKeepsTheFirstCopy(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(assignment["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("first-copy")
+	staging := storage.AttemptOutputKey(attemptID, 0)
+	live.store.put(staging, original)
+	started, release := live.store.pauseNextCopy()
+	defer release()
+	body := completeBody(t, "jpg", "image/jpeg", original)
+	path := attemptPaths(live.addr, attemptID)[3]
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			code, respBody, err := postAttemptErr(live.client, path, live.token, token, body)
+			results <- result{status: code, body: respBody, err: err}
+		}()
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("copy did not start")
+	}
+	live.store.put(staging, []byte("replaced-staging"))
+	release()
+	sawOK := false
+	sawInactive := false
+	for range 2 {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				t.Fatal(got.err)
+			}
+			if got.status == http.StatusOK {
+				sawOK = true
+				assertControlOnly(t, got.body)
+				continue
+			}
+			if got.status == http.StatusConflict && bytes.Contains(got.body, []byte(`"attempt_not_active"`)) {
+				sawInactive = true
+				continue
+			}
+			t.Fatalf("status %d body %s", got.status, got.body)
+		case <-time.After(10 * time.Second):
+			t.Fatal("complete did not finish")
+		}
+	}
+	if !sawOK || !sawInactive {
+		t.Fatalf("ok %v inactive %v", sawOK, sawInactive)
+	}
+	sum := sha256.Sum256(original)
+	wantKey := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(sum[:]))
+	got, ok := live.store.get(wantKey)
+	if !ok || !bytes.Equal(got, original) {
+		t.Fatalf("accepted %q present %v", got, ok)
+	}
+	if outputCount(t, live.pool, jobID) != 1 || live.store.copyCount() != 1 {
+		t.Fatalf("outputs %d copies %d", outputCount(t, live.pool, jobID), live.store.copyCount())
+	}
 }

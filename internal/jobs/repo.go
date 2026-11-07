@@ -282,6 +282,55 @@ func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.
 	return nil
 }
 
+// AcceptProtocol marks an active protocol job done on the caller's transaction.
+// The caller already holds the job lock. It inserts one primary output, records
+// usage once, and releases the attempt hold without changing its state.
+func (r *Repo) AcceptProtocol(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, out Output) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, jobID).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusActive {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusDone, jobID)
+	}
+	filename := "out." + out.Format
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		jobID, out.Ordinal, out.ObjectKey, filename, out.Format, out.SizeBytes, out.ContentType, OutputRolePrimary); err != nil {
+		return fmt.Errorf("insert job output: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'done', finished_at = now(), progress_pct = 100
+		WHERE id = $1`, jobID); err != nil {
+		return fmt.Errorf("accept protocol job: %w", err)
+	}
+	if err := r.recordUsage(ctx, tx, jobID, StatusDone, 0); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, jobID, StatusActive, StatusDone); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET released_at = now()
+		WHERE id = $1 AND job_id = $2 AND state = 'active' AND released_at IS NULL`,
+		attemptID, jobID)
+	if err != nil {
+		return fmt.Errorf("release hold: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("release attempt %s: no active hold", attemptID)
+	}
+	return nil
+}
+
 // FailProtocol marks a protocol job failed and records daily usage.
 func (r *Repo) FailProtocol(ctx context.Context, id uuid.UUID, code, message string) error {
 	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {

@@ -18,7 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 type pullRequest struct {
@@ -33,6 +35,14 @@ type assignmentLimits struct {
 	MaxOutputBytes int `json:"max_output_bytes"`
 }
 
+type fileLinkWire struct {
+	Role      string `json:"role"`
+	Ordinal   int    `json:"ordinal"`
+	Format    string `json:"format"`
+	Href      string `json:"href"`
+	ExpiresAt string `json:"expires_at"`
+}
+
 type assignmentWire struct {
 	JobID             string           `json:"job_id"`
 	StepID            string           `json:"step_id"`
@@ -43,8 +53,23 @@ type assignmentWire struct {
 	AttemptDeadline   string           `json:"attempt_deadline"`
 	LeaseExpiresAt    string           `json:"lease_expires_at"`
 	Limits            assignmentLimits `json:"limits"`
-	Inputs            []struct{}       `json:"inputs"`
-	Outputs           []struct{}       `json:"outputs"`
+	Inputs            []fileLinkWire   `json:"inputs"`
+	Outputs           []fileLinkWire   `json:"outputs"`
+}
+
+type completeArtifact struct {
+	Role        string      `json:"role"`
+	Ordinal     json.Number `json:"ordinal"`
+	Format      string      `json:"format"`
+	ContentType string      `json:"content_type"`
+	SHA256      string      `json:"sha256"`
+	ByteSize    json.Number `json:"byte_size"`
+}
+
+type completeRequest struct {
+	ProtocolVersion json.Number     `json:"protocol_version"`
+	Artifacts       json.RawMessage `json:"artifacts"`
+	Extensions      json.RawMessage `json:"extensions"`
 }
 
 type pullWire struct {
@@ -369,20 +394,197 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var req protocolRequest
+	var req completeRequest
 	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
 		return
 	}
-	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if len(bytes.TrimSpace(req.Artifacts)) == 0 || string(bytes.TrimSpace(req.Artifacts)) == "null" {
+		writeCode(w, http.StatusBadRequest, "invalid_message")
+		return
+	}
+	arts, err := parseArtifacts(req.Artifacts)
+	if err != nil {
+		writeDecodeError(w, err)
+		return
+	}
+	body, err := h.acceptComplete(r.Context(), sess, attemptID, raw, arts)
+	var fail *completeFailure
+	if errors.As(err, &fail) {
+		writeCode(w, fail.status, fail.code)
+		return
+	}
+	if errors.Is(err, errAttemptInactive) {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
 	if err != nil {
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
-	if !live {
-		writeCode(w, http.StatusConflict, "attempt_not_active")
-		return
+	writeStored(w, body)
+}
+
+type completeFailure struct {
+	status int
+	code   string
+}
+
+func (e *completeFailure) Error() string { return e.code }
+
+func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemptID uuid.UUID, raw []byte, arts []completeArtifact) ([]byte, error) {
+	listed := len(arts) == 1 && artifactListed(arts[0])
+	var art completeArtifact
+	if listed {
+		art = arts[0]
 	}
-	writeCode(w, http.StatusConflict, "artifact_rejected")
+	var body []byte
+	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		jobID, err := lockReportingJob(ctx, tx, attemptID, sess.ID)
+		if err != nil {
+			return err
+		}
+		var status, target string
+		if err := tx.QueryRow(ctx, `SELECT status, target_format FROM jobs WHERE id = $1`, jobID).Scan(&status, &target); err != nil {
+			return fmt.Errorf("read job: %w", err)
+		}
+		if status != jobs.StatusActive {
+			return &completeFailure{status: http.StatusConflict, code: "attempt_not_active"}
+		}
+		if err := reportingAttemptLive(ctx, tx, attemptID, sess.ID); err != nil {
+			return err
+		}
+		if !listed || art.Format != target || art.ContentType != convert.MIMEType(art.Format) {
+			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+		}
+		src := storage.AttemptOutputKey(attemptID, 0)
+		dst := storage.AcceptedOutputKey(jobID, attemptID, 0, art.SHA256)
+		size, kind := integerToken(art.ByteSize)
+		if kind != numOK {
+			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+		}
+		err = h.store.Copy(ctx, src, dst)
+		if errors.Is(err, storage.ErrNotFound) {
+			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+		}
+		if err != nil {
+			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+		}
+		gotSize, err := h.store.ObjectSize(ctx, dst)
+		if errors.Is(err, storage.ErrNotFound) {
+			return h.rejectCopied(ctx, tx, dst)
+		}
+		if err != nil {
+			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+		}
+		if gotSize > int64(100<<20) || gotSize != size {
+			return h.rejectCopied(ctx, tx, dst)
+		}
+		rc, err := h.store.Download(ctx, dst)
+		if errors.Is(err, storage.ErrNotFound) {
+			return h.rejectCopied(ctx, tx, dst)
+		}
+		if err != nil {
+			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+		}
+		sum, err := hashReader(rc)
+		if err != nil {
+			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+		}
+		if sum != art.SHA256 {
+			return h.rejectCopied(ctx, tx, dst)
+		}
+		var stepID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT step_id FROM worker_slot_holds
+			WHERE id = $1 AND session_id = $2`, attemptID, sess.ID).Scan(&stepID); err != nil {
+			return fmt.Errorf("read attempt step: %w", err)
+		}
+		if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
+			Ordinal:     0,
+			ObjectKey:   dst,
+			Format:      art.Format,
+			SizeBytes:   gotSize,
+			ContentType: art.ContentType,
+		}); err != nil {
+			return err
+		}
+		ids, err := canceledAttempts(ctx, tx, sess.ID)
+		if err != nil {
+			return err
+		}
+		encoded, err := encodeWire(heartbeatWire{
+			ProtocolVersion: 1,
+			Control:         controlWire{CancelAttemptIDs: ids, Drain: false, Terminate: false},
+		})
+		if err != nil {
+			return err
+		}
+		rawSum := sha256.Sum256(raw)
+		key := jobID.String() + "/" + stepID.String() + "/" + attemptID.String() + "/complete"
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256, response_body)
+			VALUES ($1, $2, $3, $4)`,
+			sess.ID, key, hex.EncodeToString(rawSum[:]), encoded); err != nil {
+			return fmt.Errorf("store complete: %w", err)
+		}
+		body = encoded
+		return nil
+	})
+	return body, err
+}
+
+func (h *Handler) rejectCopied(ctx context.Context, tx pgx.Tx, dst string) error {
+	var named bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM job_outputs WHERE object_key = $1)`, dst).Scan(&named); err != nil {
+		return fmt.Errorf("read output key: %w", err)
+	}
+	if !named {
+		if err := h.store.Remove(ctx, dst); err != nil {
+			return &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
+		}
+	}
+	return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+}
+
+func artifactListed(art completeArtifact) bool {
+	if art.Role != "primary" || art.Format == "" || art.ContentType == "" {
+		return false
+	}
+	ordinal, kind := integerToken(art.Ordinal)
+	if kind != numOK || ordinal != 0 {
+		return false
+	}
+	if !hex64.MatchString(art.SHA256) {
+		return false
+	}
+	size, kind := integerToken(art.ByteSize)
+	return kind == numOK && size >= 0 && size <= int64(100<<20)
+}
+
+func parseArtifacts(raw json.RawMessage) ([]completeArtifact, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	dec.DisallowUnknownFields()
+	var arts []completeArtifact
+	if err := dec.Decode(&arts); err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing json")
+		}
+		return nil, err
+	}
+	return arts, nil
+}
+
+func hashReader(rc io.ReadCloser) (string, error) {
+	defer rc.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, rc); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID uuid.UUID) {
@@ -1088,14 +1290,25 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	var jobID uuid.UUID
 	var storedStep *uuid.UUID
 	var clientID *uuid.UUID
-	var attemptDeadline, leaseExpires time.Time
-	var leaseOK bool
+	var targetFormat *string
+	var attemptDeadline, leaseExpires, linkExpires time.Time
+	var leaseOK, linkOK bool
 	err = tx.QueryRow(ctx, `
-		SELECT id, step_id, client_id,
+		SELECT id, step_id, client_id, target_format,
 		       LEAST(protocol_deadline, now() + make_interval(secs => $3)),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3))),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3)))
-		           > now() + interval '5 seconds'
+		           > now() + interval '5 seconds',
+		       LEAST(
+		           now() + interval '300 seconds',
+		           LEAST(protocol_deadline, now() + make_interval(secs => $3)),
+		           protocol_deadline
+		       ),
+		       LEAST(
+		           now() + interval '300 seconds',
+		           LEAST(protocol_deadline, now() + make_interval(secs => $3)),
+		           protocol_deadline
+		       ) > now() + interval '5 seconds'
 		FROM jobs
 		WHERE dispatch_owner = 'protocol'
 		  AND status = 'queued'
@@ -1129,8 +1342,8 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped, filterCap, engine).Scan(
-		&jobID, &storedStep, &clientID, &attemptDeadline, &leaseExpires, &leaseOK)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !leaseOK) {
+		&jobID, &storedStep, &clientID, &targetFormat, &attemptDeadline, &leaseExpires, &leaseOK, &linkExpires, &linkOK)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!leaseOK || !linkOK)) {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
 	if err != nil {
@@ -1144,6 +1357,20 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		if skip {
 			return claimDecision{skipID: jobID}, nil
 		}
+	}
+	if targetFormat == nil || *targetFormat == "" {
+		return claimDecision{skipID: jobID}, nil
+	}
+	inputKey, inputFormat, inputOK, err := oneJobInput(ctx, tx, jobID)
+	if err != nil {
+		return claimDecision{}, err
+	}
+	if !inputOK {
+		return claimDecision{skipID: jobID}, nil
+	}
+	ttl := time.Until(linkExpires).Truncate(time.Second)
+	if ttl < time.Second {
+		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
 	if _, err := tx.Exec(ctx, `SAVEPOINT claim_attempt`); err != nil {
 		return claimDecision{}, fmt.Errorf("claim savepoint: %w", err)
@@ -1185,6 +1412,15 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if err := h.jobsRepo.ActivateProtocol(ctx, tx, jobID, stepID); err != nil {
 		return claimDecision{}, err
 	}
+	getURL, err := h.store.PresignGet(ctx, inputKey, ttl)
+	if err != nil {
+		return claimDecision{}, fmt.Errorf("presign input: %w", err)
+	}
+	putURL, err := h.store.PresignPut(ctx, storage.AttemptOutputKey(attemptID, 0), ttl)
+	if err != nil {
+		return claimDecision{}, fmt.Errorf("presign output: %w", err)
+	}
+	expiresAt := linkExpires.UTC().Format(time.RFC3339Nano)
 	return claimDecision{
 		attemptID: attemptID,
 		wire: pullWire{
@@ -1199,12 +1435,32 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 				AttemptDeadline:   attemptDeadline.UTC().Format(time.RFC3339Nano),
 				LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
 				Limits:            assignmentLimits{MaxOutputBytes: 100 << 20},
-				Inputs:            []struct{}{},
-				Outputs:           []struct{}{},
+				Inputs: []fileLinkWire{{
+					Role: "source", Ordinal: 0, Format: inputFormat, Href: getURL, ExpiresAt: expiresAt,
+				}},
+				Outputs: []fileLinkWire{{
+					Role: "primary", Ordinal: 0, Format: *targetFormat, Href: putURL, ExpiresAt: expiresAt,
+				}},
 			}},
 			Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
 		},
 	}, nil
+}
+
+func oneJobInput(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) (string, string, bool, error) {
+	var n int
+	var key, format string
+	err := tx.QueryRow(ctx, `
+		SELECT count(*)::int, COALESCE(min(object_key), ''), COALESCE(min(format), '')
+		FROM job_inputs
+		WHERE job_id = $1 AND ordinal = 0 AND object_key <> '' AND format <> ''`, jobID).Scan(&n, &key, &format)
+	if err != nil {
+		return "", "", false, fmt.Errorf("read job input: %w", err)
+	}
+	if n != 1 {
+		return "", "", false, nil
+	}
+	return key, format, true, nil
 }
 
 func (h *Handler) clientAtCap(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine string, jobID uuid.UUID) (bool, error) {
