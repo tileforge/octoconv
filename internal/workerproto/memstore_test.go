@@ -143,6 +143,12 @@ func (m *memStore) copyCount() int {
 	return m.copies
 }
 
+func (m *memStore) signerCounts() (int, int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.presignGet, m.presignPut
+}
+
 func (m *memStore) pauseNextCopy() (<-chan struct{}, func()) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})

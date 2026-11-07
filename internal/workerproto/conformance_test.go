@@ -3377,3 +3377,134 @@ func TestConcurrentCompleteKeepsTheFirstCopy(t *testing.T) {
 		t.Fatalf("outputs %d copies %d", outputCount(t, live.pool, jobID), live.store.copyCount())
 	}
 }
+
+func TestScenario20FileLinkExpiry(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	body := pullBody(uuid.New(), 1, 0)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || pullAssignmentIDMust(t, resp) != jobID {
+		t.Fatalf("assignment %s", resp)
+	}
+	deadline, err := jsonString(assignment["attempt_deadline"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := jsonTime(assignment["lease_expires_at"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputs, outputs []fileLink
+	if err := json.Unmarshal(assignment["inputs"], &inputs); err != nil || len(inputs) != 1 {
+		t.Fatalf("inputs %s", assignment["inputs"])
+	}
+	if err := json.Unmarshal(assignment["outputs"], &outputs); err != nil || len(outputs) != 1 {
+		t.Fatalf("outputs %s", assignment["outputs"])
+	}
+	if inputs[0].ExpiresAt != deadline || outputs[0].ExpiresAt != deadline {
+		t.Fatalf("expires %s %s deadline %s", inputs[0].ExpiresAt, outputs[0].ExpiresAt, deadline)
+	}
+	expires, err := time.Parse(time.RFC3339Nano, inputs[0].ExpiresAt)
+	if err != nil || !expires.After(lease) {
+		t.Fatalf("expires %s lease %s", inputs[0].ExpiresAt, lease)
+	}
+	assertFileLink(t, inputs[0], "source", "png", "GET", storage.InputKey(jobID, 0, "in.png"))
+	assertFileLink(t, outputs[0], "primary", "jpg", "PUT", storage.AttemptOutputKey(attemptID, 0))
+	gets, puts := live.store.signerCounts()
+	status, _, again := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK || !bytes.Equal(resp, again) {
+		t.Fatalf("replay status %d: %s", status, again)
+	}
+	gotGets, gotPuts := live.store.signerCounts()
+	if gotGets != gets || gotPuts != puts {
+		t.Fatalf("signer counts %d %d after %d %d", gets, puts, gotGets, gotPuts)
+	}
+}
+
+func pullAssignmentIDMust(t *testing.T, body []byte) uuid.UUID {
+	t.Helper()
+	id, ok := pullAssignmentID(t, body)
+	if !ok {
+		t.Fatalf("assignment %s", body)
+	}
+	return id
+}
+
+func TestRenewDoesNotResignFileLink(t *testing.T) {
+	live := openHello(t)
+	insertPullJob(t, live.pool, pullJob{})
+	body := pullBody(uuid.New(), 1, 0)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(assignment["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(assignment["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := readAttemptSnap(t, live.pool, attemptID)
+	gets, puts := live.store.signerCounts()
+	status, _, renew := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	if status != http.StatusOK {
+		t.Fatalf("renew status %d: %s", status, renew)
+	}
+	after := readAttemptSnap(t, live.pool, attemptID)
+	if !after.lease.After(before.lease) || !after.deadline.Equal(before.deadline) {
+		t.Fatalf("renew lease %s deadline %s", after.lease, after.deadline)
+	}
+	status, _, again := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK || !bytes.Equal(resp, again) {
+		t.Fatalf("stored pull changed: %s", again)
+	}
+	status, _, beat := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("heartbeat status %d: %s", status, beat)
+	}
+	if bytes.Contains(beat, []byte(`"assignments"`)) || bytes.Contains(beat, []byte(`"href"`)) {
+		t.Fatalf("heartbeat %s", beat)
+	}
+	gotGets, gotPuts := live.store.signerCounts()
+	if gotGets != gets || gotPuts != puts {
+		t.Fatalf("signer counts %d %d after %d %d", gets, puts, gotGets, gotPuts)
+	}
+}
+
+func TestFileLinkInsideSkewStoresEmpty(t *testing.T) {
+	live := openHello(t)
+	jobID := insertPullJob(t, live.pool, pullJob{})
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE jobs SET protocol_deadline = now() + interval '4 seconds' WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	gets, puts := live.store.signerCounts()
+	status, resp := pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "queued" || holdCount(t, live.pool, jobID) != 0 {
+		t.Fatal("short link claimed the job")
+	}
+	var creds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_attempt_credentials WHERE session_id = $1`, live.sessionID).Scan(&creds); err != nil {
+		t.Fatal(err)
+	}
+	if creds != 0 {
+		t.Fatalf("credentials %d", creds)
+	}
+	gotGets, gotPuts := live.store.signerCounts()
+	if gotGets != gets || gotPuts != puts {
+		t.Fatalf("signer counts %d %d after %d %d", gets, puts, gotGets, gotPuts)
+	}
+}
