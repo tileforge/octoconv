@@ -2506,6 +2506,12 @@ func insertProtocolImageJob(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
+	_, err = pool.Exec(context.Background(), `
+		INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes)
+		VALUES ($1, 0, $2, 'in.png', 'png', 4)`, jobID, storage.InputKey(jobID, 0, "in.png"))
+	if err != nil {
+		t.Fatalf("insert input: %v", err)
+	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, jobID)
 	})
