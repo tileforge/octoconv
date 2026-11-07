@@ -20,7 +20,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -880,4 +883,309 @@ func readGateState(t *testing.T, pool *pgxpool.Pool) gateState {
 		t.Fatalf("read gate state: %v", err)
 	}
 	return state
+}
+
+func TestScenario01PullReplayDoesNotExtendLease(t *testing.T) {
+	live := openHello(t)
+	jobID := insertProtocolImageJob(t, live.pool)
+	pullID := uuid.New()
+	body := pullBody(pullID, 1, 0)
+	status, hdr, first := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, first)
+	}
+	assertNoStoreJSON(t, hdr)
+	var lease time.Time
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT lease_expires_at FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&lease); err != nil {
+		t.Fatalf("read lease: %v", err)
+	}
+	var backdated time.Time
+	if err := live.pool.QueryRow(context.Background(), `
+		UPDATE worker_slot_holds
+		SET lease_expires_at = now() - interval '1 minute'
+		WHERE job_id = $1
+		RETURNING lease_expires_at`, jobID).Scan(&backdated); err != nil {
+		t.Fatalf("backdate lease: %v", err)
+	}
+	status, hdr, second := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("replay status %d: %s", status, second)
+	}
+	assertNoStoreJSON(t, hdr)
+	if !bytes.Equal(first, second) {
+		t.Fatalf("replay body differs\n%s\n%s", first, second)
+	}
+	var after time.Time
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT lease_expires_at FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&after); err != nil {
+		t.Fatalf("reread lease: %v", err)
+	}
+	if !after.Equal(backdated) {
+		t.Fatalf("lease moved from %s to %s", backdated, after)
+	}
+	if holds := countHolds(t, live.pool, jobID); holds != 1 {
+		t.Fatalf("holds %d", holds)
+	}
+	if !lease.After(backdated) {
+		t.Fatal("lease was not moved into the past")
+	}
+}
+
+func TestScenario02ConcurrentPullOneAttempt(t *testing.T) {
+	live := openHello(t)
+	jobID := insertProtocolImageJob(t, live.pool)
+	body := pullBody(uuid.New(), 1, 0)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	type pullResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	results := make([]pullResult, 2)
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i].status, results[i].body, results[i].err = postBody(live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, result := range results {
+		if result.err != nil {
+			t.Fatalf("pull %d: %v", i, result.err)
+		}
+		if result.status != http.StatusOK {
+			t.Fatalf("pull %d status %d: %s", i, result.status, result.body)
+		}
+		if !bytes.Equal(result.body, results[0].body) {
+			t.Fatalf("pull %d body differs", i)
+		}
+	}
+	if holds := countHolds(t, live.pool, jobID); holds != 1 {
+		t.Fatalf("holds %d", holds)
+	}
+	var creds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_attempt_credentials WHERE session_id = $1`, live.sessionID).Scan(&creds); err != nil {
+		t.Fatalf("count credentials: %v", err)
+	}
+	if creds != 1 {
+		t.Fatalf("credentials %d", creds)
+	}
+}
+
+func TestScenario03PullConflict(t *testing.T) {
+	live := openHello(t)
+	jobID := insertProtocolImageJob(t, live.pool)
+	pullID := uuid.New()
+	firstBody := pullBody(pullID, 1, 0)
+	status, _, first := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, firstBody, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, first)
+	}
+	var stored []byte
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT response_body FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, live.sessionID, pullID.String()).Scan(&stored); err != nil {
+		t.Fatalf("read stored pull: %v", err)
+	}
+	secondBody := []byte(strings.Replace(string(firstBody), "{", "{ ", 1))
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, secondBody, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "pull_conflict")
+	var message string
+	if err := json.Unmarshal(resp, &struct {
+		Message *string `json:"message"`
+	}{&message}); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if message == "invalid message" {
+		t.Fatalf("conflict message %q", message)
+	}
+	var after []byte
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT response_body FROM worker_request_dedup
+		WHERE session_id = $1 AND dedup_key = $2`, live.sessionID, pullID.String()).Scan(&after); err != nil {
+		t.Fatalf("reread stored pull: %v", err)
+	}
+	if !bytes.Equal(stored, after) {
+		t.Fatal("conflict replaced the stored body")
+	}
+	if holds := countHolds(t, live.pool, jobID); holds != 1 {
+		t.Fatalf("holds %d", holds)
+	}
+}
+
+func TestScenario04EmptyPullReplay(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	pullID := uuid.New()
+	body := pullBody(pullID, 1, 0)
+	status, hdr, first := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, first)
+	}
+	assertNoStoreJSON(t, hdr)
+	assertJSONEqual(t, first, readPositiveFixture(t, "pull-empty.json"))
+	status, _, second := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("replay status %d: %s", status, second)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("empty replay differs")
+	}
+	var holds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds WHERE session_id = $1`, live.sessionID).Scan(&holds); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 0 {
+		t.Fatalf("holds %d", holds)
+	}
+}
+
+func TestScenario05PullAfterClose(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	body := pullBody(uuid.New(), 1, 0)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete status %d: %s", status, resp)
+	}
+	var dedup int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_request_dedup WHERE session_id = $1`, live.sessionID).Scan(&dedup); err != nil {
+		t.Fatalf("count dedup: %v", err)
+	}
+	if dedup != 0 {
+		t.Fatalf("dedup rows %d", dedup)
+	}
+	var hdr http.Header
+	status, hdr, resp = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, body, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusUnauthorized, "session_closed")
+	var creds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_attempt_credentials WHERE session_id = $1`, live.sessionID).Scan(&creds); err != nil {
+		t.Fatalf("count credentials: %v", err)
+	}
+	if creds != 0 {
+		t.Fatalf("credentials %d", creds)
+	}
+}
+
+func TestScenario17PullUnknownField(t *testing.T) {
+	live := openHello(t)
+	deletePullFixtures(t, live.pool)
+	unknown := []byte(`{"protocol_version":1,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"priority":1}`)
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, unknown, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "unknown_field")
+	withExt := []byte(`{"protocol_version":1,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"extensions":{"priority":1}}`)
+	without := pullBody(uuid.New(), 1, 0)
+	status, _, extended := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, withExt, nil)
+	if status != http.StatusOK {
+		t.Fatalf("extensions pull status %d: %s", status, extended)
+	}
+	status, _, plain := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, without, nil)
+	if status != http.StatusOK {
+		t.Fatalf("plain pull status %d: %s", status, plain)
+	}
+	if !bytes.Equal(extended, plain) {
+		t.Fatalf("extensions changed the pull\n%s\n%s", extended, plain)
+	}
+	var holds int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds WHERE session_id = $1`, live.sessionID).Scan(&holds); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 0 {
+		t.Fatalf("holds %d", holds)
+	}
+}
+
+func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
+	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
+}
+
+func insertProtocolImageJob(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
+	t.Helper()
+	deletePullFixtures(t, pool)
+	jobID := uuid.New()
+	_, err := pool.Exec(context.Background(), `
+		INSERT INTO jobs (
+			id, operation, engine, status, source_format, target_format,
+			dispatch_owner, capability_id, capability_version, protocol_deadline, options
+		) VALUES (
+			$1, 'convert', 'image', 'queued', 'png', 'jpg',
+			'protocol', 'octoconv.convert.image', 1, now() + interval '1 hour',
+			'{"test":"protocol-pull"}'
+		)`, jobID)
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, jobID)
+	})
+	return jobID
+}
+
+func deletePullFixtures(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+		DELETE FROM jobs
+		WHERE options @> '{"test":"protocol-pull"}'
+		   OR options @> '{"test":"TestPullAssignsOneImageAttempt"}'`)
+	if err != nil {
+		t.Fatalf("clear fixture jobs: %v", err)
+	}
+}
+
+func countHolds(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&n); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	return n
+}
+
+func assertJSONEqual(t *testing.T, body, fixture []byte) {
+	t.Helper()
+	var got, want any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if err := json.Unmarshal(fixture, &want); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("json mismatch\n%s\n%s", body, fixture)
+	}
+}
+
+func postBody(client *http.Client, method, rawURL, token string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequest(method, rawURL, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, respBody, nil
 }

@@ -446,6 +446,8 @@ func messageFor(code string) string {
 		return "capability denied"
 	case "attempt_not_active":
 		return "attempt not active"
+	case "pull_conflict":
+		return "pull conflict"
 	default:
 		return "invalid message"
 	}
