@@ -515,23 +515,27 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 		}
 		var jobID uuid.UUID
 		var current *int16
+		var storedUnknown bool
 		var stage *string
 		var stageIndex, stageCount, eta *int
 		err = tx.QueryRow(ctx, `
-			SELECT job_id, progress_percent, stage, stage_index, stage_count, eta_seconds
+			SELECT job_id, progress_percent, COALESCE(progress_unknown, false),
+			       stage, stage_index, stage_count, eta_seconds
 			FROM worker_slot_holds WHERE id = $1`, attemptID).
-			Scan(&jobID, &current, &stage, &stageIndex, &stageCount, &eta)
+			Scan(&jobID, &current, &storedUnknown, &stage, &stageIndex, &stageCount, &eta)
 		if err != nil {
 			return fmt.Errorf("read progress: %w", err)
 		}
 		percent := current
-		unknown := false
+		unknown := storedUnknown
+		advanced := false
 		if parsed.unknown {
-			percent = nil
 			unknown = true
 		} else if current == nil || parsed.percent >= int(*current) {
 			value := int16(parsed.percent)
 			percent = &value
+			unknown = false
+			advanced = true
 		}
 		if parsed.stage != nil {
 			stage = parsed.stage
@@ -554,7 +558,14 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 			WHERE id = $1`, attemptID, percent, unknown, stage, stageIndex, stageCount, eta); err != nil {
 			return fmt.Errorf("store progress: %w", err)
 		}
-		if !parsed.unknown && (current == nil || parsed.percent >= int(*current)) {
+		if parsed.unknown {
+			if _, err := tx.Exec(ctx, `
+				UPDATE jobs
+				SET progress_pct = NULL, progress_updated_at = now()
+				WHERE id = $1 AND status = 'active'`, jobID); err != nil {
+				return fmt.Errorf("store job progress: %w", err)
+			}
+		} else if advanced {
 			if _, err := tx.Exec(ctx, `
 				UPDATE jobs
 				SET progress_pct = $2, progress_updated_at = now()
@@ -686,9 +697,11 @@ func (h *Handler) stopAttempt(ctx context.Context, sessionID, attemptID uuid.UUI
 			return err
 		}
 		var state string
+		var released bool
 		err = tx.QueryRow(ctx, `
-			SELECT state FROM worker_slot_holds
-			WHERE id = $1 AND session_id = $2`, attemptID, sessionID).Scan(&state)
+			SELECT state, released_at IS NOT NULL
+			FROM worker_slot_holds
+			WHERE id = $1 AND session_id = $2`, attemptID, sessionID).Scan(&state, &released)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errAttemptInactive
 		}
@@ -702,7 +715,11 @@ func (h *Handler) stopAttempt(ctx context.Context, sessionID, attemptID uuid.UUI
 			}
 			return nil
 		}
-		if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
+		if reason == "lease_lost" {
+			if state != "active" || released {
+				return errAttemptInactive
+			}
+		} else if err := reportingAttemptLive(ctx, tx, attemptID, sessionID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `

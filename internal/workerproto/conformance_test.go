@@ -1843,6 +1843,41 @@ func TestProgressUnknownStaysNull(t *testing.T) {
 	}
 }
 
+func TestUnknownProgressClearsClientValue(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
+	path := attemptPaths(live.addr, attemptID)[1]
+	post := func(body string) {
+		t.Helper()
+		status, _, resp := postAttempt(t, live, path, token, []byte(body))
+		if status != http.StatusOK {
+			t.Fatalf("progress status %d: %s", status, resp)
+		}
+	}
+	post(`{"protocol_version":1,"percent":40}`)
+	percent, unknown := holdProgress(t, live.pool, attemptID)
+	job := jobProgress(t, live.pool, jobID)
+	if percent == nil || *percent != 40 || unknown || job == nil || *job != 40 {
+		t.Fatal("percent 40 was not stored")
+	}
+	post(`{"protocol_version":1,"percent":null}`)
+	percent, unknown = holdProgress(t, live.pool, attemptID)
+	if percent == nil || *percent != 40 || !unknown || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("unknown progress cleared the hold high-water or left the job percent")
+	}
+	post(`{"protocol_version":1,"percent":10}`)
+	percent, unknown = holdProgress(t, live.pool, attemptID)
+	if percent == nil || *percent != 40 || !unknown || jobProgress(t, live.pool, jobID) != nil {
+		t.Fatal("lower percent after unknown replaced the high-water")
+	}
+	post(`{"protocol_version":1,"percent":50}`)
+	percent, unknown = holdProgress(t, live.pool, attemptID)
+	job = jobProgress(t, live.pool, jobID)
+	if percent == nil || *percent != 50 || unknown || job == nil || *job != 50 {
+		t.Fatal("percent 50 did not replace the unknown high-water")
+	}
+}
+
 func TestScenario19RetryClearsProgress(t *testing.T) {
 	live := openHello(t)
 	restoreJitter(t)
@@ -1986,6 +2021,59 @@ func TestStoppedTerminateDoesNotBurnBudget(t *testing.T) {
 	gotAttempt, err := jsonUUID(assignment["attempt_id"])
 	if err != nil || gotAttempt == attemptID {
 		t.Fatalf("attempt %s", resp)
+	}
+}
+
+func TestStoppedLeaseLostAfterExpiryDoesNotBurnBudget(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, -30, 120)
+	var stepID uuid.UUID
+	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if failedHolds(t, live.pool, stepID) != 0 {
+		t.Fatal("failed holds were not zero")
+	}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"lease_lost"}`))
+	if status != http.StatusOK {
+		t.Fatalf("stopped status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "queued" || failedHolds(t, live.pool, stepID) != 0 || holdState(t, live.pool, attemptID) != "stopped" {
+		t.Fatal("lease_lost burned the budget or left the job active")
+	}
+	status, resp = pullOnce(t, live, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull status %d: %s", status, resp)
+	}
+	assignment := decodeOneAssignment(t, resp)
+	gotStep, err := jsonUUID(assignment["step_id"])
+	if err != nil || gotStep != stepID {
+		t.Fatalf("step %s", resp)
+	}
+	gotAttempt, err := jsonUUID(assignment["attempt_id"])
+	if err != nil || gotAttempt == attemptID {
+		t.Fatalf("attempt %s", resp)
+	}
+}
+
+func TestStoppedLeaseLostRejectsReleasedHold(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, jobID := insertActiveAttempt(t, live, -30, 120)
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_slot_holds
+		SET state = 'failed', released_at = now()
+		WHERE id = $1`, attemptID); err != nil {
+		t.Fatalf("release hold: %v", err)
+	}
+	var stepID uuid.UUID
+	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"lease_lost"}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if jobStatusOf(t, live.pool, jobID) != "active" || holdState(t, live.pool, attemptID) != "failed" || failedHolds(t, live.pool, stepID) != 1 {
+		t.Fatal("rejected lease_lost changed the fenced hold")
 	}
 }
 
