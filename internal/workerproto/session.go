@@ -89,6 +89,19 @@ func (r *Repo) closeSession(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
+func (r *Repo) attemptTokenHash(ctx context.Context, attemptID uuid.UUID) (string, bool, error) {
+	var hash string
+	err := r.pool.QueryRow(ctx, `
+		SELECT token_hash FROM worker_attempt_credentials WHERE attempt_id = $1`, attemptID).Scan(&hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read attempt credential: %w", err)
+	}
+	return hash, true, nil
+}
+
 func (r *Repo) sessionByHash(ctx context.Context, tokenHash string) (storedSession, error) {
 	var s storedSession
 	err := r.pool.QueryRow(ctx, `

@@ -43,6 +43,11 @@ func (h *Handler) Routes() http.Handler {
 	r.Post("/worker/v1/sessions", h.handleHello)
 	r.Post("/worker/v1/sessions/{id}/heartbeat", h.handleHeartbeat)
 	r.Delete("/worker/v1/sessions/{id}", h.handleDelete)
+	r.Post("/worker/v1/attempts/{id}/lease", h.gateAttempt)
+	r.Post("/worker/v1/attempts/{id}/progress", h.gateAttempt)
+	r.Post("/worker/v1/attempts/{id}/fail", h.gateAttempt)
+	r.Post("/worker/v1/attempts/{id}/complete", h.gateAttempt)
+	r.Post("/worker/v1/attempts/{id}/stopped", h.gateAttempt)
 	return r
 }
 
@@ -215,6 +220,19 @@ func (h *Handler) finishSession(w http.ResponseWriter, r *http.Request, closeSes
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (storedSession, bool) {
+	sess, ok := h.authenticateSession(w, r)
+	if !ok {
+		return storedSession{}, false
+	}
+	urlID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil || urlID != sess.ID {
+		writeCode(w, http.StatusUnauthorized, "unauthorized")
+		return storedSession{}, false
+	}
+	return sess, true
+}
+
+func (h *Handler) authenticateSession(w http.ResponseWriter, r *http.Request) (storedSession, bool) {
 	leaf, ok := peerLeaf(w, r)
 	if !ok {
 		return storedSession{}, false
@@ -256,12 +274,50 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (storedSe
 		writeCode(w, http.StatusUnauthorized, "unauthorized")
 		return storedSession{}, false
 	}
-	urlID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil || urlID != sess.ID {
-		writeCode(w, http.StatusUnauthorized, "unauthorized")
-		return storedSession{}, false
-	}
 	return sess, true
+}
+
+func (h *Handler) gateAttempt(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.authenticateSession(w, r); !ok {
+		return
+	}
+	if !discardLimitedBody(w, r) {
+		return
+	}
+	raw := r.Header.Get("Octoconv-Attempt")
+	if raw == "" {
+		writeCode(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	attemptID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeCode(w, http.StatusForbidden, "capability_denied")
+		return
+	}
+	presented, err := HashToken(raw)
+	if err != nil {
+		writeCode(w, http.StatusForbidden, "capability_denied")
+		return
+	}
+	stored, found, err := h.repo.attemptTokenHash(r.Context(), attemptID)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !found || presented != stored {
+		writeCode(w, http.StatusForbidden, "capability_denied")
+		return
+	}
+	writeCode(w, http.StatusConflict, "attempt_not_active")
+}
+
+func discardLimitedBody(w http.ResponseWriter, r *http.Request) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxMessageBytes)
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		writeDecodeError(w, err)
+		return false
+	}
+	return true
 }
 
 func peerLeaf(w http.ResponseWriter, r *http.Request) (*x509.Certificate, bool) {
@@ -371,6 +427,10 @@ func messageFor(code string) string {
 		return "unauthorized"
 	case "session_closed":
 		return "session closed"
+	case "capability_denied":
+		return "capability denied"
+	case "attempt_not_active":
+		return "attempt not active"
 	default:
 		return "invalid message"
 	}
