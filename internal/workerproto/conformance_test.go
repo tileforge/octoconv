@@ -3580,6 +3580,53 @@ func TestCompleteCorrectedBodySucceeds(t *testing.T) {
 	}
 }
 
+func TestArtifactExtensionsAreIgnored(t *testing.T) {
+	live := openHello(t)
+	clientID := insertClient(t, live.pool)
+	token, attemptID, jobID, _ := claimLiveImage(t, live, clientID)
+	payload := []byte("ext-bytes")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	sum := sha256.Sum256(payload)
+	shaHex := hex.EncodeToString(sum[:])
+	art := primaryArtifact("jpg", "image/jpeg", shaHex, 0, len(payload))
+	art["extensions"] = map[string]any{}
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeArtifacts(t, art))
+	if status != http.StatusOK {
+		t.Fatalf("complete status %d: %s", status, resp)
+	}
+	assertControlOnly(t, resp)
+	if jobStatusOf(t, live.pool, jobID) != "done" || outputCount(t, live.pool, jobID) != 1 {
+		t.Fatal("extensions object did not complete")
+	}
+
+	token, attemptID, jobID, _ = claimLiveImage(t, live, clientID)
+	payload = []byte("ext-note")
+	live.store.put(storage.AttemptOutputKey(attemptID, 0), payload)
+	sum = sha256.Sum256(payload)
+	shaHex = hex.EncodeToString(sum[:])
+	noted := primaryArtifact("jpg", "image/jpeg", shaHex, 0, len(payload))
+	noted["extensions"] = map[string]any{"priority": 1}
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[3], token, completeArtifacts(t, noted))
+	if status != http.StatusOK || jobStatusOf(t, live.pool, jobID) != "done" {
+		t.Fatalf("noted complete status %d job %s: %s", status, jobStatusOf(t, live.pool, jobID), resp)
+	}
+
+	token, attemptID, jobID, _ = claimLiveImage(t, live, clientID)
+	copies := live.store.copyCount()
+	bad := primaryArtifact("jpg", "image/jpeg", shaHex, 0, len(payload))
+	bad["extensions"] = []any{}
+	path := attemptPaths(live.addr, attemptID)[3]
+	status, hdr, resp := postAttempt(t, live, path, token, completeArtifacts(t, bad))
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_message")
+	unknown := primaryArtifact("jpg", "image/jpeg", shaHex, 0, len(payload))
+	unknown["priority"] = 1
+	status, hdr, resp = postAttempt(t, live, path, token, completeArtifacts(t, unknown))
+	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "unknown_field")
+	if live.store.copyCount() != copies || outputCount(t, live.pool, jobID) != 0 || jobStatusOf(t, live.pool, jobID) != "active" {
+		t.Fatal("rejected extensions changed the attempt")
+	}
+}
+
 func TestCompleteExpiresDuringCopy(t *testing.T) {
 	live := openHello(t)
 	cases := []struct {

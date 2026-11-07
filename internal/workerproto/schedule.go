@@ -58,12 +58,13 @@ type assignmentWire struct {
 }
 
 type completeArtifact struct {
-	Role        string      `json:"role"`
-	Ordinal     json.Number `json:"ordinal"`
-	Format      string      `json:"format"`
-	ContentType string      `json:"content_type"`
-	SHA256      string      `json:"sha256"`
-	ByteSize    json.Number `json:"byte_size"`
+	Role        string          `json:"role"`
+	Ordinal     json.Number     `json:"ordinal"`
+	Format      string          `json:"format"`
+	ContentType string          `json:"content_type"`
+	SHA256      string          `json:"sha256"`
+	ByteSize    json.Number     `json:"byte_size"`
+	Extensions  json.RawMessage `json:"extensions"`
 }
 
 type completeRequest struct {
@@ -408,6 +409,12 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeDecodeError(w, err)
 		return
+	}
+	for _, art := range arts {
+		if !extensionsObject(art.Extensions) {
+			writeCode(w, http.StatusBadRequest, "invalid_message")
+			return
+		}
 	}
 	rawSum := sha256.Sum256(raw)
 	bodyHash := hex.EncodeToString(rawSum[:])
