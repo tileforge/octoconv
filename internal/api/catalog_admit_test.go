@@ -24,6 +24,7 @@ type fakeCatalog struct {
 	operation string
 	source    string
 	target    string
+	allow     func(operation, source, target string) (workerproto.Match, bool)
 }
 
 func (f *fakeCatalog) Lookup(_ context.Context, operation, source, target string) (workerproto.Match, bool, error) {
@@ -31,6 +32,10 @@ func (f *fakeCatalog) Lookup(_ context.Context, operation, source, target string
 	f.operation = operation
 	f.source = source
 	f.target = target
+	if f.allow != nil {
+		match, found := f.allow(operation, source, target)
+		return match, found, nil
+	}
 	return f.match, f.found, f.err
 }
 
@@ -272,6 +277,55 @@ func TestCatalogSchemaRejectsBeforeUpload(t *testing.T) {
 	rec := postCreate(t, srv, "in.png", "webp")
 	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidOptions)
 	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func TestDocumentCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	catalog := &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	}
+	srv.SetCapabilityCatalog(catalog)
+
+	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("document enqueue calls=%d document=%s image=%s", q.enqueueCalls, q.enqueuedDocument, q.enqueuedImage)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineDocument {
+		t.Fatalf("engine = %+v, want document", repo.created)
+	}
+
+	rec = postCreate(t, srv, "in.png", "webp")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("image enqueue calls=%d image=%s", q.enqueueCalls, q.enqueuedImage)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.Engine != convert.EngineImage {
+		t.Fatalf("dispatch = %+v, want protocol image", repo.created)
+	}
 }
 
 func legacyImageCatalog(schema string) *fakeCatalog {
