@@ -886,6 +886,206 @@ func mustJSON(t *testing.T, v any) []byte {
 	return body
 }
 
+func TestClosedSessionStaysClosedAfterDedupDelete(t *testing.T) {
+	live := openHello(t)
+	ctx := context.Background()
+	if _, err := live.pool.Exec(ctx, `
+		INSERT INTO worker_request_dedup (session_id, dedup_key) VALUES ($1, 'pull-1')`, live.sessionID); err != nil {
+		t.Fatalf("insert dedup: %v", err)
+	}
+	status, hdr, body := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete status %d", status)
+	}
+	assertNoStoreJSON(t, hdr)
+	assertHeartbeatShape(t, body)
+	var dedup int
+	var closedAt *time.Time
+	if err := live.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM worker_request_dedup WHERE session_id = $1),
+		       (SELECT closed_at FROM worker_sessions WHERE id = $1)`, live.sessionID).Scan(&dedup, &closedAt); err != nil {
+		t.Fatalf("read close: %v", err)
+	}
+	if dedup != 0 || closedAt == nil {
+		t.Fatal("dedup remains or the session row was not closed")
+	}
+	var exists bool
+	if err := live.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM worker_sessions WHERE id = $1)`, live.sessionID).Scan(&exists); err != nil {
+		t.Fatalf("exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("close deleted the session row")
+	}
+	status, hdr, body = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "session_closed")
+}
+
+func TestSlotHoldSurvivesCloseAndNewHello(t *testing.T) {
+	live := openHello(t)
+	ctx := context.Background()
+	holdID := uuid.New()
+	if _, err := live.pool.Exec(ctx, `
+		INSERT INTO worker_slot_holds (id, owner_key, session_id) VALUES ($1, $2, $3)`,
+		holdID, "owner-image", live.sessionID); err != nil {
+		t.Fatalf("insert hold: %v", err)
+	}
+	before := readHold(t, live.pool, holdID)
+	status, _, _ := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete status %d", status)
+	}
+	sum := sha256.Sum256(live.manifest)
+	hello := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        live.workerID.String(),
+		"manifest_sha256":  hex.EncodeToString(sum[:]),
+		"free_slots":       1,
+	})
+	status, _, _ = doJSON(t, live.client, http.MethodPost, "https://"+live.addr+"/worker/v1/sessions", "", hello, nil)
+	if status != http.StatusOK {
+		t.Fatalf("second HELLO status %d", status)
+	}
+	after := readHold(t, live.pool, holdID)
+	if after != before {
+		t.Fatal("slot hold changed across close and a new HELLO")
+	}
+	var holds int
+	if err := live.pool.QueryRow(ctx, `SELECT count(*) FROM worker_slot_holds`).Scan(&holds); err != nil {
+		t.Fatalf("count holds: %v", err)
+	}
+	if holds != 1 {
+		t.Fatalf("holds = %d", holds)
+	}
+}
+
+func TestExpiredSessionIsClosed(t *testing.T) {
+	live := openHello(t)
+	if _, err := live.pool.Exec(context.Background(), `
+		UPDATE worker_sessions SET expires_at = now() - interval '1 second' WHERE id = $1`, live.sessionID); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "session_closed")
+}
+
+func TestAttemptHeaderOnHeartbeatChangesNothing(t *testing.T) {
+	live := openHello(t)
+	ctx := context.Background()
+	holdID := uuid.New()
+	if _, err := live.pool.Exec(ctx, `
+		INSERT INTO worker_slot_holds (id, owner_key, session_id) VALUES ($1, $2, $3)`,
+		holdID, "owner-image", live.sessionID); err != nil {
+		t.Fatalf("insert hold: %v", err)
+	}
+	before := readHold(t, live.pool, holdID)
+	header := make(http.Header)
+	header.Set("Octoconv-Attempt", strings.Repeat("c", 64))
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), header)
+	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "unauthorized")
+	var closedAt *time.Time
+	if err := live.pool.QueryRow(ctx, `SELECT closed_at FROM worker_sessions WHERE id = $1`, live.sessionID).Scan(&closedAt); err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if closedAt != nil {
+		t.Fatal("attempt header closed the session")
+	}
+	after := readHold(t, live.pool, holdID)
+	if after != before {
+		t.Fatal("attempt header changed the slot hold")
+	}
+}
+
+type liveSession struct {
+	pool      *pgxpool.Pool
+	workerID  uuid.UUID
+	sessionID uuid.UUID
+	token     string
+	addr      string
+	client    *http.Client
+	manifest  []byte
+}
+
+func (s liveSession) sessionURL() string {
+	return "https://" + s.addr + "/worker/v1/sessions/" + s.sessionID.String()
+}
+
+func openHello(t *testing.T) liveSession {
+	t.Helper()
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	manifest := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, manifest); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	sum := sha256.Sum256(manifest)
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
+	body := mustJSON(t, map[string]any{
+		"protocol_version": 1,
+		"worker_id":        workerID.String(),
+		"manifest_sha256":  hex.EncodeToString(sum[:]),
+		"free_slots":       1,
+	})
+	status, _, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", body, nil)
+	if status != http.StatusOK {
+		t.Fatalf("HELLO status %d", status)
+	}
+	var hello struct {
+		SessionID    string `json:"session_id"`
+		SessionToken string `json:"session_token"`
+	}
+	if err := json.Unmarshal(respBody, &hello); err != nil {
+		t.Fatalf("decode HELLO: %v", err)
+	}
+	sessionID, err := uuid.Parse(hello.SessionID)
+	if err != nil {
+		t.Fatal("session_id is not a uuid")
+	}
+	return liveSession{
+		pool:      pool,
+		workerID:  workerID,
+		sessionID: sessionID,
+		token:     hello.SessionToken,
+		addr:      addr,
+		client:    client,
+		manifest:  manifest,
+	}
+}
+
+type holdRow struct {
+	id         uuid.UUID
+	ownerKey   string
+	sessionID  uuid.UUID
+	releasedAt *time.Time
+}
+
+func readHold(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) holdRow {
+	t.Helper()
+	var row holdRow
+	err := pool.QueryRow(context.Background(), `
+		SELECT id, owner_key, session_id, released_at FROM worker_slot_holds WHERE id = $1`, id).
+		Scan(&row.id, &row.ownerKey, &row.sessionID, &row.releasedAt)
+	if err != nil {
+		t.Fatalf("read hold: %v", err)
+	}
+	return row
+}
+
+func assertHeartbeatShape(t *testing.T, body []byte) {
+	t.Helper()
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	if string(payload["protocol_version"]) != "1" || len(payload) != 2 {
+		t.Fatal("success body is not protocol_version and control")
+	}
+	assertEmptyCancelList(t, payload["control"])
+}
+
 func claimManifest(t *testing.T, id, from, to string) []byte {
 	t.Helper()
 	return mustJSON(t, map[string]any{
