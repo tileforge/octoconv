@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 const protocolAdvisoryKey int64 = 0x70726F74
@@ -24,7 +25,7 @@ const failedHoldBudgetSQL = `
 	   AND (j.manual_retry_at IS NULL OR h.released_at > j.manual_retry_at))`
 
 // StartProtocolReconciler runs the lease pass until ctx is canceled.
-func StartProtocolReconciler(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, imageAttemptBudget time.Duration, advisoryKey int64) error {
+func StartProtocolReconciler(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, store objectStore, imageAttemptBudget time.Duration, advisoryKey int64) error {
 	if advisoryKey != protocolAdvisoryKey {
 		return fmt.Errorf("protocol advisory key")
 	}
@@ -47,14 +48,14 @@ func StartProtocolReconciler(ctx context.Context, pool *pgxpool.Pool, jobsRepo *
 			if err != nil || !ok {
 				continue
 			}
-			if err := protocolPass(ctx, pool, jobsRepo); err != nil {
+			if err := protocolPass(ctx, pool, jobsRepo, store); err != nil {
 				continue
 			}
 		}
 	}
 }
 
-func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo) error {
+func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, store objectStore) error {
 	if _, err := pool.Exec(ctx, `
 		DELETE FROM worker_request_dedup
 		WHERE response_body IS NULL
@@ -68,7 +69,69 @@ func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo) 
 	if err := requeueCanceledActive(ctx, pool, jobsRepo); err != nil {
 		return err
 	}
-	return failPastDeadlines(ctx, pool, jobsRepo)
+	if err := failPastDeadlines(ctx, pool, jobsRepo); err != nil {
+		return err
+	}
+	return sweepReleasedStaging(ctx, pool, store)
+}
+
+func sweepReleasedStaging(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {
+	if store == nil {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT id, attempt_deadline
+		FROM worker_slot_holds
+		WHERE released_at IS NOT NULL
+		  AND staging_removed_at IS NULL
+		ORDER BY staging_attempted_at ASC NULLS FIRST, id
+		LIMIT 32`)
+	if err != nil {
+		return fmt.Errorf("list released staging: %w", err)
+	}
+	type stagingHold struct {
+		id       uuid.UUID
+		deadline *time.Time
+	}
+	var due []stagingHold
+	for rows.Next() {
+		var item stagingHold
+		if err := rows.Scan(&item.id, &item.deadline); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan released staging: %w", err)
+		}
+		due = append(due, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list released staging: %w", err)
+	}
+	rows.Close()
+	now := time.Now()
+	for _, item := range due {
+		removeErr := store.Remove(ctx, storage.AttemptOutputKey(item.id, 0))
+		if removeErr != nil {
+			if _, err := pool.Exec(ctx, `
+				UPDATE worker_slot_holds
+				SET staging_attempted_at = now()
+				WHERE id = $1 AND staging_removed_at IS NULL`, item.id); err != nil {
+				return fmt.Errorf("record staging attempt: %w", err)
+			}
+			continue
+		}
+		if item.deadline == nil || item.deadline.After(now) {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE worker_slot_holds
+			SET staging_removed_at = now()
+			WHERE id = $1
+			  AND released_at IS NOT NULL
+			  AND staging_removed_at IS NULL`, item.id); err != nil {
+			return fmt.Errorf("record staging removal: %w", err)
+		}
+	}
+	return nil
 }
 
 func releaseExpiredLeases(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo) error {

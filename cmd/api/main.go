@@ -316,7 +316,7 @@ func main() {
 	go func() {
 		defer close(reconcileDone)
 		log.Printf("protocol reconciler starting")
-		err := workerproto.StartProtocolReconciler(ctx, pool, jobsRepo, engineTimeoutsFromEnv()[convert.EngineImage], 0x70726F74)
+		err := workerproto.StartProtocolReconciler(ctx, pool, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage], 0x70726F74)
 		if err != nil && ctx.Err() == nil {
 			log.Printf("protocol reconciler: %v", err)
 		}
@@ -356,7 +356,7 @@ func main() {
 			log.Fatalf("worker tls: %v", err)
 		}
 		tlsCfg.ClientCAs = clientCAs
-		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerproto.NewHandler(workerCatalog, jobsRepo, engineTimeoutsFromEnv()[convert.EngineImage]).Routes())
+		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage]).Routes())
 		workerSrv.TLSConfig = tlsCfg
 	}
 

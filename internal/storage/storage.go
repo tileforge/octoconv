@@ -4,6 +4,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,9 @@ import (
 
 	"github.com/tileforge/octoconv/internal/envcfg"
 )
+
+// ErrNotFound is returned when Copy or ObjectSize names an object that is not in the bucket.
+var ErrNotFound = errors.New("object not found")
 
 const UploadPartThreads = 4
 
@@ -114,6 +118,63 @@ func (c *Client) PresignGet(ctx context.Context, key string, ttl time.Duration) 
 		return "", fmt.Errorf("presign %q: %w", key, err)
 	}
 	return u.String(), nil
+}
+
+// PresignPut returns a time-limited URL for uploading an object directly.
+func (c *Client) PresignPut(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	u, err := c.mc.PresignedPutObject(ctx, c.bucket, key, ttl)
+	if err != nil {
+		return "", fmt.Errorf("presign put %q: %w", key, err)
+	}
+	return u.String(), nil
+}
+
+// Copy copies srcKey onto dstKey in the configured bucket.
+func (c *Client) Copy(ctx context.Context, srcKey, dstKey string) error {
+	_, err := c.mc.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: c.bucket, Object: dstKey},
+		minio.CopySrcOptions{Bucket: c.bucket, Object: srcKey},
+	)
+	if err != nil {
+		if missingObject(err) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("copy %q: %w", dstKey, err)
+	}
+	return nil
+}
+
+// ObjectSize returns the stored size of key.
+func (c *Client) ObjectSize(ctx context.Context, key string) (int64, error) {
+	info, err := c.mc.StatObject(ctx, c.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		if missingObject(err) {
+			return 0, ErrNotFound
+		}
+		return 0, fmt.Errorf("stat %q: %w", key, err)
+	}
+	return info.Size, nil
+}
+
+// Remove deletes key. A missing object is not an error.
+func (c *Client) Remove(ctx context.Context, key string) error {
+	err := c.mc.RemoveObject(ctx, c.bucket, key, minio.RemoveObjectOptions{})
+	if err != nil {
+		if missingObject(err) {
+			return nil
+		}
+		return fmt.Errorf("remove %q: %w", key, err)
+	}
+	return nil
+}
+
+func missingObject(err error) bool {
+	switch minio.ToErrorResponse(err).Code {
+	case "NoSuchKey", "NoSuchObject", "NotFound":
+		return true
+	default:
+		return false
+	}
 }
 
 // lifecycleConfig builds the bucket lifecycle rules that expire objects under

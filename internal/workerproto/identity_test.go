@@ -424,8 +424,10 @@ func listenWorker(t *testing.T, repo *Repo, ca *x509.Certificate, caKey *ecdsa.P
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	store := newMemStore()
+	rememberListenerStore(ln.Addr().String(), store)
 	srv := &http.Server{
-		Handler:           NewHandler(repo, jobs.NewRepo(repo.pool), 120*time.Second).Routes(),
+		Handler:           NewHandler(repo, jobs.NewRepo(repo.pool), store, 120*time.Second).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()
@@ -1005,6 +1007,7 @@ type liveSession struct {
 	addr      string
 	client    *http.Client
 	manifest  []byte
+	store     *memStore
 }
 
 func (s liveSession) sessionURL() string {
@@ -1054,6 +1057,7 @@ func openHello(t *testing.T) liveSession {
 		addr:      addr,
 		client:    client,
 		manifest:  manifest,
+		store:     listenerStore(addr),
 	}
 }
 
