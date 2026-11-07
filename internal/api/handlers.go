@@ -25,6 +25,7 @@ import (
 	"github.com/tileforge/octoconv/internal/logfmt"
 	"github.com/tileforge/octoconv/internal/presets"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/workerproto"
 )
 
 const (
@@ -579,6 +580,33 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var pinID string
+	var pinVersion int
+	var pinSchema []byte
+	var legacyMatch bool
+	if s.catalog != nil {
+		match, found, err := s.catalog.Lookup(ctx, operation, detected, target)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		if found && match.LegacyEngine == "" {
+			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+				"unsupported conversion: "+detected+" -> "+target)
+			return
+		}
+		if found && match.LegacyEngine != engine {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		if found && match.LegacyOperation == operation {
+			pinID = match.CapabilityID
+			pinVersion = match.CapabilityVersion
+			pinSchema = match.ParameterSchema
+			legacyMatch = true
+		}
+	}
+
 	// TEX-03: the tex-package admission gate. Placed after the engine class is
 	// known and strictly BEFORE s.storage.Upload below, for the reason every
 	// gate in this handler is placed here -- a document this deployment cannot
@@ -1031,6 +1059,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if legacyMatch {
+		instance := map[string]any{}
+		if normalizedOpts != nil {
+			instance = normalizedOpts
+		}
+		if err := workerproto.ValidateParameters(pinSchema, instance); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
+			return
+		}
+	}
+
 	jobID := uuid.New()
 	key := storage.InputKey(jobID, 0, filename)
 	// Stored Content-Type is the canonical MIME of the detected format, never
@@ -1115,19 +1154,21 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
-		CorrelationID:   correlationID,
-		ID:              jobID,
-		ClientID:        client.ID,
-		Operation:       operation,
-		Engine:          engine,
-		SourceFormat:    detected,
-		TargetFormat:    target,
-		CallbackURL:     callbackURL,
-		ProgressWebhook: progressWebhook,
-		Opts:            normalizedOpts,
-		PresetName:      presetNameProv,
-		PresetVersion:   presetVerProv,
-		Inputs:          inputs,
+		CorrelationID:     correlationID,
+		ID:                jobID,
+		ClientID:          client.ID,
+		Operation:         operation,
+		Engine:            engine,
+		SourceFormat:      detected,
+		TargetFormat:      target,
+		CallbackURL:       callbackURL,
+		ProgressWebhook:   progressWebhook,
+		Opts:              normalizedOpts,
+		PresetName:        presetNameProv,
+		PresetVersion:     presetVerProv,
+		Inputs:            inputs,
+		CapabilityID:      pinID,
+		CapabilityVersion: pinVersion,
 	})
 	if err != nil {
 		// Reaching this branch means the request passed PreAdmit and then

@@ -1424,3 +1424,108 @@ func TestFindWebhookGapsIgnoresCanceled(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateWithoutPinLeavesDispatchOwnerLegacy(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:     createTestClient(t, r),
+		Operation:    "convert",
+		Engine:       "image",
+		SourceFormat: "png",
+		TargetFormat: "webp",
+		Input: Input{
+			Ordinal:     0,
+			ObjectKey:   "uploads/nopin/0-in.png",
+			Filename:    "in.png",
+			Format:      "png",
+			SizeBytes:   8,
+			ContentType: "image/png",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := readJobPin(t, r, id)
+	if got.capabilityID != nil || got.capabilityVersion != nil {
+		t.Fatalf("pin = %v %v, want NULL NULL", got.capabilityID, got.capabilityVersion)
+	}
+	if got.dispatchOwner != "legacy" {
+		t.Fatalf("dispatch_owner = %q, want legacy", got.dispatchOwner)
+	}
+	if got.engine != "image" {
+		t.Fatalf("engine = %q, want image", got.engine)
+	}
+}
+
+func TestCreateWritesCapabilityPin(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:          createTestClient(t, r),
+		Operation:         "convert",
+		Engine:            "image",
+		SourceFormat:      "png",
+		TargetFormat:      "webp",
+		CapabilityID:      "octoconv.convert.image",
+		CapabilityVersion: 1,
+		Input: Input{
+			Ordinal:     0,
+			ObjectKey:   "uploads/pin/0-in.png",
+			Filename:    "in.png",
+			Format:      "png",
+			SizeBytes:   8,
+			ContentType: "image/png",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := readJobPin(t, r, id)
+	if got.capabilityID == nil || *got.capabilityID != "octoconv.convert.image" {
+		t.Fatalf("capability_id = %v, want octoconv.convert.image", got.capabilityID)
+	}
+	if got.capabilityVersion == nil || *got.capabilityVersion != 1 {
+		t.Fatalf("capability_version = %v, want 1", got.capabilityVersion)
+	}
+	if got.dispatchOwner != "legacy" {
+		t.Fatalf("dispatch_owner = %q, want legacy", got.dispatchOwner)
+	}
+	if got.engine != "image" {
+		t.Fatalf("engine = %q, want image", got.engine)
+	}
+}
+
+func TestCreateRejectsPinVersionBelowOne(t *testing.T) {
+	r := &Repo{}
+	_, err := r.Create(context.Background(), CreateParams{
+		CapabilityID:      "octoconv.convert.image",
+		CapabilityVersion: 0,
+	})
+	if err == nil {
+		t.Fatal("Create accepted capability version 0")
+	}
+}
+
+type jobPinRow struct {
+	capabilityID      *string
+	capabilityVersion *int
+	dispatchOwner     string
+	engine            string
+}
+
+func readJobPin(t *testing.T, r *Repo, id uuid.UUID) jobPinRow {
+	t.Helper()
+	var got jobPinRow
+	err := r.pool.QueryRow(context.Background(), `
+		SELECT capability_id, capability_version, dispatch_owner, engine
+		FROM jobs WHERE id = $1`, id).Scan(&got.capabilityID, &got.capabilityVersion, &got.dispatchOwner, &got.engine)
+	if err != nil {
+		t.Fatalf("read pin: %v", err)
+	}
+	return got
+}

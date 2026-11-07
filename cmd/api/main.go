@@ -4,7 +4,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +35,7 @@ import (
 	"github.com/tileforge/octoconv/internal/presets"
 	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/workerproto"
 )
 
 // redisPinger adapts a *redis.Client to api.Pinger. asynq's own Client
@@ -304,11 +309,46 @@ func main() {
 		metrics.RecordQuotaWouldReject(clientID.String(), engine, reason)
 	})
 
+	workerCatalog := workerproto.NewRepo(pool)
+	srv.SetCapabilityCatalog(workerCatalog)
+
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {
 		addr = ":8090"
 	}
 	httpSrv := api.NewHTTPServer(addr, srv.Routes())
+
+	enabled, listenerEnv, err := workerproto.ParseListenerEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("worker listener: %v", err)
+	}
+	var workerSrv *http.Server
+	if enabled {
+		clientCAs, err := readWorkerClientCAs(listenerEnv.ClientCA)
+		if err != nil {
+			log.Fatalf("worker client ca: %v", err)
+		}
+		if err := workerLeafAllowsOrigin(listenerEnv.Cert, listenerEnv.Origin); err != nil {
+			log.Fatalf("worker tls cert: %v", err)
+		}
+		if _, err := tls.LoadX509KeyPair(listenerEnv.Cert, listenerEnv.Key); err != nil {
+			log.Fatalf("worker tls key: %v", err)
+		}
+		compared, err := workerCatalog.CompareInstalled(ctx, listenerEnv.ManifestDir)
+		if err != nil {
+			log.Fatalf("worker manifests: %v", err)
+		}
+		for _, id := range compared.Mismatched {
+			log.Printf("worker manifest hash mismatch: %s", id)
+		}
+		tlsCfg, err := workerproto.ServerTLSConfig(workerCatalog)
+		if err != nil {
+			log.Fatalf("worker tls: %v", err)
+		}
+		tlsCfg.ClientCAs = clientCAs
+		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerproto.NewHandler(workerCatalog).Routes())
+		workerSrv.TLSConfig = tlsCfg
+	}
 
 	go func() {
 		log.Printf("🚀 API listening on %s", addr)
@@ -357,20 +397,34 @@ func main() {
 		}
 	}()
 
+	if workerSrv != nil {
+		go func() {
+			log.Printf("🔐 worker listening on %s", workerSrv.Addr)
+			err := workerSrv.ListenAndServeTLS(listenerEnv.Cert, listenerEnv.Key)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("worker listen: %v", err)
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	log.Println("🛑 shutting down API...")
 
-	// Shutdown order is deliberate, not incidental (Phase 58 Task 2): httpSrv
-	// first (stop accepting new /v1 work, including inspect), then
+	// Shutdown order is deliberate, not incidental (Phase 58 Task 2): the
+	// worker listener, when it was started, and httpSrv first, then
 	// metricsSrv, and healthSrv LAST. During a rolling deploy's drain
 	// window, the liveness probe must keep answering as long as possible --
 	// shutting healthSrv down first would make kubelet see a dead probe
 	// while httpSrv is still gracefully draining in-flight /v1 requests,
-	// which is exactly the false-restart risk this ordering avoids. All
-	// three Shutdown calls share shutdownCtx, mirroring the pre-existing
-	// httpSrv/metricsSrv pair this extends.
+	// which is exactly the false-restart risk this ordering avoids. Every
+	// Shutdown call shares shutdownCtx.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if workerSrv != nil {
+		if err := workerSrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("worker graceful shutdown failed: %v", err)
+		}
+	}
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
@@ -451,4 +505,36 @@ func envDuration(key string, def time.Duration) time.Duration {
 		}
 	}
 	return def
+}
+
+func readWorkerClientCAs(path string) (*x509.CertPool, error) {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, errors.New("empty client ca")
+	}
+	return pool, nil
+}
+
+// workerLeafAllowsOrigin checks the leaf DNS SAN. Common Name is not a SAN.
+func workerLeafAllowsOrigin(certPath, origin string) error {
+	pemBytes, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", certPath, err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return errors.New("server certificate is not pem")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse server certificate: %w", err)
+	}
+	if err := cert.VerifyHostname(origin); err != nil {
+		return fmt.Errorf("origin %q: %w", origin, err)
+	}
+	return nil
 }

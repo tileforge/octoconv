@@ -124,6 +124,11 @@ type CreateParams struct {
 	// keeps paying for; a caller that sets both has two opinions and the
 	// database should not be asked to pick one.
 	Inputs []Input
+	// CapabilityID pins an approved catalog row. Empty leaves capability_id
+	// and capability_version NULL. Create never writes dispatch_owner, so the
+	// column default stays legacy.
+	CapabilityID      string
+	CapabilityVersion int
 }
 
 // Create inserts a job (status=queued), its input row, and the initial
@@ -167,6 +172,10 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		pver = &p.PresetVersion
 	}
 
+	if p.CapabilityID != "" && p.CapabilityVersion < 1 {
+		return uuid.Nil, errors.New("capability version must be at least 1")
+	}
+
 	// IsoLevel is pinned to ReadCommitted rather than inherited from the pool/
 	// DSN default (52-REVIEW.md WR-02): admitLocked's post-lock re-check
 	// inside this transaction only re-observes admissions committed while it
@@ -197,10 +206,18 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 			return err
 		}
 
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id)
-			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12)`,
-			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID),
+		if p.CapabilityID == "" {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id)
+				VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12)`,
+				jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID),
+			); err != nil {
+				return fmt.Errorf("insert job: %w", err)
+			}
+		} else if _, err := tx.Exec(ctx, `
+			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id, capability_id, capability_version)
+			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID), p.CapabilityID, p.CapabilityVersion,
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}

@@ -99,7 +99,7 @@ func TestEveryAPIListenerIsBuiltByTheConstructor(t *testing.T) {
 	src := readMainSource(t)
 	literals := strings.Count(src, "&http.Server{")
 	calls := strings.Count(src, "api.NewHTTPServer(")
-	if literals != 0 || calls != 3 {
-		t.Fatalf("%s has %d &http.Server{ literals and %d api.NewHTTPServer( calls, want 0 and 3: every listener of the api process (API_ADDR, METRICS_ADDR, HEALTH_ADDR) must carry the header and idle bounds of api.NewHTTPServer (D-25)", mainSourcePath, literals, calls)
+	if literals != 0 || calls != 4 {
+		t.Fatalf("%s has %d &http.Server{ literals and %d api.NewHTTPServer( calls, want 0 and 4: every listener of the api process (API_ADDR, METRICS_ADDR, HEALTH_ADDR, and the worker listener) must carry the header and idle bounds of api.NewHTTPServer (D-25)", mainSourcePath, literals, calls)
 	}
 }
