@@ -1383,6 +1383,115 @@ func TestPullFiveFailedHoldsStayQueued(t *testing.T) {
 	}
 }
 
+func TestRenewMovesOnlyLeaseExpiresAt(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, _ := insertActiveAttempt(t, live, 10, 20)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	if status != http.StatusOK {
+		t.Fatalf("renew status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	after := readAttemptSnap(t, live.pool, attemptID)
+	if !after.lease.After(before.lease) || after.lease.After(after.deadline) || !after.deadline.Equal(before.deadline) || after.hash != before.hash {
+		t.Fatalf("renew moved more than the lease: before %+v after %+v", before, after)
+	}
+	assertLeaseResponse(t, resp, after.lease, after.deadline)
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, attemptID) != after {
+		t.Fatal("second renew changed the hold")
+	}
+
+	shortToken, shortID, _ := insertActiveAttempt(t, live, 1, 4)
+	shortBefore := readAttemptSnap(t, live.pool, shortID)
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, shortID)[0], shortToken, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, shortID) != shortBefore {
+		t.Fatal("short renew changed the hold")
+	}
+}
+
+func TestScenario07HeartbeatDoesNotMoveLease(t *testing.T) {
+	live := openHello(t)
+	_, attemptID, _ := insertActiveAttempt(t, live, 20, 120)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("heartbeat status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(resp, &payload); err != nil {
+		t.Fatalf("decode heartbeat: %v", err)
+	}
+	_, hasLease := payload["lease_expires_at"]
+	_, hasAssignments := payload["assignments"]
+	_, hasSession := payload["session_id"]
+	if hasLease || hasAssignments || hasSession || len(payload) != 2 {
+		t.Fatalf("heartbeat %s", resp)
+	}
+	assertEmptyCancelList(t, payload["control"])
+	if readAttemptSnap(t, live.pool, attemptID) != before {
+		t.Fatal("heartbeat moved the lease")
+	}
+}
+
+func TestScenario06NewHelloLeavesLease(t *testing.T) {
+	live := openHello(t)
+	_, attemptID, _ := insertActiveAttempt(t, live, 20, 120)
+	beforeHold := readHold(t, live.pool, attemptID)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	var slots int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT max_slots FROM worker_identities WHERE worker_id = $1`, live.workerID).Scan(&slots); err != nil {
+		t.Fatalf("read max_slots: %v", err)
+	}
+	helloAgain(t, live)
+	if readHold(t, live.pool, attemptID) != beforeHold || readAttemptSnap(t, live.pool, attemptID) != before {
+		t.Fatal("new HELLO changed the hold")
+	}
+	var after int
+	if err := live.pool.QueryRow(context.Background(), `
+		SELECT max_slots FROM worker_identities WHERE worker_id = $1`, live.workerID).Scan(&after); err != nil {
+		t.Fatalf("read max_slots: %v", err)
+	}
+	if after != slots {
+		t.Fatalf("max_slots %d", after)
+	}
+}
+
+func TestScenario08RenewPastAttemptDeadline(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, _ := insertActiveAttempt(t, live, 10, -1)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, attemptID) != before {
+		t.Fatal("renew past the deadline changed the hold")
+	}
+}
+
+func TestLapsedLeaseRejectsProgress(t *testing.T) {
+	live := openHello(t)
+	token, attemptID, _ := insertActiveAttempt(t, live, -30, 120)
+	before := readAttemptSnap(t, live.pool, attemptID)
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, []byte(`{"protocol_version":1,"percent":10}`))
+	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
+	if readAttemptSnap(t, live.pool, attemptID) != before {
+		t.Fatal("lapsed progress changed the hold")
+	}
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	if status != http.StatusOK {
+		t.Fatalf("renew status %d: %s", status, resp)
+	}
+	assertNoStoreJSON(t, hdr)
+	after := readAttemptSnap(t, live.pool, attemptID)
+	if !after.lease.After(before.lease) || !after.deadline.Equal(before.deadline) || after.hash != before.hash {
+		t.Fatalf("renew moved more than the lease: before %+v after %+v", before, after)
+	}
+}
+
 func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
 	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
 }
@@ -1816,6 +1925,81 @@ func usageRows(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) int {
 	t.Helper()
 	rows, _ := usageSnapshot(t, pool, clientID)
 	return rows
+}
+
+func insertActiveAttempt(t *testing.T, live liveSession, leaseSecs, deadlineSecs int) (string, uuid.UUID, uuid.UUID) {
+	t.Helper()
+	token, hash, err := NewSessionToken()
+	if err != nil {
+		t.Fatalf("mint attempt: %v", err)
+	}
+	attemptID := uuid.New()
+	insertAttemptCredential(t, live.pool, attemptID, live.sessionID, hash, "octoconv.convert.image", 1)
+	stepID := uuid.New()
+	jobID := insertPullJob(t, live.pool, pullJob{status: "active", stepID: &stepID})
+	_, err = live.pool.Exec(context.Background(), `
+		INSERT INTO worker_slot_holds (
+			id, owner_key, session_id, job_id, step_id, state,
+			lease_expires_at, attempt_deadline
+		) VALUES (
+			$1, $2, $3, $4, $5, 'active',
+			now() + make_interval(secs => $6),
+			now() + make_interval(secs => $7)
+		)`, attemptID, live.workerID.String(), live.sessionID, jobID, stepID, leaseSecs, deadlineSecs)
+	if err != nil {
+		t.Fatalf("insert hold: %v", err)
+	}
+	return token, attemptID, jobID
+}
+
+type attemptSnap struct {
+	lease    time.Time
+	deadline time.Time
+	hash     string
+}
+
+func readAttemptSnap(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID) attemptSnap {
+	t.Helper()
+	var snap attemptSnap
+	err := pool.QueryRow(context.Background(), `
+		SELECT h.lease_expires_at, h.attempt_deadline, c.token_hash
+		FROM worker_slot_holds h
+		JOIN worker_attempt_credentials c ON c.attempt_id = h.id
+		WHERE h.id = $1`, attemptID).Scan(&snap.lease, &snap.deadline, &snap.hash)
+	if err != nil {
+		t.Fatalf("read attempt: %v", err)
+	}
+	return snap
+}
+
+func postAttempt(t *testing.T, live liveSession, rawURL, token string, body []byte) (int, http.Header, []byte) {
+	t.Helper()
+	header := make(http.Header)
+	header.Set("Octoconv-Attempt", token)
+	return doJSON(t, live.client, http.MethodPost, rawURL, live.token, body, header)
+}
+
+func assertLeaseResponse(t *testing.T, body []byte, lease, deadline time.Time) {
+	t.Helper()
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode lease: %v", err)
+	}
+	if len(payload) != 4 || string(payload["protocol_version"]) != "1" {
+		t.Fatalf("lease %s", body)
+	}
+	gotLease, err := jsonTime(payload["lease_expires_at"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDeadline, err := jsonTime(payload["attempt_deadline"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotLease.Equal(lease) || !gotDeadline.Equal(deadline) {
+		t.Fatalf("body lease %s deadline %s", gotLease, gotDeadline)
+	}
+	assertEmptyCancelList(t, payload["control"])
 }
 
 func usageSnapshot(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) (int, int) {

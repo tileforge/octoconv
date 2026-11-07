@@ -109,6 +109,186 @@ func (e *pullStatus) Error() string { return e.code }
 
 var errDedupLost = errors.New("pull dedup lost")
 
+type progressRequest struct {
+	ProtocolVersion json.Number     `json:"protocol_version"`
+	Percent         json.RawMessage `json:"percent"`
+	Stage           json.RawMessage `json:"stage"`
+	StageIndex      json.RawMessage `json:"stage_index"`
+	StageCount      json.RawMessage `json:"stage_count"`
+	ETASeconds      json.RawMessage `json:"eta_seconds"`
+	Extensions      json.RawMessage `json:"extensions"`
+}
+
+type leaseWire struct {
+	ProtocolVersion int         `json:"protocol_version"`
+	LeaseExpiresAt  string      `json:"lease_expires_at"`
+	AttemptDeadline string      `json:"attempt_deadline"`
+	Control         controlWire `json:"control"`
+}
+
+var errAttemptInactive = errors.New("attempt not active")
+
+func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, ok := h.authenticateAttempt(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := readMessage(w, r)
+	if !ok {
+		return
+	}
+	var req protocolRequest
+	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
+		return
+	}
+	var lease, deadline time.Time
+	var cancelIDs []string
+	err := pgx.BeginTxFunc(r.Context(), h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		err := tx.QueryRow(r.Context(), `
+			UPDATE worker_slot_holds AS h
+			SET lease_expires_at = LEAST(now() + interval '30 seconds', h.attempt_deadline)
+			WHERE h.id = $1
+			  AND h.session_id = $2
+			  AND h.state = 'active'
+			  AND h.released_at IS NULL
+			  AND h.attempt_deadline > now()
+			  AND LEAST(now() + interval '30 seconds', h.attempt_deadline) > h.lease_expires_at
+			  AND LEAST(now() + interval '30 seconds', h.attempt_deadline) > now() + interval '5 seconds'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM jobs j
+			      WHERE j.id = h.job_id AND j.status IN ('canceled', 'failed', 'done')
+			  )
+			RETURNING h.lease_expires_at, h.attempt_deadline`, attemptID, sess.ID).Scan(&lease, &deadline)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errAttemptInactive
+		}
+		if err != nil {
+			return fmt.Errorf("renew lease: %w", err)
+		}
+		cancelIDs, err = canceledAttempts(r.Context(), tx, sess.ID)
+		return err
+	})
+	if errors.Is(err, errAttemptInactive) {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	writeJSON(w, http.StatusOK, leaseWire{
+		ProtocolVersion: 1,
+		LeaseExpiresAt:  lease.UTC().Format(time.RFC3339Nano),
+		AttemptDeadline: deadline.UTC().Format(time.RFC3339Nano),
+		Control:         controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
+	})
+}
+
+func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, ok := h.authenticateAttempt(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := readMessage(w, r)
+	if !ok {
+		return
+	}
+	var req progressRequest
+	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
+		return
+	}
+	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !live {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
+	h.writeControl(w, r, sess.ID)
+}
+
+func (h *Handler) handleFail(w http.ResponseWriter, r *http.Request) {
+	h.rejectClosedAttempt(w, r)
+}
+
+func (h *Handler) handleStopped(w http.ResponseWriter, r *http.Request) {
+	h.rejectClosedAttempt(w, r)
+}
+
+func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
+	h.rejectClosedAttempt(w, r)
+}
+
+func (h *Handler) rejectClosedAttempt(w http.ResponseWriter, r *http.Request) {
+	sess, attemptID, ok := h.authenticateAttempt(w, r)
+	if !ok {
+		return
+	}
+	raw, ok := readMessage(w, r)
+	if !ok {
+		return
+	}
+	var req protocolRequest
+	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
+		return
+	}
+	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !live {
+		writeCode(w, http.StatusConflict, "attempt_not_active")
+		return
+	}
+	writeCode(w, http.StatusConflict, "attempt_not_active")
+}
+
+func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID uuid.UUID) {
+	ids, err := h.canceledAttemptIDs(r.Context(), sessionID)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: controlWire{CancelAttemptIDs: ids, Drain: false, Terminate: false}})
+}
+
+func protocolFields(w http.ResponseWriter, version json.Number, ext json.RawMessage) bool {
+	if !protocolVersionOK(w, version) {
+		return false
+	}
+	if !extensionsObject(ext) {
+		writeCode(w, http.StatusBadRequest, "invalid_message")
+		return false
+	}
+	return true
+}
+
+func (h *Handler) attemptOpen(ctx context.Context, attemptID, sessionID uuid.UUID, requireLease bool) (bool, error) {
+	var live bool
+	err := h.repo.pool.QueryRow(ctx, `
+		SELECT
+			h.state = 'active'
+			AND h.released_at IS NULL
+			AND COALESCE(h.attempt_deadline > now(), false)
+			AND (NOT $3 OR COALESCE(h.lease_expires_at > now(), false))
+			AND NOT EXISTS (
+				SELECT 1 FROM jobs j
+				WHERE j.id = h.job_id AND j.status IN ('canceled', 'failed', 'done')
+			)
+		FROM worker_slot_holds h
+		WHERE h.id = $1 AND h.session_id = $2`, attemptID, sessionID, requireLease).Scan(&live)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read attempt: %w", err)
+	}
+	return live, nil
+}
+
 func (h *Handler) servePull(ctx context.Context, sess storedSession, pullID uuid.UUID, bodyHash string, freeSlots, waitSeconds int64) ([]byte, error) {
 	wait := waitSeconds
 	if wait < 0 {
@@ -510,11 +690,22 @@ func emptyPull(cancelIDs []string) pullWire {
 	}
 }
 
+const canceledAttemptSQL = `
+	SELECT id FROM worker_slot_holds
+	WHERE session_id = $1 AND state = 'canceled'
+	ORDER BY id`
+
+func (h *Handler) canceledAttemptIDs(ctx context.Context, sessionID uuid.UUID) ([]string, error) {
+	rows, err := h.repo.pool.Query(ctx, canceledAttemptSQL, sessionID)
+	return collectCanceled(rows, err)
+}
+
 func canceledAttempts(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID) ([]string, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT id FROM worker_slot_holds
-		WHERE session_id = $1 AND state = 'canceled'
-		ORDER BY id`, sessionID)
+	rows, err := tx.Query(ctx, canceledAttemptSQL, sessionID)
+	return collectCanceled(rows, err)
+}
+
+func collectCanceled(rows pgx.Rows, err error) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list canceled attempts: %w", err)
 	}
