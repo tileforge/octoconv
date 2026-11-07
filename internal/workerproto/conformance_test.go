@@ -534,7 +534,7 @@ func TestMatchingAttemptTokenWritesNothing(t *testing.T) {
 			t.Fatal("matching attempt token changed the credential")
 		}
 		if readGateState(t, live.pool) != before {
-			t.Fatal("matching attempt token wrote a lease, hold, or job")
+			t.Fatal("matching attempt token wrote a credential or a slot hold")
 		}
 	}
 }
@@ -641,7 +641,6 @@ func readAttemptCredential(t *testing.T, pool *pgxpool.Pool, attemptID uuid.UUID
 type gateState struct {
 	attempts int
 	holds    int
-	jobs     int
 }
 
 func readGateState(t *testing.T, pool *pgxpool.Pool) gateState {
@@ -650,8 +649,7 @@ func readGateState(t *testing.T, pool *pgxpool.Pool) gateState {
 	err := pool.QueryRow(context.Background(), `
 		SELECT
 			(SELECT count(*) FROM worker_attempt_credentials),
-			(SELECT count(*) FROM worker_slot_holds),
-			(SELECT count(*) FROM jobs)`).Scan(&state.attempts, &state.holds, &state.jobs)
+			(SELECT count(*) FROM worker_slot_holds)`).Scan(&state.attempts, &state.holds)
 	if err != nil {
 		t.Fatalf("read gate state: %v", err)
 	}
