@@ -4,18 +4,28 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestRevokeOnLiveConnection(t *testing.T) {
@@ -289,4 +299,200 @@ func dialWorkerTLS(t *testing.T, addr string, ca *x509.Certificate, cert tls.Cer
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+func TestPlaintextDialCreatesNoSession(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	manifest := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, manifest); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	cfg := ListenerConfig(x509.NewCertPool(), nil)
+	if cfg.MinVersion != tls.VersionTLS13 || cfg.MaxVersion != tls.VersionTLS13 {
+		t.Fatal("listener is not pinned to TLS 1.3")
+	}
+	serverCfg, err := ServerTLSConfig(repo)
+	if err != nil {
+		t.Fatalf("server tls: %v", err)
+	}
+	if serverCfg.MinVersion != tls.VersionTLS13 || serverCfg.ClientAuth != tls.RequireAndVerifyClientCert || serverCfg.CipherSuites != nil {
+		t.Fatal("server tls config can leave TLS optional")
+	}
+	src, err := os.ReadFile("tlsconfig.go")
+	if err != nil {
+		t.Fatalf("read tls config: %v", err)
+	}
+	for _, forbidden := range []string{"InsecureSkipVerify", "SystemCertPool", "h2c"} {
+		if bytes.Contains(src, []byte(forbidden)) {
+			t.Fatalf("tls config contains %s", forbidden)
+		}
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("deadline: %v", err)
+	}
+	body := helloBody(workerID, manifestDigest(manifest), 1)
+	req := fmt.Sprintf("POST /worker/v1/sessions HTTP/1.1\r\nHost: worker.octoconv.local\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, 2048)
+	n, _ := conn.Read(buf)
+	reply := buf[:n]
+	if bytes.Contains(reply, []byte("session_token")) || bytes.Contains(reply, []byte(" 200 ")) {
+		t.Fatalf("plaintext HELLO succeeded: %q", reply)
+	}
+	if !bytes.Contains(reply, []byte("HTTPS server")) {
+		t.Fatalf("plaintext dial was not refused: %q", reply)
+	}
+	if allSessions(t, pool) != 0 {
+		t.Fatal("plaintext dial created a session")
+	}
+}
+
+func TestBadClientCertificateCreatesNoSession(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	manifest := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, manifest); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	good := mintClientCert(t, ca, caKey, workerID)
+	if !applicationAccepted(t, addr, ca, &good, "worker.octoconv.local") {
+		t.Fatal("approved certificate did not complete TLS")
+	}
+	if allSessions(t, pool) != 0 {
+		t.Fatal("handshake alone created a session")
+	}
+
+	otherCA, otherKey := mintTestCA(t)
+	other := mintClientCert(t, otherCA, otherKey, workerID)
+	assertHandshakeRejected(t, pool, addr, ca, other, "worker.octoconv.local", "other ca")
+
+	noURI := mintVariantCert(t, ca, caKey, nil)
+	assertHandshakeRejected(t, pool, addr, ca, noURI, "worker.octoconv.local", "missing uri")
+
+	upper := url.URL{Scheme: "urn", Opaque: "octoconv:worker:" + strings.ToUpper(workerID.String())}
+	badURI := mintVariantCert(t, ca, caKey, []*url.URL{&upper})
+	assertHandshakeRejected(t, pool, addr, ca, badURI, "worker.octoconv.local", "non-canonical uri")
+
+	unknown := mintClientCert(t, ca, caKey, uuid.New())
+	assertHandshakeRejected(t, pool, addr, ca, unknown, "worker.octoconv.local", "unknown worker")
+}
+
+func TestServerNameMismatchCreatesNoSession(t *testing.T) {
+	pool := testPool(t)
+	resetWorkerState(t, pool)
+	repo := NewRepo(pool)
+	workerID := uuid.New()
+	manifest := readPositiveFixture(t, "manifest-image.json")
+	if err := repo.Approve(context.Background(), workerID, manifest); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	ca, caKey := mintTestCA(t)
+	addr := listenWorker(t, repo, ca, caKey)
+	cert := mintClientCert(t, ca, caKey, workerID)
+	assertHandshakeRejected(t, pool, addr, ca, cert, "not-worker.example", "server name")
+	if !applicationAccepted(t, addr, ca, &cert, "worker.octoconv.local") {
+		t.Fatal("matching server name did not complete TLS")
+	}
+	if allSessions(t, pool) != 0 {
+		t.Fatal("server name mismatch created a session")
+	}
+}
+
+func assertHandshakeRejected(t *testing.T, pool *pgxpool.Pool, addr string, ca *x509.Certificate, cert tls.Certificate, serverName, label string) {
+	t.Helper()
+	before := allSessions(t, pool)
+	if applicationAccepted(t, addr, ca, &cert, serverName) {
+		t.Fatalf("%s handshake succeeded", label)
+	}
+	if allSessions(t, pool) != before {
+		t.Fatalf("%s created a session", label)
+	}
+}
+
+func applicationAccepted(t *testing.T, addr string, ca *x509.Certificate, cert *tls.Certificate, serverName string) bool {
+	t.Helper()
+	roots := x509.NewCertPool()
+	roots.AddCert(ca)
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		MaxVersion: tls.VersionTLS13,
+		RootCAs:    roots,
+		ServerName: serverName,
+	}
+	if cert != nil {
+		cfg.Certificates = []tls.Certificate{*cert}
+	}
+	conn, err := tls.Dial("tcp", addr, cfg)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("deadline: %v", err)
+	}
+	if _, err := conn.Write([]byte("GET /worker/v1/sessions HTTP/1.1\r\nHost: worker.octoconv.local\r\n\r\n")); err != nil {
+		return false
+	}
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if n == 0 || err != nil && !bytes.HasPrefix(buf[:n], []byte("HTTP/")) {
+		return false
+	}
+	return bytes.HasPrefix(buf[:n], []byte("HTTP/"))
+}
+
+func mintVariantCert(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, uris []*url.URL) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("variant key: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
+	if err != nil {
+		t.Fatalf("variant serial: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "variant"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:         uris,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("variant cert: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse variant: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der, ca.Raw}, PrivateKey: key, Leaf: leaf}
+}
+
+func allSessions(t *testing.T, pool *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM worker_sessions`).Scan(&n); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	return n
 }
