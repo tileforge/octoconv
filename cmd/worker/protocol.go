@@ -34,6 +34,8 @@ const (
 
 	maxProtocolFileBytes = 100 << 20
 	maxProtocolJSONBytes = 262144
+
+	stoppedNotifyTimeout = 5 * time.Second
 )
 
 var (
@@ -641,10 +643,12 @@ func (c *protocolClient) stopAttempt(parent context.Context, cancelAttempt conte
 	if parent.Err() != nil {
 		return
 	}
-	if flag.claim(reason, cause) {
-		_ = c.postStopped(parent, asgn, reason)
-	}
+	claimed := flag.claim(reason, cause)
 	cancelAttempt(cause)
+	if !claimed {
+		return
+	}
+	_ = c.postStopped(parent, asgn, reason)
 }
 
 func (c *protocolClient) lostLease(ctx context.Context, flag *stopFlag, asgn assignmentJSON) error {
@@ -779,12 +783,14 @@ func (c *protocolClient) postStopped(ctx context.Context, asgn assignmentJSON, r
 	if ctx.Err() != nil {
 		return nil
 	}
+	notify, cancel := context.WithTimeout(ctx, stoppedNotifyTimeout)
+	defer cancel()
 	body, err := json.Marshal(stoppedJSON{ProtocolVersion: 1, Reason: reason})
 	if err != nil {
 		return err
 	}
 	_, err = c.postCore(
-		ctx,
+		notify,
 		"/worker/v1/attempts/"+url.PathEscape(asgn.AttemptID)+"/stopped",
 		body,
 		c.sessionToken,

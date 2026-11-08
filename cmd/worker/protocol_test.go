@@ -362,6 +362,33 @@ func TestStalledRenewalStopsAtLeaseExpiry(t *testing.T) {
 	}
 }
 
+func TestStalledStoppedReleasesAttempt(t *testing.T) {
+	state := &scriptState{helloLease: 0, helloWait: 0, stallLease: true, stallStopped: true, blockGet: true}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	expires := time.Now().Add(2 * time.Second)
+	asgn.LeaseExpiresAt = expires.UTC().Format(time.RFC3339Nano)
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, stoppedNotifyTimeout+8*time.Second, func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.pulls >= 2 && state.getReleased >= 1 && len(state.stopped) >= 1
+	})
+	since := time.Since(expires)
+	if since < stoppedNotifyTimeout-time.Second || since > stoppedNotifyTimeout+3*time.Second {
+		t.Fatal("stopped bound")
+	}
+	reasons := state.stoppedReasons()
+	state.mu.Lock()
+	fails := len(state.fails)
+	replies := state.stoppedReplies
+	released := state.getReleased
+	state.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != "lease_lost" || fails != 0 || replies != 0 || released < 1 {
+		t.Fatal("stopped")
+	}
+}
+
 func TestLeaseLossSendsStopped(t *testing.T) {
 	state := &scriptState{helloLease: 0, helloWait: 0, blockGet: true, leaseCode: "attempt_not_active"}
 	dial, fileURL := bootScript(t, state, true)
@@ -847,7 +874,10 @@ type scriptState struct {
 	hijackComplete bool
 	leaseCode      string
 	stallLease     bool
+	stallStopped   bool
 	blockGet       bool
+	getReleased    int
+	stoppedReplies int
 	jpg            []byte
 	putBody        []byte
 	fileGets       int
@@ -906,6 +936,16 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
 	case strings.HasSuffix(r.URL.Path, "/stopped"):
 		s.keep(&s.stopped, body)
+		s.mu.Lock()
+		stall := s.stallStopped
+		s.mu.Unlock()
+		if stall {
+			<-r.Context().Done()
+			return
+		}
+		s.mu.Lock()
+		s.stoppedReplies++
+		s.mu.Unlock()
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
 	case strings.HasSuffix(r.URL.Path, "/complete"):
 		if s.maybeHijackComplete(w, body) {
@@ -943,6 +983,9 @@ func (s *scriptState) serveFile(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if r.Method == http.MethodGet && block {
 		<-r.Context().Done()
+		s.mu.Lock()
+		s.getReleased++
+		s.mu.Unlock()
 		panic(http.ErrAbortHandler)
 	}
 	switch r.Method {
