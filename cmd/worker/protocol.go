@@ -597,6 +597,8 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 	wait := renewEvery(c.leaseSeconds)
 	if leaseCovers(leaseUntil, deadline) {
 		wait = untilFire(leaseUntil)
+	} else {
+		wait = cappedWait(leaseUntil, wait)
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
@@ -639,7 +641,7 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 				return
 			}
 			if err != nil {
-				timer.Reset(wait)
+				timer.Reset(cappedWait(leaseUntil, renewEvery(c.leaseSeconds)))
 				continue
 			}
 			if ctrl.Terminate {
@@ -657,9 +659,23 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 				timer.Reset(untilFire(leaseUntil))
 				continue
 			}
-			timer.Reset(wait)
+			timer.Reset(cappedWait(leaseUntil, renewEvery(c.leaseSeconds)))
 		}
 	}
+}
+
+func cappedWait(leaseUntil time.Time, interval time.Duration) time.Duration {
+	if leaseUntil.IsZero() {
+		return interval
+	}
+	remaining := time.Until(leaseUntil)
+	if remaining < 0 {
+		return 0
+	}
+	if interval < remaining {
+		return interval
+	}
+	return remaining
 }
 
 func leaseCovers(leaseUntil, deadline time.Time) bool {

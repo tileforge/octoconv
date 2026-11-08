@@ -456,6 +456,31 @@ func TestLeaseCoveringDeadlineDoesNotRenew(t *testing.T) {
 	}
 }
 
+func TestRenewErrorDoesNotOutliveLease(t *testing.T) {
+	state := &scriptState{helloLease: 4, helloWait: 0, blockGet: true, leaseCode: "unavailable"}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	expires := time.Now().Add(3 * time.Second)
+	asgn.LeaseExpiresAt = expires.UTC().Format(time.RFC3339Nano)
+	asgn.AttemptDeadline = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, 8*time.Second, func() bool {
+		return len(state.stoppedReasons()) >= 1
+	})
+	since := time.Since(expires)
+	if since < -250*time.Millisecond || since > 750*time.Millisecond {
+		t.Fatal("retry wait")
+	}
+	reasons := state.stoppedReasons()
+	state.mu.Lock()
+	posts := state.leasePosts
+	fails := len(state.fails)
+	state.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != "lease_lost" || fails != 0 || posts < 1 {
+		t.Fatal("renew error")
+	}
+}
+
 func TestCompleteRetryUsesSameBytes(t *testing.T) {
 	requireVips(t)
 	state := &scriptState{
@@ -1278,6 +1303,10 @@ func (s *scriptState) writeLease(w http.ResponseWriter, r *http.Request) {
 	}
 	if code == "attempt_not_active" {
 		writeJSONStatus(w, http.StatusConflict, []byte(`{"code":"attempt_not_active","message":"attempt not active","retryable":false}`))
+		return
+	}
+	if code == "unavailable" {
+		writeJSONStatus(w, http.StatusInternalServerError, []byte(`{"code":"unavailable","message":"unavailable","retryable":true}`))
 		return
 	}
 	when := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
