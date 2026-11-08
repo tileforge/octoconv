@@ -42,6 +42,7 @@ import (
 
 	"github.com/tileforge/octoconv/internal/api"
 	"github.com/tileforge/octoconv/internal/clients"
+	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/db"
 	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/presets"
@@ -233,6 +234,28 @@ func TestRetryableVipsMapsToTimeout(t *testing.T) {
 	}
 }
 
+func TestSymlinkOutputIsEngineError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret")
+	if err := os.WriteFile(target, []byte("secret"), 0o600); err != nil {
+		t.Fatal("write")
+	}
+	link := filepath.Join(dir, "out.png")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal("symlink")
+	}
+	_, err := convert.ReadJobFile(link)
+	if !errors.Is(err, convert.ErrJobFileIrregular) {
+		t.Fatal("read")
+	}
+	if imageEngineCode(err) != "engine_error" {
+		t.Fatal("code")
+	}
+	if imageEngineCode(fmt.Errorf("open output: %w", convert.ErrJobFileIrregular)) != "engine_error" {
+		t.Fatal("wrapped")
+	}
+}
+
 func TestProgressPercentStaysBelow100(t *testing.T) {
 	requireVips(t)
 	state := &scriptState{helloLease: 30, helloWait: 0, jpg: readFixture(t, "../../internal/convert/testdata/sanitize/exif_gps.jpg")}
@@ -314,6 +337,28 @@ func TestCancelSendsStopped(t *testing.T) {
 	state.mu.Unlock()
 	if len(reasons) != 1 || reasons[0] != "cancel" || fails != 0 || gets != 0 {
 		t.Fatal("cancel")
+	}
+}
+
+func TestStalledRenewalStopsAtLeaseExpiry(t *testing.T) {
+	state := &scriptState{helloLease: 0, helloWait: 0, stallLease: true, blockGet: true}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	expires := time.Now().Add(2 * time.Second)
+	asgn.LeaseExpiresAt = expires.UTC().Format(time.RFC3339Nano)
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, 8*time.Second, func() bool {
+		return len(state.stoppedReasons()) >= 1
+	})
+	if time.Since(expires) > 3*time.Second {
+		t.Fatal("renewal outlived the lease")
+	}
+	reasons := state.stoppedReasons()
+	state.mu.Lock()
+	fails := len(state.fails)
+	state.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != "lease_lost" || fails != 0 {
+		t.Fatal("lease")
 	}
 }
 
@@ -801,6 +846,7 @@ type scriptState struct {
 	completes      [][]byte
 	hijackComplete bool
 	leaseCode      string
+	stallLease     bool
 	blockGet       bool
 	jpg            []byte
 	putBody        []byte
@@ -851,7 +897,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/sessions"):
 		s.writeHello(w)
 	case strings.HasSuffix(r.URL.Path, "/lease"):
-		s.writeLease(w)
+		s.writeLease(w, r)
 	case strings.HasSuffix(r.URL.Path, "/progress"):
 		s.keep(&s.progress, body)
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
@@ -969,10 +1015,15 @@ func (s *scriptState) writePull(w http.ResponseWriter) {
 	writeJSONStatus(w, http.StatusOK, raw)
 }
 
-func (s *scriptState) writeLease(w http.ResponseWriter) {
+func (s *scriptState) writeLease(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	code := s.leaseCode
+	stall := s.stallLease
 	s.mu.Unlock()
+	if stall {
+		<-r.Context().Done()
+		return
+	}
 	if code == "attempt_not_active" {
 		writeJSONStatus(w, http.StatusConflict, []byte(`{"code":"attempt_not_active","message":"attempt not active","retryable":false}`))
 		return

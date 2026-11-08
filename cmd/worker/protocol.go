@@ -54,6 +54,9 @@ func imageEngineCode(err error) string {
 	if err == nil || errors.Is(err, context.DeadlineExceeded) {
 		return "timeout"
 	}
+	if errors.Is(err, convert.ErrJobFileIrregular) {
+		return "engine_error"
+	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "no converter for") {
 		return "engine_error"
@@ -562,7 +565,7 @@ func (c *protocolClient) convert(ctx context.Context, from, to string, src []byt
 	if err := conv.Convert(convertCtx, inPath, outPath, nil); err != nil {
 		return nil, err
 	}
-	return os.ReadFile(outPath)
+	return convert.ReadJobFile(outPath)
 }
 
 func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttempt context.CancelCauseFunc, flag *stopFlag, asgn assignmentJSON, leaseUntil time.Time) {
@@ -583,8 +586,15 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 				c.stopAttempt(parent, cancelAttempt, flag, asgn, "lease_lost", errAttemptNotActive)
 				return
 			}
-			next, ctrl, err := c.renew(attempt, asgn)
+			next, ctrl, err := c.renewUntil(attempt, asgn, leaseUntil)
 			if parent.Err() != nil {
+				return
+			}
+			if !leaseUntil.IsZero() && !time.Now().Before(leaseUntil) {
+				c.stopAttempt(parent, cancelAttempt, flag, asgn, "lease_lost", errAttemptNotActive)
+				return
+			}
+			if attempt.Err() != nil {
 				return
 			}
 			if errors.Is(err, errSessionClosed) {
@@ -666,6 +676,16 @@ func (c *protocolClient) alreadyStopped(ctx context.Context, flag *stopFlag) (bo
 type leaseResponseJSON struct {
 	LeaseExpiresAt string      `json:"lease_expires_at"`
 	Control        controlJSON `json:"control"`
+}
+
+func (c *protocolClient) renewUntil(attempt context.Context, asgn assignmentJSON, leaseUntil time.Time) (time.Time, controlJSON, error) {
+	ctx := attempt
+	if !leaseUntil.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(attempt, leaseUntil)
+		defer cancel()
+	}
+	return c.renew(ctx, asgn)
 }
 
 func (c *protocolClient) renew(ctx context.Context, asgn assignmentJSON) (time.Time, controlJSON, error) {
