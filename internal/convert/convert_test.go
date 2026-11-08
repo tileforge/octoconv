@@ -4,9 +4,32 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestLibvipsPairsStayTwenty(t *testing.T) {
+	pairs := (LibvipsConverter{}).Pairs()
+	if len(pairs) != 20 {
+		t.Fatalf("pairs = %d, want 20", len(pairs))
+	}
+	jpgPNG := false
+	for _, pair := range pairs {
+		if strings.Contains(pair.From, "pdf") || strings.Contains(pair.To, "pdf") {
+			t.Fatalf("pdf pair %s to %s", pair.From, pair.To)
+		}
+		if pair.From == "png" && pair.To == "png" {
+			t.Fatal("png to png")
+		}
+		if pair.From == "jpg" && pair.To == "png" {
+			jpgPNG = true
+		}
+	}
+	if !jpgPNG {
+		t.Fatal("jpg to png")
+	}
+}
 
 func TestNormalizeFormat(t *testing.T) {
 	cases := map[string]string{

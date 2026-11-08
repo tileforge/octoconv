@@ -130,10 +130,32 @@ type CreateParams struct {
 	// database should not be asked to pick one.
 	Inputs []Input
 	// CapabilityID pins an approved catalog row. Empty leaves capability_id
-	// and capability_version NULL. Create never writes dispatch_owner, so the
-	// column default stays legacy.
+	// and capability_version NULL.
 	CapabilityID      string
 	CapabilityVersion int
+	// DispatchOwner is protocol when an approved image match waits for a
+	// pull. Empty leaves the column default legacy and writes no deadline.
+	DispatchOwner string
+	// ProtocolAttemptBudget is the image engine timeout used to compute
+	// protocol_deadline. Zero with an empty DispatchOwner writes neither column.
+	ProtocolAttemptBudget time.Duration
+}
+
+func checkDispatchOwner(p CreateParams) error {
+	switch p.DispatchOwner {
+	case "":
+		if p.ProtocolAttemptBudget != 0 {
+			return errors.New("protocol budget set without dispatch owner")
+		}
+		return nil
+	case "protocol":
+		if p.CapabilityID == "" || p.CapabilityVersion < 1 || p.ProtocolAttemptBudget <= 0 {
+			return errors.New("protocol dispatch requires a capability pin and a positive budget")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown dispatch owner %q", p.DispatchOwner)
+	}
 }
 
 // Create inserts a job (status=queued), its input row, and the initial
@@ -180,6 +202,9 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	if p.CapabilityID != "" && p.CapabilityVersion < 1 {
 		return uuid.Nil, errors.New("capability version must be at least 1")
 	}
+	if err := checkDispatchOwner(p); err != nil {
+		return uuid.Nil, err
+	}
 
 	// IsoLevel is pinned to ReadCommitted rather than inherited from the pool/
 	// DSN default (52-REVIEW.md WR-02): admitLocked's post-lock re-check
@@ -211,7 +236,16 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 			return err
 		}
 
-		if p.CapabilityID == "" {
+		if p.DispatchOwner == "protocol" {
+			secs := int(p.ProtocolAttemptBudget / time.Second)
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id, capability_id, capability_version, dispatch_owner, protocol_deadline)
+				VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'protocol', now() + interval '15 minutes' + make_interval(secs => $15::int * 5))`,
+				jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID), p.CapabilityID, p.CapabilityVersion, secs,
+			); err != nil {
+				return fmt.Errorf("insert job: %w", err)
+			}
+		} else if p.CapabilityID == "" {
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id)
 				VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12)`,

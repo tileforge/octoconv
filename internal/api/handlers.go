@@ -1153,22 +1153,33 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
+	dispatchOwner := ""
+	var attemptBudget time.Duration
+	if legacyMatch && engine == convert.EngineImage && pinID != "" {
+		dispatchOwner = "protocol"
+		attemptBudget = s.engineTimeouts[convert.EngineImage]
+		if attemptBudget <= 0 {
+			attemptBudget = 120 * time.Second
+		}
+	}
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
-		CorrelationID:     correlationID,
-		ID:                jobID,
-		ClientID:          client.ID,
-		Operation:         operation,
-		Engine:            engine,
-		SourceFormat:      detected,
-		TargetFormat:      target,
-		CallbackURL:       callbackURL,
-		ProgressWebhook:   progressWebhook,
-		Opts:              normalizedOpts,
-		PresetName:        presetNameProv,
-		PresetVersion:     presetVerProv,
-		Inputs:            inputs,
-		CapabilityID:      pinID,
-		CapabilityVersion: pinVersion,
+		CorrelationID:         correlationID,
+		ID:                    jobID,
+		ClientID:              client.ID,
+		Operation:             operation,
+		Engine:                engine,
+		SourceFormat:          detected,
+		TargetFormat:          target,
+		CallbackURL:           callbackURL,
+		ProgressWebhook:       progressWebhook,
+		Opts:                  normalizedOpts,
+		PresetName:            presetNameProv,
+		PresetVersion:         presetVerProv,
+		Inputs:                inputs,
+		CapabilityID:          pinID,
+		CapabilityVersion:     pinVersion,
+		DispatchOwner:         dispatchOwner,
+		ProtocolAttemptBudget: attemptBudget,
 	})
 	if err != nil {
 		// Reaching this branch means the request passed PreAdmit and then
@@ -1218,18 +1229,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		"correlation_id", correlationID,
 	))
 
-	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
-	if !routed {
-		// Fail closed: an engine class with no known queue must never be
-		// silently dropped (T-11-02). EngineFor above only ever returns a
-		// value produced by a registered Converter.Engine(), so this branch
-		// signals a registry/routing bug, not a client input.
-		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
-		return
-	}
-	if enqueueErr != nil {
-		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
-		return
+	if dispatchOwner != "protocol" {
+		routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
+		if !routed {
+			// Fail closed: an engine class with no known queue must never be
+			// silently dropped (T-11-02). EngineFor above only ever returns a
+			// value produced by a registered Converter.Engine(), so this branch
+			// signals a registry/routing bug, not a client input.
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
+			return
+		}
+		if enqueueErr != nil {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
+			return
+		}
 	}
 
 	resp := map[string]any{

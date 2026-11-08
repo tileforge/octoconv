@@ -1537,6 +1537,101 @@ func TestCreateRejectsPinVersionBelowOne(t *testing.T) {
 	}
 }
 
+func TestCreateProtocolOwnerAndDeadline(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Fatal("DATABASE_URL not set")
+	}
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	input := Input{
+		Ordinal:     0,
+		ObjectKey:   "uploads/protocol/0-exif_gps.jpg",
+		Filename:    "exif_gps.jpg",
+		Format:      "jpg",
+		SizeBytes:   100,
+		ContentType: "image/jpeg",
+	}
+	badID := uuid.New()
+	if _, err := r.Create(ctx, CreateParams{
+		ID:            badID,
+		ClientID:      clientID,
+		Operation:     "convert",
+		Engine:        "image",
+		SourceFormat:  "jpg",
+		TargetFormat:  "png",
+		DispatchOwner: "asynq",
+		Input:         input,
+	}); err == nil {
+		t.Fatal("Create accepted dispatch owner asynq")
+	}
+	var badCount int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE id = $1`, badID).Scan(&badCount); err != nil {
+		t.Fatalf("count rejected job: %v", err)
+	}
+	if badCount != 0 {
+		t.Fatalf("rejected owner inserted %d rows", badCount)
+	}
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:              clientID,
+		Operation:             "convert",
+		Engine:                "image",
+		SourceFormat:          "jpg",
+		TargetFormat:          "png",
+		CapabilityID:          "octoconv.convert.image",
+		CapabilityVersion:     1,
+		DispatchOwner:         "protocol",
+		ProtocolAttemptBudget: 120 * time.Second,
+		Input:                 input,
+	})
+	if err != nil {
+		t.Fatalf("Create protocol: %v", err)
+	}
+	var owner, capability, engine string
+	var secs float64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT dispatch_owner, capability_id, engine, EXTRACT(EPOCH FROM (protocol_deadline - now()))
+		FROM jobs WHERE id = $1`, id).Scan(&owner, &capability, &engine, &secs); err != nil {
+		t.Fatalf("read protocol job: %v", err)
+	}
+	if owner != "protocol" || capability != "octoconv.convert.image" || engine != "image" {
+		t.Fatalf("owner=%s capability=%s engine=%s", owner, capability, engine)
+	}
+	if secs < 1470 || secs > 1530 {
+		t.Fatalf("protocol_deadline is %.1fs from now, want about 1500", secs)
+	}
+	stale, err := r.FindStale(ctx, -time.Hour, -time.Hour)
+	if err != nil {
+		t.Fatalf("FindStale: %v", err)
+	}
+	for _, job := range stale {
+		if job.ID == id {
+			t.Fatal("FindStale returned the protocol job")
+		}
+	}
+
+	legacyID, err := r.Create(ctx, CreateParams{
+		ClientID:     clientID,
+		Operation:    "convert",
+		Engine:       "image",
+		SourceFormat: "jpg",
+		TargetFormat: "png",
+		Input:        input,
+	})
+	if err != nil {
+		t.Fatalf("Create legacy: %v", err)
+	}
+	var legacyOwner string
+	var deadline *time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT dispatch_owner, protocol_deadline FROM jobs WHERE id = $1`, legacyID).Scan(&legacyOwner, &deadline); err != nil {
+		t.Fatalf("read legacy job: %v", err)
+	}
+	if legacyOwner != "legacy" || deadline != nil {
+		t.Fatalf("legacy owner=%s deadline=%v", legacyOwner, deadline)
+	}
+}
+
 type jobPinRow struct {
 	capabilityID      *string
 	capabilityVersion *int

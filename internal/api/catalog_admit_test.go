@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,6 +24,7 @@ type fakeCatalog struct {
 	operation string
 	source    string
 	target    string
+	allow     func(operation, source, target string) (workerproto.Match, bool)
 }
 
 func (f *fakeCatalog) Lookup(_ context.Context, operation, source, target string) (workerproto.Match, bool, error) {
@@ -29,6 +32,10 @@ func (f *fakeCatalog) Lookup(_ context.Context, operation, source, target string
 	f.operation = operation
 	f.source = source
 	f.target = target
+	if f.allow != nil {
+		match, found := f.allow(operation, source, target)
+		return match, found, nil
+	}
 	return f.match, f.found, f.err
 }
 
@@ -90,6 +97,9 @@ func TestCreateJobWithoutCatalogStillEnqueuesImage(t *testing.T) {
 	if repo.created == nil || repo.created.Engine != convert.EngineImage || repo.created.CapabilityID != "" {
 		t.Fatalf("create params = %+v, want engine image and empty pin", repo.created)
 	}
+	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("dispatch = %q budget = %s, want legacy defaults", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
 	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
 		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want one image enqueue", q.enqueueCalls, q.enqueuedImage)
 	}
@@ -126,8 +136,11 @@ func TestCatalogPinOnImageCreate(t *testing.T) {
 	if repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d, want octoconv.convert.image v1", repo.created.CapabilityID, repo.created.CapabilityVersion)
 	}
-	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
-		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want the image queue", q.enqueueCalls, q.enqueuedImage)
+	if q.enqueueCalls != 0 || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want no enqueue", q.enqueueCalls, q.enqueuedImage)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 120*time.Second {
+		t.Fatalf("dispatch = %q budget = %s, want protocol 120s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -203,8 +216,54 @@ func TestCatalogSchemaAcceptsEmptyObject(t *testing.T) {
 	if repo.created == nil || repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %+v, want octoconv.convert.image v1", repo.created)
 	}
-	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
-		t.Fatalf("enqueueCalls = %d, want the image queue", q.enqueueCalls)
+	if q.enqueueCalls != 0 || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d, want no enqueue", q.enqueueCalls)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 120*time.Second {
+		t.Fatalf("dispatch = %q budget = %s, want protocol 120s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+}
+
+func TestApprovedImageCreateSkipsEnqueue(t *testing.T) {
+	data, err := os.ReadFile("../convert/testdata/sanitize/exif_gps.jpg")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(legacyImageCatalog(`{}`))
+
+	body, ct := multipartBody(t, "exif_gps.jpg", "png", data)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["status"] != "queued" || resp["job_id"] == "" {
+		t.Fatalf("body = %s, want job_id and status queued", rec.Body.Bytes())
+	}
+	if _, ok := resp["capability_id"]; ok {
+		t.Fatalf("client body exposes capability_id: %s", rec.Body.Bytes())
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineImage || repo.created.SourceFormat != "jpg" || repo.created.TargetFormat != "png" {
+		t.Fatalf("create params = %+v, want image jpg to png", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 120*time.Second {
+		t.Fatalf("dispatch = %q budget = %s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want no enqueue", q.enqueueCalls, q.enqueuedImage)
 	}
 }
 
@@ -218,6 +277,55 @@ func TestCatalogSchemaRejectsBeforeUpload(t *testing.T) {
 	rec := postCreate(t, srv, "in.png", "webp")
 	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidOptions)
 	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func TestDocumentCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	catalog := &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	}
+	srv.SetCapabilityCatalog(catalog)
+
+	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("document enqueue calls=%d document=%s image=%s", q.enqueueCalls, q.enqueuedDocument, q.enqueuedImage)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineDocument {
+		t.Fatalf("engine = %+v, want document", repo.created)
+	}
+
+	rec = postCreate(t, srv, "in.png", "webp")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedImage != uuid.Nil {
+		t.Fatalf("image enqueue calls=%d image=%s", q.enqueueCalls, q.enqueuedImage)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.Engine != convert.EngineImage {
+		t.Fatalf("dispatch = %+v, want protocol image", repo.created)
+	}
 }
 
 func legacyImageCatalog(schema string) *fakeCatalog {
