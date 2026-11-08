@@ -256,6 +256,29 @@ func TestSymlinkOutputIsEngineError(t *testing.T) {
 	}
 }
 
+func TestReadLimitedJobFileStopsAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.png")
+	if err := os.WriteFile(path, []byte("0123456789"), 0o600); err != nil {
+		t.Fatal("write")
+	}
+	body, err := readLimitedJobFile(path, 10)
+	if err != nil || string(body) != "0123456789" {
+		t.Fatal("exact")
+	}
+	_, err = readLimitedJobFile(path, 4)
+	if !errors.Is(err, errOutputTooLarge) {
+		t.Fatal("limit")
+	}
+	link := filepath.Join(dir, "link.png")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal("symlink")
+	}
+	if _, err := readLimitedJobFile(link, 10); !errors.Is(err, convert.ErrJobFileIrregular) {
+		t.Fatal("symlink read")
+	}
+}
+
 func TestProgressPercentStaysBelow100(t *testing.T) {
 	requireVips(t)
 	state := &scriptState{helloLease: 30, helloWait: 0, jpg: readFixture(t, "../../internal/convert/testdata/sanitize/exif_gps.jpg")}
@@ -431,6 +454,134 @@ func TestCompleteRetryUsesSameBytes(t *testing.T) {
 	}
 	if len(state.fails) != 0 {
 		t.Fatal("fail")
+	}
+}
+
+func TestTinyOutputLimitIsEngineError(t *testing.T) {
+	requireVips(t)
+	state := &scriptState{
+		helloLease: 30,
+		helloWait:  0,
+		jpg:        readFixture(t, "../../internal/convert/testdata/sanitize/exif_gps.jpg"),
+	}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	asgn.Limits.MaxOutputBytes = 1
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, 60*time.Second, func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return len(state.fails) >= 1
+	})
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.fails) != 1 || len(state.completes) != 0 || len(state.putBody) != 0 {
+		t.Fatal("output too large")
+	}
+	var fail struct {
+		EngineCode string `json:"engine_code"`
+		Message    string `json:"message"`
+	}
+	if err := json.Unmarshal(state.fails[0], &fail); err != nil || fail.EngineCode != "engine_error" || fail.Message != "output too large" {
+		t.Fatal("fail body")
+	}
+}
+
+func TestStalledCompleteRetriesSameBytes(t *testing.T) {
+	requireVips(t)
+	state := &scriptState{
+		helloLease:    120,
+		helloWait:     0,
+		jpg:           readFixture(t, "../../internal/convert/testdata/sanitize/exif_gps.jpg"),
+		stallComplete: true,
+	}
+	dial, fileURL := bootScript(t, state, true)
+	state.setAssignment(scriptAssignment(fileURL), controlJSON{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runProtocol(ctx, dial)
+	}()
+	deadline := time.Now().Add(2*terminalReportTimeout + 30*time.Second)
+	var first time.Time
+	for first.IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		state.mu.Lock()
+		n := len(state.completes)
+		state.mu.Unlock()
+		if n >= 1 {
+			first = time.Now()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("timed out")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("complete stall")
+	}
+	since := time.Since(first)
+	if since < 2*terminalReportTimeout-time.Second || since > 2*terminalReportTimeout+3*time.Second {
+		t.Fatal("complete bound")
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.completes) != 2 || !bytes.Equal(state.completes[0], state.completes[1]) {
+		t.Fatal("complete bytes")
+	}
+}
+
+func TestStalledFailReturnsWithinBound(t *testing.T) {
+	state := &scriptState{helloLease: 120, helloWait: 0, stallFail: true}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	asgn.Outputs[0].Format = "pdf"
+	state.setAssignment(asgn, controlJSON{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runProtocol(ctx, dial)
+	}()
+	deadline := time.Now().Add(terminalReportTimeout + 20*time.Second)
+	var first time.Time
+	for first.IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		state.mu.Lock()
+		n := len(state.fails)
+		state.mu.Unlock()
+		if n >= 1 {
+			first = time.Now()
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("timed out")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("fail stall")
+	}
+	since := time.Since(first)
+	if since < terminalReportTimeout-time.Second || since > terminalReportTimeout+3*time.Second {
+		t.Fatal("fail bound")
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if len(state.fails) != 1 || len(state.completes) != 0 {
+		t.Fatal("fail once")
 	}
 }
 
@@ -875,6 +1026,8 @@ type scriptState struct {
 	leaseCode      string
 	stallLease     bool
 	stallStopped   bool
+	stallComplete  bool
+	stallFail      bool
 	blockGet       bool
 	getReleased    int
 	stoppedReplies int
@@ -933,6 +1086,13 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
 	case strings.HasSuffix(r.URL.Path, "/fail"):
 		s.keep(&s.fails, body)
+		s.mu.Lock()
+		stallFail := s.stallFail
+		s.mu.Unlock()
+		if stallFail {
+			<-r.Context().Done()
+			return
+		}
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
 	case strings.HasSuffix(r.URL.Path, "/stopped"):
 		s.keep(&s.stopped, body)
@@ -952,6 +1112,13 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.keep(&s.completes, body)
+		s.mu.Lock()
+		stallComplete := s.stallComplete
+		s.mu.Unlock()
+		if stallComplete {
+			<-r.Context().Done()
+			return
+		}
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
 	default:
 		http.NotFound(w, r)

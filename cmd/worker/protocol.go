@@ -35,13 +35,15 @@ const (
 	maxProtocolFileBytes = 100 << 20
 	maxProtocolJSONBytes = 262144
 
-	stoppedNotifyTimeout = 5 * time.Second
+	stoppedNotifyTimeout  = 5 * time.Second
+	terminalReportTimeout = 5 * time.Second
 )
 
 var (
 	errOriginRejected   = errors.New("origin_rejected")
 	errSessionClosed    = errors.New("session_closed")
 	errAttemptNotActive = errors.New("attempt_not_active")
+	errOutputTooLarge   = errors.New("output too large")
 )
 
 var imageTerminalSignatures = []string{
@@ -318,7 +320,7 @@ func (c *protocolClient) hello(ctx context.Context) (helloJSON, error) {
 	if err != nil {
 		return helloJSON{}, err
 	}
-	raw, err := c.postCore(ctx, "/worker/v1/sessions", body, "", "", false)
+	raw, err := c.postCore(ctx, "/worker/v1/sessions", body, "", "", false, 0)
 	if err != nil {
 		return helloJSON{}, err
 	}
@@ -388,7 +390,7 @@ func (c *protocolClient) pull(ctx context.Context) (pullResponseJSON, error) {
 	if err != nil {
 		return pullResponseJSON{}, err
 	}
-	raw, err := c.postCore(ctx, "/worker/v1/sessions/"+url.PathEscape(c.sessionID)+"/pull", body, c.sessionToken, "", true)
+	raw, err := c.postCore(ctx, "/worker/v1/sessions/"+url.PathEscape(c.sessionID)+"/pull", body, c.sessionToken, "", true, 0)
 	if err != nil {
 		var status *statusError
 		if errors.As(err, &status) && status.code == "rate_limited" {
@@ -477,7 +479,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		return err
 	}
 
-	produced, err := c.convert(attemptCtx, in.Format, out.Format, src, deadline)
+	produced, err := c.convert(attemptCtx, in.Format, out.Format, src, deadline, asgn.Limits.MaxOutputBytes)
 	if done, stopErr := c.alreadyStopped(ctx, &flag); done {
 		return stopErr
 	}
@@ -485,10 +487,10 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		if errors.Is(err, errOriginRejected) {
 			return errOriginRejected
 		}
+		if errors.Is(err, errOutputTooLarge) {
+			return c.fail(ctx, asgn, "engine_error", "output too large")
+		}
 		return c.fail(ctx, asgn, imageEngineCode(err), safeMessage(err))
-	}
-	if asgn.Limits.MaxOutputBytes > 0 && int64(len(produced)) > asgn.Limits.MaxOutputBytes {
-		return c.fail(ctx, asgn, "engine_error", "output too large")
 	}
 	if err := c.postProgress(attemptCtx, asgn, 99); err != nil {
 		if done, stopErr := c.alreadyStopped(ctx, &flag); done {
@@ -536,6 +538,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		c.sessionToken,
 		asgn.AttemptToken,
 		true,
+		terminalReportTimeout,
 	)
 	if errors.Is(err, errAttemptNotActive) {
 		return c.lostLease(ctx, &flag, asgn)
@@ -543,7 +546,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 	return err
 }
 
-func (c *protocolClient) convert(ctx context.Context, from, to string, src []byte, deadline time.Time) ([]byte, error) {
+func (c *protocolClient) convert(ctx context.Context, from, to string, src []byte, deadline time.Time, maxOut int64) ([]byte, error) {
 	conv, ok := convert.Default.Lookup(from, to)
 	if !ok {
 		return nil, fmt.Errorf("no converter for %s to %s", from, to)
@@ -567,7 +570,27 @@ func (c *protocolClient) convert(ctx context.Context, from, to string, src []byt
 	if err := conv.Convert(convertCtx, inPath, outPath, nil); err != nil {
 		return nil, err
 	}
-	return convert.ReadJobFile(outPath)
+	return readLimitedJobFile(outPath, maxOut)
+}
+
+func readLimitedJobFile(path string, maxOut int64) ([]byte, error) {
+	f, _, err := convert.OpenJobFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	limit := int64(maxProtocolFileBytes)
+	if maxOut > 0 && maxOut < limit {
+		limit = maxOut
+	}
+	payload, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > limit {
+		return nil, errOutputTooLarge
+	}
+	return payload, nil
 }
 
 func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttempt context.CancelCauseFunc, flag *stopFlag, asgn assignmentJSON, leaseUntil time.Time) {
@@ -701,6 +724,7 @@ func (c *protocolClient) renew(ctx context.Context, asgn assignmentJSON) (time.T
 		c.sessionToken,
 		asgn.AttemptToken,
 		false,
+		0,
 	)
 	if err != nil {
 		return time.Time{}, controlJSON{}, err
@@ -736,6 +760,7 @@ func (c *protocolClient) postProgress(ctx context.Context, asgn assignmentJSON, 
 		c.sessionToken,
 		asgn.AttemptToken,
 		false,
+		0,
 	)
 	return err
 }
@@ -767,6 +792,7 @@ func (c *protocolClient) fail(ctx context.Context, asgn assignmentJSON, code, me
 		c.sessionToken,
 		asgn.AttemptToken,
 		false,
+		terminalReportTimeout,
 	)
 	if errors.Is(err, errAttemptNotActive) || errors.Is(err, errSessionClosed) {
 		return err
@@ -796,6 +822,7 @@ func (c *protocolClient) postStopped(ctx context.Context, asgn assignmentJSON, r
 		c.sessionToken,
 		asgn.AttemptToken,
 		false,
+		0,
 	)
 	if errors.Is(err, errAttemptNotActive) {
 		return nil
@@ -832,7 +859,7 @@ func (c *protocolClient) putFile(ctx context.Context, href string, body []byte) 
 	return err
 }
 
-func (c *protocolClient) postCore(ctx context.Context, path string, body []byte, bearer, attempt string, retry bool) ([]byte, error) {
+func (c *protocolClient) postCore(ctx context.Context, path string, body []byte, bearer, attempt string, retry bool, perTry time.Duration) ([]byte, error) {
 	target, err := url.JoinPath(c.core.String(), strings.TrimPrefix(path, "/"))
 	if err != nil {
 		return nil, err
@@ -843,7 +870,15 @@ func (c *protocolClient) postCore(ctx context.Context, path string, body []byte,
 	}
 	var last error
 	for try := 0; try < attempts; try++ {
-		raw, err := c.do(ctx, c.coreHTTP, http.MethodPost, target, body, bearer, attempt, maxProtocolJSONBytes)
+		raw, err := func() ([]byte, error) {
+			tryCtx := ctx
+			if perTry > 0 {
+				var cancel context.CancelFunc
+				tryCtx, cancel = context.WithTimeout(ctx, perTry)
+				defer cancel()
+			}
+			return c.do(tryCtx, c.coreHTTP, http.MethodPost, target, body, bearer, attempt, maxProtocolJSONBytes)
+		}()
 		if err == nil {
 			return raw, nil
 		}
