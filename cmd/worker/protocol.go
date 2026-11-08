@@ -449,7 +449,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		c.renewLoop(ctx, attemptCtx, cancelAttempt, &flag, asgn, leaseUntil)
+		c.renewLoop(ctx, attemptCtx, cancelAttempt, &flag, asgn, leaseUntil, deadline)
 	}()
 	defer func() {
 		cancelAttempt(context.Canceled)
@@ -501,7 +501,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		}
 		return err
 	}
-	if err := c.putFile(attemptCtx, out.Href, produced); err != nil {
+	if err := c.putFile(attemptCtx, out.Href, produced, convert.MIMEType(out.Format)); err != nil {
 		if done, stopErr := c.alreadyStopped(ctx, &flag); done {
 			return stopErr
 		}
@@ -593,8 +593,11 @@ func readLimitedJobFile(path string, maxOut int64) ([]byte, error) {
 	return payload, nil
 }
 
-func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttempt context.CancelCauseFunc, flag *stopFlag, asgn assignmentJSON, leaseUntil time.Time) {
+func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttempt context.CancelCauseFunc, flag *stopFlag, asgn assignmentJSON, leaseUntil, deadline time.Time) {
 	wait := renewEvery(c.leaseSeconds)
+	if leaseCovers(leaseUntil, deadline) {
+		wait = untilFire(leaseUntil)
+	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	for {
@@ -610,6 +613,10 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 			if !leaseUntil.IsZero() && !time.Now().Before(leaseUntil) {
 				c.stopAttempt(parent, cancelAttempt, flag, asgn, "lease_lost", errAttemptNotActive)
 				return
+			}
+			if leaseCovers(leaseUntil, deadline) {
+				timer.Reset(untilFire(leaseUntil))
+				continue
 			}
 			next, ctrl, err := c.renewUntil(attempt, asgn, leaseUntil)
 			if parent.Err() != nil {
@@ -646,9 +653,25 @@ func (c *protocolClient) renewLoop(parent, attempt context.Context, cancelAttemp
 			if !next.IsZero() {
 				leaseUntil = next
 			}
+			if leaseCovers(leaseUntil, deadline) {
+				timer.Reset(untilFire(leaseUntil))
+				continue
+			}
 			timer.Reset(wait)
 		}
 	}
+}
+
+func leaseCovers(leaseUntil, deadline time.Time) bool {
+	return !deadline.IsZero() && !leaseUntil.IsZero() && !leaseUntil.Before(deadline)
+}
+
+func untilFire(at time.Time) time.Duration {
+	d := time.Until(at)
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func renewEvery(seconds int) time.Duration {
@@ -848,14 +871,14 @@ func (c *protocolClient) getFile(ctx context.Context, href string) ([]byte, erro
 	if _, err := requireHTTPS(href); err != nil {
 		return nil, err
 	}
-	return c.do(ctx, c.fileHTTP, http.MethodGet, href, nil, "", "", maxProtocolFileBytes)
+	return c.do(ctx, c.fileHTTP, http.MethodGet, href, nil, "", "", "", maxProtocolFileBytes)
 }
 
-func (c *protocolClient) putFile(ctx context.Context, href string, body []byte) error {
+func (c *protocolClient) putFile(ctx context.Context, href string, body []byte, contentType string) error {
 	if _, err := requireHTTPS(href); err != nil {
 		return err
 	}
-	_, err := c.do(ctx, c.fileHTTP, http.MethodPut, href, body, "", "", maxProtocolJSONBytes)
+	_, err := c.do(ctx, c.fileHTTP, http.MethodPut, href, body, "", "", contentType, maxProtocolJSONBytes)
 	return err
 }
 
@@ -877,7 +900,7 @@ func (c *protocolClient) postCore(ctx context.Context, path string, body []byte,
 				tryCtx, cancel = context.WithTimeout(ctx, perTry)
 				defer cancel()
 			}
-			return c.do(tryCtx, c.coreHTTP, http.MethodPost, target, body, bearer, attempt, maxProtocolJSONBytes)
+			return c.do(tryCtx, c.coreHTTP, http.MethodPost, target, body, bearer, attempt, "", maxProtocolJSONBytes)
 		}()
 		if err == nil {
 			return raw, nil
@@ -906,7 +929,7 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("status %d", e.status)
 }
 
-func (c *protocolClient) do(ctx context.Context, client *http.Client, method, rawURL string, body []byte, bearer, attempt string, limit int64) ([]byte, error) {
+func (c *protocolClient) do(ctx context.Context, client *http.Client, method, rawURL string, body []byte, bearer, attempt, contentType string, limit int64) ([]byte, error) {
 	if _, err := requireHTTPS(rawURL); err != nil {
 		return nil, err
 	}
@@ -923,6 +946,9 @@ func (c *protocolClient) do(ctx context.Context, client *http.Client, method, ra
 	}
 	if attempt != "" {
 		req.Header.Set("Octoconv-Attempt", attempt)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := client.Do(req)
 	if err != nil {

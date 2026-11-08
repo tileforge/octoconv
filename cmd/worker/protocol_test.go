@@ -415,7 +415,9 @@ func TestStalledStoppedReleasesAttempt(t *testing.T) {
 func TestLeaseLossSendsStopped(t *testing.T) {
 	state := &scriptState{helloLease: 0, helloWait: 0, blockGet: true, leaseCode: "attempt_not_active"}
 	dial, fileURL := bootScript(t, state, true)
-	state.setAssignment(scriptAssignment(fileURL), controlJSON{})
+	asgn := scriptAssignment(fileURL)
+	asgn.AttemptDeadline = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	state.setAssignment(asgn, controlJSON{})
 	runProtocolUntil(t, dial, 20*time.Second, func() bool {
 		return len(state.stoppedReasons()) >= 1
 	})
@@ -425,6 +427,32 @@ func TestLeaseLossSendsStopped(t *testing.T) {
 	state.mu.Unlock()
 	if len(reasons) != 1 || reasons[0] != "lease_lost" || fails != 0 {
 		t.Fatal("lease")
+	}
+}
+
+func TestLeaseCoveringDeadlineDoesNotRenew(t *testing.T) {
+	state := &scriptState{helloLease: 0, helloWait: 0, blockGet: true}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	expires := time.Now().Add(2 * time.Second)
+	stamp := expires.UTC().Format(time.RFC3339Nano)
+	asgn.LeaseExpiresAt = stamp
+	asgn.AttemptDeadline = stamp
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, 8*time.Second, func() bool {
+		return len(state.stoppedReasons()) >= 1
+	})
+	since := time.Since(expires)
+	if since < -250*time.Millisecond || since > 2*time.Second {
+		t.Fatal("covered lease")
+	}
+	reasons := state.stoppedReasons()
+	state.mu.Lock()
+	posts := state.leasePosts
+	fails := len(state.fails)
+	state.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != "lease_lost" || fails != 0 || posts != 0 {
+		t.Fatal("renewed")
 	}
 }
 
@@ -659,6 +687,16 @@ func TestFileRequestOmitsAuthorization(t *testing.T) {
 	for _, snap := range append(gets, puts...) {
 		if snap.auth || snap.attempt {
 			t.Fatal("file header")
+		}
+	}
+	for _, snap := range gets {
+		if snap.ctype != "" {
+			t.Fatal("get type")
+		}
+	}
+	for _, snap := range puts {
+		if snap.ctype != "image/png" {
+			t.Fatal("put type")
 		}
 	}
 	for _, snap := range pulls {
@@ -1029,6 +1067,7 @@ type scriptState struct {
 	stallComplete  bool
 	stallFail      bool
 	blockGet       bool
+	leasePosts     int
 	getReleased    int
 	stoppedReplies int
 	jpg            []byte
@@ -1044,6 +1083,7 @@ type scriptState struct {
 type headerSnap struct {
 	auth    bool
 	attempt bool
+	ctype   string
 }
 
 func (s *scriptState) setAssignment(asgn assignmentJSON, ctrl controlJSON) {
@@ -1138,6 +1178,7 @@ func (s *scriptState) serveFile(w http.ResponseWriter, r *http.Request) {
 	snap := headerSnap{
 		auth:    r.Header.Get("Authorization") != "",
 		attempt: r.Header.Get("Octoconv-Attempt") != "",
+		ctype:   r.Header.Get("Content-Type"),
 	}
 	if snap.auth || snap.attempt {
 		s.mu.Lock()
@@ -1229,6 +1270,7 @@ func (s *scriptState) writeLease(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	code := s.leaseCode
 	stall := s.stallLease
+	s.leasePosts++
 	s.mu.Unlock()
 	if stall {
 		<-r.Context().Done()
