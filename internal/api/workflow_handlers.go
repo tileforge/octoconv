@@ -18,7 +18,7 @@ import (
 	"github.com/tileforge/octoconv/internal/workflow"
 )
 
-func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation string) {
+func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation, correlationID string) {
 	if operation != operationConv || r.FormValue(formFieldPreset) != "" || r.FormValue(formFieldTarget) != "" {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "workflow cannot be combined with preset or target")
 		return
@@ -70,6 +70,7 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		InputBytes:      header.Size,
 		CallbackURL:     callbackURL,
 		ProgressWebhook: callbackURL != "" && r.FormValue(formFieldProgressWebhook) == "true",
+		CorrelationID:   correlationID,
 	})
 	if errors.Is(err, workflow.ErrRejected) || errors.Is(err, workflow.ErrConflict) {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid workflow")

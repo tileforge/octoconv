@@ -25,6 +25,7 @@ type AdmitInput struct {
 	InputBytes      int64
 	CallbackURL     string
 	ProgressWebhook bool
+	CorrelationID   string
 }
 
 // StatusStep is one step as the status read returns it.
@@ -122,14 +123,14 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 			INSERT INTO jobs (
 				id, client_id, operation, engine, status, source_format, target_format,
 				options, capability_id, capability_version, dispatch_owner, protocol_deadline, attempts,
-				admitted_input_bytes, callback_url, progress_webhook
+				admitted_input_bytes, callback_url, progress_webhook, correlation_id
 			) VALUES (
 				$1, $2, 'convert', $3, 'queued', $4, $5,
-				'{}'::jsonb, $6, $7, 'protocol', $8, 0, $9, $10, $11
+				'{}'::jsonb, $6, $7, 'protocol', $8, 0, $9, $10, $11, NULLIF($12, '')
 			)`,
 			jobID, in.ClientID, resolved[0].LegacyEngine, source, resolved[len(resolved)-1].TargetFormat,
 			resolved[0].CapabilityID, resolved[0].CapabilityVersion, in.Deadline, in.InputBytes,
-			in.CallbackURL, in.ProgressWebhook && in.CallbackURL != "",
+			in.CallbackURL, in.ProgressWebhook && in.CallbackURL != "", in.CorrelationID,
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}

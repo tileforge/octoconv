@@ -330,6 +330,109 @@ func TestWorkflowKeepsCallbackSettings(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
+func TestWorkflowKeepsCorrelationID(t *testing.T) {
+	pool := workerAdminPool(t)
+	repo := jobs.NewRepo(pool)
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, clientID := newWorkflowOperator(pool, repo, store, q)
+	capabilityID := insertAPICapability(t, pool)
+	insertAPIClient(t, pool, clientID)
+	name := "wf-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	published := postSystemWorkflow(t, srv, map[string]any{
+		"name": name, "version": 1, "client_ids": []uuid.UUID{clientID}, "steps": apiSteps(capabilityID),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("publish status %d body %s", published.Code, published.Body.String())
+	}
+	deadline := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+	fields := map[string]string{"workflow": name + "@1", "deadline": deadline}
+	owned := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID)
+	snaps := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+	rejected := postWorkflowHeader(t, srv, "photo.jpeg", pngBytesFixture(), fields, "bad id")
+	assertClientError(t, rejected, http.StatusUnprocessableEntity, errcode.InvalidRequest)
+	if decodedError(t, rejected) != "Correlation-Id must be at most 128 printable ASCII characters without spaces" {
+		t.Fatalf("error %q", decodedError(t, rejected))
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID); got != owned {
+		t.Fatalf("jobs %d, want %d", got, owned)
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
+		t.Fatalf("snapshots %d, want %d", got, snaps)
+	}
+	if q.enqueueCalls != 0 || store.uploadCalls != 0 {
+		t.Fatal("an invalid correlation id stored or enqueued")
+	}
+
+	const want = "svc-checkout/req-8f31c2a4"
+	kept := postWorkflowHeader(t, srv, "photo.jpeg", pngBytesFixture(), fields, want)
+	if kept.Code != http.StatusCreated {
+		t.Fatalf("create status %d body %s", kept.Code, kept.Body.String())
+	}
+	var created map[string]json.RawMessage
+	if err := json.Unmarshal(kept.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if _, ok := created["correlation_id"]; ok || len(created) != 2 {
+		t.Fatalf("create body %s", kept.Body.String())
+	}
+	keptID := decodeCreatedJob(t, kept)
+	statusRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(statusRec, authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+keptID.String(), nil)))
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", statusRec.Code, statusRec.Body.String())
+	}
+	var status map[string]json.RawMessage
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if string(status["correlation_id"]) != `"`+want+`"` {
+		t.Fatalf("status correlation %s", status["correlation_id"])
+	}
+	var stored *string
+	if err := pool.QueryRow(context.Background(), `SELECT correlation_id FROM jobs WHERE id = $1`, keptID).Scan(&stored); err != nil {
+		t.Fatalf("read correlation: %v", err)
+	}
+	if stored == nil || *stored != want {
+		t.Fatalf("stored %v", stored)
+	}
+
+	plain := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), fields)
+	if plain.Code != http.StatusCreated {
+		t.Fatalf("plain status %d body %s", plain.Code, plain.Body.String())
+	}
+	plainID := decodeCreatedJob(t, plain)
+	plainRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(plainRec, authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+plainID.String(), nil)))
+	if plainRec.Code != http.StatusOK {
+		t.Fatalf("plain get %d body %s", plainRec.Code, plainRec.Body.String())
+	}
+	if strings.Contains(plainRec.Body.String(), "correlation_id") {
+		t.Fatalf("absent correlation echoed: %s", plainRec.Body.String())
+	}
+	var empty *string
+	if err := pool.QueryRow(context.Background(), `SELECT correlation_id FROM jobs WHERE id = $1`, plainID).Scan(&empty); err != nil {
+		t.Fatalf("read empty correlation: %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("stored %q", *empty)
+	}
+	if q.enqueueCalls != 0 || store.uploadCalls != 0 {
+		t.Fatal("workflow admission enqueued or uploaded")
+	}
+}
+
+func postWorkflowHeader(t *testing.T, srv *Server, filename string, data []byte, fields map[string]string, correlationID string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, ct := multipartFields(t, filename, data, fields)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set(CorrelationHeader, correlationID)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
 func decodeCreatedJob(t *testing.T, rec *httptest.ResponseRecorder) uuid.UUID {
 	t.Helper()
 	var created struct {

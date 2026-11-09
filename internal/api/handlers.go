@@ -218,7 +218,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.FormValue(formFieldWorkflow) != "" {
-		s.admitWorkflow(w, r, operation)
+		s.admitWorkflow(w, r, operation, correlationID)
 		return
 	}
 

@@ -373,6 +373,49 @@ func TestAdmitCallbackReachesWebhookGaps(t *testing.T) {
 	}
 }
 
+func TestAdmitStoresCorrelationID(t *testing.T) {
+	pool := testPool(t)
+	store := NewStore(pool)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	const want = "svc-checkout/req-8f31c2a4"
+	kept, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		CorrelationID: want,
+	})
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	var stored *string
+	if err := pool.QueryRow(context.Background(), `SELECT correlation_id FROM jobs WHERE id = $1`, kept).Scan(&stored); err != nil {
+		t.Fatalf("read correlation: %v", err)
+	}
+	if stored == nil || *stored != want {
+		t.Fatalf("correlation %v", stored)
+	}
+	absent, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+	})
+	if err != nil {
+		t.Fatalf("admit without correlation: %v", err)
+	}
+	var empty *string
+	if err := pool.QueryRow(context.Background(), `SELECT correlation_id FROM jobs WHERE id = $1`, absent).Scan(&empty); err != nil {
+		t.Fatalf("read empty correlation: %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("correlation %q", *empty)
+	}
+}
+
 func TestAdmitRejectsEnforcedZeroConcurrency(t *testing.T) {
 	pool := testPool(t)
 	store := NewStore(pool)
