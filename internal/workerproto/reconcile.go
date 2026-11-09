@@ -2,6 +2,7 @@ package workerproto
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -72,7 +73,78 @@ func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, 
 	if err := failPastDeadlines(ctx, pool, jobsRepo); err != nil {
 		return err
 	}
+	if err := sweepWorkflowResults(ctx, pool, store); err != nil {
+		return err
+	}
 	return sweepReleasedStaging(ctx, pool, store)
+}
+
+const workflowResultSweepSQL = `j.status IN ('done', 'canceled')
+		  OR (j.status = 'failed' AND NOT COALESCE(j.protocol_deadline > now(), false))`
+
+func sweepWorkflowResults(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {
+	if store == nil {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT r.job_id, r.step_id, r.object_key
+		FROM workflow_step_results r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE `+workflowResultSweepSQL)
+	if err != nil {
+		return fmt.Errorf("list workflow results: %w", err)
+	}
+	type resultRow struct {
+		jobID  uuid.UUID
+		stepID uuid.UUID
+		key    string
+	}
+	var due []resultRow
+	for rows.Next() {
+		var item resultRow
+		if err := rows.Scan(&item.jobID, &item.stepID, &item.key); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan workflow result: %w", err)
+		}
+		due = append(due, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list workflow results: %w", err)
+	}
+	rows.Close()
+	for _, item := range due {
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var eligible bool
+			err := tx.QueryRow(ctx, `
+				SELECT (`+workflowResultSweepSQL+`)
+				FROM jobs AS j
+				WHERE j.id = $1
+				FOR UPDATE`, item.jobID).Scan(&eligible)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !eligible) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("lock workflow job: %w", err)
+			}
+			if err := store.Remove(ctx, item.key); err != nil {
+				return nil
+			}
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM workflow_step_results AS r
+				USING jobs AS j
+				WHERE r.job_id = $1 AND r.step_id = $2
+				  AND j.id = r.job_id
+				  AND (`+workflowResultSweepSQL+`)`, item.jobID, item.stepID); err != nil {
+				return fmt.Errorf("delete workflow result: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sweepReleasedStaging(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {

@@ -175,7 +175,13 @@ components:
         status:
           type: string
         current_step:
-          type: "null"
+          description: >-
+            The current step id while the job is queued or active, and null
+            when the job is done, failed, or canceled.
+          oneOf:
+            - type: string
+              format: uuid
+            - type: "null"
         steps:
           type: array
           items:
@@ -2003,7 +2009,9 @@ paths:
         Returns the stored chain for a job this caller admitted with a
         workflow field. The overall percent stays null until a final
         result is accepted, and the step count is not that percent.
-        current_step is null. Each step progress_pct is null. A one-step
+        current_step is the running step id while the job is queued or
+        active, and null when the job is done, failed, or canceled. Each
+        step progress_pct is null. A one-step
         job, a missing job, and a job owned by another client all answer
         404 with the same body.
       parameters:

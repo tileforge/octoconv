@@ -371,7 +371,9 @@ func main() {
 			log.Fatalf("worker tls: %v", err)
 		}
 		tlsCfg.ClientCAs = clientCAs
-		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage]).Routes())
+		workerHandler := workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage])
+		workerHandler.SetEngineBudgets(engineTimeoutsFromEnv())
+		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerHandler.Routes())
 		workerSrv.TLSConfig = tlsCfg
 	}
 

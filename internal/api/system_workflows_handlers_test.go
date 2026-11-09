@@ -131,9 +131,14 @@ func TestSystemWorkflows(t *testing.T) {
 }
 
 func newWorkflowOperator(pool *pgxpool.Pool, repo Repo, store Storage, q Enqueuer) (*Server, uuid.UUID) {
+	return newWorkflowOperatorLimit(pool, repo, store, q, nil)
+}
+
+func newWorkflowOperatorLimit(pool *pgxpool.Pool, repo Repo, store Storage, q Enqueuer, maxEngineBytes map[string]int64) (*Server, uuid.UUID) {
 	resolver := newFakeResolver()
 	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:    1 << 20,
+		MaxEngineBytes:    maxEngineBytes,
 		OperatorClientIDs: map[uuid.UUID]struct{}{resolver.client.ID: {}},
 	})
 	wfStore := workflow.NewStore(pool)

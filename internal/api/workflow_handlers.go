@@ -15,6 +15,7 @@ import (
 	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
 	"github.com/tileforge/octoconv/internal/workflow"
 )
 
@@ -59,8 +60,42 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 			return
 		}
 	}
+	if s.storage == nil {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
+		return
+	}
 	client, _ := auth.ClientFromContext(r.Context())
-	jobID, err := s.workflows.Admit(r.Context(), workflow.AdmitInput{
+	engine, err := s.workflows.FirstEngine(r.Context(), workflow.AdmitInput{
+		ClientID:     client.ID,
+		Name:         name,
+		Version:      version,
+		SourceFormat: source,
+		Deadline:     deadline,
+		Budgets:      s.engineTimeouts,
+	})
+	if err != nil && !errors.Is(err, workflow.ErrRejected) {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	if err == nil {
+		if limit, perFormat, gated := s.sizeLimit(engine, source); gated && header.Size > limit {
+			msg := "file exceeds size limit for this conversion type"
+			if perFormat {
+				msg = formatLimitMessage(source, limit)
+			}
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, msg)
+			return
+		}
+	}
+	jobID := uuid.New()
+	filename := path.Base(header.Filename)
+	key := storage.InputKey(jobID, 0, filename)
+	contentType := convert.MIMEType(source)
+	if err := s.storage.Upload(r.Context(), key, file, header.Size, contentType); err != nil {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
+		return
+	}
+	jobID, err = s.workflows.Admit(r.Context(), workflow.AdmitInput{
 		ClientID:        client.ID,
 		Name:            name,
 		Version:         version,
@@ -71,6 +106,14 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		CallbackURL:     callbackURL,
 		ProgressWebhook: callbackURL != "" && r.FormValue(formFieldProgressWebhook) == "true",
 		CorrelationID:   correlationID,
+		JobID:           jobID,
+		File: &workflow.AdmitFile{
+			ObjectKey:   key,
+			Filename:    filename,
+			Format:      source,
+			SizeBytes:   header.Size,
+			ContentType: contentType,
+		},
 	})
 	if errors.Is(err, workflow.ErrRejected) || errors.Is(err, workflow.ErrConflict) {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid workflow")
@@ -133,9 +176,13 @@ func (s *Server) handleJobWorkflow(w http.ResponseWriter, r *http.Request) {
 			"progress_pct":       nil,
 		})
 	}
+	var current any
+	if view.CurrentStep != uuid.Nil {
+		current = view.CurrentStep
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       view.Status,
-		"current_step": nil,
+		"current_step": current,
 		"steps":        steps,
 	})
 }
