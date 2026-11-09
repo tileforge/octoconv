@@ -945,6 +945,37 @@ components:
           enum: [ok, degraded]
       required: [postgres, redis, s3, status]
 
+    SystemWorker:
+      type: object
+      properties:
+        worker_id:
+          type: string
+          format: uuid
+        capability_id:
+          type: [string, "null"]
+        capability_version:
+          type: [integer, "null"]
+        sessions:
+          type: array
+          items:
+            type: object
+            required: [session_id, state, last_heartbeat_at, active_attempts]
+            properties:
+              session_id:
+                type: string
+                format: uuid
+              state:
+                type: string
+                enum: [ready, draining, offline]
+              last_heartbeat_at:
+                type: [string, "null"]
+                format: date-time
+              active_attempts:
+                type: integer
+            additionalProperties: false
+      required: [worker_id, capability_id, capability_version, sessions]
+      additionalProperties: false
+
   responses:
     Unauthorized:
       description: Missing/malformed Authorization header, or an unknown/revoked API key.
@@ -3002,6 +3033,94 @@ paths:
               example:
                 error: invalid period filter
                 code: invalid_request
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/system/workers:
+    get:
+      tags: [System]
+      operationId: listSystemWorkers
+      summary: Open worker sessions as ready, draining, or offline
+      description: >-
+        Operator-only. Lists identities that have an open session or an
+        approved capability. Each open session is ready, draining, or
+        offline. Draining wins when that session's drain time is set.
+        Otherwise a session is offline when its last heartbeat is older
+        than 30 seconds, or when it has no heartbeat and it opened more
+        than 30 seconds ago. A missed heartbeat does not close the session.
+        A non-operator receives 404. The body has no session token and no
+        file link.
+      responses:
+        "200":
+          description: Workers and their open sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workers]
+                properties:
+                  workers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SystemWorker"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller is not an authorized operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+                code: unknown_preset
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/system/workers/{worker_id}/drain:
+    post:
+      tags: [System]
+      operationId: drainSystemWorker
+      summary: Drain open sessions of one worker
+      description: >-
+        Operator-only. Sets drain time on sessions of this worker that are
+        already open and do not already have one. A session opened after
+        this call is not drained. An unknown worker is 404. A known worker
+        with no open session returns the worker object and writes nothing.
+        A non-operator receives 404.
+      parameters:
+        - name: worker_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The worker after the drain stamp.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemWorker"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller is not an authorized operator, or the worker id is unknown.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+                code: unknown_preset
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "431":

@@ -311,6 +311,7 @@ func main() {
 
 	workerCatalog := workerproto.NewRepo(pool)
 	srv.SetCapabilityCatalog(workerCatalog)
+	srv.SetWorkerAdmin(workerCatalog)
 
 	reconcileDone := make(chan struct{})
 	go func() {
