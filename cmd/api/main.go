@@ -125,8 +125,8 @@ func main() {
 	// PROJECT.md), so its depth stays observable. Matching every worker's
 	// existing precedent, the Inspector is never closed — Collect() is
 	// pull-based/lazy, invoked once per scrape.
-	prometheus.MustRegister(metrics.NewQueueDepthCollector(asynq.NewInspector(redisOpt),
-		append(queue.AllConvertQueues(), queue.QueueWebhook)...))
+	depth := metrics.NewQueueDepthCollector(asynq.NewInspector(redisOpt),
+		append(queue.AllConvertQueues(), queue.QueueWebhook)...)
 
 	salt := []byte(os.Getenv("API_KEY_SALT"))
 	if len(salt) == 0 {
@@ -312,6 +312,14 @@ func main() {
 	workerCatalog := workerproto.NewRepo(pool)
 	srv.SetCapabilityCatalog(workerCatalog)
 	srv.SetWorkerAdmin(workerCatalog)
+	depth.SetImageBacklog(func() (metrics.ImageBacklog, error) {
+		pending, active, retry, err := workerCatalog.ImageBacklog(context.Background())
+		if err != nil {
+			return metrics.ImageBacklog{}, err
+		}
+		return metrics.ImageBacklog{Pending: pending, Active: active, Retry: retry}, nil
+	})
+	prometheus.MustRegister(depth)
 
 	reconcileDone := make(chan struct{})
 	go func() {

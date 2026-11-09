@@ -1897,3 +1897,38 @@ func decodeRaw(w http.ResponseWriter, raw []byte, dst any) bool {
 	}
 	return true
 }
+
+const imageBacklogSQL = `
+SELECT
+    count(*) FILTER (
+        WHERE status = 'queued'
+          AND protocol_deadline > now()
+          AND (not_before IS NULL OR not_before <= now())
+    ),
+    count(*) FILTER (
+        WHERE status = 'active'
+          AND protocol_deadline > now()
+    ),
+    count(*) FILTER (
+        WHERE status = 'queued'
+          AND protocol_deadline > now()
+          AND not_before > now()
+    )
+FROM jobs
+WHERE dispatch_owner = 'protocol'
+  AND engine = 'image'
+  AND capability_id IS DISTINCT FROM 'octoconv.convert.imagepdf'
+  AND ($1::uuid IS NULL OR id = $1)`
+
+// ImageBacklog counts protocol image jobs that are still eligible to run.
+func (r *Repo) ImageBacklog(ctx context.Context) (pending, active, retry int, err error) {
+	return imageBacklog(ctx, r.pool, nil)
+}
+
+func imageBacklog(ctx context.Context, q queryRower, id *uuid.UUID) (pending, active, retry int, err error) {
+	err = q.QueryRow(ctx, imageBacklogSQL, id).Scan(&pending, &active, &retry)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("image backlog: %w", err)
+	}
+	return pending, active, retry, nil
+}
