@@ -17,6 +17,7 @@ import (
 	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/presets"
 	"github.com/tileforge/octoconv/internal/workerproto"
+	"github.com/tileforge/octoconv/internal/workflow"
 )
 
 // Repo is the subset of the jobs repository the API depends on.
@@ -208,6 +209,9 @@ type Server struct {
 	// workers is nil until SetWorkerAdmin. A nil admin answers the worker
 	// routes with 500 and leaves every other route unchanged.
 	workers WorkerAdmin
+	// workflows is nil until SetWorkflows. A nil store answers the workflow
+	// routes with 500 and leaves a create that omits the field unchanged.
+	workflows Workflows
 	// jobsListDefaultPageSize / jobsListMaxPageSize are the D-06 page-size
 	// knobs for GET /v1/jobs: the default page size used when ?limit is
 	// absent/unparseable, and the hard ceiling ?limit clamps to (never
@@ -305,6 +309,20 @@ type WorkerAdmin interface {
 // Nil answers those routes with 500. NewServer does not take this dependency.
 func (s *Server) SetWorkerAdmin(admin WorkerAdmin) {
 	s.workers = admin
+}
+
+// Workflows publishes a chain and admits a job onto a snapshot of it.
+type Workflows interface {
+	Publish(ctx context.Context, in workflow.PublishInput) (workflow.Definition, error)
+	List(ctx context.Context) ([]workflow.Definition, error)
+	Admit(ctx context.Context, in workflow.AdmitInput) (uuid.UUID, error)
+	Status(ctx context.Context, clientID, jobID uuid.UUID) (workflow.JobWorkflow, error)
+}
+
+// SetWorkflows installs the store behind publish, admit, and the workflow read.
+// Nil answers those routes with 500. NewServer does not take this dependency.
+func (s *Server) SetWorkflows(store Workflows) {
+	s.workflows = store
 }
 
 // Config configures a Server.

@@ -86,6 +86,13 @@ func (r *Repo) Approve(ctx context.Context, workerID uuid.UUID, fileBytes []byte
 			return fmt.Errorf("upsert identity: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
+			DELETE FROM worker_capability_ports
+			WHERE (capability_id, capability_version) IN (
+				SELECT id, version FROM worker_capabilities WHERE worker_id = $1
+			)`, workerID); err != nil {
+			return fmt.Errorf("delete ports: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
 			DELETE FROM worker_capability_formats
 			WHERE (capability_id, capability_version) IN (
 				SELECT id, version FROM worker_capabilities WHERE worker_id = $1
@@ -119,6 +126,16 @@ func (r *Repo) Approve(ctx context.Context, workerID uuid.UUID, fileBytes []byte
 					return fmt.Errorf("approve format: %w", ErrCapabilityConflict)
 				}
 				return fmt.Errorf("insert format: %w", err)
+			}
+		}
+		for _, port := range parsed.ports {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO worker_capability_ports (
+					capability_id, capability_version, direction, role, min_count, max_count, ordinal
+				) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				parsed.id, parsed.version, port.direction, port.role, port.min, port.max, port.ordinal,
+			); err != nil {
+				return fmt.Errorf("insert port: %w", err)
 			}
 		}
 		return nil
@@ -246,6 +263,15 @@ type parsedManifest struct {
 	legacyEngine    string
 	schema          json.RawMessage
 	formats         []storedFormat
+	ports           []storedPort
+}
+
+type storedPort struct {
+	direction string
+	role      string
+	min       int
+	max       int
+	ordinal   int
 }
 
 type storedFormat struct {
@@ -319,6 +345,14 @@ func parseManifest(fileBytes []byte) (parsedManifest, error) {
 	if err := validatePorts(cap.Outputs, false); err != nil {
 		return parsedManifest{}, err
 	}
+	inputs, err := collectPorts("input", cap.Inputs)
+	if err != nil {
+		return parsedManifest{}, err
+	}
+	outputs, err := collectPorts("output", cap.Outputs)
+	if err != nil {
+		return parsedManifest{}, err
+	}
 	if _, err := resolveParameterSchema(cap.ParameterSchema); err != nil {
 		return parsedManifest{}, fmt.Errorf("approve parameter schema: %w", err)
 	}
@@ -362,7 +396,27 @@ func parseManifest(fileBytes []byte) (parsedManifest, error) {
 		}
 		parsed.formats = append(parsed.formats, storedFormat{source: source, target: target})
 	}
+	parsed.ports = append(inputs, outputs...)
 	return parsed, nil
+}
+
+func collectPorts(direction string, ports []portDoc) ([]storedPort, error) {
+	out := make([]storedPort, 0, len(ports))
+	for i, port := range ports {
+		min, minKind := integerToken(port.Min)
+		max, maxKind := integerToken(port.Max)
+		if minKind != numOK || maxKind != numOK {
+			return nil, errors.New("approve manifest: port count")
+		}
+		out = append(out, storedPort{
+			direction: direction,
+			role:      port.Role,
+			min:       int(min),
+			max:       int(max),
+			ordinal:   i,
+		})
+	}
+	return out, nil
 }
 
 func validatePorts(ports []portDoc, inputs bool) error {

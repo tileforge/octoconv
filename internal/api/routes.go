@@ -77,6 +77,7 @@ func (s *Server) Routes() chi.Router {
 		})
 		r.Get("/jobs", s.handleListJobs)
 		r.Get("/jobs/{id}", s.handleGetJob)
+		r.Get("/jobs/{id}/workflow", s.handleJobWorkflow)
 		r.Get("/jobs/{id}/repeat", s.handleRepeatMetadata)
 		r.Post("/jobs/{id}/repeat", s.handleRepeat)
 		// GET /jobs/{id}/events (PUSH-01, Phase 42): SSE progress stream.
@@ -131,6 +132,11 @@ func (s *Server) Routes() chi.Router {
 			r.Use(s.requireOperator)
 			r.Get("/", s.handleSystemWorkers)
 			r.Post("/{worker_id}/drain", s.handleSystemWorkerDrain)
+		})
+		r.Route("/system/workflows", func(r chi.Router) {
+			r.Use(s.requireOperator)
+			r.Get("/", s.handleSystemWorkflows)
+			r.Post("/", s.handleSystemWorkflowPublish)
 		})
 	})
 	return r
