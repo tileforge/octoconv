@@ -52,15 +52,24 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "cannot determine source format from filename")
 		return
 	}
+	callbackURL := r.FormValue(formFieldCallbackURL)
+	if callbackURL != "" {
+		if err := validateCallbackURL(callbackURL); err != nil {
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid callback_url")
+			return
+		}
+	}
 	client, _ := auth.ClientFromContext(r.Context())
 	jobID, err := s.workflows.Admit(r.Context(), workflow.AdmitInput{
-		ClientID:     client.ID,
-		Name:         name,
-		Version:      version,
-		SourceFormat: source,
-		Deadline:     deadline,
-		Budgets:      s.engineTimeouts,
-		InputBytes:   header.Size,
+		ClientID:        client.ID,
+		Name:            name,
+		Version:         version,
+		SourceFormat:    source,
+		Deadline:        deadline,
+		Budgets:         s.engineTimeouts,
+		InputBytes:      header.Size,
+		CallbackURL:     callbackURL,
+		ProgressWebhook: callbackURL != "" && r.FormValue(formFieldProgressWebhook) == "true",
 	})
 	if errors.Is(err, workflow.ErrRejected) || errors.Is(err, workflow.ErrConflict) {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid workflow")

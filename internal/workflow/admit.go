@@ -16,13 +16,15 @@ import (
 
 // AdmitInput is one client request to run a published chain.
 type AdmitInput struct {
-	ClientID     uuid.UUID
-	Name         string
-	Version      int
-	SourceFormat string
-	Deadline     time.Time
-	Budgets      map[string]time.Duration
-	InputBytes   int64
+	ClientID        uuid.UUID
+	Name            string
+	Version         int
+	SourceFormat    string
+	Deadline        time.Time
+	Budgets         map[string]time.Duration
+	InputBytes      int64
+	CallbackURL     string
+	ProgressWebhook bool
 }
 
 // StatusStep is one step as the status read returns it.
@@ -120,13 +122,14 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 			INSERT INTO jobs (
 				id, client_id, operation, engine, status, source_format, target_format,
 				options, capability_id, capability_version, dispatch_owner, protocol_deadline, attempts,
-				admitted_input_bytes
+				admitted_input_bytes, callback_url, progress_webhook
 			) VALUES (
 				$1, $2, 'convert', $3, 'queued', $4, $5,
-				'{}'::jsonb, $6, $7, 'protocol', $8, 0, $9
+				'{}'::jsonb, $6, $7, 'protocol', $8, 0, $9, $10, $11
 			)`,
 			jobID, in.ClientID, resolved[0].LegacyEngine, source, resolved[len(resolved)-1].TargetFormat,
 			resolved[0].CapabilityID, resolved[0].CapabilityVersion, in.Deadline, in.InputBytes,
+			in.CallbackURL, in.ProgressWebhook && in.CallbackURL != "",
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}

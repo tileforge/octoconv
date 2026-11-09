@@ -296,6 +296,83 @@ func TestAdmitStoresOneJob(t *testing.T) {
 	}
 }
 
+func TestAdmitCallbackReachesWebhookGaps(t *testing.T) {
+	pool := testPool(t)
+	store := NewStore(pool)
+	repo := jobs.NewRepo(pool)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	const hook = "https://8.8.8.8/hook"
+	withHook, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		CallbackURL: hook, ProgressWebhook: true,
+	})
+	if err != nil {
+		t.Fatalf("admit with callback: %v", err)
+	}
+	var stored string
+	var progress bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT callback_url, progress_webhook FROM jobs WHERE id = $1`, withHook).Scan(&stored, &progress); err != nil {
+		t.Fatalf("read callback: %v", err)
+	}
+	if stored != hook || !progress {
+		t.Fatalf("callback %q progress %v", stored, progress)
+	}
+	silent, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		ProgressWebhook: true,
+	})
+	if err != nil {
+		t.Fatalf("admit without callback: %v", err)
+	}
+	var silentURL *string
+	var silentProgress bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT callback_url, progress_webhook FROM jobs WHERE id = $1`, silent).Scan(&silentURL, &silentProgress); err != nil {
+		t.Fatalf("read silent callback: %v", err)
+	}
+	if silentURL != nil && *silentURL != "" || silentProgress {
+		t.Fatalf("silent callback %v progress %v", silentURL, silentProgress)
+	}
+	for _, id := range []uuid.UUID{withHook, silent} {
+		if err := repo.FailProtocol(context.Background(), id, "reconciler_exhausted", "protocol deadline passed"); err != nil {
+			t.Fatalf("fail %s: %v", id, err)
+		}
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE jobs SET finished_at = '-infinity' WHERE id = ANY($1)`, []uuid.UUID{withHook, silent}); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	gaps, err := repo.FindWebhookGaps(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatalf("gaps: %v", err)
+	}
+	sawHook := false
+	for _, gap := range gaps {
+		if gap.ID == silent {
+			t.Fatal("job without a callback was a webhook gap")
+		}
+		if gap.ID == withHook {
+			sawHook = true
+			if gap.Status != jobs.StatusFailed {
+				t.Fatalf("gap status %s", gap.Status)
+			}
+		}
+	}
+	if !sawHook {
+		t.Fatal("failed workflow job with a callback was not a webhook gap")
+	}
+}
+
 func TestAdmitRejectsEnforcedZeroConcurrency(t *testing.T) {
 	pool := testPool(t)
 	store := NewStore(pool)

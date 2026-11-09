@@ -245,6 +245,105 @@ func TestWorkflowRejectsExtraFile(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
+func TestWorkflowKeepsCallbackSettings(t *testing.T) {
+	pool := workerAdminPool(t)
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, clientID := newWorkflowOperator(pool, repo, store, q)
+	capabilityID := insertAPICapability(t, pool)
+	insertAPIClient(t, pool, clientID)
+	name := "wf-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	published := postSystemWorkflow(t, srv, map[string]any{
+		"name": name, "version": 1, "client_ids": []uuid.UUID{clientID}, "steps": apiSteps(capabilityID),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("publish status %d body %s", published.Code, published.Body.String())
+	}
+	deadline := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+	owned := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID)
+	snaps := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+	rejected := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), map[string]string{
+		"workflow":         name + "@1",
+		"deadline":         deadline,
+		"callback_url":     "https://127.0.0.1/hook",
+		"progress_webhook": "true",
+	})
+	assertClientError(t, rejected, http.StatusBadRequest, errcode.InvalidRequest)
+	if decodedError(t, rejected) != "invalid callback_url" {
+		t.Fatalf("error %q", decodedError(t, rejected))
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID); got != owned {
+		t.Fatalf("jobs %d, want %d", got, owned)
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
+		t.Fatalf("snapshots %d, want %d", got, snaps)
+	}
+	assertNoUploadOrEnqueue(t, repo, store, q)
+
+	flagOnly := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), map[string]string{
+		"workflow":         name + "@1",
+		"deadline":         deadline,
+		"progress_webhook": "true",
+	})
+	if flagOnly.Code != http.StatusCreated {
+		t.Fatalf("flag-only status %d body %s", flagOnly.Code, flagOnly.Body.String())
+	}
+	flagJob := decodeCreatedJob(t, flagOnly)
+	var flagURL *string
+	var flagProgress bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT callback_url, progress_webhook FROM jobs WHERE id = $1`, flagJob).Scan(&flagURL, &flagProgress); err != nil {
+		t.Fatalf("read flag-only: %v", err)
+	}
+	if flagURL != nil && *flagURL != "" || flagProgress {
+		t.Fatalf("flag-only callback %v progress %v", flagURL, flagProgress)
+	}
+
+	const hook = "https://8.8.8.8/hook"
+	kept := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), map[string]string{
+		"workflow":         name + "@1",
+		"deadline":         deadline,
+		"callback_url":     hook,
+		"progress_webhook": "true",
+	})
+	if kept.Code != http.StatusCreated {
+		t.Fatalf("create status %d body %s", kept.Code, kept.Body.String())
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(kept.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["progress_pct"]; ok || len(raw) != 2 {
+		t.Fatalf("body %s", kept.Body.String())
+	}
+	keptJob := decodeCreatedJob(t, kept)
+	var stored string
+	var progress bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT callback_url, progress_webhook FROM jobs WHERE id = $1`, keptJob).Scan(&stored, &progress); err != nil {
+		t.Fatalf("read callback: %v", err)
+	}
+	if stored != hook || !progress {
+		t.Fatalf("callback %q progress %v", stored, progress)
+	}
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func decodeCreatedJob(t *testing.T, rec *httptest.ResponseRecorder) uuid.UUID {
+	t.Helper()
+	var created struct {
+		JobID uuid.UUID `json:"job_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if created.JobID == uuid.Nil {
+		t.Fatal("missing job id")
+	}
+	return created.JobID
+}
+
 func TestWorkflowStatus(t *testing.T) {
 	pool := workerAdminPool(t)
 	repo := jobs.NewRepo(pool)
