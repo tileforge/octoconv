@@ -1577,6 +1577,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		FROM jobs
 		WHERE dispatch_owner = 'protocol'
 		  AND status = 'queued'
+		  AND workflow_snapshot_id IS NULL
 		  AND capability_id = $1
 		  AND capability_version = $2
 		  AND (not_before IS NULL OR not_before <= now())
@@ -1918,6 +1919,7 @@ FROM jobs
 WHERE dispatch_owner = 'protocol'
   AND engine = 'image'
   AND capability_id IS DISTINCT FROM 'octoconv.convert.imagepdf'
+  AND workflow_snapshot_id IS NULL
   AND ($1::uuid IS NULL OR id = $1)`
 
 // ImageBacklog counts protocol image jobs that are still eligible to run.

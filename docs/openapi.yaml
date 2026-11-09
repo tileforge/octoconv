@@ -163,6 +163,94 @@ components:
               additionalProperties: true
       required: [job_id, status]
 
+    JobWorkflow:
+      type: object
+      additionalProperties: false
+      description: >-
+        Chain status for one admitted workflow. The overall percent stays
+        null until a final result is accepted, and the step count is not
+        that percent.
+      required: [status, current_step, steps]
+      properties:
+        status:
+          type: string
+        current_step:
+          type: "null"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowStepStatus"
+
+    WorkflowStepStatus:
+      type: object
+      additionalProperties: false
+      required: [step_id, capability_id, capability_version, source_format, target_format, progress_pct]
+      properties:
+        step_id:
+          type: string
+          format: uuid
+        capability_id:
+          type: string
+        capability_version:
+          type: integer
+        source_format:
+          type: string
+        target_format:
+          type: string
+        progress_pct:
+          type: "null"
+
+    WorkflowDefinition:
+      type: object
+      additionalProperties: false
+      required: [name, version, client_ids, document]
+      properties:
+        name:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        client_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        document:
+          type: object
+          additionalProperties: false
+          required: [steps]
+          properties:
+            steps:
+              type: array
+              items:
+                $ref: "#/components/schemas/WorkflowStoredStep"
+
+    WorkflowStoredStep:
+      type: object
+      additionalProperties: false
+      required:
+        [capability_id, capability_version, source_format, target_format,
+         input_role, output_role, parameters, legacy_engine]
+      properties:
+        capability_id:
+          type: string
+        capability_version:
+          type: integer
+          minimum: 1
+        source_format:
+          type: string
+        target_format:
+          type: string
+        input_role:
+          type: string
+        output_role:
+          type: string
+        parameters:
+          type: object
+          additionalProperties: false
+        legacy_engine:
+          type: string
+
     JobStatus:
       type: object
       description: >-
@@ -1096,9 +1184,14 @@ paths:
       summary: Create a conversion job
       description: >-
         Uploads a file and queues an asynchronous conversion job. Either
-        (target [+ opts]) or preset must be supplied, never both. The
-        declared filename extension must match the file's actual (magic-byte
-        detected) content, or the request is rejected.
+        (target [+ opts]) or preset must be supplied, never both. An
+        optional workflow field names a published chain as name@version.
+        When it is set, preset and target stay absent, deadline is
+        required, and the response is 201. When it is absent, deadline is
+        not read. When workflow is absent, the declared filename extension
+        must match the file's actual (magic-byte detected) content, or the
+        request is rejected. When workflow is set, the source format is
+        the filename extension.
       parameters:
         - name: Correlation-Id
           in: header
@@ -1239,6 +1332,19 @@ paths:
                     step->stl, iges->stl, dxf->svg and dxf->pdf. The options
                     are CADOpts; the options each format accepts, the size
                     ceilings and the error codes are in docs/CAD.md.
+                workflow:
+                  type: string
+                  description: >-
+                    Optional published chain, written as name@version.
+                    version is a positive integer with no leading zero.
+                    When this field is set, preset and target must be
+                    absent and deadline is required. When this field is
+                    absent, deadline is not read.
+                deadline:
+                  type: string
+                  format: date-time
+                  description: >-
+                    RFC3339 deadline. Required only when workflow is set.
               required: [file]
               additionalProperties: false
             examples:
@@ -1254,6 +1360,22 @@ paths:
                   file: jfk.wav
                   target: json
       responses:
+        "201":
+          description: >-
+            Workflow accepted and queued. The body is job_id and status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [job_id, status]
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [queued]
         "202":
           description: Job accepted and queued.
           content:
@@ -1760,6 +1882,24 @@ paths:
                   type: object
                   additionalProperties: true
       responses:
+        "201":
+          description: >-
+            The create handler answers 201 for a workflow admission.
+            Repeat calls that handler. A repeat form has no workflow
+            field, so a repeat request takes the one-step result.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [job_id, status]
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [queued]
         "202":
           description: New queued task, same response shape as POST /v1/jobs
           content:
@@ -1839,6 +1979,59 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           description: Job not found (also returned for a job owned by a different client).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: job not found
+                code: not_found
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{id}/workflow:
+    get:
+      tags: [Jobs]
+      operationId: getJobWorkflow
+      summary: Read the admitted workflow for one job
+      description: >-
+        Returns the stored chain for a job this caller admitted with a
+        workflow field. The overall percent stays null until a final
+        result is accepted, and the step count is not that percent.
+        current_step is null. Each step progress_pct is null. A one-step
+        job, a missing job, and a job owned by another client all answer
+        404 with the same body.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The stored chain. Overall progress stays null.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobWorkflow"
+        "400":
+          description: Invalid job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid job id
+                code: invalid_request
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Job not found (also returned for a job owned by a different client, and for a one-step job).
           content:
             application/json:
               schema:
@@ -3121,6 +3314,151 @@ paths:
               example:
                 error: preset not found
                 code: unknown_preset
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/system/workflows:
+    get:
+      tags: [System]
+      operationId: listSystemWorkflows
+      summary: List published workflow definitions
+      description: >-
+        Operator-only. Returns each published name and version with the
+        client ids that may admit it. A non-operator receives 404.
+      responses:
+        "200":
+          description: Published definitions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [workflows]
+                properties:
+                  workflows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowDefinition"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller is not an authorized operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+                code: unknown_preset
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "431":
+          $ref: "#/components/responses/RequestHeaderFieldsTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [System]
+      operationId: publishSystemWorkflow
+      summary: Publish one workflow definition version
+      description: >-
+        Operator-only. Stores the chain and one grant per client id.
+        An empty client_ids list stores nothing. The same name and
+        version is a conflict and leaves the existing row. A non-operator
+        receives 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, version, client_ids, steps]
+              properties:
+                name:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+                client_ids:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    format: uuid
+                steps:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                      [capability_id, capability_version, source_format,
+                       target_format, input_role, output_role]
+                    properties:
+                      capability_id:
+                        type: string
+                      capability_version:
+                        type: integer
+                        minimum: 1
+                      source_format:
+                        type: string
+                      target_format:
+                        type: string
+                      input_role:
+                        type: string
+                      output_role:
+                        type: string
+                      parameters:
+                        type: object
+                        additionalProperties: false
+      responses:
+        "201":
+          description: The stored definition.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowDefinition"
+        "400":
+          description: The body is not one JSON object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid JSON body
+                code: invalid_request
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller is not an authorized operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+                code: unknown_preset
+        "409":
+          description: This name and version is already stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: workflow already exists
+                code: already_exists
+        "422":
+          description: The chain is not admissible. Nothing was stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid workflow
+                code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "431":

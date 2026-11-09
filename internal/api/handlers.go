@@ -36,6 +36,8 @@ const (
 	formFieldOpts            = "opts"
 	formFieldPreset          = "preset"
 	formFieldOperation       = "operation"
+	formFieldWorkflow        = "workflow"
+	formFieldDeadline        = "deadline"
 	// operationConv is kept as a local alias of convert.OperationConvert so
 	// existing call sites in this file (the operation-omitted default and
 	// the Create call below) do not need touching beyond this one line
@@ -213,6 +215,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	operation := r.FormValue(formFieldOperation)
 	if operation == "" {
 		operation = operationConv
+	}
+
+	if r.FormValue(formFieldWorkflow) != "" {
+		s.admitWorkflow(w, r, operation)
+		return
 	}
 
 	if usingPreset && (rawTarget != "" || (rawOpts != "" && rawOpts != "{}")) {

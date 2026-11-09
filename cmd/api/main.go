@@ -36,6 +36,7 @@ import (
 	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/storage"
 	"github.com/tileforge/octoconv/internal/workerproto"
+	"github.com/tileforge/octoconv/internal/workflow"
 )
 
 // redisPinger adapts a *redis.Client to api.Pinger. asynq's own Client
@@ -312,6 +313,7 @@ func main() {
 	workerCatalog := workerproto.NewRepo(pool)
 	srv.SetCapabilityCatalog(workerCatalog)
 	srv.SetWorkerAdmin(workerCatalog)
+	srv.SetWorkflows(workflow.NewStore(pool))
 	depth.SetImageBacklog(func() (metrics.ImageBacklog, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
