@@ -67,6 +67,7 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 	if source == "" {
 		return uuid.Nil, ErrRejected
 	}
+	in.SourceFormat = source
 	jobID := uuid.New()
 	if in.File != nil {
 		fileFormat := convert.NormalizeFormat(in.File.Format)
@@ -77,48 +78,9 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 		jobID = in.JobID
 	}
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		var granted int
-		if err := tx.QueryRow(ctx, `
-			SELECT count(*) FROM workflow_grants
-			WHERE name = $1 AND version = $2 AND client_id = $3`,
-			in.Name, in.Version, in.ClientID).Scan(&granted); err != nil {
-			return fmt.Errorf("read grant: %w", err)
-		}
-		if granted != 1 {
-			return ErrRejected
-		}
-		var raw []byte
-		err := tx.QueryRow(ctx, `
-			SELECT document FROM workflow_definitions WHERE name = $1 AND version = $2`,
-			in.Name, in.Version).Scan(&raw)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRejected
-		}
-		if err != nil {
-			return fmt.Errorf("read definition: %w", err)
-		}
-		var doc storedDocument
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return fmt.Errorf("decode document: %w", err)
-		}
-		steps := make([]Step, 0, len(doc.Steps))
-		for _, step := range doc.Steps {
-			steps = append(steps, Step{
-				CapabilityID:      step.CapabilityID,
-				CapabilityVersion: step.CapabilityVersion,
-				SourceFormat:      step.SourceFormat,
-				TargetFormat:      step.TargetFormat,
-				InputRole:         step.InputRole,
-				OutputRole:        step.OutputRole,
-				Parameters:        step.Parameters,
-			})
-		}
-		resolved, err := resolveChain(ctx, tx, steps, in.Budgets)
+		resolved, raw, err := readResolvedChain(ctx, tx, in)
 		if err != nil {
 			return err
-		}
-		if resolved[0].SourceFormat != source {
-			return ErrRejected
 		}
 		var sum time.Duration
 		for _, step := range resolved {
@@ -197,6 +159,78 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	return jobID, nil
+}
+
+// FirstEngine reports the engine of the first step when the chain matches the source.
+func (s *Store) FirstEngine(ctx context.Context, in AdmitInput) (string, error) {
+	if in.ClientID == uuid.Nil || in.Name == "" || in.Version < 1 || in.Deadline.IsZero() {
+		return "", ErrRejected
+	}
+	source := convert.NormalizeFormat(in.SourceFormat)
+	if source == "" {
+		return "", ErrRejected
+	}
+	in.SourceFormat = source
+	var engine string
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		resolved, _, err := readResolvedChain(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		engine = resolved[0].LegacyEngine
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return engine, nil
+}
+
+func readResolvedChain(ctx context.Context, tx pgx.Tx, in AdmitInput) ([]storedStep, []byte, error) {
+	var granted int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM workflow_grants
+		WHERE name = $1 AND version = $2 AND client_id = $3`,
+		in.Name, in.Version, in.ClientID).Scan(&granted); err != nil {
+		return nil, nil, fmt.Errorf("read grant: %w", err)
+	}
+	if granted != 1 {
+		return nil, nil, ErrRejected
+	}
+	var raw []byte
+	err := tx.QueryRow(ctx, `
+		SELECT document FROM workflow_definitions WHERE name = $1 AND version = $2`,
+		in.Name, in.Version).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, ErrRejected
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read definition: %w", err)
+	}
+	var doc storedDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, nil, fmt.Errorf("decode document: %w", err)
+	}
+	steps := make([]Step, 0, len(doc.Steps))
+	for _, step := range doc.Steps {
+		steps = append(steps, Step{
+			CapabilityID:      step.CapabilityID,
+			CapabilityVersion: step.CapabilityVersion,
+			SourceFormat:      step.SourceFormat,
+			TargetFormat:      step.TargetFormat,
+			InputRole:         step.InputRole,
+			OutputRole:        step.OutputRole,
+			Parameters:        step.Parameters,
+		})
+	}
+	resolved, err := resolveChain(ctx, tx, steps, in.Budgets)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resolved[0].SourceFormat != in.SourceFormat {
+		return nil, nil, ErrRejected
+	}
+	return resolved, raw, nil
 }
 
 // Status loads the snapshot for a job owned by clientID.

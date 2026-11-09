@@ -64,6 +64,29 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 		return
 	}
+	client, _ := auth.ClientFromContext(r.Context())
+	engine, err := s.workflows.FirstEngine(r.Context(), workflow.AdmitInput{
+		ClientID:     client.ID,
+		Name:         name,
+		Version:      version,
+		SourceFormat: source,
+		Deadline:     deadline,
+		Budgets:      s.engineTimeouts,
+	})
+	if err != nil && !errors.Is(err, workflow.ErrRejected) {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	if err == nil {
+		if limit, perFormat, gated := s.sizeLimit(engine, source); gated && header.Size > limit {
+			msg := "file exceeds size limit for this conversion type"
+			if perFormat {
+				msg = formatLimitMessage(source, limit)
+			}
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, msg)
+			return
+		}
+	}
 	jobID := uuid.New()
 	filename := path.Base(header.Filename)
 	key := storage.InputKey(jobID, 0, filename)
@@ -72,7 +95,6 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 		return
 	}
-	client, _ := auth.ClientFromContext(r.Context())
 	jobID, err = s.workflows.Admit(r.Context(), workflow.AdmitInput{
 		ClientID:        client.ID,
 		Name:            name,

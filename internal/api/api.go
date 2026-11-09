@@ -316,6 +316,7 @@ type Workflows interface {
 	Publish(ctx context.Context, in workflow.PublishInput) (workflow.Definition, error)
 	List(ctx context.Context) ([]workflow.Definition, error)
 	Admit(ctx context.Context, in workflow.AdmitInput) (uuid.UUID, error)
+	FirstEngine(ctx context.Context, in workflow.AdmitInput) (string, error)
 	Status(ctx context.Context, clientID, jobID uuid.UUID) (workflow.JobWorkflow, error)
 }
 

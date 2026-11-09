@@ -225,6 +225,45 @@ func TestWorkflowQuotaRejectsBeforeInsert(t *testing.T) {
 	}
 }
 
+func TestWorkflowRejectsOversizeInput(t *testing.T) {
+	pool := workerAdminPool(t)
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, clientID := newWorkflowOperatorLimit(pool, repo, store, q, map[string]int64{"image": 8})
+	capabilityID := insertAPICapability(t, pool)
+	insertAPIClient(t, pool, clientID)
+	name := "wf-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	published := postSystemWorkflow(t, srv, map[string]any{
+		"name": name, "version": 1, "client_ids": []uuid.UUID{clientID}, "steps": apiSteps(capabilityID),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("publish status %d body %s", published.Code, published.Body.String())
+	}
+	fields := map[string]string{
+		"workflow": name + "@1",
+		"deadline": time.Now().Add(10 * time.Minute).Format(time.RFC3339),
+	}
+	over := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), fields)
+	assertClientError(t, over, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge)
+	if decodedError(t, over) != "file exceeds size limit for this conversion type" {
+		t.Fatalf("error %q", decodedError(t, over))
+	}
+	if store.uploadCalls != 0 || q.enqueueCalls != 0 || repo.created != nil {
+		t.Fatalf("upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
+	}
+	if n := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID); n != 0 {
+		t.Fatalf("jobs %d", n)
+	}
+	small := postWorkflow(t, srv, "photo.jpeg", []byte("jpeg"), fields)
+	if small.Code != http.StatusCreated {
+		t.Fatalf("small status %d body %s", small.Code, small.Body.String())
+	}
+	if store.uploadCalls != 1 || q.enqueueCalls != 0 {
+		t.Fatalf("upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
+	}
+}
+
 func TestWorkflowRejectsExtraFile(t *testing.T) {
 	pool := workerAdminPool(t)
 	repo := &fakeRepo{}
