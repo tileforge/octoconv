@@ -643,7 +643,11 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if handled {
 			return nil
 		}
-		if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		var clientID *uuid.UUID
+		var engine string
+		var admitted *int64
+		if err := tx.QueryRow(ctx, `
+			SELECT status, client_id, engine, admitted_input_bytes FROM jobs WHERE id = $1`, jobID).Scan(&status, &clientID, &engine, &admitted); err != nil {
 			return fmt.Errorf("read job: %w", err)
 		}
 		if status != jobs.StatusActive {
@@ -656,7 +660,20 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return err
 		}
 		if snapshotID != nil && stepIndex+1 < len(snap.Steps) {
-			if err := recordContinuation(ctx, tx, jobID, stepID, attemptID, dst, art, gotSize, snap.Steps[stepIndex+1]); err != nil {
+			next := snap.Steps[stepIndex+1]
+			quotaErr := h.admitChangedEngine(ctx, tx, clientID, engine, next.LegacyEngine, admitted)
+			reason := jobs.QuotaReason(quotaErr)
+			if quotaErr != nil && reason == "" {
+				return quotaErr
+			}
+			if reason != "" {
+				if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+					return err
+				}
+				if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, reason, quotaErr.Error()); err != nil {
+					return err
+				}
+			} else if err := recordContinuation(ctx, tx, jobID, stepID, attemptID, dst, art, gotSize, next); err != nil {
 				return err
 			}
 		} else if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
@@ -1573,7 +1590,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		engine = *legacyEngine
 		filterCap = true
 	}
-	budgetSeconds := int64(h.imageAttemptBudget / time.Second)
+	budgets, fallbackSeconds := h.attemptBudgetArgs()
 	var jobID uuid.UUID
 	var storedStep *uuid.UUID
 	var clientID *uuid.UUID
@@ -1583,18 +1600,18 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	var leaseOK, linkOK bool
 	err = tx.QueryRow(ctx, `
 		SELECT id, step_id, client_id, target_format, workflow_snapshot_id,
-		       LEAST(protocol_deadline, now() + make_interval(secs => $3)),
-		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3))),
-		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3)))
+		       LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)),
+		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`))),
+		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)))
 		           > now() + interval '5 seconds',
 		       LEAST(
 		           now() + interval '300 seconds',
-		           LEAST(protocol_deadline, now() + make_interval(secs => $3)),
+		           LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)),
 		           protocol_deadline
 		       ),
 		       LEAST(
 		           now() + interval '300 seconds',
-		           LEAST(protocol_deadline, now() + make_interval(secs => $3)),
+		           LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)),
 		           protocol_deadline
 		       ) > now() + interval '5 seconds'
 		FROM jobs
@@ -1605,7 +1622,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		  AND capability_version = $2
 		  AND (not_before IS NULL OR not_before <= now())
 		  AND protocol_deadline > now()
-		  AND NOT (id = ANY($4))
+		  AND NOT (id = ANY($5))
 		  AND (
 		      step_id IS NULL OR (
 		          SELECT count(*) FROM worker_slot_holds h
@@ -1615,22 +1632,22 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		      ) < 5
 		  )
 		  AND (
-		      NOT $5 OR NOT EXISTS (
+		      NOT $6 OR NOT EXISTS (
 		          SELECT 1 FROM client_limits cl
 		          WHERE cl.client_id = jobs.client_id
-		            AND cl.engine = $6
+		            AND cl.engine = $7
 		            AND cl.max_concurrent IS NOT NULL
 		            AND (
 		                SELECT count(*) FROM jobs AS peer
 		                WHERE peer.client_id = jobs.client_id
-		                  AND peer.engine = $6
+		                  AND peer.engine = $7
 		                  AND peer.status = 'active'
 		            ) >= cl.max_concurrent
 		      )
 		  )
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped, filterCap, engine).Scan(
+		LIMIT 1`, capabilityID, capabilityVersion, budgets, fallbackSeconds, skipped, filterCap, engine).Scan(
 		&jobID, &storedStep, &clientID, &targetFormat, &snapshotID, &attemptDeadline, &leaseExpires, &leaseOK, &linkExpires, &linkOK)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!leaseOK || !linkOK)) {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
@@ -1859,6 +1876,40 @@ func workflowResultInput(ctx context.Context, tx pgx.Tx, jobID, stepID uuid.UUID
 		return "", "", false, nil
 	}
 	return key, format, true, nil
+}
+
+const claimAttemptBudgetSQL = `COALESCE((($3::jsonb) ->> jobs.engine)::bigint, $4::bigint)`
+
+func (h *Handler) attemptBudgetArgs() (string, int64) {
+	fallback := int64(h.imageAttemptBudget / time.Second)
+	if fallback <= 0 {
+		fallback = 120
+	}
+	seconds := make(map[string]int64)
+	if h.engineBudgets != nil {
+		for _, engine := range convert.AllEngines() {
+			seconds[engine] = fallback
+			if budget, ok := h.engineBudgets[engine]; ok && budget > 0 {
+				seconds[engine] = int64(budget / time.Second)
+			}
+		}
+	}
+	raw, err := json.Marshal(seconds)
+	if err != nil {
+		return "{}", fallback
+	}
+	return string(raw), fallback
+}
+
+func (h *Handler) admitChangedEngine(ctx context.Context, tx pgx.Tx, clientID *uuid.UUID, engine, nextEngine string, admitted *int64) error {
+	if nextEngine == engine || clientID == nil {
+		return nil
+	}
+	var n int64
+	if admitted != nil {
+		n = *admitted
+	}
+	return h.jobsRepo.AdmitLocked(ctx, tx, *clientID, nextEngine, n)
 }
 
 func recordContinuation(ctx context.Context, tx pgx.Tx, jobID, stepID, attemptID uuid.UUID, objectKey string, art completeArtifact, size int64, next workflowSnapStep) error {

@@ -179,6 +179,56 @@ func TestWorkflowSweepRemovesTerminalResults(t *testing.T) {
 	}
 }
 
+func TestWorkflowKeepsRetryableResult(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Fatal("DATABASE_URL must be set")
+	}
+	pool := testPool(t)
+	clientID := uuid.New()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `INSERT INTO clients (id, name) VALUES ($1, $2)`, clientID, "retry-sweep-"+clientID.String()); err != nil {
+		t.Fatalf("insert client: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM worker_slot_holds WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+		_, _ = pool.Exec(context.Background(), `UPDATE jobs SET workflow_snapshot_id = NULL WHERE client_id = $1`, clientID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM jobs WHERE client_id = $1`, clientID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM clients WHERE id = $1`, clientID)
+	})
+	kept := insertSweepJob(t, pool, clientID, "failed")
+	expired := insertSweepJob(t, pool, clientID, "failed")
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs SET protocol_deadline = now() + interval '1 hour' WHERE id = $1`, kept); err != nil {
+		t.Fatalf("future deadline: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs SET protocol_deadline = now() - interval '1 second' WHERE id = $1`, expired); err != nil {
+		t.Fatalf("past deadline: %v", err)
+	}
+	keptKey := "results/" + kept.String() + "/mid"
+	expiredKey := "results/" + expired.String() + "/mid"
+	insertSweepResult(t, pool, kept, keptKey)
+	insertSweepResult(t, pool, expired, expiredKey)
+	store := newMemStore()
+	if err := protocolPass(ctx, pool, jobs.NewRepo(pool), store); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if countResults(t, pool, kept) != 1 || keyRemoved(store, keptKey) || countResults(t, pool, expired) != 0 || !keyRemoved(store, expiredKey) {
+		t.Fatalf("kept %d expired %d removed %v", countResults(t, pool, kept), countResults(t, pool, expired), store.removedKeys())
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs SET protocol_deadline = now() - interval '1 second' WHERE id = $1`, kept); err != nil {
+		t.Fatalf("expire kept: %v", err)
+	}
+	store.resetRemoves()
+	if err := protocolPass(ctx, pool, jobs.NewRepo(pool), store); err != nil {
+		t.Fatalf("expire sweep: %v", err)
+	}
+	if countResults(t, pool, kept) != 0 || !keyRemoved(store, keptKey) {
+		t.Fatal("expired retryable result stayed")
+	}
+}
+
 func TestWorkflowCancelStopsChain(t *testing.T) {
 	env := newChain(t, 4)
 	first := oneAssignment(t, env.sessions[0])

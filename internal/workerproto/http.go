@@ -35,6 +35,7 @@ type Handler struct {
 	jobsRepo           *jobs.Repo
 	store              objectStore
 	imageAttemptBudget time.Duration
+	engineBudgets      map[string]time.Duration
 }
 
 type objectStore interface {
@@ -49,6 +50,19 @@ type objectStore interface {
 // NewHandler returns a handler bound to the catalog, the object store, and the image attempt budget.
 func NewHandler(repo *Repo, jobsRepo *jobs.Repo, store objectStore, imageAttemptBudget time.Duration) *Handler {
 	return &Handler{repo: repo, jobsRepo: jobsRepo, store: store, imageAttemptBudget: imageAttemptBudget}
+}
+
+// SetEngineBudgets sets the attempt budget used for each engine class.
+func (h *Handler) SetEngineBudgets(budgets map[string]time.Duration) {
+	if budgets == nil {
+		h.engineBudgets = nil
+		return
+	}
+	copied := make(map[string]time.Duration, len(budgets))
+	for engine, budget := range budgets {
+		copied[engine] = budget
+	}
+	h.engineBudgets = copied
 }
 
 // Routes returns the worker router. It is not mounted on the client API.

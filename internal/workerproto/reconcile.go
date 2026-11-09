@@ -2,6 +2,7 @@ package workerproto
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -78,6 +79,9 @@ func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, 
 	return sweepReleasedStaging(ctx, pool, store)
 }
 
+const workflowResultSweepSQL = `j.status IN ('done', 'canceled')
+		  OR (j.status = 'failed' AND NOT COALESCE(j.protocol_deadline > now(), false))`
+
 func sweepWorkflowResults(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {
 	if store == nil {
 		return nil
@@ -86,7 +90,7 @@ func sweepWorkflowResults(ctx context.Context, pool *pgxpool.Pool, store objectS
 		SELECT r.job_id, r.step_id, r.object_key
 		FROM workflow_step_results r
 		JOIN jobs j ON j.id = r.job_id
-		WHERE j.status IN ('done', 'failed', 'canceled')`)
+		WHERE `+workflowResultSweepSQL)
 	if err != nil {
 		return fmt.Errorf("list workflow results: %w", err)
 	}
@@ -110,16 +114,34 @@ func sweepWorkflowResults(ctx context.Context, pool *pgxpool.Pool, store objectS
 	}
 	rows.Close()
 	for _, item := range due {
-		if err := store.Remove(ctx, item.key); err != nil {
-			continue
-		}
-		if _, err := pool.Exec(ctx, `
-			DELETE FROM workflow_step_results AS r
-			USING jobs AS j
-			WHERE r.job_id = $1 AND r.step_id = $2
-			  AND j.id = r.job_id
-			  AND j.status IN ('done', 'failed', 'canceled')`, item.jobID, item.stepID); err != nil {
-			return fmt.Errorf("delete workflow result: %w", err)
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var eligible bool
+			err := tx.QueryRow(ctx, `
+				SELECT (`+workflowResultSweepSQL+`)
+				FROM jobs AS j
+				WHERE j.id = $1
+				FOR UPDATE`, item.jobID).Scan(&eligible)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !eligible) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("lock workflow job: %w", err)
+			}
+			if err := store.Remove(ctx, item.key); err != nil {
+				return nil
+			}
+			if _, err := tx.Exec(ctx, `
+				DELETE FROM workflow_step_results AS r
+				USING jobs AS j
+				WHERE r.job_id = $1 AND r.step_id = $2
+				  AND j.id = r.job_id
+				  AND (`+workflowResultSweepSQL+`)`, item.jobID, item.stepID); err != nil {
+				return fmt.Errorf("delete workflow result: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 	return nil

@@ -62,6 +62,56 @@ func TestWorkflowChargesOnce(t *testing.T) {
 	}
 }
 
+func TestWorkflowNextEngineQuota(t *testing.T) {
+	env := newChain(t, 8)
+	ctx := context.Background()
+	raw, err := json.Marshal(workflowSnapDoc{Steps: []workflowSnapStep{
+		{StepID: env.steps[0], CapabilityID: env.caps[0], CapabilityVersion: 1, SourceFormat: "jpg", TargetFormat: "png", LegacyEngine: "image"},
+		{StepID: env.steps[1], CapabilityID: env.caps[1], CapabilityVersion: 1, SourceFormat: "png", TargetFormat: "jpg", LegacyEngine: "document"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `UPDATE workflow_snapshots SET document = $2::jsonb WHERE job_id = $1`, env.jobID, raw); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, env.clientID); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `
+		INSERT INTO client_limits (client_id, engine, max_daily_jobs)
+		VALUES ($1, 'document', 0)`, env.clientID); err != nil {
+		t.Fatalf("limit: %v", err)
+	}
+	first := oneAssignment(t, env.sessions[0])
+	attemptID, _ := assignmentAttempt(t, first)
+	payload := []byte("png!")
+	acceptArtifact(t, env.sessions[0], first, "png", "image/png", payload)
+	job := readChainJob(t, env.pool, env.jobID)
+	if job.status != "failed" || job.engine != "image" || job.stepID != env.steps[0] || countResults(t, env.pool, env.jobID) != 0 {
+		t.Fatalf("job %+v results %d", job, countResults(t, env.pool, env.jobID))
+	}
+	var code, message string
+	if err := env.pool.QueryRow(ctx, `SELECT error_code, error_message FROM jobs WHERE id = $1`, env.jobID).Scan(&code, &message); err != nil {
+		t.Fatal(err)
+	}
+	if code != jobs.QuotaReasonDailyJobs || message != jobs.ErrDailyJobsLimit.Error() {
+		t.Fatalf("code %s message %s", code, message)
+	}
+	var engine string
+	var bytesIn int64
+	if err := env.pool.QueryRow(ctx, `
+		SELECT engine, bytes_in FROM client_usage_daily WHERE client_id = $1`, env.clientID).Scan(&engine, &bytesIn); err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if engine != "image" || bytesIn != env.size || primaryOutputs(t, env, env.jobID) != 0 {
+		t.Fatalf("engine %s bytes %d outputs %d", engine, bytesIn, primaryOutputs(t, env, env.jobID))
+	}
+	if _, ok := env.store.get(acceptedObjectKey(env.jobID, attemptID, payload)); ok {
+		t.Fatal("accepted object stayed")
+	}
+}
+
 func TestWorkflowProgressStaysNull(t *testing.T) {
 	env := newChain(t, 4)
 	ctx := context.Background()

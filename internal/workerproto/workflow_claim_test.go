@@ -576,3 +576,32 @@ func TestWorkflowRecordsOneContinuation(t *testing.T) {
 		t.Fatal("second pull changed the chain")
 	}
 }
+
+func TestWorkflowUsesStepEngineBudget(t *testing.T) {
+	env := newChain(t, 4)
+	ctx := context.Background()
+	raw, err := json.Marshal(workflowSnapDoc{Steps: []workflowSnapStep{
+		{StepID: env.steps[0], CapabilityID: env.caps[0], CapabilityVersion: 1, SourceFormat: "jpg", TargetFormat: "png", LegacyEngine: "document"},
+		{StepID: env.steps[1], CapabilityID: env.caps[1], CapabilityVersion: 1, SourceFormat: "png", TargetFormat: "jpg", LegacyEngine: "image"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.pool.Exec(ctx, `UPDATE jobs SET engine = 'document' WHERE id = $1`, env.jobID); err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	if _, err := env.pool.Exec(ctx, `UPDATE workflow_snapshots SET document = $2::jsonb WHERE job_id = $1`, env.jobID, raw); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	h := NewHandler(env.repo, env.jobs, env.store, 120*time.Second)
+	h.SetEngineBudgets(map[string]time.Duration{"document": 300 * time.Second})
+	assignment := serveOne(t, h, env.sessions[0])
+	deadline, err := jsonTime(assignment["attempt_deadline"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	remain := time.Until(deadline)
+	if remain < 250*time.Second || remain > 310*time.Second {
+		t.Fatalf("attempt deadline in %s", remain)
+	}
+}
