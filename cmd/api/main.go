@@ -313,7 +313,9 @@ func main() {
 	srv.SetCapabilityCatalog(workerCatalog)
 	srv.SetWorkerAdmin(workerCatalog)
 	depth.SetImageBacklog(func() (metrics.ImageBacklog, error) {
-		pending, active, retry, err := workerCatalog.ImageBacklog(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		pending, active, retry, err := workerCatalog.ImageBacklog(ctx)
 		if err != nil {
 			return metrics.ImageBacklog{}, err
 		}
