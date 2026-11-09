@@ -245,12 +245,18 @@ func (h *Handler) finishSession(w http.ResponseWriter, r *http.Request, closeSes
 	}
 	control := freshControl()
 	if !closeSession {
+		draining, err := h.repo.touchHeartbeat(r.Context(), sess.ID)
+		if err != nil {
+			writeCode(w, http.StatusInternalServerError, "invalid_message")
+			return
+		}
 		ids, err := h.canceledAttemptIDs(r.Context(), sess.ID)
 		if err != nil {
 			writeCode(w, http.StatusInternalServerError, "invalid_message")
 			return
 		}
 		control.CancelAttemptIDs = ids
+		control.Drain = draining
 	}
 	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: control})
 }

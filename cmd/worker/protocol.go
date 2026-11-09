@@ -168,6 +168,11 @@ type protocolClient struct {
 	sessionToken string
 	leaseSeconds int
 	pullWait     int
+	beatEvery    time.Duration
+
+	mu       sync.Mutex
+	active   *liveAttempt
+	draining bool
 }
 
 func newProtocolClient(dial protocolDial) (*protocolClient, error) {
@@ -253,12 +258,30 @@ func (c *protocolClient) loop(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if hello.Control.Terminate || hello.Control.Drain {
+	c.beatEvery = heartbeatEvery(hello.HeartbeatIntervalSeconds)
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c.heartbeatLoop(sessionCtx)
+	}()
+	defer func() {
+		cancelSession()
+		wg.Wait()
+	}()
+	if hello.Control.Drain {
+		return c.deleteSession(ctx)
+	}
+	if hello.Control.Terminate {
 		return nil
 	}
 	for {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if c.sessionDraining() {
+			return c.deleteSession(ctx)
 		}
 		pull, err := c.pull(ctx)
 		if ctx.Err() != nil && !errors.Is(err, errSessionClosed) {
@@ -268,8 +291,11 @@ func (c *protocolClient) loop(ctx context.Context) error {
 			return err
 		}
 		if len(pull.Assignments) == 0 {
-			if pull.Control.Terminate || pull.Control.Drain {
+			if pull.Control.Terminate {
 				return nil
+			}
+			if pull.Control.Drain || c.sessionDraining() {
+				return c.deleteSession(ctx)
 			}
 			select {
 			case <-ctx.Done():
@@ -282,11 +308,126 @@ func (c *protocolClient) loop(ctx context.Context) error {
 			if err := c.runAssignment(ctx, asgn, pull.Control); err != nil {
 				return err
 			}
-			if pull.Control.Terminate || pull.Control.Drain {
+			if pull.Control.Terminate {
 				return nil
+			}
+			if pull.Control.Drain || c.sessionDraining() {
+				return c.deleteSession(ctx)
 			}
 		}
 	}
+}
+
+func heartbeatEvery(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func (c *protocolClient) heartbeatLoop(ctx context.Context) {
+	body := []byte(`{"protocol_version":1}`)
+	timer := time.NewTimer(c.beatEvery)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if ctx.Err() != nil {
+				return
+			}
+			c.postHeartbeat(ctx, body)
+			timer.Reset(c.beatEvery)
+		}
+	}
+}
+
+func (c *protocolClient) postHeartbeat(ctx context.Context, body []byte) {
+	raw, err := c.postCore(
+		ctx,
+		"/worker/v1/sessions/"+url.PathEscape(c.sessionID)+"/heartbeat",
+		body,
+		c.sessionToken,
+		"",
+		false,
+		terminalReportTimeout,
+	)
+	if err != nil {
+		return
+	}
+	var resp struct {
+		Control controlJSON `json:"control"`
+	}
+	if json.Unmarshal(raw, &resp) != nil {
+		return
+	}
+	c.applyHeartbeat(resp.Control)
+}
+
+func (c *protocolClient) applyHeartbeat(ctrl controlJSON) {
+	c.mu.Lock()
+	if ctrl.Drain {
+		c.draining = true
+	}
+	run := c.active
+	c.mu.Unlock()
+	if run == nil {
+		return
+	}
+	if ctrl.Terminate {
+		c.stopAttempt(run.parent, run.cancel, run.flag, run.asgn, "terminate", errors.New("terminate"))
+		return
+	}
+	if containsID(ctrl.CancelAttemptIDs, run.asgn.AttemptID) {
+		c.stopAttempt(run.parent, run.cancel, run.flag, run.asgn, "cancel", errors.New("cancel"))
+	}
+}
+
+func (c *protocolClient) sessionDraining() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.draining
+}
+
+func (c *protocolClient) setActive(run *liveAttempt) {
+	c.mu.Lock()
+	c.active = run
+	c.mu.Unlock()
+}
+
+func (c *protocolClient) clearActive() {
+	c.mu.Lock()
+	c.active = nil
+	c.mu.Unlock()
+}
+
+func (c *protocolClient) deleteSession(ctx context.Context) error {
+	target, err := url.JoinPath(c.core.String(), "worker/v1/sessions", c.sessionID)
+	if err != nil {
+		return err
+	}
+	tryCtx, cancel := context.WithTimeout(ctx, terminalReportTimeout)
+	defer cancel()
+	_, err = c.do(
+		tryCtx,
+		c.coreHTTP,
+		http.MethodDelete,
+		target,
+		[]byte(`{"protocol_version":1}`),
+		c.sessionToken,
+		"",
+		"",
+		maxProtocolJSONBytes,
+	)
+	return err
+}
+
+type liveAttempt struct {
+	asgn   assignmentJSON
+	parent context.Context
+	cancel context.CancelCauseFunc
+	flag   *stopFlag
 }
 
 type controlJSON struct {
@@ -296,11 +437,12 @@ type controlJSON struct {
 }
 
 type helloJSON struct {
-	SessionID       string      `json:"session_id"`
-	SessionToken    string      `json:"session_token"`
-	LeaseSeconds    int         `json:"lease_seconds"`
-	PullWaitSeconds int         `json:"pull_wait_seconds"`
-	Control         controlJSON `json:"control"`
+	SessionID                string      `json:"session_id"`
+	SessionToken             string      `json:"session_token"`
+	LeaseSeconds             int         `json:"lease_seconds"`
+	PullWaitSeconds          int         `json:"pull_wait_seconds"`
+	HeartbeatIntervalSeconds int         `json:"heartbeat_interval_seconds"`
+	Control                  controlJSON `json:"control"`
 }
 
 type helloRequestJSON struct {
@@ -445,6 +587,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 
 	attemptCtx, cancelAttempt := context.WithCancelCause(ctx)
 	var flag stopFlag
+	c.setActive(&liveAttempt{asgn: asgn, parent: ctx, cancel: cancelAttempt, flag: &flag})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -452,6 +595,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 		c.renewLoop(ctx, attemptCtx, cancelAttempt, &flag, asgn, leaseUntil, deadline)
 	}()
 	defer func() {
+		c.clearActive()
 		cancelAttempt(context.Canceled)
 		wg.Wait()
 	}()

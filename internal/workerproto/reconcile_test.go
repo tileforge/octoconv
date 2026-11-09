@@ -124,6 +124,9 @@ func TestProtocolPassRearmsPastAttemptDeadline(t *testing.T) {
 }
 
 func TestProtocolDeadlineMarksFailed(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Fatal("DATABASE_URL must be set")
+	}
 	pool := testPool(t)
 	clientID := insertClient(t, pool)
 	stepID := uuid.New()
@@ -151,6 +154,50 @@ func TestProtocolDeadlineMarksFailed(t *testing.T) {
 	}
 	if readProtocolSnap(t, pool, jobID).status != "failed" {
 		t.Fatal("second pass deleted the job")
+	}
+	pending, active, retry, err := imageBacklog(context.Background(), pool, &jobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 || active != 0 || retry != 0 {
+		t.Fatalf("backlog pending=%d active=%d retry=%d", pending, active, retry)
+	}
+}
+
+func TestImageBacklogStates(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Fatal("DATABASE_URL must be set")
+	}
+	pool := testPool(t)
+	beforePending, beforeActive, beforeRetry, err := NewRepo(pool).ImageBacklog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertPullJob(t, pool, pullJob{status: "queued"})
+	retryID := insertPullJob(t, pool, pullJob{status: "queued"})
+	if _, err := pool.Exec(context.Background(), `UPDATE jobs SET not_before = now() + interval '1 hour' WHERE id = $1`, retryID); err != nil {
+		t.Fatal(err)
+	}
+	activeID := insertPullJob(t, pool, pullJob{status: "active"})
+	if _, err := pool.Exec(context.Background(), `UPDATE jobs SET status = 'active' WHERE id = $1`, activeID); err != nil {
+		t.Fatal(err)
+	}
+	pastID := insertPullJob(t, pool, pullJob{status: "queued"})
+	if _, err := pool.Exec(context.Background(), `UPDATE jobs SET protocol_deadline = now() - interval '1 second' WHERE id = $1`, pastID); err != nil {
+		t.Fatal(err)
+	}
+	insertPullJob(t, pool, pullJob{status: "queued", owner: "legacy"})
+	insertPullJob(t, pool, pullJob{status: "queued", capability: "octoconv.convert.imagepdf"})
+	doneID := insertPullJob(t, pool, pullJob{status: "done"})
+	if _, err := pool.Exec(context.Background(), `UPDATE jobs SET status = 'done' WHERE id = $1`, doneID); err != nil {
+		t.Fatal(err)
+	}
+	pending, active, retry, err := NewRepo(pool).ImageBacklog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending-beforePending != 1 || active-beforeActive != 1 || retry-beforeRetry != 1 {
+		t.Fatalf("backlog pending=%d active=%d retry=%d", pending-beforePending, active-beforeActive, retry-beforeRetry)
 	}
 }
 

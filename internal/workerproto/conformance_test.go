@@ -1605,6 +1605,76 @@ func TestPullRateLimitStoresNoAttempt(t *testing.T) {
 	}
 }
 
+func TestLimitedLoadKeepsDedup(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Fatal("DATABASE_URL must be set")
+	}
+	live := openHello(t)
+	ctx := context.Background()
+	bodies := make([][]byte, 8)
+	var first []byte
+	for i := range bodies {
+		if i > 0 && i%2 == 0 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+		bodies[i] = pullBody(uuid.New(), 0, 0)
+		status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, bodies[i], nil)
+		if status != http.StatusOK {
+			t.Fatalf("pull %d status %d: %s", i, status, resp)
+		}
+		assertEmptyPull(t, resp)
+		if i == 0 {
+			first = append([]byte(nil), resp...)
+		}
+	}
+	dedup, holds := sessionPullRows(t, live.pool, live.sessionID)
+	if dedup != 8 || holds != 0 {
+		t.Fatalf("dedup %d holds %d", dedup, holds)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, bodies[0], nil)
+	if status != http.StatusOK || !bytes.Equal(resp, first) {
+		t.Fatalf("replay status %d", status)
+	}
+	dedup, holds = sessionPullRows(t, live.pool, live.sessionID)
+	if dedup != 8 || holds != 0 {
+		t.Fatalf("replay dedup %d holds %d", dedup, holds)
+	}
+	oversized := bytes.Repeat([]byte("x"), maxMessageBytes+1)
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, oversized, nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusRequestEntityTooLarge, "message_too_large")
+	dedup, holds = sessionPullRows(t, live.pool, live.sessionID)
+	if dedup != 8 || holds != 0 {
+		t.Fatalf("oversized dedup %d holds %d", dedup, holds)
+	}
+	status, _, _ = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	if status != http.StatusOK {
+		t.Fatalf("delete status %d", status)
+	}
+	if _, err := live.pool.Exec(ctx, `DELETE FROM worker_request_dedup WHERE session_id = $1`, live.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	dedup, _ = sessionPullRows(t, live.pool, live.sessionID)
+	if dedup != 0 {
+		t.Fatalf("dedup after close %d", dedup)
+	}
+	status, hdr, resp = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, pullBody(uuid.New(), 0, 0), nil)
+	assertProtocolError(t, status, hdr, resp, http.StatusUnauthorized, "session_closed")
+}
+
+func sessionPullRows(t *testing.T, pool *pgxpool.Pool, sessionID uuid.UUID) (int, int) {
+	t.Helper()
+	var dedup, holds int
+	err := pool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM worker_request_dedup WHERE session_id = $1),
+			(SELECT count(*) FROM worker_slot_holds WHERE session_id = $1)`, sessionID).Scan(&dedup, &holds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dedup, holds
+}
+
 func TestPullDoesNotClaimLegacyOrImagepdf(t *testing.T) {
 	ln := startWorkerListener(t)
 	image := ln.hello(t, readPositiveFixture(t, "manifest-image.json"))

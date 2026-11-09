@@ -456,6 +456,68 @@ func TestLeaseCoveringDeadlineDoesNotRenew(t *testing.T) {
 	}
 }
 
+func TestHeartbeatDuringCoveredLeasePostsCancel(t *testing.T) {
+	state := &scriptState{helloLease: 0, helloWait: 0, helloHeartbeat: 1, blockGet: true}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	expires := time.Now().Add(2 * time.Second)
+	stamp := expires.UTC().Format(time.RFC3339Nano)
+	asgn.LeaseExpiresAt = stamp
+	asgn.AttemptDeadline = stamp
+	state.setAssignment(asgn, controlJSON{})
+	state.mu.Lock()
+	state.heartbeatCancel = []string{asgn.AttemptID}
+	state.mu.Unlock()
+	runProtocolUntil(t, dial, 8*time.Second, func() bool {
+		return len(state.stoppedReasons()) >= 1
+	})
+	reasons := state.stoppedReasons()
+	state.mu.Lock()
+	posts := state.leasePosts
+	fails := len(state.fails)
+	beats := state.heartbeatPosts
+	attempt := state.heartbeatAttempt
+	auth := state.heartbeatAuth
+	var first []byte
+	if len(state.heartbeatBodies) > 0 {
+		first = append([]byte(nil), state.heartbeatBodies[0]...)
+	}
+	state.mu.Unlock()
+	if len(reasons) != 1 || reasons[0] != "cancel" || fails != 0 || posts != 0 || beats < 1 || attempt || !auth {
+		t.Fatal("heartbeat cancel")
+	}
+	if !bytes.Equal(first, []byte(`{"protocol_version":1}`)) {
+		t.Fatal("heartbeat body")
+	}
+}
+
+func TestDrainDeletesSessionAfterAssignment(t *testing.T) {
+	state := &scriptState{
+		helloLease:     30,
+		helloWait:      0,
+		helloHeartbeat: 1,
+		fileDelay:      2 * time.Second,
+		heartbeatDrain: true,
+	}
+	dial, fileURL := bootScript(t, state, true)
+	asgn := scriptAssignment(fileURL)
+	asgn.Outputs[0].Format = "pdf"
+	state.setAssignment(asgn, controlJSON{})
+	runProtocolUntil(t, dial, 8*time.Second, func() bool {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.deletes >= 1
+	})
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.pulls != 1 || state.deletes != 1 || len(state.fails) != 1 || len(state.stopped) != 0 {
+		t.Fatal("drain")
+	}
+	if state.heartbeatPosts < 1 || state.heartbeatAttempt || !state.heartbeatAuth || state.deleteAttempt {
+		t.Fatal("heartbeat")
+	}
+}
+
 func TestRenewErrorDoesNotOutliveLease(t *testing.T) {
 	state := &scriptState{helloLease: 4, helloWait: 0, blockGet: true, leaseCode: "unavailable"}
 	dial, fileURL := bootScript(t, state, true)
@@ -1075,34 +1137,44 @@ func runProtocolUntil(t *testing.T, dial protocolDial, limit time.Duration, read
 }
 
 type scriptState struct {
-	mu             sync.Mutex
-	helloLease     int
-	helloWait      int
-	asgn           assignmentJSON
-	ctrl           controlJSON
-	pulls          int
-	progress       [][]byte
-	fails          [][]byte
-	stopped        [][]byte
-	completes      [][]byte
-	hijackComplete bool
-	leaseCode      string
-	stallLease     bool
-	stallStopped   bool
-	stallComplete  bool
-	stallFail      bool
-	blockGet       bool
-	leasePosts     int
-	getReleased    int
-	stoppedReplies int
-	jpg            []byte
-	putBody        []byte
-	fileGets       int
-	fileAuth       bool
-	pullSnaps      []headerSnap
-	getSnaps       []headerSnap
-	putSnaps       []headerSnap
-	redirectTo     string
+	mu               sync.Mutex
+	helloLease       int
+	helloWait        int
+	helloHeartbeat   int
+	fileDelay        time.Duration
+	heartbeatDrain   bool
+	asgn             assignmentJSON
+	ctrl             controlJSON
+	pulls            int
+	progress         [][]byte
+	fails            [][]byte
+	stopped          [][]byte
+	completes        [][]byte
+	hijackComplete   bool
+	leaseCode        string
+	stallLease       bool
+	stallStopped     bool
+	stallComplete    bool
+	stallFail        bool
+	blockGet         bool
+	leasePosts       int
+	heartbeatPosts   int
+	heartbeatAttempt bool
+	heartbeatAuth    bool
+	heartbeatBodies  [][]byte
+	heartbeatCancel  []string
+	deletes          int
+	deleteAttempt    bool
+	getReleased      int
+	stoppedReplies   int
+	jpg              []byte
+	putBody          []byte
+	fileGets         int
+	fileAuth         bool
+	pullSnaps        []headerSnap
+	getSnaps         []headerSnap
+	putSnaps         []headerSnap
+	redirectTo       string
 }
 
 type headerSnap struct {
@@ -1185,9 +1257,49 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
+	case strings.HasSuffix(r.URL.Path, "/heartbeat"):
+		s.writeHeartbeat(w, r, body)
+	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/sessions/"):
+		s.mu.Lock()
+		s.deletes++
+		if r.Header.Get("Octoconv-Attempt") != "" {
+			s.deleteAttempt = true
+		}
+		s.mu.Unlock()
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1,"control":{"cancel_attempt_ids":[],"drain":false,"terminate":false}}`))
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *scriptState) writeHeartbeat(w http.ResponseWriter, r *http.Request, body []byte) {
+	s.mu.Lock()
+	s.heartbeatPosts++
+	s.heartbeatBodies = append(s.heartbeatBodies, append([]byte(nil), body...))
+	if r.Header.Get("Octoconv-Attempt") != "" {
+		s.heartbeatAttempt = true
+	}
+	if r.Header.Get("Authorization") != "" {
+		s.heartbeatAuth = true
+	}
+	cancel := append([]string(nil), s.heartbeatCancel...)
+	drain := s.heartbeatDrain && s.pulls >= 1
+	s.mu.Unlock()
+	raw, err := json.Marshal(struct {
+		ProtocolVersion int         `json:"protocol_version"`
+		Control         controlJSON `json:"control"`
+	}{
+		ProtocolVersion: 1,
+		Control: controlJSON{
+			CancelAttemptIDs: cancel,
+			Drain:            drain,
+		},
+	})
+	if err != nil {
+		http.Error(w, "json", http.StatusInternalServerError)
+		return
+	}
+	writeJSONStatus(w, http.StatusOK, raw)
 }
 
 func (s *scriptState) notePull(r *http.Request) {
@@ -1212,6 +1324,7 @@ func (s *scriptState) serveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	block := s.blockGet
+	delay := s.fileDelay
 	jpg := append([]byte(nil), s.jpg...)
 	s.mu.Unlock()
 	if r.Method == http.MethodGet && block {
@@ -1220,6 +1333,15 @@ func (s *scriptState) serveFile(w http.ResponseWriter, r *http.Request) {
 		s.getReleased++
 		s.mu.Unlock()
 		panic(http.ErrAbortHandler)
+	}
+	if r.Method == http.MethodGet && delay > 0 {
+		timer := time.NewTimer(delay)
+		select {
+		case <-r.Context().Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 	switch r.Method {
 	case http.MethodGet:
@@ -1260,10 +1382,11 @@ func (s *scriptState) keep(dst *[][]byte, body []byte) {
 func (s *scriptState) writeHello(w http.ResponseWriter) {
 	s.mu.Lock()
 	hello := helloJSON{
-		SessionID:       uuid.NewString(),
-		SessionToken:    "session-token",
-		LeaseSeconds:    s.helloLease,
-		PullWaitSeconds: s.helloWait,
+		SessionID:                uuid.NewString(),
+		SessionToken:             "session-token",
+		LeaseSeconds:             s.helloLease,
+		PullWaitSeconds:          s.helloWait,
+		HeartbeatIntervalSeconds: s.helloHeartbeat,
 	}
 	s.mu.Unlock()
 	raw, err := json.Marshal(hello)

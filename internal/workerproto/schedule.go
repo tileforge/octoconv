@@ -172,6 +172,7 @@ func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
 	}
 	var lease, deadline time.Time
 	var cancelIDs []string
+	var draining bool
 	err := pgx.BeginTxFunc(r.Context(), h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(r.Context(), `
 			UPDATE worker_slot_holds AS h
@@ -195,6 +196,10 @@ func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("renew lease: %w", err)
 		}
 		cancelIDs, err = canceledAttempts(r.Context(), tx, sess.ID)
+		if err != nil {
+			return err
+		}
+		draining, err = sessionDraining(r.Context(), tx, sess.ID)
 		return err
 	})
 	if errors.Is(err, errAttemptInactive) {
@@ -209,7 +214,7 @@ func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
 		ProtocolVersion: 1,
 		LeaseExpiresAt:  lease.UTC().Format(time.RFC3339Nano),
 		AttemptDeadline: deadline.UTC().Format(time.RFC3339Nano),
-		Control:         controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
+		Control:         controlWire{CancelAttemptIDs: cancelIDs, Drain: draining, Terminate: false},
 	})
 }
 
@@ -402,6 +407,22 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if !decodeRaw(w, raw, &req) || !protocolFields(w, req.ProtocolVersion, req.Extensions) {
 		return
 	}
+	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	if !live {
+		_, keyOK, err := h.loadCompleteKey(r.Context(), attemptID, sess.ID)
+		if err != nil {
+			writeCode(w, http.StatusInternalServerError, "invalid_message")
+			return
+		}
+		if !keyOK {
+			writeCode(w, http.StatusConflict, "attempt_not_active")
+			return
+		}
+	}
 	if len(bytes.TrimSpace(req.Artifacts)) == 0 || string(bytes.TrimSpace(req.Artifacts)) == "null" {
 		writeCode(w, http.StatusBadRequest, "invalid_message")
 		return
@@ -432,22 +453,6 @@ func (h *Handler) handleComplete(w http.ResponseWriter, r *http.Request) {
 	if stored != nil {
 		writeStored(w, stored)
 		return
-	}
-	live, err := h.attemptOpen(r.Context(), attemptID, sess.ID, true)
-	if err != nil {
-		writeCode(w, http.StatusInternalServerError, "invalid_message")
-		return
-	}
-	if !live {
-		_, ok, err := h.loadCompleteKey(r.Context(), attemptID, sess.ID)
-		if err != nil {
-			writeCode(w, http.StatusInternalServerError, "invalid_message")
-			return
-		}
-		if !ok {
-			writeCode(w, http.StatusConflict, "attempt_not_active")
-			return
-		}
 	}
 	body, err := h.acceptComplete(r.Context(), sess, attemptID, bodyHash, arts)
 	var fail *completeFailure
@@ -647,9 +652,13 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err != nil {
 			return err
 		}
+		draining, err := sessionDraining(ctx, tx, sess.ID)
+		if err != nil {
+			return err
+		}
 		encoded, err := encodeWire(heartbeatWire{
 			ProtocolVersion: 1,
-			Control:         controlWire{CancelAttemptIDs: ids, Drain: false, Terminate: false},
+			Control:         controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false},
 		})
 		if err != nil {
 			return err
@@ -829,7 +838,12 @@ func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
-	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: controlWire{CancelAttemptIDs: ids, Drain: false, Terminate: false}})
+	draining, err := sessionDraining(r.Context(), h.repo.pool, sessionID)
+	if err != nil {
+		writeCode(w, http.StatusInternalServerError, "invalid_message")
+		return
+	}
+	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false}})
 }
 
 type parsedProgress struct {
@@ -1256,7 +1270,13 @@ func (h *Handler) storeEmptyPull(ctx context.Context, sess storedSession, pullID
 		if err != nil {
 			return err
 		}
-		encoded, err := encodeWire(emptyPull(cancelIDs))
+		draining, err := sessionDraining(ctx, tx, sess.ID)
+		if err != nil {
+			return err
+		}
+		wire := emptyPull(cancelIDs)
+		wire.Control.Drain = draining
+		encoded, err := encodeWire(wire)
 		if err != nil {
 			return err
 		}
@@ -1483,6 +1503,15 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	cancelIDs, err := canceledAttempts(ctx, tx, sess.ID)
 	if err != nil {
 		return claimDecision{}, err
+	}
+	draining, err := sessionDraining(ctx, tx, sess.ID)
+	if err != nil {
+		return claimDecision{}, err
+	}
+	if draining {
+		wire := emptyPull(cancelIDs)
+		wire.Control.Drain = true
+		return claimDecision{wire: wire, emptyNow: true}, nil
 	}
 	if freeSlots == 0 {
 		return claimDecision{wire: emptyPull(cancelIDs), emptyNow: true}, nil
@@ -1867,4 +1896,39 @@ func decodeRaw(w http.ResponseWriter, raw []byte, dst any) bool {
 		return false
 	}
 	return true
+}
+
+const imageBacklogSQL = `
+SELECT
+    count(*) FILTER (
+        WHERE status = 'queued'
+          AND protocol_deadline > now()
+          AND (not_before IS NULL OR not_before <= now())
+    ),
+    count(*) FILTER (
+        WHERE status = 'active'
+          AND protocol_deadline > now()
+    ),
+    count(*) FILTER (
+        WHERE status = 'queued'
+          AND protocol_deadline > now()
+          AND not_before > now()
+    )
+FROM jobs
+WHERE dispatch_owner = 'protocol'
+  AND engine = 'image'
+  AND capability_id IS DISTINCT FROM 'octoconv.convert.imagepdf'
+  AND ($1::uuid IS NULL OR id = $1)`
+
+// ImageBacklog counts protocol image jobs that are still eligible to run.
+func (r *Repo) ImageBacklog(ctx context.Context) (pending, active, retry int, err error) {
+	return imageBacklog(ctx, r.pool, nil)
+}
+
+func imageBacklog(ctx context.Context, q queryRower, id *uuid.UUID) (pending, active, retry int, err error) {
+	err = q.QueryRow(ctx, imageBacklogSQL, id).Scan(&pending, &active, &retry)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("image backlog: %w", err)
+	}
+	return pending, active, retry, nil
 }

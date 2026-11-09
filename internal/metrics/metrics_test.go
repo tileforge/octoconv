@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"errors"
 	"sort"
 	"strings"
 	"testing"
@@ -273,5 +274,155 @@ func TestNewQueueDepthCollectorDescribeAllFourQueues(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("Describe: want exactly 1 descriptor, got %d", count)
+	}
+}
+
+type staticInspector struct {
+	info map[string]asynq.QueueInfo
+	err  error
+}
+
+func (s staticInspector) GetQueueInfo(queue string) (*asynq.QueueInfo, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	info, ok := s.info[queue]
+	if !ok {
+		return nil, errors.New("missing queue")
+	}
+	copied := info
+	return &copied, nil
+}
+
+func collectGauges(t *testing.T, c prometheus.Collector) map[string]float64 {
+	t.Helper()
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]float64{}
+	for _, fam := range families {
+		if fam.GetName() != "octoconv_queue_depth" {
+			t.Fatalf("metric %s", fam.GetName())
+		}
+		for _, metric := range fam.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				labels[label.GetName()] = label.GetValue()
+			}
+			if len(labels) != 2 || labels["queue"] == "" || labels["state"] == "" {
+				t.Fatalf("labels %#v", labels)
+			}
+			out[labels["queue"]+"/"+labels["state"]] = metric.GetGauge().GetValue()
+		}
+	}
+	return out
+}
+
+func TestImageBacklogAddsToAsynq(t *testing.T) {
+	c := NewQueueDepthCollector(nil, "image", "document")
+	c.inspector = staticInspector{info: map[string]asynq.QueueInfo{
+		"image":    {Pending: 1, Active: 1, Scheduled: 3, Retry: 1, Archived: 4},
+		"document": {Pending: 5, Active: 6, Scheduled: 7, Retry: 8, Archived: 9},
+	}}
+	c.SetImageBacklog(func() (ImageBacklog, error) {
+		return ImageBacklog{Pending: 2, Active: 3, Retry: 4}, nil
+	})
+	got := collectGauges(t, c)
+	if got["image/pending"] != 3 || got["image/active"] != 4 || got["image/retry"] != 5 {
+		t.Fatalf("image gauges %#v", got)
+	}
+	if got["image/scheduled"] != 3 || got["image/archived"] != 4 {
+		t.Fatalf("image asynq states %#v", got)
+	}
+	if got["document/pending"] != 5 || got["document/active"] != 6 || got["document/retry"] != 8 {
+		t.Fatalf("document gauges %#v", got)
+	}
+}
+
+func TestImageBacklogSurvivesInspectorError(t *testing.T) {
+	c := NewQueueDepthCollector(nil, "image", "document")
+	c.inspector = staticInspector{err: errors.New("inspector down")}
+	if len(collectGauges(t, c)) != 0 {
+		t.Fatal("nil backlog emitted a gauge")
+	}
+	c.SetImageBacklog(func() (ImageBacklog, error) {
+		return ImageBacklog{Pending: 4, Active: 1, Retry: 2}, nil
+	})
+	got := collectGauges(t, c)
+	if got["image/pending"] != 4 || got["image/active"] != 1 || got["image/retry"] != 2 {
+		t.Fatalf("image backlog %#v", got)
+	}
+	if _, ok := got["image/scheduled"]; ok {
+		t.Fatal("scheduled emitted")
+	}
+	if _, ok := got["image/archived"]; ok {
+		t.Fatal("archived emitted")
+	}
+	if _, ok := got["document/pending"]; ok {
+		t.Fatal("document emitted")
+	}
+	c.SetImageBacklog(func() (ImageBacklog, error) {
+		return ImageBacklog{}, errors.New("backlog")
+	})
+	if len(collectGauges(t, c)) != 0 {
+		t.Fatal("callback error emitted a gauge")
+	}
+}
+
+func TestQueueDepthLabelsStayQueueAndState(t *testing.T) {
+	jobA := uuid.NewString()
+	jobB := uuid.NewString()
+	c := NewQueueDepthCollector(nil, "image")
+	c.inspector = staticInspector{info: map[string]asynq.QueueInfo{
+		"image": {Pending: 1},
+	}}
+	c.SetImageBacklog(func() (ImageBacklog, error) {
+		if jobA == jobB {
+			return ImageBacklog{}, errors.New("same job")
+		}
+		return ImageBacklog{Pending: 2}, nil
+	})
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending float64
+	var saw bool
+	for _, fam := range families {
+		if fam.GetName() != "octoconv_queue_depth" {
+			t.Fatalf("metric %s", fam.GetName())
+		}
+		for _, metric := range fam.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				name := label.GetName()
+				if name == "job_id" || name == "attempt_id" || name == "client_id" || name == "capability_id" {
+					t.Fatalf("label %s", name)
+				}
+				labels[name] = label.GetValue()
+				if label.GetValue() == jobA || label.GetValue() == jobB {
+					t.Fatal("job id in a label")
+				}
+			}
+			if len(labels) != 2 || labels["queue"] == "" || labels["state"] == "" {
+				t.Fatalf("labels %#v", labels)
+			}
+			if labels["queue"] == "image" && labels["state"] == "pending" {
+				pending = metric.GetGauge().GetValue()
+				saw = true
+			}
+		}
+	}
+	if !saw || pending != 3 {
+		t.Fatalf("pending %v saw %v", pending, saw)
 	}
 }

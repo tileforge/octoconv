@@ -125,6 +125,13 @@ func (s *Server) Routes() chi.Router {
 			r.Use(s.requireOperator)
 			r.Get("/", s.handleSystemUsage)
 		})
+		// /v1/system/workers sits behind the same requireOperator gate.
+		// A non-operator receives the no-leak 404, never 403.
+		r.Route("/system/workers", func(r chi.Router) {
+			r.Use(s.requireOperator)
+			r.Get("/", s.handleSystemWorkers)
+			r.Post("/{worker_id}/drain", s.handleSystemWorkerDrain)
+		})
 	})
 	return r
 }

@@ -205,6 +205,9 @@ type Server struct {
 	// catalog is nil until SetCapabilityCatalog. A nil catalog does not
 	// change registry admission or the image enqueue.
 	catalog CapabilityCatalog
+	// workers is nil until SetWorkerAdmin. A nil admin answers the worker
+	// routes with 500 and leaves every other route unchanged.
+	workers WorkerAdmin
 	// jobsListDefaultPageSize / jobsListMaxPageSize are the D-06 page-size
 	// knobs for GET /v1/jobs: the default page size used when ?limit is
 	// absent/unparseable, and the hard ceiling ?limit clamps to (never
@@ -290,6 +293,18 @@ type CapabilityCatalog interface {
 // take this dependency.
 func (s *Server) SetCapabilityCatalog(catalog CapabilityCatalog) {
 	s.catalog = catalog
+}
+
+// WorkerAdmin is the operator read of open sessions and the drain stamp.
+type WorkerAdmin interface {
+	ListWorkers(ctx context.Context) ([]workerproto.WorkerView, error)
+	DrainWorker(ctx context.Context, workerID uuid.UUID) (workerproto.WorkerView, error)
+}
+
+// SetWorkerAdmin installs the catalog behind the operator worker routes.
+// Nil answers those routes with 500. NewServer does not take this dependency.
+func (s *Server) SetWorkerAdmin(admin WorkerAdmin) {
+	s.workers = admin
 }
 
 // Config configures a Server.
