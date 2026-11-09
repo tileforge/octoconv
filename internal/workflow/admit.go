@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 // AdmitInput is one client request to run a published chain.
@@ -21,6 +22,7 @@ type AdmitInput struct {
 	SourceFormat string
 	Deadline     time.Time
 	Budgets      map[string]time.Duration
+	InputBytes   int64
 }
 
 // StatusStep is one step as the status read returns it.
@@ -48,7 +50,7 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 		return uuid.Nil, ErrRejected
 	}
 	jobID := uuid.New()
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		var granted int
 		if err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM workflow_grants
@@ -102,6 +104,13 @@ func (s *Store) Admit(ctx context.Context, in AdmitInput) (uuid.UUID, error) {
 		}
 		if in.Deadline.Before(time.Now().Add(sum)) {
 			return ErrRejected
+		}
+		repo := s.jobs
+		if repo == nil {
+			repo = jobs.NewRepo(s.pool)
+		}
+		if err := repo.AdmitLocked(ctx, tx, in.ClientID, resolved[0].LegacyEngine, in.InputBytes); err != nil {
+			return err
 		}
 		snap, err := copyWithStepIDs(raw)
 		if err != nil {

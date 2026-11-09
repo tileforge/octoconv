@@ -56,9 +56,14 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		SourceFormat: source,
 		Deadline:     deadline,
 		Budgets:      s.engineTimeouts,
+		InputBytes:   header.Size,
 	})
 	if errors.Is(err, workflow.ErrRejected) || errors.Is(err, workflow.ErrConflict) {
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid workflow")
+		return
+	}
+	if msg, retryAfter, ok := quotaRejection(err); ok {
+		writeQuotaError(w, msg, retryAfter)
 		return
 	}
 	if err != nil {

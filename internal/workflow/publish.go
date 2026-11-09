@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 const imagepdfCapability = "octoconv.convert.imagepdf"
@@ -59,11 +60,18 @@ type Definition struct {
 // Store is the Postgres store for definitions, grants, and snapshots.
 type Store struct {
 	pool *pgxpool.Pool
+	jobs *jobs.Repo
 }
 
 // NewStore returns a store for the given pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
+}
+
+// SetJobs installs the repository whose quota gate Admit runs.
+// A nil repository leaves Admit on a repository with enforcement enabled.
+func (s *Store) SetJobs(repo *jobs.Repo) {
+	s.jobs = repo
 }
 
 type rowQuery interface {

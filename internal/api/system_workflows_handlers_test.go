@@ -136,7 +136,11 @@ func newWorkflowOperator(pool *pgxpool.Pool, repo Repo, store Storage, q Enqueue
 		MaxUploadBytes:    1 << 20,
 		OperatorClientIDs: map[uuid.UUID]struct{}{resolver.client.ID: {}},
 	})
-	srv.SetWorkflows(workflow.NewStore(pool))
+	wfStore := workflow.NewStore(pool)
+	if jobsRepo, ok := repo.(*jobs.Repo); ok {
+		wfStore.SetJobs(jobsRepo)
+	}
+	srv.SetWorkflows(wfStore)
 	return srv, resolver.client.ID
 }
 

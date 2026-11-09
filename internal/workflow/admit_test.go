@@ -3,10 +3,14 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/tileforge/octoconv/internal/jobs"
 )
 
 func TestAdmitRejectsUngrantedClient(t *testing.T) {
@@ -289,5 +293,118 @@ func TestAdmitStoresOneJob(t *testing.T) {
 	}
 	if _, err := uuid.Parse(view.Steps[0].StepID.String()); err != nil || view.Steps[0].StepID == uuid.Nil {
 		t.Fatal("missing step id")
+	}
+}
+
+func TestAdmitRejectsEnforcedZeroConcurrency(t *testing.T) {
+	pool := testPool(t)
+	store := NewStore(pool)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	denyImage(t, pool, clientID)
+	beforeJobs, beforeSnaps := ownedCounts(t, pool, clientID, name)
+	_, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		InputBytes: 10,
+	})
+	if !errors.Is(err, jobs.ErrConcurrencyLimit) {
+		t.Fatalf("err %v", err)
+	}
+	afterJobs, afterSnaps := ownedCounts(t, pool, clientID, name)
+	if afterJobs != beforeJobs || afterSnaps != beforeSnaps {
+		t.Fatalf("jobs %d->%d snapshots %d->%d", beforeJobs, afterJobs, beforeSnaps, afterSnaps)
+	}
+}
+
+func TestAdmitDisabledQuotaStillStores(t *testing.T) {
+	pool := testPool(t)
+	repo := jobs.NewRepo(pool)
+	repo.SetQuotaEnforcementDisabled(true)
+	store := NewStore(pool)
+	store.SetJobs(repo)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	denyImage(t, pool, clientID)
+	jobID, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+	})
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if jobID == uuid.Nil {
+		t.Fatal("missing job")
+	}
+}
+
+func TestPurgeDeletesWorkflowSnapshot(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	var def string
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conname = 'workflow_snapshots_job_id_fkey'`).Scan(&def); err != nil {
+		t.Fatalf("read constraint: %v", err)
+	}
+	if !strings.Contains(def, "ON DELETE CASCADE") {
+		t.Fatalf("constraint %s", def)
+	}
+	clientID := insertClient(t, pool)
+	jobID := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO jobs (
+			id, client_id, operation, engine, status, source_format, target_format, options, created_at
+		) VALUES (
+			$1, $2, 'convert', 'image', 'done', 'jpg', 'png', '{}', '-infinity'
+		)`, jobID, clientID); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO workflow_snapshots (job_id, definition_name, definition_version, document)
+		VALUES ($1, 'purge-snap', 1, '{"steps":[]}'::jsonb)`, jobID); err != nil {
+		t.Fatalf("insert snapshot: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET workflow_snapshot_id = id WHERE id = $1`, jobID); err != nil {
+		t.Fatalf("attach snapshot: %v", err)
+	}
+	if _, err := jobs.NewRepo(pool).PurgeJobs(ctx, 90*24*time.Hour, 1); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	var jobsLeft, snapsLeft int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE id = $1`, jobID).Scan(&jobsLeft); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM workflow_snapshots WHERE job_id = $1`, jobID).Scan(&snapsLeft); err != nil {
+		t.Fatalf("count snapshots: %v", err)
+	}
+	if jobsLeft != 0 || snapsLeft != 0 {
+		t.Fatalf("jobs %d snapshots %d", jobsLeft, snapsLeft)
+	}
+}
+
+func denyImage(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, clientID); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO client_limits (client_id, engine, max_concurrent)
+		VALUES ($1, 'image', 0)`, clientID); err != nil {
+		t.Fatalf("limit: %v", err)
 	}
 }

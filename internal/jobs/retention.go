@@ -2,9 +2,10 @@
 //
 // Deleting `jobs` is enough: job_events, job_inputs, job_outputs and
 // webhook_deliveries all declare `job_id ... REFERENCES jobs (id) ON DELETE
-// CASCADE` (0001_init.sql), and jobs.parent_id self-references with CASCADE
-// too. A separate `DELETE FROM job_events` (etc.) here would be wrong-order
-// churn, not a missing feature — do not add one.
+// CASCADE` (0001_init.sql), workflow_snapshots does the same (0027), and
+// jobs.parent_id self-references with CASCADE too. A separate
+// `DELETE FROM job_events` (etc.) here would be wrong-order churn, not a
+// missing feature — do not add one.
 //
 // client_usage_daily is purged independently, on its OWN longer window, by
 // PurgeUsage below. That independence is the entire reason D-01 chose a
@@ -24,8 +25,9 @@ import (
 // exclusion is the safety property, not an optimization: a queued job
 // stranded for months is a reconciler problem, and deleting live work while
 // a worker holds it would be unrecoverable data loss. Deleting a jobs row
-// cascades to its job_events/job_inputs/job_outputs/webhook_deliveries (see
-// the package doc comment above) — no separate deletes are issued here.
+// cascades to its job_events/job_inputs/job_outputs/webhook_deliveries and
+// workflow_snapshots (see the package doc comment above) — no separate
+// deletes are issued here.
 //
 // cutoff is computed in Go and bound as a timestamptz parameter, never an
 // inline SQL interval expression, matching Repo.FindStale's convention.

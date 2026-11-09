@@ -313,7 +313,9 @@ func main() {
 	workerCatalog := workerproto.NewRepo(pool)
 	srv.SetCapabilityCatalog(workerCatalog)
 	srv.SetWorkerAdmin(workerCatalog)
-	srv.SetWorkflows(workflow.NewStore(pool))
+	wfStore := workflow.NewStore(pool)
+	wfStore.SetJobs(jobsRepo)
+	srv.SetWorkflows(wfStore)
 	depth.SetImageBacklog(func() (metrics.ImageBacklog, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

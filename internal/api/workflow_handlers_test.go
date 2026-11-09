@@ -146,6 +146,51 @@ func TestWorkflowCreate(t *testing.T) {
 	}
 }
 
+func TestWorkflowQuotaRejectsBeforeInsert(t *testing.T) {
+	pool := workerAdminPool(t)
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, clientID := newWorkflowOperator(pool, repo, store, q)
+	capabilityID := insertAPICapability(t, pool)
+	insertAPIClient(t, pool, clientID)
+	name := "wf-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	published := postSystemWorkflow(t, srv, map[string]any{
+		"name": name, "version": 1, "client_ids": []uuid.UUID{clientID}, "steps": apiSteps(capabilityID),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("publish status %d body %s", published.Code, published.Body.String())
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, clientID); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO client_limits (client_id, engine, max_concurrent)
+		VALUES ($1, 'image', 0)`, clientID); err != nil {
+		t.Fatalf("limit: %v", err)
+	}
+	owned := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID)
+	snaps := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+	rec := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), map[string]string{
+		"workflow": name + "@1",
+		"deadline": time.Now().Add(10 * time.Minute).Format(time.RFC3339),
+	})
+	assertClientError(t, rec, http.StatusTooManyRequests, errcode.QuotaExceeded)
+	if rec.Header().Get("Retry-After") != "30" {
+		t.Fatalf("Retry-After %q", rec.Header().Get("Retry-After"))
+	}
+	if decodedError(t, rec) != "too many concurrent jobs for this conversion type" {
+		t.Fatalf("error %q", decodedError(t, rec))
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID); got != owned {
+		t.Fatalf("jobs %d, want %d", got, owned)
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
+		t.Fatalf("snapshots %d, want %d", got, snaps)
+	}
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
 func TestWorkflowStatus(t *testing.T) {
 	pool := workerAdminPool(t)
 	repo := jobs.NewRepo(pool)

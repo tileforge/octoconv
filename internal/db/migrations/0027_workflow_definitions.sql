@@ -43,7 +43,8 @@ ALTER TABLE jobs
 
 ALTER TABLE workflow_snapshots
     ADD CONSTRAINT workflow_snapshots_job_id_fkey
-    FOREIGN KEY (job_id) REFERENCES jobs (id);
+    FOREIGN KEY (job_id) REFERENCES jobs (id)
+    ON DELETE CASCADE;
 
 ALTER TABLE jobs
     ADD CONSTRAINT jobs_workflow_snapshot_id_fkey

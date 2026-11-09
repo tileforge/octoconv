@@ -86,6 +86,20 @@ func NewRepo(pool *pgxpool.Pool) *Repo {
 	return &Repo{pool: pool}
 }
 
+// AdmitLocked runs the quota gate for one client and engine.
+// tx must use read committed isolation, the same pin Repo.Create uses.
+func (r *Repo) AdmitLocked(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine string, inputBytes int64) error {
+	return admitLocked(
+		ctx,
+		tx,
+		clientID,
+		engine,
+		inputBytes,
+		r.quotaObserver,
+		r.quotaDisabled,
+	)
+}
+
 // CreateParams describes a new convert job and its single input. ID is the
 // caller-provided job id so storage keys (which embed the id) and the row match.
 type CreateParams struct {
