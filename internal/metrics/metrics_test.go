@@ -373,3 +373,56 @@ func TestImageBacklogSurvivesInspectorError(t *testing.T) {
 		t.Fatal("callback error emitted a gauge")
 	}
 }
+
+func TestQueueDepthLabelsStayQueueAndState(t *testing.T) {
+	jobA := uuid.NewString()
+	jobB := uuid.NewString()
+	c := NewQueueDepthCollector(nil, "image")
+	c.inspector = staticInspector{info: map[string]asynq.QueueInfo{
+		"image": {Pending: 1},
+	}}
+	c.SetImageBacklog(func() (ImageBacklog, error) {
+		if jobA == jobB {
+			return ImageBacklog{}, errors.New("same job")
+		}
+		return ImageBacklog{Pending: 2}, nil
+	})
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(c); err != nil {
+		t.Fatal(err)
+	}
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending float64
+	var saw bool
+	for _, fam := range families {
+		if fam.GetName() != "octoconv_queue_depth" {
+			t.Fatalf("metric %s", fam.GetName())
+		}
+		for _, metric := range fam.GetMetric() {
+			labels := map[string]string{}
+			for _, label := range metric.GetLabel() {
+				name := label.GetName()
+				if name == "job_id" || name == "attempt_id" || name == "client_id" || name == "capability_id" {
+					t.Fatalf("label %s", name)
+				}
+				labels[name] = label.GetValue()
+				if label.GetValue() == jobA || label.GetValue() == jobB {
+					t.Fatal("job id in a label")
+				}
+			}
+			if len(labels) != 2 || labels["queue"] == "" || labels["state"] == "" {
+				t.Fatalf("labels %#v", labels)
+			}
+			if labels["queue"] == "image" && labels["state"] == "pending" {
+				pending = metric.GetGauge().GetValue()
+				saw = true
+			}
+		}
+	}
+	if !saw || pending != 3 {
+		t.Fatalf("pending %v saw %v", pending, saw)
+	}
+}
