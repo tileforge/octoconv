@@ -43,6 +43,10 @@ func (s *Server) admitWorkflow(w http.ResponseWriter, r *http.Request, operation
 		return
 	}
 	defer file.Close()
+	if r.MultipartForm != nil && len(r.MultipartForm.File[formFieldFile]) > 1 {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "this conversion accepts a single file")
+		return
+	}
 	source := convert.NormalizeFormat(strings.TrimPrefix(path.Ext(path.Base(header.Filename)), "."))
 	if source == "" {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "cannot determine source format from filename")

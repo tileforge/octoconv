@@ -1337,6 +1337,7 @@ paths:
                   description: >-
                     Optional published chain, written as name@version.
                     version is a positive integer with no leading zero.
+                    The name contains no @ character.
                     When this field is set, preset and target must be
                     absent and deadline is required. When this field is
                     absent, deadline is not read.
@@ -3366,9 +3367,9 @@ paths:
       summary: Publish one workflow definition version
       description: >-
         Operator-only. Stores the chain and one grant per client id.
-        An empty client_ids list stores nothing. The same name and
-        version is a conflict and leaves the existing row. A non-operator
-        receives 404.
+        An empty client_ids list stores nothing. A name containing
+        @ stores nothing. The same name and version is a conflict
+        and leaves the existing row. A non-operator receives 404.
       requestBody:
         required: true
         content:
@@ -3380,6 +3381,9 @@ paths:
               properties:
                 name:
                   type: string
+                  description: >-
+                    Definition name. It contains no @ character, so a
+                    client can refer to it as name@version.
                 version:
                   type: integer
                   minimum: 1

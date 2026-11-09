@@ -77,6 +77,20 @@ func TestPublishRejectsOneStep(t *testing.T) {
 	assertNothing(t, pool, name)
 }
 
+func TestPublishRejectsAtSign(t *testing.T) {
+	pool := testPool(t)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName() + "@resize"
+	_, err := NewStore(pool).Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	})
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("err %v", err)
+	}
+	assertNothing(t, pool, name)
+}
+
 func TestPublishRejectsEmptyClients(t *testing.T) {
 	pool := testPool(t)
 	cap := insertCapability(t, pool, capabilitySpec{})

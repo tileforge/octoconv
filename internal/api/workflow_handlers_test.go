@@ -191,6 +191,60 @@ func TestWorkflowQuotaRejectsBeforeInsert(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
+func TestWorkflowRejectsExtraFile(t *testing.T) {
+	pool := workerAdminPool(t)
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, clientID := newWorkflowOperator(pool, repo, store, q)
+	capabilityID := insertAPICapability(t, pool)
+	insertAPIClient(t, pool, clientID)
+	name := "wf-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	published := postSystemWorkflow(t, srv, map[string]any{
+		"name": name, "version": 1, "client_ids": []uuid.UUID{clientID}, "steps": apiSteps(capabilityID),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("publish status %d body %s", published.Code, published.Body.String())
+	}
+	owned := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID)
+	snaps := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID)
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for _, filename := range []string{"a.jpeg", "b.jpeg"} {
+		fw, err := w.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(pngBytesFixture()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.WriteField("workflow", name+"@1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("deadline", time.Now().Add(10*time.Minute).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &body))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidRequest)
+	if decodedError(t, rec) != "this conversion accepts a single file" {
+		t.Fatalf("error %q", decodedError(t, rec))
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID); got != owned {
+		t.Fatalf("jobs %d, want %d", got, owned)
+	}
+	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
+		t.Fatalf("snapshots %d, want %d", got, snaps)
+	}
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
 func TestWorkflowStatus(t *testing.T) {
 	pool := workerAdminPool(t)
 	repo := jobs.NewRepo(pool)

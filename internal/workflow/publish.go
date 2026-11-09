@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -105,7 +106,7 @@ type snapshotDocument struct {
 
 // Publish stores one definition version and one grant per client.
 func (s *Store) Publish(ctx context.Context, in PublishInput) (Definition, error) {
-	if in.Name == "" || in.Version < 1 || len(in.ClientIDs) == 0 {
+	if in.Name == "" || strings.Contains(in.Name, "@") || in.Version < 1 || len(in.ClientIDs) == 0 {
 		return Definition{}, ErrRejected
 	}
 	seen := make(map[uuid.UUID]struct{}, len(in.ClientIDs))
