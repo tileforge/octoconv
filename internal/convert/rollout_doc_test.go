@@ -22,6 +22,8 @@ func TestProtocolRolloutSection(t *testing.T) {
 		"Keep the worker_capabilities row until no queued protocol image job remains.",
 		"A catalog miss enqueues the new image job.",
 		"DrainWorker stops new pulls.",
+		"A lease expiry with retry budget left returns that job to queued.",
+		"Call DrainWorker only after the queued protocol image jobs and the active protocol image jobs are both gone.",
 		"Do not change jobs.dispatch_owner.",
 		"A done job keeps its job_outputs row.",
 		"document, html, audio, av, ocr, pandoc, probe, tectonic, and cad stay on asynq.",

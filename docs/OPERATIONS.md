@@ -162,11 +162,10 @@ Rollback order:
 
 1. Keep the legacy image worker up.
 2. Delete the image rows in worker_capability_formats before DrainWorker.
-3. Keep the worker_capabilities row until no queued protocol image job remains. Let the protocol worker finish those queued jobs while that row remains.
-4. Call DrainWorker only after that queue is empty. DrainWorker stops new pulls. claimOnce returns an empty pull once drain_at is set.
-5. Wait until open attempts finish or reach their deadline.
-6. Stop the protocol worker.
-7. Leave the schema applied.
+3. Keep the worker_capabilities row until no queued protocol image job remains. Count a job whose not_before is still in the future. A lease expiry with retry budget left returns that job to queued. Wait until no protocol image job is active. The protocol worker keeps pulling while the worker_capabilities row remains.
+4. Call DrainWorker only after the queued protocol image jobs and the active protocol image jobs are both gone. DrainWorker stops new pulls. claimOnce returns an empty pull once drain_at is set.
+5. Stop the protocol worker.
+6. Leave the schema applied.
 
 The other classes are a later milestone. This milestone does not migrate them.
 
