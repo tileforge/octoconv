@@ -145,6 +145,31 @@ transaction-start time — a known, accepted narrow window, not a refund path.
 
 </details>
 
+## Protocol image rollout
+
+There is no down migration. Do not drop a column and do not edit a migration that schema_migrations has recorded. The first protocol worker is the image worker. The legacy image worker stays up. document, html, audio, av, ocr, pandoc, probe, tectonic, and cad stay on asynq. png to pdf stays 422. imagepdf does not get a ScaledObject. The image scaler query stays `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`.
+
+Forward order:
+
+1. Apply migrations with the existing migrate path.
+2. Approve the image manifest.
+3. Start the protocol API listener.
+4. Start one image protocol worker.
+
+Legacy image jobs stay on asynq. Protocol image jobs stay protocol. A catalog miss enqueues the new image job. A queued protocol job is not in asynq, and FindStale does not return it. A done job keeps its job_outputs row. Do not change jobs.dispatch_owner.
+
+Rollback order:
+
+1. Keep the legacy image worker up.
+2. Delete the image rows in worker_capability_formats before DrainWorker.
+3. Keep the worker_capabilities row until no queued protocol image job remains. Let the protocol worker finish those queued jobs while that row remains.
+4. Call DrainWorker only after that queue is empty. DrainWorker stops new pulls. claimOnce returns an empty pull once drain_at is set.
+5. Wait until open attempts finish or reach their deadline.
+6. Stop the protocol worker.
+7. Leave the schema applied.
+
+The other classes are a later milestone. This milestone does not migrate them.
+
 ## Sandboxing the TeX engine
 
 A `.tex` is a program. `--untrusted` stops it from running shell commands and it does *not*

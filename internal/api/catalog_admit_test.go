@@ -105,6 +105,32 @@ func TestCreateJobWithoutCatalogStillEnqueuesImage(t *testing.T) {
 	}
 }
 
+func TestCatalogMissEnqueuesImage(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	catalog := &fakeCatalog{found: false}
+	srv.SetCapabilityCatalog(catalog)
+
+	rec := postCreate(t, srv, "in.png", "webp")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if catalog.calls != 1 {
+		t.Fatalf("Lookup calls = %d, want 1", catalog.calls)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineImage || repo.created.CapabilityID != "" {
+		t.Fatalf("create params = %+v, want engine image and empty pin", repo.created)
+	}
+	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("dispatch = %q budget = %s, want legacy defaults", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want one image enqueue", q.enqueueCalls, q.enqueuedImage)
+	}
+}
+
 func TestCatalogPinOnImageCreate(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
