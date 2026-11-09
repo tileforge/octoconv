@@ -396,6 +396,83 @@ func TestPurgeDeletesWorkflowSnapshot(t *testing.T) {
 	}
 }
 
+func TestAdmitDailyBytesSeesPriorWorkflowJob(t *testing.T) {
+	pool := testPool(t)
+	store := NewStore(pool)
+	repo := jobs.NewRepo(pool)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	limitImageBytes(t, pool, clientID, 100)
+	first, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		InputBytes: 60,
+	})
+	if err != nil {
+		t.Fatalf("first admit: %v", err)
+	}
+	var stored int64
+	if err := pool.QueryRow(context.Background(), `SELECT admitted_input_bytes FROM jobs WHERE id = $1`, first).Scan(&stored); err != nil {
+		t.Fatalf("read bytes: %v", err)
+	}
+	if stored != 60 {
+		t.Fatalf("admitted bytes %d", stored)
+	}
+	_, err = store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		InputBytes: 60,
+	})
+	if !errors.Is(err, jobs.ErrDailyBytesLimit) {
+		t.Fatalf("second admit err %v", err)
+	}
+	if n, snaps := ownedCounts(t, pool, clientID, name); n != 1 || snaps != 1 {
+		t.Fatalf("jobs %d snapshots %d", n, snaps)
+	}
+	if err := repo.MarkFailed(context.Background(), first, "engine_error", "boom", nil, 0); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+	var rolled int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT COALESCE(sum(bytes_in), 0) FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date`, clientID).Scan(&rolled); err != nil {
+		t.Fatalf("read usage: %v", err)
+	}
+	if rolled != 60 {
+		t.Fatalf("bytes_in %d", rolled)
+	}
+	_, err = store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(),
+		InputBytes: 60,
+	})
+	if !errors.Is(err, jobs.ErrDailyBytesLimit) {
+		t.Fatalf("admit after rollup err %v", err)
+	}
+	if n, snaps := ownedCounts(t, pool, clientID, name); n != 1 || snaps != 1 {
+		t.Fatalf("after rollup jobs %d snapshots %d", n, snaps)
+	}
+}
+
+func limitImageBytes(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID, maxBytes int64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, clientID); err != nil {
+		t.Fatalf("enforce: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO client_limits (client_id, engine, max_daily_bytes)
+		VALUES ($1, 'image', $2)`, clientID, maxBytes); err != nil {
+		t.Fatalf("limit: %v", err)
+	}
+}
+
 func denyImage(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()

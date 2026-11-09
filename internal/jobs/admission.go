@@ -169,7 +169,8 @@ const (
 // awaiting_upload into the in-flight predicate (which would also require
 // changing jobs_client_engine_inflight_idx's predicate in a new migration)
 // would commit to quota semantics for a status whose meaning does not exist
-// yet. The byte term sums job_inputs.size_bytes; for a job still awaiting
+// yet. The byte term sums job_inputs.size_bytes, or admitted_input_bytes
+// when that column is set. For a job still awaiting
 // its upload that row is either absent -- in which case moving the status
 // buys the byte term nothing -- or carries a client-declared size that has
 // not been verified against any stored object. Deciding between those
@@ -386,7 +387,11 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 				COALESCE((SELECT sum(bytes_in) FROM client_usage_daily
 					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
 				+ COALESCE((SELECT sum(ji.size_bytes) FROM jobs j JOIN job_inputs ji ON ji.job_id = j.id
-					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0),
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')
+					  AND j.admitted_input_bytes IS NULL), 0)
+				+ COALESCE((SELECT sum(j.admitted_input_bytes) FROM jobs j
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')
+					  AND j.admitted_input_bytes IS NOT NULL), 0),
 				COALESCE((SELECT sum(job_count) FROM client_usage_daily
 					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
 				+ COALESCE((SELECT count(*) FROM jobs j

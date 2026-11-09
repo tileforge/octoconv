@@ -49,3 +49,8 @@ ALTER TABLE workflow_snapshots
 ALTER TABLE jobs
     ADD CONSTRAINT jobs_workflow_snapshot_id_fkey
     FOREIGN KEY (workflow_snapshot_id) REFERENCES workflow_snapshots (job_id);
+
+ALTER TABLE jobs
+    ADD COLUMN admitted_input_bytes bigint,
+    ADD CONSTRAINT jobs_admitted_input_bytes_nonnegative
+        CHECK (admitted_input_bytes IS NULL OR admitted_input_bytes >= 0);

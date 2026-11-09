@@ -51,12 +51,11 @@ func (r *Repo) recordUsage(ctx context.Context, tx pgx.Tx, id uuid.UUID, status 
 			(now() AT TIME ZONE 'utc')::date,
 			$2,
 			1,
-			-- Byte totals are summed over ALL of the job's input/output rows,
-			-- never a single fixed row — the SEED-017 constraint. Neither
-			-- subquery below filters by row position; a split/merge job
-			-- producing N outputs is counted correctly with no accounting
-			-- rewrite.
-			COALESCE((SELECT sum(size_bytes) FROM job_inputs WHERE job_id = j.id), 0),
+			-- Input bytes are admitted_input_bytes when that column is set.
+			-- Otherwise they are the sum of every job_inputs row. Output
+			-- bytes stay the sum of every job_outputs row. Neither sum
+			-- filters by row position (SEED-017).
+			COALESCE(j.admitted_input_bytes, (SELECT sum(size_bytes) FROM job_inputs WHERE job_id = j.id), 0),
 			COALESCE((SELECT sum(size_bytes) FROM job_outputs WHERE job_id = j.id), 0),
 			-- wall_seconds: prefer the caller's attempt clock ($3, seconds) when
 			-- positive. Otherwise derive it from started_at, which is the ONLY
