@@ -72,7 +72,57 @@ func protocolPass(ctx context.Context, pool *pgxpool.Pool, jobsRepo *jobs.Repo, 
 	if err := failPastDeadlines(ctx, pool, jobsRepo); err != nil {
 		return err
 	}
+	if err := sweepWorkflowResults(ctx, pool, store); err != nil {
+		return err
+	}
 	return sweepReleasedStaging(ctx, pool, store)
+}
+
+func sweepWorkflowResults(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {
+	if store == nil {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT r.job_id, r.step_id, r.object_key
+		FROM workflow_step_results r
+		JOIN jobs j ON j.id = r.job_id
+		WHERE j.status IN ('done', 'failed', 'canceled')`)
+	if err != nil {
+		return fmt.Errorf("list workflow results: %w", err)
+	}
+	type resultRow struct {
+		jobID  uuid.UUID
+		stepID uuid.UUID
+		key    string
+	}
+	var due []resultRow
+	for rows.Next() {
+		var item resultRow
+		if err := rows.Scan(&item.jobID, &item.stepID, &item.key); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan workflow result: %w", err)
+		}
+		due = append(due, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("list workflow results: %w", err)
+	}
+	rows.Close()
+	for _, item := range due {
+		if err := store.Remove(ctx, item.key); err != nil {
+			continue
+		}
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM workflow_step_results AS r
+			USING jobs AS j
+			WHERE r.job_id = $1 AND r.step_id = $2
+			  AND j.id = r.job_id
+			  AND j.status IN ('done', 'failed', 'canceled')`, item.jobID, item.stepID); err != nil {
+			return fmt.Errorf("delete workflow result: %w", err)
+		}
+	}
+	return nil
 }
 
 func sweepReleasedStaging(ctx context.Context, pool *pgxpool.Pool, store objectStore) error {

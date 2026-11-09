@@ -19,6 +19,7 @@ import (
 	"github.com/tileforge/octoconv/internal/clients"
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
 )
 
 func TestWorkflowFieldAbsentKeepsMissingTarget(t *testing.T) {
@@ -91,14 +92,16 @@ func TestWorkflowCreate(t *testing.T) {
 	if repo.created != nil {
 		t.Fatalf("Create was called: %+v", repo.created)
 	}
-	assertNoUploadOrEnqueue(t, repo, store, q)
+	if q.enqueueCalls != 0 || store.uploadCalls != 1 {
+		t.Fatalf("enqueue %d upload %d", q.enqueueCalls, store.uploadCalls)
+	}
 	if n := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id = $1`, created.JobID); n != 1 {
 		t.Fatalf("snapshots %d", n)
 	}
 	var attempts int
 	var snapshotID uuid.UUID
 	var owner, status, engine string
-	var inputs, holds, creds int
+	var holds, creds int
 	if err := pool.QueryRow(context.Background(), `
 		SELECT attempts, workflow_snapshot_id, dispatch_owner, status, engine
 		FROM jobs WHERE id = $1`, created.JobID).Scan(&attempts, &snapshotID, &owner, &status, &engine); err != nil {
@@ -107,8 +110,34 @@ func TestWorkflowCreate(t *testing.T) {
 	if attempts != 0 || snapshotID != created.JobID || owner != "protocol" || status != jobs.StatusQueued || engine != "image" {
 		t.Fatalf("job attempts=%d snapshot=%s owner=%s status=%s engine=%s", attempts, snapshotID, owner, status, engine)
 	}
-	if n := countQuery(t, pool, `SELECT count(*) FROM job_inputs WHERE job_id = $1`, created.JobID); n != inputs {
+	if n := countQuery(t, pool, `SELECT count(*) FROM job_inputs WHERE job_id = $1`, created.JobID); n != 1 {
 		t.Fatalf("inputs %d", n)
+	}
+	var stepID uuid.UUID
+	var ordinal int
+	var objectKey, filename, format, contentType string
+	var size int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT j.step_id, i.ordinal, i.object_key, i.filename, i.format, i.size_bytes, i.content_type
+		FROM jobs j JOIN job_inputs i ON i.job_id = j.id
+		WHERE j.id = $1`, created.JobID).Scan(&stepID, &ordinal, &objectKey, &filename, &format, &size, &contentType); err != nil {
+		t.Fatalf("read input: %v", err)
+	}
+	var rawSnap []byte
+	if err := pool.QueryRow(context.Background(), `SELECT document FROM workflow_snapshots WHERE job_id = $1`, created.JobID).Scan(&rawSnap); err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	var snap struct {
+		Steps []struct {
+			StepID uuid.UUID `json:"step_id"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(rawSnap, &snap); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	wantKey := storage.InputKey(created.JobID, 0, "photo.jpeg")
+	if len(snap.Steps) != 2 || stepID != snap.Steps[0].StepID || ordinal != 0 || objectKey != wantKey || filename != "photo.jpeg" || format != "jpg" || contentType != "image/jpeg" || size != int64(len(pngBytesFixture())) {
+		t.Fatalf("step %s key %s filename %s format %s type %s size %d", stepID, objectKey, filename, format, contentType, size)
 	}
 	if n := countQuery(t, pool, `SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, created.JobID); n != holds {
 		t.Fatalf("holds %d", n)
@@ -127,6 +156,9 @@ func TestWorkflowCreate(t *testing.T) {
 	if decodedError(t, badDeadline) != "invalid deadline" {
 		t.Fatalf("error %q", decodedError(t, badDeadline))
 	}
+	if store.uploadCalls != 1 || q.enqueueCalls != 0 || repo.created != nil {
+		t.Fatalf("bad deadline uploaded or enqueued: upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
+	}
 	missing := postWorkflow(t, srv, "photo.jpeg", pngBytesFixture(), map[string]string{
 		"workflow": "missing@1",
 		"deadline": deadline,
@@ -141,8 +173,8 @@ func TestWorkflowCreate(t *testing.T) {
 	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
 		t.Fatalf("snapshots %d, want %d", got, snaps)
 	}
-	if q.enqueueCalls != 0 || store.uploadCalls != 0 || repo.created != nil {
-		t.Fatal("a rejected workflow stored or enqueued")
+	if store.uploadCalls != 2 || q.enqueueCalls != 0 || repo.created != nil {
+		t.Fatalf("unknown workflow upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
 	}
 }
 
@@ -188,7 +220,9 @@ func TestWorkflowQuotaRejectsBeforeInsert(t *testing.T) {
 	if got := countQuery(t, pool, `SELECT count(*) FROM workflow_snapshots WHERE job_id IN (SELECT id FROM jobs WHERE client_id = $1)`, clientID); got != snaps {
 		t.Fatalf("snapshots %d, want %d", got, snaps)
 	}
-	assertNoUploadOrEnqueue(t, repo, store, q)
+	if store.uploadCalls != 1 || q.enqueueCalls != 0 || repo.created != nil {
+		t.Fatalf("quota upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
+	}
 }
 
 func TestWorkflowRejectsExtraFile(t *testing.T) {
@@ -327,7 +361,9 @@ func TestWorkflowKeepsCallbackSettings(t *testing.T) {
 	if stored != hook || !progress {
 		t.Fatalf("callback %q progress %v", stored, progress)
 	}
-	assertNoUploadOrEnqueue(t, repo, store, q)
+	if store.uploadCalls != 2 || q.enqueueCalls != 0 || repo.created != nil {
+		t.Fatalf("upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
+	}
 }
 
 func TestWorkflowKeepsCorrelationID(t *testing.T) {
@@ -417,8 +453,8 @@ func TestWorkflowKeepsCorrelationID(t *testing.T) {
 	if empty != nil {
 		t.Fatalf("stored %q", *empty)
 	}
-	if q.enqueueCalls != 0 || store.uploadCalls != 0 {
-		t.Fatal("workflow admission enqueued or uploaded")
+	if q.enqueueCalls != 0 || store.uploadCalls != 2 {
+		t.Fatalf("upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
 	}
 }
 
@@ -485,7 +521,11 @@ func TestWorkflowStatus(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode workflow: %v", err)
 	}
-	if len(body) != 3 || string(body["current_step"]) != "null" || string(body["status"]) != `"`+jobs.StatusQueued+`"` {
+	var stepID uuid.UUID
+	if err := pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, job.JobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if len(body) != 3 || string(body["current_step"]) != `"`+stepID.String()+`"` || string(body["status"]) != `"`+jobs.StatusQueued+`"` {
 		t.Fatalf("body %s", rec.Body.String())
 	}
 	var steps []map[string]json.RawMessage
@@ -523,8 +563,70 @@ func TestWorkflowStatus(t *testing.T) {
 	if string(jobBody["progress_pct"]) != "null" {
 		t.Fatalf("progress %s", jobBody["progress_pct"])
 	}
-	if q.enqueueCalls != 0 || store.uploadCalls != 0 {
-		t.Fatal("status read enqueued or uploaded")
+	if _, ok := jobBody["download_url"]; ok || strings.Contains(jobRec.Body.String(), "download_url") {
+		t.Fatalf("queued download %s", jobRec.Body.String())
+	}
+
+	midKey := "results/" + job.JobID.String() + "/intermediate"
+	outKey := "results/" + job.JobID.String() + "/final"
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO workflow_step_results (
+			job_id, step_id, attempt_id, object_key, format, size_bytes, content_type, sha256
+		) VALUES ($1, $2, $3, $4, 'png', 4, 'image/png', $5)`,
+		job.JobID, stepID, uuid.New(), midKey, strings.Repeat("cd", 32)); err != nil {
+		t.Fatalf("insert result: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, 0, $2, 'out.jpg', 'jpg', 4, 'image/jpeg', 'primary')`, job.JobID, outKey); err != nil {
+		t.Fatalf("insert output: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE jobs SET status = 'done', progress_pct = 100 WHERE id = $1`, job.JobID); err != nil {
+		t.Fatalf("finish job: %v", err)
+	}
+	store.presignByKey = map[string]string{outKey: "https://files.test/final"}
+	doneRec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(doneRec, authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+job.JobID.String(), nil)))
+	if doneRec.Code != http.StatusOK {
+		t.Fatalf("done status %d body %s", doneRec.Code, doneRec.Body.String())
+	}
+	var doneBody map[string]json.RawMessage
+	if err := json.Unmarshal(doneRec.Body.Bytes(), &doneBody); err != nil {
+		t.Fatalf("decode done: %v", err)
+	}
+	if string(doneBody["download_url"]) != `"https://files.test/final"` || string(doneBody["progress_pct"]) != "100" {
+		t.Fatalf("done body %s", doneRec.Body.String())
+	}
+	if _, ok := doneBody["outputs"]; ok || strings.Contains(doneRec.Body.String(), midKey) {
+		t.Fatalf("done body exposed an intermediate: %s", doneRec.Body.String())
+	}
+	doneFlow := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(doneFlow, authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+job.JobID.String()+"/workflow", nil)))
+	if doneFlow.Code != http.StatusOK {
+		t.Fatalf("done workflow %d body %s", doneFlow.Code, doneFlow.Body.String())
+	}
+	var doneView map[string]json.RawMessage
+	if err := json.Unmarshal(doneFlow.Body.Bytes(), &doneView); err != nil {
+		t.Fatalf("decode done workflow: %v", err)
+	}
+	if len(doneView) != 3 || string(doneView["current_step"]) != "null" || string(doneView["status"]) != `"`+jobs.StatusDone+`"` {
+		t.Fatalf("done workflow %s", doneFlow.Body.String())
+	}
+	var doneSteps []map[string]json.RawMessage
+	if err := json.Unmarshal(doneView["steps"], &doneSteps); err != nil {
+		t.Fatalf("decode done steps: %v", err)
+	}
+	if len(doneSteps) != 2 {
+		t.Fatalf("done steps %d", len(doneSteps))
+	}
+	for _, step := range doneSteps {
+		if string(step["progress_pct"]) != "null" {
+			t.Fatalf("done step %s", doneFlow.Body.String())
+		}
+	}
+	if q.enqueueCalls != 0 || store.uploadCalls != 1 {
+		t.Fatalf("upload %d enqueue %d", store.uploadCalls, q.enqueueCalls)
 	}
 
 	plain := insertPlainAPIJob(t, pool, clientID)

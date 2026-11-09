@@ -574,7 +574,9 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return err
 		}
 		var status, target string
-		if err := tx.QueryRow(ctx, `SELECT status, target_format FROM jobs WHERE id = $1`, jobID).Scan(&status, &target); err != nil {
+		var snapshotID *uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			SELECT status, target_format, workflow_snapshot_id FROM jobs WHERE id = $1`, jobID).Scan(&status, &target, &snapshotID); err != nil {
 			return fmt.Errorf("read job: %w", err)
 		}
 		var stepID uuid.UUID
@@ -598,7 +600,21 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err := reportingAttemptLive(ctx, tx, attemptID, sess.ID); err != nil {
 			return err
 		}
-		if !listed || art.Format != target || art.ContentType != convert.MIMEType(art.Format) {
+		wantFormat := target
+		var snap workflowSnapDoc
+		stepIndex := -1
+		if snapshotID != nil {
+			var err error
+			snap, stepIndex, err = workflowStepIndex(ctx, tx, jobID, &stepID)
+			if err != nil {
+				return err
+			}
+			if stepIndex < 0 {
+				return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+			}
+			wantFormat = snap.Steps[stepIndex].TargetFormat
+		}
+		if !listed || art.Format != wantFormat || art.ContentType != convert.MIMEType(art.Format) {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
 		size, kind := integerToken(art.ByteSize)
@@ -639,7 +655,11 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dst); err != nil {
 			return err
 		}
-		if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
+		if snapshotID != nil && stepIndex+1 < len(snap.Steps) {
+			if err := recordContinuation(ctx, tx, jobID, stepID, attemptID, dst, art, gotSize, snap.Steps[stepIndex+1]); err != nil {
+				return err
+			}
+		} else if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
 			Ordinal:     0,
 			ObjectKey:   dst,
 			Format:      art.Format,
@@ -1014,7 +1034,8 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 			if _, err := tx.Exec(ctx, `
 				UPDATE jobs
 				SET progress_pct = NULL, progress_updated_at = now()
-				WHERE id = $1 AND status = 'active'`, jobID); err != nil {
+				WHERE id = $1 AND status = 'active'
+				  AND workflow_snapshot_id IS NULL`, jobID); err != nil {
 				return fmt.Errorf("store job progress: %w", err)
 			}
 		} else if advanced {
@@ -1022,6 +1043,7 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 				UPDATE jobs
 				SET progress_pct = $2, progress_updated_at = now()
 				WHERE id = $1 AND status = 'active'
+				  AND workflow_snapshot_id IS NULL
 				  AND (progress_pct IS NULL OR progress_pct <= $2)`, jobID, parsed.percent); err != nil {
 				return fmt.Errorf("store job progress: %w", err)
 			}
@@ -1556,10 +1578,11 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	var storedStep *uuid.UUID
 	var clientID *uuid.UUID
 	var targetFormat *string
+	var snapshotID *uuid.UUID
 	var attemptDeadline, leaseExpires, linkExpires time.Time
 	var leaseOK, linkOK bool
 	err = tx.QueryRow(ctx, `
-		SELECT id, step_id, client_id, target_format,
+		SELECT id, step_id, client_id, target_format, workflow_snapshot_id,
 		       LEAST(protocol_deadline, now() + make_interval(secs => $3)),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3))),
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => $3)))
@@ -1577,7 +1600,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		FROM jobs
 		WHERE dispatch_owner = 'protocol'
 		  AND status = 'queued'
-		  AND workflow_snapshot_id IS NULL
+		  AND (workflow_snapshot_id IS NULL OR step_id IS NOT NULL)
 		  AND capability_id = $1
 		  AND capability_version = $2
 		  AND (not_before IS NULL OR not_before <= now())
@@ -1608,7 +1631,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		ORDER BY created_at, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`, capabilityID, capabilityVersion, budgetSeconds, skipped, filterCap, engine).Scan(
-		&jobID, &storedStep, &clientID, &targetFormat, &attemptDeadline, &leaseExpires, &leaseOK, &linkExpires, &linkOK)
+		&jobID, &storedStep, &clientID, &targetFormat, &snapshotID, &attemptDeadline, &leaseExpires, &leaseOK, &linkExpires, &linkOK)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!leaseOK || !linkOK)) {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
@@ -1624,15 +1647,56 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			return claimDecision{skipID: jobID}, nil
 		}
 	}
-	if targetFormat == nil || *targetFormat == "" {
-		return claimDecision{skipID: jobID}, nil
+	outputFormat := ""
+	if targetFormat != nil {
+		outputFormat = *targetFormat
 	}
-	inputKey, inputFormat, inputOK, err := oneJobInput(ctx, tx, jobID)
-	if err != nil {
-		return claimDecision{}, err
-	}
-	if !inputOK {
-		return claimDecision{skipID: jobID}, nil
+	var inputKey, inputFormat string
+	var inputOK bool
+	if snapshotID != nil {
+		doc, index, err := workflowStepIndex(ctx, tx, jobID, storedStep)
+		if err != nil {
+			return claimDecision{}, err
+		}
+		matched := index >= 0
+		var step workflowSnapStep
+		if matched {
+			step = doc.Steps[index]
+			matched = step.CapabilityID == capabilityID && step.CapabilityVersion == capabilityVersion && step.TargetFormat != ""
+		}
+		if !matched {
+			if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "workflow input missing"); err != nil {
+				return claimDecision{}, err
+			}
+			return claimDecision{skipID: jobID}, nil
+		}
+		outputFormat = step.TargetFormat
+		if index == 0 {
+			inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
+		} else {
+			inputKey, inputFormat, inputOK, err = workflowResultInput(ctx, tx, jobID, doc.Steps[index-1].StepID)
+		}
+		if err != nil {
+			return claimDecision{}, err
+		}
+		if !inputOK {
+			if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "workflow input missing"); err != nil {
+				return claimDecision{}, err
+			}
+			return claimDecision{skipID: jobID}, nil
+		}
+	} else {
+		if outputFormat == "" {
+			return claimDecision{skipID: jobID}, nil
+		}
+		var err error
+		inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
+		if err != nil {
+			return claimDecision{}, err
+		}
+		if !inputOK {
+			return claimDecision{skipID: jobID}, nil
+		}
 	}
 	if _, ok := linkSignTTL(linkExpires); !ok {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
@@ -1724,7 +1788,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 					Role: "source", Ordinal: 0, Format: inputFormat, Href: getURL, ExpiresAt: expiresAt,
 				}},
 				Outputs: []fileLinkWire{{
-					Role: "primary", Ordinal: 0, Format: *targetFormat, Href: putURL, ExpiresAt: expiresAt,
+					Role: "primary", Ordinal: 0, Format: outputFormat, Href: putURL, ExpiresAt: expiresAt,
 				}},
 			}},
 			Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
@@ -1742,6 +1806,100 @@ func linkSignTTL(deadline time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	return ttl, true
+}
+
+type workflowSnapStep struct {
+	StepID            uuid.UUID `json:"step_id"`
+	CapabilityID      string    `json:"capability_id"`
+	CapabilityVersion int       `json:"capability_version"`
+	SourceFormat      string    `json:"source_format"`
+	TargetFormat      string    `json:"target_format"`
+	LegacyEngine      string    `json:"legacy_engine"`
+}
+
+type workflowSnapDoc struct {
+	Steps []workflowSnapStep `json:"steps"`
+}
+
+func workflowStepIndex(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, stepID *uuid.UUID) (workflowSnapDoc, int, error) {
+	var raw []byte
+	err := tx.QueryRow(ctx, `SELECT document FROM workflow_snapshots WHERE job_id = $1`, jobID).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return workflowSnapDoc{}, -1, nil
+	}
+	if err != nil {
+		return workflowSnapDoc{}, -1, fmt.Errorf("read workflow snapshot: %w", err)
+	}
+	var doc workflowSnapDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return workflowSnapDoc{}, -1, fmt.Errorf("decode workflow snapshot: %w", err)
+	}
+	if stepID == nil {
+		return doc, -1, nil
+	}
+	for i, step := range doc.Steps {
+		if step.StepID == *stepID {
+			return doc, i, nil
+		}
+	}
+	return doc, -1, nil
+}
+
+func workflowResultInput(ctx context.Context, tx pgx.Tx, jobID, stepID uuid.UUID) (string, string, bool, error) {
+	var n int
+	var key, format string
+	err := tx.QueryRow(ctx, `
+		SELECT count(*)::int, COALESCE(min(object_key), ''), COALESCE(min(format), '')
+		FROM workflow_step_results
+		WHERE job_id = $1 AND step_id = $2 AND object_key <> '' AND format <> ''`, jobID, stepID).Scan(&n, &key, &format)
+	if err != nil {
+		return "", "", false, fmt.Errorf("read workflow result: %w", err)
+	}
+	if n != 1 {
+		return "", "", false, nil
+	}
+	return key, format, true, nil
+}
+
+func recordContinuation(ctx context.Context, tx pgx.Tx, jobID, stepID, attemptID uuid.UUID, objectKey string, art completeArtifact, size int64, next workflowSnapStep) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO workflow_step_results (
+			job_id, step_id, attempt_id, object_key, format, size_bytes, content_type, sha256
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		jobID, stepID, attemptID, objectKey, art.Format, size, art.ContentType, art.SHA256); err != nil {
+		return fmt.Errorf("insert workflow result: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued',
+		    step_id = $2,
+		    capability_id = $3,
+		    capability_version = $4,
+		    engine = $5,
+		    not_before = NULL,
+		    progress_pct = NULL,
+		    eta_seconds = NULL
+		WHERE id = $1`,
+		jobID, next.StepID, next.CapabilityID, next.CapabilityVersion, next.LegacyEngine); err != nil {
+		return fmt.Errorf("continue workflow: %w", err)
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET released_at = now()
+		WHERE id = $1 AND job_id = $2 AND state = 'active' AND released_at IS NULL`,
+		attemptID, jobID)
+	if err != nil {
+		return fmt.Errorf("release hold: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("release attempt %s: no active hold", attemptID)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, jobID, jobs.StatusActive, jobs.StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
 }
 
 func oneJobInput(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) (string, string, bool, error) {
@@ -1919,7 +2077,19 @@ FROM jobs
 WHERE dispatch_owner = 'protocol'
   AND engine = 'image'
   AND capability_id IS DISTINCT FROM 'octoconv.convert.imagepdf'
-  AND workflow_snapshot_id IS NULL
+  AND (
+      workflow_snapshot_id IS NULL
+      OR (
+          step_id IS NOT NULL
+          AND (
+              SELECT count(*) FROM job_inputs i
+              WHERE i.job_id = jobs.id
+                AND i.ordinal = 0
+                AND object_key <> ''
+                AND format <> ''
+          ) = 1
+      )
+  )
   AND ($1::uuid IS NULL OR id = $1)`
 
 // ImageBacklog counts protocol image jobs that are still eligible to run.

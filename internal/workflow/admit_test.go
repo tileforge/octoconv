@@ -284,15 +284,95 @@ func TestAdmitStoresOneJob(t *testing.T) {
 	if holds != 0 || creds != 0 {
 		t.Fatalf("holds %d credentials %d", holds, creds)
 	}
+	var stepID *uuid.UUID
+	var inputs int
+	if err := pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
+		t.Fatalf("read step: %v", err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM job_inputs WHERE job_id = $1`, jobID).Scan(&inputs); err != nil {
+		t.Fatalf("count inputs: %v", err)
+	}
+	if stepID != nil || inputs != 0 {
+		t.Fatalf("step %v inputs %d", stepID, inputs)
+	}
 	view, err := store.Status(context.Background(), clientID, jobID)
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if view.Status != "queued" || len(view.Steps) != 2 {
+	if view.Status != "queued" || len(view.Steps) != 2 || view.CurrentStep != uuid.Nil {
 		t.Fatalf("view %+v", view)
 	}
 	if _, err := uuid.Parse(view.Steps[0].StepID.String()); err != nil || view.Steps[0].StepID == uuid.Nil {
 		t.Fatal("missing step id")
+	}
+}
+
+func TestAdmitStoresUploadAndStep(t *testing.T) {
+	pool := testPool(t)
+	store := NewStore(pool)
+	cap := insertCapability(t, pool, capabilitySpec{})
+	clientID := insertClient(t, pool)
+	name := uniqueName()
+	if _, err := store.Publish(context.Background(), PublishInput{
+		Name: name, Version: 1, ClientIDs: []uuid.UUID{clientID}, Steps: twoSteps(cap.id), Budgets: imageBudget(),
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	jobID := uuid.New()
+	const size int64 = 4
+	rejected, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(), InputBytes: size,
+		File: &AdmitFile{ObjectKey: "uploads/x", Filename: "photo.jpeg", Format: "jpg", SizeBytes: size + 1, ContentType: "image/jpeg"},
+	})
+	if !errors.Is(err, ErrRejected) || rejected != uuid.Nil {
+		t.Fatalf("mismatch err %v id %s", err, rejected)
+	}
+	var owned int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&owned); err != nil {
+		t.Fatal(err)
+	}
+	if owned != 0 {
+		t.Fatalf("jobs %d", owned)
+	}
+	got, err := store.Admit(context.Background(), AdmitInput{
+		ClientID: clientID, Name: name, Version: 1, SourceFormat: "jpeg",
+		Deadline: time.Now().Add(10 * time.Minute), Budgets: imageBudget(), InputBytes: size, JobID: jobID,
+		File: &AdmitFile{ObjectKey: "uploads/" + jobID.String() + "/0-photo.jpeg", Filename: "photo.jpeg", Format: "jpeg", SizeBytes: size, ContentType: "image/jpeg"},
+	})
+	if err != nil || got != jobID {
+		t.Fatalf("admit %s err %v", got, err)
+	}
+	var stepID uuid.UUID
+	var ordinal int
+	var key, filename, format, contentType string
+	var storedSize int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT j.step_id, i.ordinal, i.object_key, i.filename, i.format, i.size_bytes, i.content_type
+		FROM jobs j
+		JOIN job_inputs i ON i.job_id = j.id
+		WHERE j.id = $1`, jobID).Scan(&stepID, &ordinal, &key, &filename, &format, &storedSize, &contentType); err != nil {
+		t.Fatalf("read input: %v", err)
+	}
+	view, err := store.Status(context.Background(), clientID, jobID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if ordinal != 0 || key != "uploads/"+jobID.String()+"/0-photo.jpeg" || filename != "photo.jpeg" || format != "jpg" || storedSize != size || contentType != "image/jpeg" {
+		t.Fatalf("input ordinal=%d key=%s filename=%s format=%s size=%d type=%s", ordinal, key, filename, format, storedSize, contentType)
+	}
+	if stepID != view.Steps[0].StepID || view.CurrentStep != stepID || view.Status != "queued" {
+		t.Fatalf("step %s current %s status %s", stepID, view.CurrentStep, view.Status)
+	}
+	var attempts, holds int
+	if err := pool.QueryRow(context.Background(), `SELECT attempts FROM jobs WHERE id = $1`, jobID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM worker_slot_holds WHERE job_id = $1`, jobID).Scan(&holds); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 || holds != 0 {
+		t.Fatalf("attempts %d holds %d", attempts, holds)
 	}
 }
 
