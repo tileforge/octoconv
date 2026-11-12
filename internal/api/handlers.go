@@ -138,6 +138,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleCreateJob accepts a multipart upload (fields: file, target), validates
 // the conversion pair before touching storage, uploads the input to S3, records
 // the job in Postgres (queued) and enqueues the conversion task.
+func cadProtocolJob(engine, operation string, opts map[string]any) bool {
+	return engine == convert.EngineCAD && operation == convert.OperationConvert && len(opts) == 0
+}
+
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rc, start := s.armIntakeDeadline(w)
@@ -1162,7 +1166,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// the one already embedded in the storage key above so they stay aligned.
 	dispatchOwner := ""
 	var attemptBudget time.Duration
-	if legacyMatch && pinID != "" && (engine == convert.EngineImage || engine == convert.EngineCAD) {
+	if legacyMatch && pinID != "" && (engine == convert.EngineImage || cadProtocolJob(engine, operation, normalizedOpts)) {
 		dispatchOwner = "protocol"
 		attemptBudget = s.engineTimeouts[engine]
 		if attemptBudget <= 0 {
@@ -1171,6 +1175,9 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				attemptBudget = convert.CADDefaultEngineTimeout
 			}
 		}
+	} else if engine == convert.EngineCAD {
+		pinID = ""
+		pinVersion = 0
 	}
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
 		CorrelationID:         correlationID,

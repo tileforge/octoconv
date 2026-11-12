@@ -247,7 +247,7 @@ func TestApprovedCADUsesConfiguredBudget(t *testing.T) {
 	}
 }
 
-func TestApprovedCADRenderSkipsEnqueue(t *testing.T) {
+func TestApprovedCADRenderStaysOnAsynq(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -265,14 +265,37 @@ func TestApprovedCADRenderSkipsEnqueue(t *testing.T) {
 	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationRender {
 		t.Fatalf("create params = %+v, want engine cad operation render", repo.created)
 	}
-	if repo.created.CapabilityID != "octoconv.render.cad" || repo.created.DispatchOwner != "protocol" {
-		t.Fatalf("pin = %s dispatch = %q", repo.created.CapabilityID, repo.created.DispatchOwner)
+	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
 	}
-	if repo.created.ProtocolAttemptBudget != convert.CADDefaultEngineTimeout {
-		t.Fatalf("budget = %s, want %s", repo.created.ProtocolAttemptBudget, convert.CADDefaultEngineTimeout)
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
 	}
-	if q.enqueueCalls != 0 || q.enqueuedCAD != uuid.Nil {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s, want no enqueue", q.enqueueCalls, q.enqueuedCAD)
+}
+
+func TestApprovedCADOptionsStayOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
+	data := readCADFixture(t, "synthetic/units_inch.step")
+	body, ct := multipartBodyWithOpts(t, "part.step", "stl", data, `{"quality":"fine"}`)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || len(repo.created.Opts) == 0 {
+		t.Fatalf("create params = %+v, want cad opts", repo.created)
+	}
+	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
 	}
 }
 
