@@ -144,6 +144,27 @@ func TestProtocolAttemptResetClearsStage(t *testing.T) {
 	}
 }
 
+func TestActivateProtocolCountsTheAttempt(t *testing.T) {
+	body, err := os.ReadFile("../jobs/repo.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	start := strings.Index(text, "func (r *Repo) ActivateProtocol")
+	if start < 0 {
+		t.Fatal("ActivateProtocol missing")
+	}
+	fn := text[start:]
+	if end := strings.Index(fn, "\nfunc "); end > 0 {
+		fn = fn[:end]
+	}
+	inc := strings.Index(fn, "attempts = attempts + 1")
+	eta := strings.Index(fn, "eta_seconds = NULL")
+	if inc < 0 || eta < 0 || inc > eta {
+		t.Fatal("ActivateProtocol does not increment jobs.attempts before clearing eta")
+	}
+}
+
 func TestFileLinkMaxTTLCoversDefaultCADBudget(t *testing.T) {
 	want := int(convert.CADDefaultEngineTimeout / time.Second)
 	if FileLinkMaxTTLSeconds != want {

@@ -728,7 +728,7 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read claimed job: %v", err)
 	}
-	if jobStatus != "active" || attempts != 0 || progress != nil || storedStep != stepID || owner != "protocol" {
+	if jobStatus != "active" || attempts != 1 || progress != nil || storedStep != stepID || owner != "protocol" {
 		t.Fatalf("job status=%s attempts=%d progress=%v step=%s owner=%s", jobStatus, attempts, progress, storedStep, owner)
 	}
 	leaseAt, err := jsonTime(assignment["lease_expires_at"])

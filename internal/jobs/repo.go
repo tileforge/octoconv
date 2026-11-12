@@ -316,6 +316,7 @@ func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.
 		UPDATE jobs
 		SET status = 'active',
 		    started_at = COALESCE(started_at, now()),
+		    attempts = attempts + 1,
 		    progress_pct = NULL,
 		    eta_seconds = NULL,
 		    stage = NULL,
