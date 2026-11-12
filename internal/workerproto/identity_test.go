@@ -171,7 +171,7 @@ func TestApprovedImageHelloAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(respBody, &hello); err != nil {
 		t.Fatalf("decode HELLO: %v", err)
 	}
-	if hello.ProtocolVersion != 1 || hello.PullWaitSeconds != 20 || hello.HeartbeatIntervalSeconds != 10 || hello.LeaseSeconds != 30 || hello.SessionMaxLifetimeSeconds != 86400 || hello.MaxMessageBytes != 262144 || hello.FileLinkMaxTTLSeconds != 300 || hello.ClockSkewMarginSeconds != 5 || hello.PullRatePerSecond != 2 || hello.ProgressRatePerSecond != 4 || hello.FileAccess != "direct" {
+	if hello.ProtocolVersion != 1 || hello.PullWaitSeconds != 20 || hello.HeartbeatIntervalSeconds != 10 || hello.LeaseSeconds != 30 || hello.SessionMaxLifetimeSeconds != 86400 || hello.MaxMessageBytes != 262144 || hello.FileLinkMaxTTLSeconds != FileLinkMaxTTLSeconds || hello.ClockSkewMarginSeconds != 5 || hello.PullRatePerSecond != 2 || hello.ProgressRatePerSecond != 4 || hello.FileAccess != "direct" {
 		t.Fatal("HELLO advertisement does not match the published starting numbers")
 	}
 	assertEmptyCancelList(t, hello.Control)

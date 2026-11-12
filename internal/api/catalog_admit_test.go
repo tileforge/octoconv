@@ -247,6 +247,67 @@ func TestApprovedCADUsesConfiguredBudget(t *testing.T) {
 	}
 }
 
+func TestApprovedCADOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	over := time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.engineTimeouts = map[string]time.Duration{convert.EngineCAD: over}
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
+
+	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationConvert {
+		t.Fatalf("create params = %+v, want engine cad operation convert", repo.created)
+	}
+	if repo.created.CapabilityID != "" || repo.created.CapabilityVersion != 0 || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("pin = %q v%d dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.CapabilityVersion, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+	}
+}
+
+func TestApprovedImageOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	over := time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.engineTimeouts = map[string]time.Duration{convert.EngineImage: over}
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		found: true,
+		match: workerproto.Match{
+			CapabilityID:      "octoconv.convert.image",
+			CapabilityVersion: 1,
+			ClientOperation:   convert.OperationConvert,
+			LegacyOperation:   convert.OperationConvert,
+			LegacyEngine:      convert.EngineImage,
+			ParameterSchema:   []byte(`{}`),
+		},
+	})
+
+	rec := postCreate(t, srv, "in.png", "webp")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineImage {
+		t.Fatalf("engine = %+v, want image", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d, want the image pin kept", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("dispatch = %q budget = %s, want asynq", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedImage != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedImage = %s created = %s", q.enqueueCalls, q.enqueuedImage, repo.createdID)
+	}
+}
+
 func TestApprovedCADRenderStaysOnAsynq(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}

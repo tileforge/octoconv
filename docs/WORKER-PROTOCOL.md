@@ -93,7 +93,7 @@ HELLO success fields are `session_id`, `session_token`, `protocol_version`, `con
 | `lease_seconds` | 30 |
 | `session_max_lifetime_seconds` | 86400 |
 | `max_message_bytes` | 262144 |
-| `file_link_max_ttl_seconds` | 300 |
+| `file_link_max_ttl_seconds` | 886 |
 | `clock_skew_margin_seconds` | 5 |
 | `pull_rate_per_second` | 2 |
 | `progress_rate_per_second` | 4 |
@@ -198,7 +198,7 @@ The first capability is `octoconv.convert.image`, version `1`. `legacy` is opera
 
 The second capability is `octoconv.convert.imagepdf`, version `1`. The client operation is `convert`. It has no `legacy` object, one pair `png` to `pdf`, one `source`, one `primary`, and `parameter_schema` `{}`. The fixture is [worker-protocol/examples/positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json).
 
-Cad uses two capabilities because a manifest holds one capability and cad has two client operations. `octoconv.convert.cad`, version `1`, has legacy operation `convert` and engine `cad`. Its pairs are step to stl, iges to stl, dxf to svg, and dxf to pdf. `octoconv.render.cad`, version `1`, has legacy operation `render` and engine `cad`. Its pairs are step to png, iges to png, stl to png, and dxf to png. The render capability also declares output role `measurements` with min 0 and max 1. Both use `parameter_schema` `{}`. The fixtures are [worker-protocol/examples/positive/manifest-cad-convert.json](worker-protocol/examples/positive/manifest-cad-convert.json) and [worker-protocol/examples/positive/manifest-cad-render.json](worker-protocol/examples/positive/manifest-cad-render.json). Approving the convert manifest moves a new cad convert job that has no options to the external worker. A cad render, a cad job that sets options, or a cad job with no approved manifest still goes to asynq. The assignment `limits.max_output_bytes` for that convert job is the output ceiling of the target: SVG allows `CADMaxDXFSVGBytes`, STL allows `CADMaxSTLBytes`, and PDF stays at 100 MiB. Image assignments stay at 100 MiB. Completion accepts a primary artifact only up to the ceiling advertised for that job.
+Cad uses two capabilities because a manifest holds one capability and cad has two client operations. `octoconv.convert.cad`, version `1`, has legacy operation `convert` and engine `cad`. Its pairs are step to stl, iges to stl, dxf to svg, and dxf to pdf. `octoconv.render.cad`, version `1`, has legacy operation `render` and engine `cad`. Its pairs are step to png, iges to png, stl to png, and dxf to png. The render capability also declares output role `measurements` with min 0 and max 1. Both use `parameter_schema` `{}`. The fixtures are [worker-protocol/examples/positive/manifest-cad-convert.json](worker-protocol/examples/positive/manifest-cad-convert.json) and [worker-protocol/examples/positive/manifest-cad-render.json](worker-protocol/examples/positive/manifest-cad-render.json). Approving the convert manifest moves a new cad convert job that has no options to the external worker when its attempt budget is at most `file_link_max_ttl`. A cad render, a cad job that sets options, a cad job whose engine timeout is longer than that cap, or a cad job with no approved manifest still goes to asynq. The assignment `limits.max_output_bytes` for that convert job is the output ceiling of the target: SVG allows `CADMaxDXFSVGBytes`, STL allows `CADMaxSTLBytes`, and PDF stays at 100 MiB. Image assignments stay at 100 MiB. Completion accepts a primary artifact only up to the ceiling advertised for that job.
 
 Wire output roles that later engines may use are `primary`, `report`, `preview`, `thumbnail`, and `measurements`. The image and imagepdf manifests declare only `primary`. Input role `source` is a protocol field. The current `job_inputs` table has no role column. This phase does not add one.
 
@@ -222,7 +222,7 @@ The URL is a bearer and can be reused until `expires_at`. A download that starte
 
 Object immutability is a core copy onto a key the PUT URL cannot write. The core checks size and SHA-256 on that copy, and only then opens the acceptance transaction. A later PUT to the staging key does not change the copy. Checking the staging object and then copying it is not sufficient. Bucket versioning and Object Lock are not the mechanism.
 
-`file_link_max_ttl` starting policy is 5 minutes, advertised as `file_link_max_ttl_seconds` 300. It MUST be finite, at least 1 second, and at most 604800 seconds. Do not use 15 minutes. The client download default of 15 minutes is a different clock and is not `file_link_max_ttl`.
+`file_link_max_ttl` is the default CAD attempt budget, advertised as `file_link_max_ttl_seconds` 886. It MUST be finite, at least 1 second, and at most 604800 seconds. Do not use 15 minutes. The client download default of 15 minutes is a different clock and is not `file_link_max_ttl`. A job whose attempt budget is longer than this cap stays on asynq, so a signed link covers the whole attempt.
 
 ### gateway
 
@@ -255,7 +255,7 @@ The published inequality is `lease_expires_at` less than or equal to `attempt_de
 | Control message | 256 KiB (262144 bytes), else `message_too_large` | File bytes never count. Phase 86 checks the committed fixtures fit, expecting well under 64 KiB. |
 | Progress messages | 4 per second per attempt | Excess is `rate_limited` and the attempt stays. |
 | `clock_skew_margin` | 5 seconds, advertised as `clock_skew_margin_seconds` | Policy. The core will not issue a link or a lease that would expire inside that margin. |
-| `file_link_max_ttl` | 5 minutes, advertised as `file_link_max_ttl_seconds` | Finite, at least 1 second, and at most 604800 seconds. Not 15 minutes. Issued `expires_at` is the minimum of `issued_at` plus this cap, `attempt_deadline`, and `job_deadline`. The lease is not that cap. |
+| `file_link_max_ttl` | 886 seconds, advertised as `file_link_max_ttl_seconds` | Finite, at least 1 second, and at most 604800 seconds. Not 15 minutes. Issued `expires_at` is the minimum of `issued_at` plus this cap, `attempt_deadline`, and `job_deadline`. The lease is not that cap. |
 
 ## Progress
 

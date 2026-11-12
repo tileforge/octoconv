@@ -1167,15 +1167,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	dispatchOwner := ""
 	var attemptBudget time.Duration
 	if legacyMatch && pinID != "" && (engine == convert.EngineImage || cadProtocolJob(engine, operation, normalizedOpts)) {
-		dispatchOwner = "protocol"
-		attemptBudget = s.engineTimeouts[engine]
-		if attemptBudget <= 0 {
-			attemptBudget = 120 * time.Second
+		budget := s.engineTimeouts[engine]
+		if budget <= 0 {
+			budget = 120 * time.Second
 			if engine == convert.EngineCAD {
-				attemptBudget = convert.CADDefaultEngineTimeout
+				budget = convert.CADDefaultEngineTimeout
 			}
 		}
-	} else if engine == convert.EngineCAD {
+		linkCap := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
+		if budget <= linkCap {
+			dispatchOwner = "protocol"
+			attemptBudget = budget
+		}
+	}
+	if dispatchOwner == "" && engine == convert.EngineCAD {
 		pinID = ""
 		pinVersion = 0
 	}

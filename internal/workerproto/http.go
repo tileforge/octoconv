@@ -214,7 +214,7 @@ func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
 		LeaseSeconds:              30,
 		SessionMaxLifetimeSeconds: 86400,
 		MaxMessageBytes:           maxMessageBytes,
-		FileLinkMaxTTLSeconds:     300,
+		FileLinkMaxTTLSeconds:     FileLinkMaxTTLSeconds,
 		ClockSkewMarginSeconds:    5,
 		PullRatePerSecond:         2,
 		ProgressRatePerSecond:     4,

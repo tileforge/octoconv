@@ -2,9 +2,11 @@ package workerproto
 
 import (
 	"encoding/json"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tileforge/octoconv/internal/convert"
 )
@@ -74,5 +76,46 @@ func TestArtifactListedHonorsCADCeilings(t *testing.T) {
 				t.Fatalf("artifactListed = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFileLinkMaxTTLCoversDefaultCADBudget(t *testing.T) {
+	want := int(convert.CADDefaultEngineTimeout / time.Second)
+	if FileLinkMaxTTLSeconds != want {
+		t.Fatalf("FileLinkMaxTTLSeconds = %d, want %d", FileLinkMaxTTLSeconds, want)
+	}
+	if FileLinkMaxTTLSeconds >= 15*60 {
+		t.Fatalf("FileLinkMaxTTLSeconds = %d, must stay under 15 minutes", FileLinkMaxTTLSeconds)
+	}
+	if FileLinkMaxTTLSeconds <= int(convert.CADDefaultMeshTimeout/time.Second) {
+		t.Fatalf("FileLinkMaxTTLSeconds = %d does not cover mesh timeout %s", FileLinkMaxTTLSeconds, convert.CADDefaultMeshTimeout)
+	}
+	n := strconv.Itoa(FileLinkMaxTTLSeconds)
+	doc, err := os.ReadFile("../../docs/WORKER-PROTOCOL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(doc)
+	for _, needle := range []string{
+		"| `file_link_max_ttl_seconds` | " + n + " |",
+		"advertised as `file_link_max_ttl_seconds` " + n,
+		"| `file_link_max_ttl` | " + n + " seconds, advertised as `file_link_max_ttl_seconds` |",
+		"Do not use 15 minutes.",
+		"Issued `expires_at` is the minimum of `issued_at` plus this cap, `attempt_deadline`, and `job_deadline`.",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("WORKER-PROTOCOL.md missing %q", needle)
+		}
+	}
+	fixture, err := os.ReadFile("../../docs/worker-protocol/examples/positive/hello-response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(fixture), `"file_link_max_ttl_seconds": `+n) {
+		t.Fatalf("hello fixture does not advertise %s", n)
+	}
+	interval := fileLinkIntervalSQL()
+	if !strings.Contains(interval, n) || strings.Contains(interval, "300") {
+		t.Fatalf("link interval SQL = %q", interval)
 	}
 }

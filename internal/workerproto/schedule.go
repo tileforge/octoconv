@@ -1626,12 +1626,12 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		       LEAST(now() + interval '30 seconds', LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)))
 		           > now() + interval '5 seconds',
 		       LEAST(
-		           now() + interval '300 seconds',
+		           `+fileLinkIntervalSQL()+`,
 		           LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)),
 		           protocol_deadline
 		       ),
 		       LEAST(
-		           now() + interval '300 seconds',
+		           `+fileLinkIntervalSQL()+`,
 		           LEAST(protocol_deadline, now() + make_interval(secs => `+claimAttemptBudgetSQL+`)),
 		           protocol_deadline
 		       ) > now() + interval '5 seconds'
@@ -1899,7 +1899,14 @@ func workflowResultInput(ctx context.Context, tx pgx.Tx, jobID, stepID uuid.UUID
 	return key, format, true, nil
 }
 
-const claimAttemptBudgetSQL = `COALESCE((($3::jsonb) ->> jobs.engine)::bigint, $4::bigint)`
+const (
+	claimAttemptBudgetSQL = `COALESCE((($3::jsonb) ->> jobs.engine)::bigint, $4::bigint)`
+	FileLinkMaxTTLSeconds = int(convert.CADDefaultEngineTimeout / time.Second)
+)
+
+func fileLinkIntervalSQL() string {
+	return fmt.Sprintf("now() + make_interval(secs => %d)", FileLinkMaxTTLSeconds)
+}
 
 func (h *Handler) attemptBudgetArgs() (string, int64) {
 	fallback := int64(h.imageAttemptBudget / time.Second)
