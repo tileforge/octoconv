@@ -1982,7 +1982,10 @@ func recordContinuation(ctx context.Context, tx pgx.Tx, jobID, stepID, attemptID
 		    engine = $5,
 		    not_before = NULL,
 		    progress_pct = NULL,
-		    eta_seconds = NULL
+		    eta_seconds = NULL,
+		    stage = NULL,
+		    stage_index = NULL,
+		    stage_count = NULL
 		WHERE id = $1`,
 		jobID, next.StepID, next.CapabilityID, next.CapabilityVersion, next.LegacyEngine); err != nil {
 		return fmt.Errorf("continue workflow: %w", err)

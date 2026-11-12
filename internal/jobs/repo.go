@@ -318,6 +318,9 @@ func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.
 		    started_at = COALESCE(started_at, now()),
 		    progress_pct = NULL,
 		    eta_seconds = NULL,
+		    stage = NULL,
+		    stage_index = NULL,
+		    stage_count = NULL,
 		    step_id = $2
 		WHERE id = $1`, id, stepID); err != nil {
 		return fmt.Errorf("activate protocol job: %w", err)
@@ -449,13 +452,15 @@ func (r *Repo) RequeueProtocol(ctx context.Context, id uuid.UUID, notBefore time
 		if notBefore.IsZero() {
 			_, err := tx.Exec(ctx, `
 				UPDATE jobs
-				SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL
+				SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL,
+				    stage = NULL, stage_index = NULL, stage_count = NULL
 				WHERE id = $1`, id)
 			return err
 		}
 		_, err := tx.Exec(ctx, `
 			UPDATE jobs
-			SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL
+			SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL,
+			    stage = NULL, stage_index = NULL, stage_count = NULL
 			WHERE id = $1`, id, notBefore)
 		return err
 	})
@@ -507,13 +512,15 @@ func (r *Repo) RequeueProtocolIn(ctx context.Context, tx pgx.Tx, id uuid.UUID, n
 	if when.IsZero() {
 		if _, err := tx.Exec(ctx, `
 			UPDATE jobs
-			SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL
+			SET status = 'queued', not_before = now(), progress_pct = NULL, eta_seconds = NULL,
+			    stage = NULL, stage_index = NULL, stage_count = NULL
 			WHERE id = $1`, id); err != nil {
 			return err
 		}
 	} else if _, err := tx.Exec(ctx, `
 		UPDATE jobs
-		SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL
+		SET status = 'queued', not_before = $2, progress_pct = NULL, eta_seconds = NULL,
+		    stage = NULL, stage_index = NULL, stage_count = NULL
 		WHERE id = $1`, id, when); err != nil {
 		return err
 	}
@@ -548,7 +555,8 @@ func (r *Repo) QueueAfterStop(ctx context.Context, tx pgx.Tx, id uuid.UUID) erro
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE jobs
-		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL
+		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL,
+		    stage = NULL, stage_index = NULL, stage_count = NULL
 		WHERE id = $1`, id); err != nil {
 		return fmt.Errorf("requeue stopped job: %w", err)
 	}
@@ -744,7 +752,8 @@ func (r *Repo) ManualRetry(ctx context.Context, id uuid.UUID) error {
 		}
 		_, err := tx.Exec(ctx, `
 			UPDATE jobs
-			SET status = 'queued', progress_pct = NULL, eta_seconds = NULL, manual_retry_at = now()
+			SET status = 'queued', progress_pct = NULL, eta_seconds = NULL,
+			    stage = NULL, stage_index = NULL, stage_count = NULL, manual_retry_at = now()
 			WHERE id = $1`, id)
 		return err
 	})

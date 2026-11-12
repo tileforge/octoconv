@@ -114,6 +114,36 @@ func TestCADJobStagePublishesOnlyPublicWords(t *testing.T) {
 	}
 }
 
+func TestProtocolAttemptResetClearsStage(t *testing.T) {
+	paths := []string{"../jobs/repo.go", "reconcile.go", "session.go", "schedule.go"}
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		from := 0
+		for {
+			at := strings.Index(text[from:], "eta_seconds = NULL")
+			if at < 0 {
+				break
+			}
+			at += from
+			end := at + len("eta_seconds = NULL") + 160
+			if end > len(text) {
+				end = len(text)
+			}
+			window := text[at:end]
+			for _, part := range []string{"stage = NULL", "stage_index = NULL", "stage_count = NULL"} {
+				if !strings.Contains(window, part) {
+					t.Fatalf("%s near %d clears eta without %s", path, at, part)
+				}
+			}
+			from = at + len("eta_seconds = NULL")
+		}
+	}
+}
+
 func TestFileLinkMaxTTLCoversDefaultCADBudget(t *testing.T) {
 	want := int(convert.CADDefaultEngineTimeout / time.Second)
 	if FileLinkMaxTTLSeconds != want {
