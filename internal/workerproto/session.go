@@ -273,7 +273,8 @@ func (r *Repo) requeueRevokedJob(ctx context.Context, tx pgx.Tx, jobID uuid.UUID
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE jobs
-		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL
+		SET status = 'queued', progress_pct = NULL, eta_seconds = NULL,
+		    stage = NULL, stage_index = NULL, stage_count = NULL
 		WHERE id = $1`, jobID); err != nil {
 		return fmt.Errorf("requeue revoked job: %w", err)
 	}

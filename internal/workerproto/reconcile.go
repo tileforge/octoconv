@@ -358,7 +358,10 @@ func queueOrExhaust(ctx context.Context, tx pgx.Tx, jobsRepo *jobs.Repo, jobID u
 		SET status = 'queued',
 		    not_before = now() + make_interval(secs => $2),
 		    progress_pct = NULL,
-		    eta_seconds = NULL
+		    eta_seconds = NULL,
+		    stage = NULL,
+		    stage_index = NULL,
+		    stage_count = NULL
 		WHERE id = $1`, jobID, delay); err != nil {
 		return fmt.Errorf("requeue protocol job: %w", err)
 	}
