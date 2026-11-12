@@ -177,6 +177,127 @@ func TestCatalogPinOnImageCreate(t *testing.T) {
 	}
 }
 
+func postCAD(t *testing.T, srv *Server, filename, target, operation string, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	body, ct := multipartBodyWithOperation(t, filename, target, operation, data)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func cadMatch(id, operation string) workerproto.Match {
+	return workerproto.Match{
+		CapabilityID:      id,
+		CapabilityVersion: 1,
+		ClientOperation:   operation,
+		LegacyOperation:   operation,
+		LegacyEngine:      convert.EngineCAD,
+		ParameterSchema:   []byte(`{}`),
+	}
+}
+
+func TestApprovedCADConvertSkipsEnqueue(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	catalog := &fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)}
+	srv.SetCapabilityCatalog(catalog)
+
+	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if catalog.operation != convert.OperationConvert || catalog.source != "step" || catalog.target != "stl" {
+		t.Fatalf("lookup op=%s source=%s target=%s", catalog.operation, catalog.source, catalog.target)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationConvert {
+		t.Fatalf("create params = %+v, want engine cad operation convert", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.cad" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != convert.CADDefaultEngineTimeout {
+		t.Fatalf("dispatch = %q budget = %s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedCAD != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s, want no enqueue", q.enqueueCalls, q.enqueuedCAD)
+	}
+}
+
+func TestApprovedCADUsesConfiguredBudget(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts = map[string]time.Duration{convert.EngineCAD: 5 * time.Minute}
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
+
+	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.ProtocolAttemptBudget != 5*time.Minute {
+		t.Fatalf("budget = %s, want 5m", repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 0 {
+		t.Fatalf("enqueueCalls = %d, want 0", q.enqueueCalls)
+	}
+}
+
+func TestApprovedCADRenderSkipsEnqueue(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	catalog := &fakeCatalog{found: true, match: cadMatch("octoconv.render.cad", convert.OperationRender)}
+	srv.SetCapabilityCatalog(catalog)
+
+	rec := postCAD(t, srv, "part.step", "png", convert.OperationRender, readCADFixture(t, "synthetic/units_inch.step"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if catalog.operation != convert.OperationRender || catalog.source != "step" || catalog.target != "png" {
+		t.Fatalf("lookup op=%s source=%s target=%s", catalog.operation, catalog.source, catalog.target)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationRender {
+		t.Fatalf("create params = %+v, want engine cad operation render", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.render.cad" || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("pin = %s dispatch = %q", repo.created.CapabilityID, repo.created.DispatchOwner)
+	}
+	if repo.created.ProtocolAttemptBudget != convert.CADDefaultEngineTimeout {
+		t.Fatalf("budget = %s, want %s", repo.created.ProtocolAttemptBudget, convert.CADDefaultEngineTimeout)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedCAD != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s, want no enqueue", q.enqueueCalls, q.enqueuedCAD)
+	}
+}
+
+func TestCatalogMissEnqueuesCAD(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: false})
+
+	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.CapabilityID != "" {
+		t.Fatalf("create params = %+v, want engine cad and empty pin", repo.created)
+	}
+	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("dispatch = %q budget = %s, want asynq", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+	}
+}
+
 func TestImagepdfCatalogDoesNotCreateJob(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}

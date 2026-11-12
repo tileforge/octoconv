@@ -1162,11 +1162,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// the one already embedded in the storage key above so they stay aligned.
 	dispatchOwner := ""
 	var attemptBudget time.Duration
-	if legacyMatch && engine == convert.EngineImage && pinID != "" {
+	if legacyMatch && pinID != "" && (engine == convert.EngineImage || engine == convert.EngineCAD) {
 		dispatchOwner = "protocol"
-		attemptBudget = s.engineTimeouts[convert.EngineImage]
+		attemptBudget = s.engineTimeouts[engine]
 		if attemptBudget <= 0 {
 			attemptBudget = 120 * time.Second
+			if engine == convert.EngineCAD {
+				attemptBudget = convert.CADDefaultEngineTimeout
+			}
 		}
 	}
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
