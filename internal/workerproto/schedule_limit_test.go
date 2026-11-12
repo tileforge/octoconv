@@ -79,6 +79,41 @@ func TestArtifactListedHonorsCADCeilings(t *testing.T) {
 	}
 }
 
+func TestCADJobStagePublishesOnlyPublicWords(t *testing.T) {
+	guard, mesh := "guard", "mesh"
+	one, two, three := 1, 2, 3
+	zero := 0
+	other := "preprocess"
+	cases := []struct {
+		name  string
+		stage *string
+		index *int
+		count *int
+		ok    bool
+	}{
+		{name: "guard", stage: &guard, index: &one, count: &three, ok: true},
+		{name: "mesh", stage: &mesh, index: &two, count: &three, ok: true},
+		{name: "unknown word", stage: &other, index: &one, count: &three, ok: false},
+		{name: "index zero", stage: &guard, index: &zero, count: &three, ok: false},
+		{name: "index past count", stage: &guard, index: &three, count: &two, ok: false},
+		{name: "missing index", stage: &guard, count: &three, ok: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, ok := cadJobStage(tc.stage, tc.index, tc.count)
+			if ok != tc.ok {
+				t.Fatalf("cadJobStage ok = %t, want %t", ok, tc.ok)
+			}
+		})
+	}
+	for _, word := range convert.CADStageVocabulary() {
+		stage := word
+		if _, got, n, ok := cadJobStage(&stage, &one, &three); !ok || got != 1 || n != 3 {
+			t.Fatalf("cadJobStage(%q) = %d/%d ok %t", word, got, n, ok)
+		}
+	}
+}
+
 func TestFileLinkMaxTTLCoversDefaultCADBudget(t *testing.T) {
 	want := int(convert.CADDefaultEngineTimeout / time.Second)
 	if FileLinkMaxTTLSeconds != want {
@@ -102,6 +137,8 @@ func TestFileLinkMaxTTLCoversDefaultCADBudget(t *testing.T) {
 		"| `file_link_max_ttl` | " + n + " seconds, advertised as `file_link_max_ttl_seconds` |",
 		"Do not use 15 minutes.",
 		"Issued `expires_at` is the minimum of `issued_at` plus this cap, `attempt_deadline`, and `job_deadline`.",
+		"a cad job that opts into progress webhooks",
+		"Protocol progress copies a CAD stage onto the job",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("WORKER-PROTOCOL.md missing %q", needle)

@@ -308,6 +308,58 @@ func TestApprovedImageOverLinkWindowStaysOnAsynq(t *testing.T) {
 	}
 }
 
+func TestApprovedCADProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
+	data := readCADFixture(t, "synthetic/units_inch.step")
+	body, ct := multipartBodyWithCallback(t, "part.step", "stl", data, "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.CallbackURL != "https://8.8.8.8/hook" {
+		t.Fatalf("create params = %+v, want progress webhook", repo.created)
+	}
+	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+	}
+}
+
+func TestApprovedCADCallbackWithoutProgressWebhookUsesProtocol(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
+	data := readCADFixture(t, "synthetic/units_inch.step")
+	body, ct := multipartBodyWithCallback(t, "part.step", "stl", data, "https://8.8.8.8/hook", "")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.ProgressWebhook || repo.created.CallbackURL != "https://8.8.8.8/hook" {
+		t.Fatalf("create params = %+v, want callback without progress webhook", repo.created)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.CapabilityID != "octoconv.convert.cad" {
+		t.Fatalf("dispatch = %q pin = %q, want protocol", repo.created.DispatchOwner, repo.created.CapabilityID)
+	}
+	if q.enqueueCalls != 0 {
+		t.Fatalf("enqueueCalls = %d, want 0", q.enqueueCalls)
+	}
+}
+
 func TestApprovedCADRenderStaysOnAsynq(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}

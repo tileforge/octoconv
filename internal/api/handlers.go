@@ -1166,7 +1166,9 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// the one already embedded in the storage key above so they stay aligned.
 	dispatchOwner := ""
 	var attemptBudget time.Duration
-	if legacyMatch && pinID != "" && (engine == convert.EngineImage || cadProtocolJob(engine, operation, normalizedOpts)) {
+	imageProtocol := engine == convert.EngineImage
+	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol) {
 		budget := s.engineTimeouts[engine]
 		if budget <= 0 {
 			budget = 120 * time.Second

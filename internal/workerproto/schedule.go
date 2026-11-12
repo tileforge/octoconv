@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -966,6 +967,19 @@ func parseProgress(req progressRequest) (parsedProgress, string) {
 	return parsed, ""
 }
 
+func cadJobStage(stage *string, index, count *int) (string, int, int, bool) {
+	if stage == nil || index == nil || count == nil {
+		return "", 0, 0, false
+	}
+	if *index < 1 || *count < *index {
+		return "", 0, 0, false
+	}
+	if !slices.Contains(convert.CADStageVocabulary(), *stage) {
+		return "", 0, 0, false
+	}
+	return *stage, *index, *count, true
+}
+
 func optionalInt(raw json.RawMessage, min int) (*int, string) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, ""
@@ -1084,6 +1098,17 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 				  AND workflow_snapshot_id IS NULL
 				  AND (progress_pct IS NULL OR progress_pct <= $2)`, jobID, parsed.percent); err != nil {
 				return fmt.Errorf("store job progress: %w", err)
+			}
+		}
+		if stageName, stageAt, stageN, ok := cadJobStage(stage, stageIndex, stageCount); ok {
+			if _, err := tx.Exec(ctx, `
+				UPDATE jobs
+				SET stage = $2, stage_index = $3, stage_count = $4
+				WHERE id = $1 AND status = 'active' AND engine = $5
+				  AND workflow_snapshot_id IS NULL
+				  AND (stage_index IS NULL OR stage_index < $3)`,
+				jobID, stageName, stageAt, stageN, convert.EngineCAD); err != nil {
+				return fmt.Errorf("store job stage: %w", err)
 			}
 		}
 		return nil
