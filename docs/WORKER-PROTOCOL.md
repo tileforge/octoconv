@@ -198,7 +198,9 @@ The first capability is `octoconv.convert.image`, version `1`. `legacy` is opera
 
 The second capability is `octoconv.convert.imagepdf`, version `1`. The client operation is `convert`. It has no `legacy` object, one pair `png` to `pdf`, one `source`, one `primary`, and `parameter_schema` `{}`. The fixture is [worker-protocol/examples/positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json).
 
-Wire output roles that later engines may use are `primary`, `report`, `preview`, `thumbnail`, and `measurements`. These two manifests declare only `primary`. Input role `source` is a protocol field. The current `job_inputs` table has no role column. This phase does not add one.
+Cad uses two capabilities because a manifest holds one capability and cad has two client operations. `octoconv.convert.cad`, version `1`, has legacy operation `convert` and engine `cad`. Its pairs are step to stl, iges to stl, dxf to svg, and dxf to pdf. `octoconv.render.cad`, version `1`, has legacy operation `render` and engine `cad`. Its pairs are step to png, iges to png, stl to png, and dxf to png. The render capability also declares output role `measurements` with min 0 and max 1. Both use `parameter_schema` `{}`. The fixtures are [worker-protocol/examples/positive/manifest-cad-convert.json](worker-protocol/examples/positive/manifest-cad-convert.json) and [worker-protocol/examples/positive/manifest-cad-render.json](worker-protocol/examples/positive/manifest-cad-render.json). Approving either manifest does not by itself move a new cad job off asynq.
+
+Wire output roles that later engines may use are `primary`, `report`, `preview`, `thumbnail`, and `measurements`. The image and imagepdf manifests declare only `primary`. Input role `source` is a protocol field. The current `job_inputs` table has no role column. This phase does not add one.
 
 A new capability must not add a compile-time engine case or a per-worker reconciler case. `jobs.engine` cannot store a new capability id until a later phase. Phase 83, not this phase, widens that check once with the single placeholder `external`. `external` is not a queue name. Routing, quotas, usage, list filters, and KEDA do not read `external`; they use `capability_id`. For a legacy-mapped image job the accounting key stays `image`. For `octoconv.convert.imagepdf` the accounting key is the capability id. Do not collapse those onto one sentinel. This phase adds no SQL migration.
 
@@ -414,6 +416,8 @@ This phase adds no migration SQL, no worker process, no Python tree, and no chan
 | [positive/complete.json](worker-protocol/examples/positive/complete.json) | One complete request |
 | [positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json) | `octoconv.convert.image` manifest, 20 format pairs |
 | [positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json) | `octoconv.convert.imagepdf` manifest, png to pdf, no legacy engine |
+| [positive/manifest-cad-convert.json](worker-protocol/examples/positive/manifest-cad-convert.json) | `octoconv.convert.cad` manifest, four convert pairs |
+| [positive/manifest-cad-render.json](worker-protocol/examples/positive/manifest-cad-render.json) | `octoconv.render.cad` manifest, four render pairs |
 | [negative/pull-unknown-field.json](worker-protocol/examples/negative/pull-unknown-field.json) | A pull request plus top-level `priority` `1` |
 
 The negative file is invalid. The core MUST answer HTTP 400 with `code` `unknown_field`. The same `priority` key inside `extensions` is ignored, not rejected. There is no sibling expected-response file.
