@@ -573,10 +573,11 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err != nil {
 			return err
 		}
-		var status, target string
+		var status, target, engine string
 		var snapshotID *uuid.UUID
 		if err := tx.QueryRow(ctx, `
-			SELECT status, target_format, workflow_snapshot_id FROM jobs WHERE id = $1`, jobID).Scan(&status, &target, &snapshotID); err != nil {
+			SELECT status, target_format, engine, workflow_snapshot_id
+			FROM jobs WHERE id = $1`, jobID).Scan(&status, &target, &engine, &snapshotID); err != nil {
 			return fmt.Errorf("read job: %w", err)
 		}
 		var stepID uuid.UUID
@@ -601,6 +602,7 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return err
 		}
 		wantFormat := target
+		limitEngine := engine
 		var snap workflowSnapDoc
 		stepIndex := -1
 		if snapshotID != nil {
@@ -613,17 +615,21 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 				return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 			}
 			wantFormat = snap.Steps[stepIndex].TargetFormat
+			if snap.Steps[stepIndex].LegacyEngine != "" {
+				limitEngine = snap.Steps[stepIndex].LegacyEngine
+			}
 		}
+		maxOut := protocolOutputLimit(limitEngine, wantFormat)
 		if !listed || art.Format != wantFormat || art.ContentType != convert.MIMEType(art.Format) {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
 		size, kind := integerToken(art.ByteSize)
-		if kind != numOK {
+		if kind != numOK || size > maxOut {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
 		src := storage.AttemptOutputKey(attemptID, 0)
 		dst := storage.AcceptedOutputKey(jobID, attemptID, 0, art.SHA256)
-		gotSize, err := h.copyMatched(ctx, tx, src, dst, art.SHA256, size)
+		gotSize, err := h.copyMatched(ctx, tx, src, dst, art.SHA256, size, maxOut)
 		if err != nil {
 			return err
 		}
@@ -644,7 +650,6 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return nil
 		}
 		var clientID *uuid.UUID
-		var engine string
 		var admitted *int64
 		if err := tx.QueryRow(ctx, `
 			SELECT status, client_id, engine, admitted_input_bytes FROM jobs WHERE id = $1`, jobID).Scan(&status, &clientID, &engine, &admitted); err != nil {
@@ -751,7 +756,7 @@ func takeStoredComplete(ctx context.Context, tx pgx.Tx, sessionID uuid.UUID, key
 	return true, nil
 }
 
-func (h *Handler) copyMatched(ctx context.Context, tx pgx.Tx, src, dst, sha string, size int64) (int64, error) {
+func (h *Handler) copyMatched(ctx context.Context, tx pgx.Tx, src, dst, sha string, size, maxOut int64) (int64, error) {
 	err := h.store.Copy(ctx, src, dst)
 	if errors.Is(err, storage.ErrNotFound) {
 		return 0, &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
@@ -766,7 +771,7 @@ func (h *Handler) copyMatched(ctx context.Context, tx pgx.Tx, src, dst, sha stri
 	if err != nil {
 		return 0, &completeFailure{status: http.StatusInternalServerError, code: "invalid_message"}
 	}
-	if gotSize > int64(100<<20) || gotSize != size {
+	if gotSize > maxOut || gotSize != size {
 		return 0, h.rejectCopied(ctx, tx, dst)
 	}
 	rc, err := h.store.Download(ctx, dst)
@@ -828,6 +833,22 @@ func (h *Handler) removeUnnamedCopy(ctx context.Context, tx pgx.Tx, dst string) 
 	return nil
 }
 
+const protocolDefaultOutputBytes int64 = 100 << 20
+
+func protocolOutputLimit(engine, target string) int64 {
+	if engine != convert.EngineCAD {
+		return protocolDefaultOutputBytes
+	}
+	switch convert.NormalizeFormat(target) {
+	case "svg":
+		return convert.CADMaxDXFSVGBytes
+	case "stl":
+		return convert.CADMaxSTLBytes
+	default:
+		return protocolDefaultOutputBytes
+	}
+}
+
 func artifactListed(art completeArtifact) bool {
 	if art.Role != "primary" || art.Format == "" || art.ContentType == "" {
 		return false
@@ -840,7 +861,7 @@ func artifactListed(art completeArtifact) bool {
 		return false
 	}
 	size, kind := integerToken(art.ByteSize)
-	return kind == numOK && size >= 0 && size <= int64(100<<20)
+	return kind == numOK && size >= 0 && size <= protocolOutputLimit(convert.EngineCAD, art.Format)
 }
 
 func parseArtifacts(raw json.RawMessage) ([]completeArtifact, error) {
@@ -1800,7 +1821,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 				CapabilityVersion: capabilityVersion,
 				AttemptDeadline:   attemptDeadline.UTC().Format(time.RFC3339Nano),
 				LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
-				Limits:            assignmentLimits{MaxOutputBytes: 100 << 20},
+				Limits:            assignmentLimits{MaxOutputBytes: int(protocolOutputLimit(engine, outputFormat))},
 				Inputs: []fileLinkWire{{
 					Role: "source", Ordinal: 0, Format: inputFormat, Href: getURL, ExpiresAt: expiresAt,
 				}},
