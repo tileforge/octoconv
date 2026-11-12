@@ -33,6 +33,21 @@ func TestWorkerHandoverSection(t *testing.T) {
 		"The lease stays 30 seconds.",
 		"imagepdf does not get a ScaledObject.",
 		"png to pdf stays 422.",
+		"tileforge/octoconv-worker-<engine>",
+		"tileforge/octoconv-worker-cad",
+		"<ENGINE>_PROTOCOL_CORE_URL",
+		"<ENGINE>_PROTOCOL_CLIENT_CERT",
+		"<ENGINE>_PROTOCOL_CLIENT_KEY",
+		"<ENGINE>_PROTOCOL_CLIENT_CA",
+		"<ENGINE>_PROTOCOL_WORKER_ID",
+		"<ENGINE>_PROTOCOL_MANIFEST_PATH",
+		"CAD_PROTOCOL_",
+		"no `DATABASE_URL`",
+		"no `REDIS_ADDR`",
+		"manifest-cad-convert.json",
+		"manifest-cad-render.json",
+		"octoconv.convert.cad",
+		"octoconv.render.cad",
 	}
 	for _, needle := range needles {
 		if n := strings.Count(body, needle); n != 1 {

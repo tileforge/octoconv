@@ -10,6 +10,14 @@ Every message uses protocol_version 1. The schema is [docs/worker-protocol/v1.sc
 
 This repository does not publish a Python worker. png to pdf stays 422.
 
+## Class repository
+
+Image stays in this repository. Any other engine class uses `tileforge/octoconv-worker-<engine>`, where `<engine>` is the legacy engine id. Cad uses `tileforge/octoconv-worker-cad`.
+
+That process reads `<ENGINE>_PROTOCOL_CORE_URL`, `<ENGINE>_PROTOCOL_CLIENT_CERT`, `<ENGINE>_PROTOCOL_CLIENT_KEY`, `<ENGINE>_PROTOCOL_CLIENT_CA`, `<ENGINE>_PROTOCOL_WORKER_ID`, and `<ENGINE>_PROTOCOL_MANIFEST_PATH`. Cad uses the prefix `CAD_PROTOCOL_`.
+
+The process has no `DATABASE_URL` and no `REDIS_ADDR`. One manifest holds one capability. Cad publishes `manifest-cad-convert.json` (`octoconv.convert.cad`) and `manifest-cad-render.json` (`octoconv.render.cad`).
+
 ## For an operator
 
 A client certificate is required. There is no server flag to allow plaintext. Approve the manifest before HELLO.
