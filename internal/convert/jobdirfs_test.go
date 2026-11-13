@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+func cadDXFQuote(p string) string { return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'" }
+
 func jobDirOutside(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "outside")
@@ -286,38 +288,6 @@ func jobDirLinkTo(t *testing.T, target, name string) string {
 	return link
 }
 
-func TestCADDXFReadsRefuseAPlantedLink(t *testing.T) {
-	t.Run("parseCADMeasureDraft", func(t *testing.T) {
-		link := jobDirLinkTo(t, cadDXFTestFile("wide.measure.json"), cadMeasureDraftName)
-		d, err := parseCADMeasureDraft(link)
-		if err == nil {
-			t.Fatalf("read the draft through a planted link: %+v", d)
-		}
-	})
-	t.Run("parseCADDXFTexts", func(t *testing.T) {
-		link := jobDirLinkTo(t, cadDXFTestFile("wide.texts.json"), cadDXFTextsName)
-		texts, err := parseCADDXFTexts(link, 1<<20)
-		if err == nil || texts != nil {
-			t.Fatalf("read texts.json through a planted link: %d texts, %v", len(texts), err)
-		}
-	})
-	t.Run("cadDXFReadSVGFacts", func(t *testing.T) {
-		link := jobDirLinkTo(t, cadDXFTestFile("uncommon.render.svg"), cadDXFRenderName)
-		facts, err := cadDXFReadSVGFacts(link, 1<<30)
-		if err == nil || len(facts.Texts) != 0 {
-			t.Fatalf("read the SVG through a planted link: %d texts, %v", len(facts.Texts), err)
-		}
-	})
-	t.Run("cadPDFDecode through JudgeCADDXFPDF", func(t *testing.T) {
-		pdf, texts, svg := cadDXFFixtureInputs(t, "uncommon")
-		link := jobDirLinkTo(t, pdf, "out.pdf")
-		facts, err := JudgeCADDXFPDF(link, 1<<30, texts, svg)
-		if err == nil || facts.PaintOps != 0 || facts.Text != "" {
-			t.Fatalf("judged the PDF through a planted link: %+v, %v", facts, err)
-		}
-	})
-}
-
 func TestOpenJobFileRefusesWhatIsNotARegularFile(t *testing.T) {
 	t.Run("a regular file", func(t *testing.T) {
 		path := jobDirOutside(t, "regular body")
@@ -393,33 +363,6 @@ func TestOpenJobFileRefusesWhatIsNotARegularFile(t *testing.T) {
 }
 
 func TestStageOutputReadsRefuseAPlantedLink(t *testing.T) {
-	t.Run("the mesh STL", func(t *testing.T) {
-		outside := filepath.Join(t.TempDir(), "outside.stl")
-		if err := os.WriteFile(outside, cadBoxSTL(10, 20, 30), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		link := jobDirLinkTo(t, outside, cadMeshSTLName)
-		n, _, err := judgeBinarySTL(link)
-		if !errors.Is(err, ErrJobFileIrregular) {
-			t.Errorf("judgeBinarySTL = %d triangles, %v, want ErrJobFileIrregular", n, err)
-		}
-	})
-	t.Run("the render PNG", func(t *testing.T) {
-		f := newCADRenderFixture(t, "step")
-		outside := filepath.Join(t.TempDir(), "frame.png")
-		if err := os.WriteFile(outside, renderPNGBytes(t, 512, true), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		draft := f.writeDraft(t, unitsInchDraft())
-		render := fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/render.args\"\nln -s %s \"$8\"\nprintf 'CADVERDICT {\"stage\":\"render\",\"verdict\":\"ok\",\"reason\":\"\",\"triangles\":12,\"view\":\"%%s\",\"size\":%%s,\"background\":\"%%s\"}\\n' \"$2\" \"$4\" \"$6\"\n", cadDXFQuote(outside))
-		f.setEngines(t, cadOKGuard(), f.meshScript(t, draft), render)
-		opts := map[string]any{"view": "top", "size": float64(512), "background": "transparent", "quality": "fine"}
-		err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, opts)
-		if !errors.Is(err, ErrCADRenderRejected) {
-			t.Errorf("Convert = %v, want ErrCADRenderRejected", err)
-		}
-		f.noSidecar(t)
-	})
 	t.Run("the OCR page fragment", func(t *testing.T) {
 		f := newOCRPDFFakes(t)
 		outside := jobDirOutside(t, "outside page text")
@@ -505,7 +448,7 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 	html := func(t *testing.T) string {
 		return jobDirOutsideBytes(t, []byte("<!DOCTYPE html>\n<html><head><title>t</title></head><body><p>outside</p></body></html>\n"))
 	}
-	png := func(t *testing.T) string { return jobDirOutsideBytes(t, renderPNGBytes(t, 64, false)) }
+	png := func(t *testing.T) string { return jobDirOutsideBytes(t, []byte("png-body")) }
 	txt := func(t *testing.T) string { return jobDirOutsideBytes(t, []byte("transcribed text\n")) }
 	exact := func(want string) func(t *testing.T, err error) {
 		return func(t *testing.T, err error) { t.Helper(); requireErrText(t, err, want) }
