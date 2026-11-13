@@ -512,11 +512,10 @@ func TestCADDXFPaddedInputIsAcceptedBelowTheCeiling(t *testing.T) {
 	data := cadDXFPaddedTo(t, 1<<20)
 	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 	srv := newCADCeilingServer(repo, store, q)
+	admitCADCatalog(srv)
 	rec := postFormatCeilingCreate(t, srv, "padded.dxf", "svg", data)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.SourceFormat != "dxf" || q.enqueuedCAD != repo.createdID {
-		t.Errorf("created = %+v, enqueuedCAD = %s, want a dxf job on the cad queue", repo.created, q.enqueuedCAD)
-	}
+	assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", "svg", "octoconv.convert.cad")
 }

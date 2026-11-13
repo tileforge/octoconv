@@ -175,6 +175,7 @@ func createDuringUploadWith(t *testing.T, junk []int64, doc uploadDoc, blockKind
 		MaxUploadBytes:        uploadMaxBytes,
 		InspectMaxUploadBytes: uploadMaxBytes,
 	})
+	admitCADCatalog(srv)
 	ts := startShippedServer(t, srv.Routes())
 
 	boundary := multipart.NewWriter(io.Discard).Boundary()
@@ -455,11 +456,12 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &capturingStorage{fakeStorage: &fakeStorage{}}
-			_, ts := newIntakeServerWith(t, &fakeRepo{}, store, Config{
+			srv, ts := newIntakeServerWith(t, &fakeRepo{}, store, Config{
 				MaxUploadBytes:        uploadMaxBytes,
 				InspectMaxUploadBytes: uploadMaxBytes,
 				MaxFormatBytes:        tc.formats,
 			}, intakeReadDeadline, intakeMinBytesPerSecond)
+			admitCADCatalog(srv)
 			pr, pw := io.Pipe()
 			mw := multipart.NewWriter(pw)
 			go func() {

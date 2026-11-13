@@ -79,15 +79,7 @@ func TestCADGraceChainFollowsTheEngineTimeout(t *testing.T) {
 		t.Errorf("ConfigMap CAD_ENGINE_TIMEOUT = %d s (present %v), want the Go default %d s", got, ok, engine)
 	}
 
-	if got := parseGracePeriods(t)["cadWorker"]; got != engine+20 {
-		t.Errorf("values.yaml cadWorker.terminationGracePeriodSeconds = %d, want engine %d + 20 = %d", got, engine, engine+20)
-	}
-
 	compose := cadReadFile(t, composeFile)
-	cadWorker := cadBlock(t, compose, composeFile, "services", "cad-worker")
-	if got := cadIntField(t, cadWorker, composeFile, regexp.MustCompile(`^    stop_grace_period:\s*(\d+)s\s*$`)); got != engine+20 {
-		t.Errorf("docker-compose.yml cad-worker stop_grace_period = %ds, want engine %d + 20 = %ds", got, engine, engine+20)
-	}
 
 	values := cadReadFile(t, valuesFile)
 	kedaCAD := cadBlock(t, values, valuesFile, "keda", "cad")
@@ -122,7 +114,6 @@ func TestCADGraceChainFollowsTheEngineTimeout(t *testing.T) {
 		path  string
 		lines []string
 	}{
-		{composeFile + " cad-worker", cadWorker},
 		{configMap, cadReadFile(t, configMap)},
 	} {
 		for name, d := range stages {

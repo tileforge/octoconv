@@ -16,20 +16,6 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: pip
-    directory: /cmd/cad-worker
-    schedule:
-      interval: weekly
-      day: monday
-      time: "09:00"
-      timezone: Europe/Moscow
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: "build(deps)"
-    groups:
-      python-minor-patch:
-        update-types: [minor, patch]
-
-  - package-ecosystem: pip
     directory: /scripts/cad-measure
     # Version updates only: keep fixed OCP/VTK benchmark variants out of the schedule.
     # Security PRs can still touch these files. Regenerate and validate them through

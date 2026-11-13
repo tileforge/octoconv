@@ -151,3 +151,18 @@ func TestEveryBakingJobCachesEveryService(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryCacheScopeNamesAComposeService(t *testing.T) {
+	services := map[string]bool{}
+	for _, svc := range buildableComposeServices(t) {
+		services[svc] = true
+	}
+	for name, job := range bakeJobs(t) {
+		for scope := range job.scopes {
+			if !services[scope] {
+				t.Errorf("CI job %q sets cache-from for %s, which has no build: in docker-compose.yml: "+
+					"buildx rejects an override whose target does not exist", name, scope)
+			}
+		}
+	}
+}

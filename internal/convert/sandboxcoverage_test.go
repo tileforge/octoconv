@@ -96,8 +96,6 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return verapdfEngines, true
 	case "documentsandbox.go":
 		return sandboxUnion(sofficeEngines, verapdfEngines), true
-	case "cad.go", "cadsandbox.go", "cadrender.go", "caddxf.go":
-		return sandboxUnion(sandboxUnion(sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines), cadDXFEngines), cadRsvgEngines), true
 	}
 	return nil, false
 }
@@ -124,8 +122,6 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"probe"}
 	case "libreoffice.go", "verapdf.go", "documentsandbox.go":
 		return []string{"document"}
-	case "cad.go", "cadsandbox.go", "cadrender.go", "caddxf.go":
-		return []string{"cad"}
 	}
 	return nil
 }
@@ -149,8 +145,6 @@ func sandboxGroupEngines(group string) []string {
 		return probeEngines
 	case "document":
 		return sandboxUnion(sofficeEngines, verapdfEngines)
-	case "cad":
-		return sandboxUnion(sandboxUnion(sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines), cadDXFEngines), cadRsvgEngines)
 	}
 	return nil
 }
@@ -502,13 +496,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go", "libreoffice.go", "verapdf.go", "cad.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go", "libreoffice.go", "verapdf.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe", "document", "cad"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe", "document"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)

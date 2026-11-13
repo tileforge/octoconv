@@ -187,6 +187,43 @@ func postCAD(t *testing.T, srv *Server, filename, target, operation string, data
 	return rec
 }
 
+func admitCADCatalog(srv *Server) {
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			switch source {
+			case "step", "iges", "stl", "dxf":
+			default:
+				return workerproto.Match{}, false
+			}
+			id := "octoconv.convert.cad"
+			if operation == convert.OperationRender {
+				id = "octoconv.render.cad"
+			}
+			return cadMatch(id, operation), true
+		},
+	})
+}
+
+func assertAdmittedCAD(t *testing.T, repo *fakeRepo, q *fakeQueue, operation, source, target, pin string) {
+	t.Helper()
+	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != operation ||
+		repo.created.SourceFormat != source || repo.created.TargetFormat != target {
+		t.Fatalf("created = %+v, want cad %s %s -> %s", repo.created, operation, source, target)
+	}
+	if repo.created.CapabilityID != pin || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d, want %s v1", repo.created.CapabilityID, repo.created.CapabilityVersion, pin)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != convert.CADDefaultEngineTimeout {
+		t.Fatalf("dispatch = %q budget = %s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if len(repo.created.Opts) != 0 {
+		t.Errorf("stored opts = %#v, want none", repo.created.Opts)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedCAD != uuid.Nil {
+		t.Errorf("enqueueCalls = %d enqueuedCAD = %s, want no enqueue", q.enqueueCalls, q.enqueuedCAD)
+	}
+}
+
 func cadMatch(id, operation string) workerproto.Match {
 	return workerproto.Match{
 		CapabilityID:      id,
@@ -247,7 +284,7 @@ func TestApprovedCADUsesConfiguredBudget(t *testing.T) {
 	}
 }
 
-func TestApprovedCADOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedCADOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -257,18 +294,8 @@ func TestApprovedCADOverLinkWindowStaysOnAsynq(t *testing.T) {
 	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: cadMatch("octoconv.convert.cad", convert.OperationConvert)})
 
 	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationConvert {
-		t.Fatalf("create params = %+v, want engine cad operation convert", repo.created)
-	}
-	if repo.created.CapabilityID != "" || repo.created.CapabilityVersion != 0 || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("pin = %q v%d dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.CapabilityVersion, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestApprovedImageOverLinkWindowStaysOnAsynq(t *testing.T) {
@@ -320,18 +347,8 @@ func TestApprovedCADProgressWebhookStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.CallbackURL != "https://8.8.8.8/hook" {
-		t.Fatalf("create params = %+v, want progress webhook", repo.created)
-	}
-	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidRequest)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestApprovedCADCallbackWithoutProgressWebhookUsesProtocol(t *testing.T) {
@@ -360,7 +377,7 @@ func TestApprovedCADCallbackWithoutProgressWebhookUsesProtocol(t *testing.T) {
 	}
 }
 
-func TestApprovedCADRenderStaysOnAsynq(t *testing.T) {
+func TestApprovedCADRenderSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -378,11 +395,14 @@ func TestApprovedCADRenderStaysOnAsynq(t *testing.T) {
 	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != convert.OperationRender {
 		t.Fatalf("create params = %+v, want engine cad operation render", repo.created)
 	}
-	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	if repo.created.CapabilityID != "octoconv.render.cad" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
 	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != convert.CADDefaultEngineTimeout {
+		t.Fatalf("dispatch = %q budget = %s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedCAD != uuid.Nil {
+		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s, want no enqueue", q.enqueueCalls, q.enqueuedCAD)
 	}
 }
 
@@ -398,21 +418,11 @@ func TestApprovedCADOptionsStayOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineCAD || len(repo.created.Opts) == 0 {
-		t.Fatalf("create params = %+v, want cad opts", repo.created)
-	}
-	if repo.created.CapabilityID != "" || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("pin = %q dispatch = %q budget = %s, want asynq", repo.created.CapabilityID, repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.OptsNotApplicable)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestCatalogMissEnqueuesCAD(t *testing.T) {
+func TestCatalogMissRefusesCAD(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -420,18 +430,8 @@ func TestCatalogMissEnqueuesCAD(t *testing.T) {
 	srv.SetCapabilityCatalog(&fakeCatalog{found: false})
 
 	rec := postCAD(t, srv, "part.step", "stl", "", readCADFixture(t, "synthetic/units_inch.step"))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.CapabilityID != "" {
-		t.Fatalf("create params = %+v, want engine cad and empty pin", repo.created)
-	}
-	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("dispatch = %q budget = %s, want asynq", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedCAD = %s created = %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestImagepdfCatalogDoesNotCreateJob(t *testing.T) {

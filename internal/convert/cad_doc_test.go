@@ -1,12 +1,7 @@
 package convert
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"os"
 	"reflect"
 	"regexp"
@@ -21,16 +16,15 @@ import (
 const (
 	cadDocPath     = "../../docs/CAD.md"
 	cadDocChart    = "../../deploy/chart/octoconv/templates/configmap.yaml"
-	cadDocWorker   = "../../cmd/cad-worker/main.go"
 	cadDocEstimate = "../../internal/api/estimate.go"
 	cadDocValues   = "../../deploy/chart/octoconv/values.yaml"
 	cadDocEvidDir  = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/"
+	cad76Evidence  = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt"
 )
 
 var (
 	cadDocTick        = regexp.MustCompile("`([^`]+)`")
 	cadDocChartCap    = regexp.MustCompile(`(?m)^\s+MAX_UPLOAD_BYTES:\s*"(\d+)"`)
-	cadDocEnv         = regexp.MustCompile(`envDuration\("(CAD_[A-Z_]+)", convert\.(\w+)\)`)
 	cadDocConcurrency = regexp.MustCompile(`(?m)^\s+CAD_WORKER_CONCURRENCY:\s*"?([^"\s]+)"?\s*$`)
 	cadDocSource      = regexp.MustCompile(`^evidence/(\S+) ([A-Z_]+)(?:\[(\w+)=([^\]]+)\])?\.(\w+)$`)
 	cadDocNearInk     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is ink`)
@@ -617,17 +611,13 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 	})
 
 	t.Run("time_limits", func(t *testing.T) {
-		vars := map[string]time.Duration{}
-		for _, m := range cadDocEnv.FindAllStringSubmatch(cadDocRead(t, cadDocWorker), -1) {
-			d, ok := cadDocDurations[m[2]]
-			if !ok {
-				t.Errorf("%s reads %s with the default convert.%s, which the test does not know", cadDocWorker, m[1], m[2])
-				continue
-			}
-			vars[m[1]] = d
-		}
-		if len(vars) < 6 {
-			t.Fatalf("found %d CAD timeout variables in %s, want 6", len(vars), cadDocWorker)
+		vars := map[string]time.Duration{
+			"CAD_GUARD_TIMEOUT":  CADDefaultGuardTimeout,
+			"CAD_MESH_TIMEOUT":   CADDefaultMeshTimeout,
+			"CAD_RENDER_TIMEOUT": CADDefaultRenderTimeout,
+			"CAD_DXF_TIMEOUT":    CADDefaultDXFTimeout,
+			"CAD_RSVG_TIMEOUT":   CADDefaultRsvgTimeout,
+			"CAD_ENGINE_TIMEOUT": CADDefaultEngineTimeout,
 		}
 		got := map[string]bool{}
 		for _, r := range cadDocTable(t, doc, "## Time limits", "variable", "default seconds", "covers") {
@@ -751,7 +741,7 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			t.Fatalf("docs/CAD.md Known limits has no near_white row")
 		}
 		if strings.Contains(limit, "any channel at or above") {
-			t.Errorf("docs/CAD.md near_white says paint with any channel at or above the cutoff is no ink; cadMeasure skips a pixel only when every channel is at or above %d", cadBackgroundCutoff)
+			t.Errorf("docs/CAD.md near_white says paint with any channel at or above the cutoff is no ink; a pixel is background only when every channel is at or above %d", cadBackgroundCutoff)
 		}
 		triples := func(re *regexp.Regexp) [][3]int {
 			var out [][3]int
@@ -784,49 +774,6 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 		}
 		if !edge {
 			t.Errorf("docs/CAD.md near_white has no background example whose smallest channel is %d", cadBackgroundCutoff)
-		}
-		size := CADMinRenderSize
-		box, err := CADDrawingLetterbox(1, 1, size)
-		if err != nil {
-			t.Fatalf("CADDrawingLetterbox: %v", err)
-		}
-		probe := func(p [3]int, want int) {
-			img := image.NewNRGBA(image.Rect(0, 0, size, size))
-			for i := range img.Pix {
-				img.Pix[i] = 0xff
-			}
-			img.SetNRGBA(size/2, size/2, color.NRGBA{R: uint8(p[0]), G: uint8(p[1]), B: uint8(p[2]), A: 255})
-			var f CADPixelFacts
-			cadMeasure(img, &f)
-			if f.Count != want {
-				t.Errorf("cadMeasure counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
-			}
-			var buf bytes.Buffer
-			if err := png.Encode(&buf, img); err != nil {
-				t.Fatalf("png.Encode: %v", err)
-			}
-			if f, _ := JudgeCADPNG(bytes.NewReader(buf.Bytes()), size, CADBackgroundOpq); f.Count != want {
-				t.Errorf("JudgeCADPNG counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
-			}
-			if f, _ := JudgeCADDrawingPNG(bytes.NewReader(buf.Bytes()), size, CADBackgroundOpq, box); f.Count != want {
-				t.Errorf("JudgeCADDrawingPNG counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
-			}
-			f, err := JudgeCADDrawingInk(bytes.NewReader(buf.Bytes()), size)
-			if f.Count != want {
-				t.Errorf("JudgeCADDrawingInk counts %d ink pixels for %v on white, docs/CAD.md near_white implies %d", f.Count, p, want)
-			}
-			if want == 1 && err != nil {
-				t.Errorf("JudgeCADDrawingInk refuses %v on white, docs/CAD.md near_white calls it ink: %v", p, err)
-			}
-			if want == 0 && !errors.Is(err, ErrCADEmptyResult) {
-				t.Errorf("JudgeCADDrawingInk returns %v for %v on white, docs/CAD.md near_white calls it no ink, want ErrCADEmptyResult", err, p)
-			}
-		}
-		for _, p := range ink {
-			probe(p, 1)
-		}
-		for _, p := range not {
-			probe(p, 0)
 		}
 	})
 

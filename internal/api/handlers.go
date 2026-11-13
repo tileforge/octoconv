@@ -135,13 +135,16 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, result)
 }
 
+func cadProtocolJob(engine, operation string, opts map[string]any) bool {
+	if engine != convert.EngineCAD || len(opts) != 0 {
+		return false
+	}
+	return operation == convert.OperationConvert || operation == convert.OperationRender
+}
+
 // handleCreateJob accepts a multipart upload (fields: file, target), validates
 // the conversion pair before touching storage, uploads the input to S3, records
 // the job in Postgres (queued) and enqueues the conversion task.
-func cadProtocolJob(engine, operation string, opts map[string]any) bool {
-	return engine == convert.EngineCAD && operation == convert.OperationConvert && len(opts) == 0
-}
-
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rc, start := s.armIntakeDeadline(w)
@@ -1081,6 +1084,39 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	dispatchOwner := ""
+	var attemptBudget time.Duration
+	imageProtocol := engine == convert.EngineImage
+	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol) {
+		budget := s.engineTimeouts[engine]
+		if budget <= 0 {
+			budget = 120 * time.Second
+			if engine == convert.EngineCAD {
+				budget = convert.CADDefaultEngineTimeout
+			}
+		}
+		linkCap := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
+		if budget <= linkCap {
+			dispatchOwner = "protocol"
+			attemptBudget = budget
+		}
+	}
+	if engine == convert.EngineCAD && dispatchOwner != "protocol" {
+		switch {
+		case progressWebhook:
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=cad_progress_webhook", client.ID, filename)
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "cad jobs do not accept progress_webhook")
+		case len(normalizedOpts) > 0:
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=cad_opts", client.ID, filename)
+			writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
+		default:
+			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+				"unsupported conversion: "+detected+" -> "+target)
+		}
+		return
+	}
+
 	jobID := uuid.New()
 	key := storage.InputKey(jobID, 0, filename)
 	// Stored Content-Type is the canonical MIME of the detected format, never
@@ -1164,28 +1200,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
-	dispatchOwner := ""
-	var attemptBudget time.Duration
-	imageProtocol := engine == convert.EngineImage
-	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
-	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol) {
-		budget := s.engineTimeouts[engine]
-		if budget <= 0 {
-			budget = 120 * time.Second
-			if engine == convert.EngineCAD {
-				budget = convert.CADDefaultEngineTimeout
-			}
-		}
-		linkCap := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
-		if budget <= linkCap {
-			dispatchOwner = "protocol"
-			attemptBudget = budget
-		}
-	}
-	if dispatchOwner == "" && engine == convert.EngineCAD {
-		pinID = ""
-		pinVersion = 0
-	}
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
 		CorrelationID:         correlationID,
 		ID:                    jobID,

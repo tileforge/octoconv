@@ -445,10 +445,12 @@ func shippedHeapServer(t *testing.T) *httptest.Server {
 }
 
 func heapProbeServer() *Server {
-	return NewServer(&fakeRepo{}, &transportCapStorage{fakeStorage: &fakeStorage{}}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
+	srv := NewServer(&fakeRepo{}, &transportCapStorage{fakeStorage: &fakeStorage{}}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
 		MaxUploadBytes:        64 << 20,
 		InspectMaxUploadBytes: 64 << 20,
 	})
+	admitCADCatalog(srv)
+	return srv
 }
 
 const (
