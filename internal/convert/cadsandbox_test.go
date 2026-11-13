@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -361,18 +360,6 @@ func TestCADPreflightFailsWhenTheSandboxCannotBeEstablished(t *testing.T) {
 	}
 }
 
-func TestCADPreflightFixtureCountMatchesTheRealGuard(t *testing.T) {
-	requireCADPython(t)
-	want, err := cadStepEntities(cadPreflightSTEP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := runCADGuard(t, "step", CADMaxSTEPEntities, CADMaxNAUO, filepath.Join("testdata", "cad", "synthetic", "units_inch.step"))
-	if r.verdict != "ok" || r.number("entities") != want {
-		t.Errorf("verdict=%q entities=%d, want ok/%d", r.verdict, r.number("entities"), want)
-	}
-}
-
 func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 	for _, n := range []int{0, 2, -1} {
 		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultDXFTimeout, CADDefaultRsvgTimeout, CADDefaultEngineTimeout)
@@ -605,33 +592,6 @@ func TestCADDrawSetsAreTheMeasuredOnes(t *testing.T) {
 	}
 }
 
-func TestCADDXFHelperImportsNoOpenCascadeOrVTK(t *testing.T) {
-	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-dxf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
-	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC|vtk|vtkmodules)\b|__import__|importlib`)
-	ezdxf, imports := 0, 0
-	for i, line := range strings.Split(string(raw), "\n") {
-		code, _, _ := strings.Cut(line, "#")
-		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
-			continue
-		}
-		imports++
-		if strings.Contains(code, "ezdxf") {
-			ezdxf++
-		}
-		if forbidden.MatchString(code) {
-			t.Errorf("cad-dxf line %d imports %q: the drawing stage shares /opt/venv with OpenCascade and VTK, so its imports, "+
-				"not its path set, are what keep those bindings out of reach", i+1, strings.TrimSpace(line))
-		}
-	}
-	if imports == 0 || ezdxf == 0 {
-		t.Fatalf("read %d import lines and %d from ezdxf: the check would pass on a helper it did not read", imports, ezdxf)
-	}
-}
-
 func TestCADEngineTimeoutStaysUnderTheReconcilerWindow(t *testing.T) {
 	const window = 900 * time.Second
 	if CADDefaultEngineTimeout >= window {
@@ -689,33 +649,6 @@ func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
 				}
 			}
 		}
-	}
-}
-
-func TestCADRenderHelperImportsNoOpenCascade(t *testing.T) {
-	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-render")
-	if err != nil {
-		t.Fatal(err)
-	}
-	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
-	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC)\b|__import__|importlib`)
-	vtk, imports := 0, 0
-	for i, line := range strings.Split(string(raw), "\n") {
-		code, _, _ := strings.Cut(line, "#")
-		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
-			continue
-		}
-		imports++
-		if strings.Contains(code, "vtkmodules") {
-			vtk++
-		}
-		if forbidden.MatchString(code) {
-			t.Errorf("cad-render line %d imports %q: the render stage must not reach OpenCascade; its separate exec grant "+
-				"is what keeps OCP out, and a path set cannot (R-09)", i+1, strings.TrimSpace(line))
-		}
-	}
-	if imports == 0 || vtk == 0 {
-		t.Fatalf("read %d import lines and %d from vtkmodules: the check would pass on a helper it did not read", imports, vtk)
 	}
 }
 

@@ -897,12 +897,6 @@ func TestCADDXFGuardArgv(t *testing.T) {
 			t.Errorf("guard argv = %q, want %q", got, want)
 		}
 	})
-	t.Run("the real guard accepts the production argv", func(t *testing.T) {
-		r := runCADGuardArgs(t, cadGuardArgs("dxf", filepath.Join("testdata", "cad", "dxf", "all_hidden.dxf"))...)
-		if r.exit != 0 || r.verdict != "ok" {
-			t.Fatalf("cad-guard exit %d verdict %q reason %q: %s", r.exit, r.verdict, r.reason, r.stdout)
-		}
-	})
 	t.Run("step is unchanged", func(t *testing.T) {
 		f := newCADFixture(t, "step", record, "exit 1\n")
 		if _, err := (CADConverter{}).guardStage(context.Background(), f.jobDir, "step", f.in); err != nil {

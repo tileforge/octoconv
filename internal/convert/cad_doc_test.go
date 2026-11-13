@@ -21,7 +21,6 @@ import (
 const (
 	cadDocPath     = "../../docs/CAD.md"
 	cadDocChart    = "../../deploy/chart/octoconv/templates/configmap.yaml"
-	cadDocWorker   = "../../cmd/cad-worker/main.go"
 	cadDocEstimate = "../../internal/api/estimate.go"
 	cadDocValues   = "../../deploy/chart/octoconv/values.yaml"
 	cadDocEvidDir  = "testdata/evidence/76-measured-bounds-keda-proof-client-docs/"
@@ -30,7 +29,6 @@ const (
 var (
 	cadDocTick        = regexp.MustCompile("`([^`]+)`")
 	cadDocChartCap    = regexp.MustCompile(`(?m)^\s+MAX_UPLOAD_BYTES:\s*"(\d+)"`)
-	cadDocEnv         = regexp.MustCompile(`envDuration\("(CAD_[A-Z_]+)", convert\.(\w+)\)`)
 	cadDocConcurrency = regexp.MustCompile(`(?m)^\s+CAD_WORKER_CONCURRENCY:\s*"?([^"\s]+)"?\s*$`)
 	cadDocSource      = regexp.MustCompile(`^evidence/(\S+) ([A-Z_]+)(?:\[(\w+)=([^\]]+)\])?\.(\w+)$`)
 	cadDocNearInk     = regexp.MustCompile(`\((\d{1,3}), (\d{1,3}), (\d{1,3})\) is ink`)
@@ -617,17 +615,13 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 	})
 
 	t.Run("time_limits", func(t *testing.T) {
-		vars := map[string]time.Duration{}
-		for _, m := range cadDocEnv.FindAllStringSubmatch(cadDocRead(t, cadDocWorker), -1) {
-			d, ok := cadDocDurations[m[2]]
-			if !ok {
-				t.Errorf("%s reads %s with the default convert.%s, which the test does not know", cadDocWorker, m[1], m[2])
-				continue
-			}
-			vars[m[1]] = d
-		}
-		if len(vars) < 6 {
-			t.Fatalf("found %d CAD timeout variables in %s, want 6", len(vars), cadDocWorker)
+		vars := map[string]time.Duration{
+			"CAD_GUARD_TIMEOUT":  CADDefaultGuardTimeout,
+			"CAD_MESH_TIMEOUT":   CADDefaultMeshTimeout,
+			"CAD_RENDER_TIMEOUT": CADDefaultRenderTimeout,
+			"CAD_DXF_TIMEOUT":    CADDefaultDXFTimeout,
+			"CAD_RSVG_TIMEOUT":   CADDefaultRsvgTimeout,
+			"CAD_ENGINE_TIMEOUT": CADDefaultEngineTimeout,
 		}
 		got := map[string]bool{}
 		for _, r := range cadDocTable(t, doc, "## Time limits", "variable", "default seconds", "covers") {

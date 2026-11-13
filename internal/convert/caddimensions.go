@@ -30,8 +30,9 @@ type cadDimensionLine struct {
 	Value      string
 }
 
-// Match the orthographic camera in cmd/cad-worker/helper/cad-render. Bounds
-// position lines in mesh coordinates; the document supplies values in display units.
+const cadRenderMargin = 0.06
+
+// Bounds position lines in mesh coordinates; the document supplies values in display units.
 func cadDimensionProjection(b stlBounds, view string, frame image.Rectangle) [8]cadPoint {
 	var right, up [3]float64
 	switch view {
@@ -67,8 +68,7 @@ func cadDimensionProjection(b stlBounds, view string, frame image.Rectangle) [8]
 	center := cadPoint{float64(frame.Min.X+frame.Max.X) / 2, float64(frame.Min.Y+frame.Max.Y) / 2}
 	var scale float64
 	if half > 0 {
-		// The raw renderer leaves 6% on each side of its square frame.
-		scale = float64(frame.Dx()) * 0.88 / (2 * half)
+		scale = float64(frame.Dx()) * (1 - 2*cadRenderMargin) / (2 * half)
 	}
 	for i, p := range points {
 		points[i] = center.add(p.mul(scale))

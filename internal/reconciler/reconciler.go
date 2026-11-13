@@ -395,7 +395,18 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// tectonic joined AllEngines, which is the whole point of it.
 			enqueueErr = s.enq.EnqueueTectonicConvert(ctx, j.ID)
 		case convert.EngineCAD:
-			enqueueErr = s.enq.EnqueueCADJob(ctx, j.ID)
+			job, _ := s.store.Get(ctx, j.ID)
+			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "engine_error", "unsupported conversion", map[string]any{"action": "cad_retired"})
+			if ferr == nil {
+				metrics.RecordReconcilerAction("cad_retired")
+			}
+			if job != nil && ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, jobs.StatusFailed)
+			}
+			if job != nil && ferr == nil && job.CallbackURL != "" {
+				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
+			}
+			continue
 		default:
 			// Fail closed (T-10-03): archive is out of scope this
 			// milestone and a corrupted/unrecognized engine value must never

@@ -39,7 +39,6 @@ func TestChartGraceOutlivesAsynqShutdown(t *testing.T) {
 		"pandocWorker":   "PANDOC_ENGINE_TIMEOUT",
 		"probeWorker":    "PROBE_ENGINE_TIMEOUT",
 		"tectonicWorker": "TECTONIC_ENGINE_TIMEOUT",
-		"cadWorker":      "CAD_ENGINE_TIMEOUT",
 	}
 	// Not engine workers: they run no conversion and derive no ShutdownTimeout
 	// from an engine timeout.

@@ -666,6 +666,18 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
+			if want.engine == convert.EngineCAD {
+				if len(got) != 0 {
+					t.Fatalf("engine cad: EnqueueCADJob calls = %+v, want none", got)
+				}
+				if store.requeueStaleCalls != 0 {
+					t.Fatalf("engine cad: RequeueStale calls = %d, want 0", store.requeueStaleCalls)
+				}
+				if len(store.markFailedCalls) != 1 || store.markFailedCalls[0] != id {
+					t.Fatalf("engine cad: MarkFailed calls = %+v, want [%s]", store.markFailedCalls, id)
+				}
+				return
+			}
 			if len(got) != 1 || got[0] != id {
 				t.Fatalf("engine %q: matching Enqueue* calls = %+v, want [%s]", want.engine, got, id)
 			}

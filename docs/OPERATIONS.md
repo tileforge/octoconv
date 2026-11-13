@@ -41,7 +41,6 @@ cmd/
   pandoc-worker/      — markup-family conversion (pandoc)
   probe-worker/       — sanitize operation
   tectonic-worker/    — LaTeX → PDF, Landlock-confined
-  cad-worker/         — STEP and IGES → STL (OCCT), DXF → SVG/PDF, PNG previews, Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep
   mcp-server/         — stdio MCP server
   mcp-http/           — streamable-HTTP MCP server for in-cluster use

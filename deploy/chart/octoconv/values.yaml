@@ -223,16 +223,6 @@ tectonicWorker:
       cpu: "2"
       memory: "1Gi"
 
-cadWorker:
-  image:
-    repository: "octoconv-cad-worker"
-  replicas: 1
-  terminationGracePeriodSeconds: 906
-  resources:
-    limits:
-      cpu: "2"
-      memory: "4Gi"
-
 chromiumWorker:
   image:
     repository: "octoconv-chromium-worker"

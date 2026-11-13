@@ -12,14 +12,10 @@ import (
 
 const (
 	previewDocPath     = "../../docs/PREVIEW.md"
-	previewDocRenderer = "../../cmd/cad-worker/helper/cad-render"
 	previewDocHandlers = "../../internal/api/handlers.go"
 )
 
-var (
-	previewDocMargin  = regexp.MustCompile(`(?m)^MARGIN = ([0-9.]+)$`)
-	previewDocRefusal = regexp.MustCompile(`convert\.ValidateCADApplicability\([^)]*\); err != nil \{[^}]*errcode\.OptsNotApplicable`)
-)
+var previewDocRefusal = regexp.MustCompile(`convert\.ValidateCADApplicability\([^)]*\); err != nil \{[^}]*errcode\.OptsNotApplicable`)
 
 func previewDocSet(keys ...string) map[string]bool {
 	out := map[string]bool{}
@@ -59,10 +55,6 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 				t.Errorf("the cad convert pair %s -> png is a preview outside render", p.From)
 			}
 		}
-		m := previewDocMargin.FindStringSubmatch(cadDocRead(t, previewDocRenderer))
-		if m == nil {
-			t.Fatalf("%s has no MARGIN line", previewDocRenderer)
-		}
 		threeD := map[string]bool{}
 		for _, p := range pairs[OperationRender] {
 			if p.From != "dxf" {
@@ -92,7 +84,7 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 			"output":       {previewDocSet("png", jobs.OutputRolePrimary), []string{"role `" + jobs.OutputRolePrimary + "`"}},
 			"size":         {previewDocSet(fmt.Sprintf("%d..%d", CADMinRenderSize, CADMaxRenderSize), strconv.Itoa(CADDefaultRenderSize)), []string{fmt.Sprintf("default `%d`", CADDefaultRenderSize)}},
 			"background":   {cadBackgrounds, []string{"`" + CADBackgroundOpq + "` (white #FFFFFF, the default)", "`" + CADBackgroundTr + "` (alpha 0)"}},
-			"3D framing":   {previewDocSet(m[1]), []string{"orthographic"}},
+			"3D framing":   {previewDocSet(strconv.FormatFloat(cadRenderMargin, 'g', -1, 64)), []string{"orthographic"}},
 			"DXF framing":  {previewDocSet(strconv.FormatFloat(cadMarginMin, 'g', -1, 64)), []string{"never cropped or stretched"}},
 			"3D views":     {cadViews, []string{"`" + CADViewIso + "` (the default)"}},
 			"DXF views":    {previewDocSet("top", "view", "opts_not_applicable"), []string{"422"}},

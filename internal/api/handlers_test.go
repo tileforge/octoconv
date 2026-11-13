@@ -4091,7 +4091,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		// negative half -- every other engine's accessor must stay uuid.Nil --
 		// and a separate test would assert only the positive half.
 		{convert.EngineTectonic, fixture{"in.tex", "pdf", func(*testing.T) []byte { return latexFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedTectonic }},
-		{convert.EngineCAD, fixture{"in.step", "stl", func(t *testing.T) []byte { return readCADFixture(t, "public/LM8UU.step") }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedCAD }},
 	}
 
 	allAccessors := make(map[string]func(*fakeQueue) uuid.UUID, len(cases))
@@ -4133,30 +4132,25 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		})
 	}
 
-	t.Run("cad_render_routes_to_the_cad_queue", func(t *testing.T) {
+	t.Run("cad_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}
 		store := &fakeStorage{}
 		queue := &fakeQueue{}
 		srv, _ := newTestServer(repo, store, queue)
 
-		body, ct := multipartBodyWithOperation(t, "in.step", "png", "render", readCADFixture(t, "public/LM8UU.step"))
+		body, ct := multipartBody(t, "in.step", "stl", readCADFixture(t, "public/LM8UU.step"))
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 		req.Header.Set("Content-Type", ct)
 		rec := httptest.NewRecorder()
 
 		srv.Routes().ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 		}
-		if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != "render" {
-			t.Fatalf("job = %+v, want a cad render job", repo.created)
-		}
-		if queue.enqueuedCAD != repo.createdID {
-			t.Fatalf("cad enqueue id = %s, want %s", queue.enqueuedCAD, repo.createdID)
-		}
-		if queue.enqueuedImage != uuid.Nil {
-			t.Fatalf("a render job must not reach the image queue: %s", queue.enqueuedImage)
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedCAD != uuid.Nil {
+			t.Fatalf("refused cad created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
 		}
 	})
 

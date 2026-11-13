@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"go.yaml.in/yaml/v3"
 
 	"github.com/tileforge/octoconv/internal/convert"
@@ -188,14 +187,13 @@ func TestChartTransportCapsAdmitTheLargestCeilingFile(t *testing.T) {
 		MaxUploadBytes:        maxUpload,
 		InspectMaxUploadBytes: inspectUpload,
 	})
+	admitCADCatalog(srv)
 
 	rec := postLargestSTL(t, srv, "/v1/jobs", fileName)
 	if rec.Code != http.StatusAccepted {
 		t.Errorf("create at the chart's caps: status = %d, want 202; body=%.300s", rec.Code, rec.Body.String())
 	} else {
-		if repo.createdID == uuid.Nil || q.enqueuedCAD != repo.createdID {
-			t.Errorf("enqueuedCAD = %s, created = %s, want the created job on the cad queue", q.enqueuedCAD, repo.createdID)
-		}
+		assertAdmittedCAD(t, repo, q, convert.OperationRender, "stl", "png", "octoconv.render.cad")
 		if store.uploadCalls != 1 || store.bytes != size {
 			t.Errorf("uploadCalls = %d, uploaded %d bytes, want 1 upload of %d bytes", store.uploadCalls, store.bytes, size)
 		}
@@ -591,7 +589,8 @@ func TestChartTransportCapsAdmitTheLargestCeilingFileOverAPacedConnection(t *tes
 
 	t.Run("/v1/jobs", func(t *testing.T) {
 		store := &atomicCapStorage{fakeStorage: &fakeStorage{}}
-		_, ts := newIntakeServerWith(t, &fakeRepo{}, store, cfg, window, minRate)
+		srv, ts := newIntakeServerWith(t, &fakeRepo{}, store, cfg, window, minRate)
+		admitCADCatalog(srv)
 		status, raw, size, elapsed := paced(t, ts, "/v1/jobs")
 		if status != http.StatusAccepted {
 			t.Fatalf("create over a paced connection: status = %d after %v, want 202; body=%.300s", status, elapsed, raw)

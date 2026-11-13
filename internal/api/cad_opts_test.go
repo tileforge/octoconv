@@ -5,16 +5,17 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/errcode"
 )
 
 func postCADJobWithOpts(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, opts string) *httptest.ResponseRecorder {
 	t.Helper()
 	srv, _ := newTestServer(repo, store, q)
+	admitCADCatalog(srv)
 	body, ct := multipartBodyWithOpts(t, "in.step", "stl", readCADFixture(t, "public/LM8UU.step"), opts)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 	req.Header.Set("Content-Type", ct)
@@ -69,43 +70,24 @@ func TestCreateJobCADOptsRejections(t *testing.T) {
 	}
 }
 
-func TestCreateJobCADDimensionsStored(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
+func TestCreateJobCADDimensionsAreRefused(t *testing.T) {
+	for _, raw := range []string{`{"dimensions":false}`, `{"dimensions":true}`} {
 		repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
-		raw := `{"dimensions":false}`
-		if enabled {
-			raw = `{"dimensions":true}`
-		}
 		rec := postCADRender(t, repo, store, q, "in.step", readCADFixture(t, "public/LM8UU.step"), raw)
-		if rec.Code != http.StatusAccepted && rec.Code != http.StatusCreated {
-			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
-		}
-		if repo.created == nil {
-			t.Fatal("no job was created")
-		}
-		if want := map[string]any{"dimensions": enabled}; !reflect.DeepEqual(repo.created.Opts, want) {
-			t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, want)
-		}
+		assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
 	}
 }
 
-func TestCreateJobCADQualityStoredNormalized(t *testing.T) {
+func TestCreateJobCADQualityIsRefused(t *testing.T) {
 	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 	rec := postCADJobWithOpts(t, repo, store, q, "  {\n \"quality\" : \"fine\" }  ")
-	if rec.Code != http.StatusAccepted && rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 2xx; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil {
-		t.Fatal("no job was created")
-	}
-	if want := map[string]any{"quality": "fine"}; !reflect.DeepEqual(repo.created.Opts, want) {
-		t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, want)
-	}
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
 }
 
 func postCADRender(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, filename string, data []byte, opts string) *httptest.ResponseRecorder {
 	t.Helper()
 	srv, _ := newTestServer(repo, store, q)
+	admitCADCatalog(srv)
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 	fw, err := w.CreateFormFile("file", filename)
@@ -156,29 +138,43 @@ func TestCreateJobRenderIsAcceptedForEachCADSource(t *testing.T) {
 		name     string
 		filename string
 		fixture  string
-		opts     string
-		want     map[string]any
+		source   string
 	}{
-		{"step", "in.step", "public/LM8UU.step", ` { "size" : 512, "view":"top" }`, map[string]any{"size": float64(512), "view": "top"}},
-		{"iges", "in.iges", "synthetic/surfaces_only.iges", `{"quality":"draft"}`, map[string]any{"quality": "draft"}},
-		{"stl", "in.stl", "public/nasa-hubble-all-pieces.stl", `{"background":"transparent"}`, map[string]any{"background": "transparent"}},
+		{"step", "in.step", "public/LM8UU.step", "step"},
+		{"iges", "in.iges", "synthetic/surfaces_only.iges", "iges"},
+		{"stl", "in.stl", "public/nasa-hubble-all-pieces.stl", "stl"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postCADRender(t, repo, store, q, tc.filename, readCADFixture(t, tc.fixture), "")
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			assertAdmittedCAD(t, repo, q, convert.OperationRender, tc.source, "png", "octoconv.render.cad")
+			if store.uploadCalls != 1 {
+				t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
+			}
+		})
+	}
+}
+
+func TestCreateJobRenderOptionsAreRefused(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		fixture  string
+		opts     string
+	}{
+		{"step", "in.step", "public/LM8UU.step", ` { "size" : 512, "view":"top" }`},
+		{"iges", "in.iges", "synthetic/surfaces_only.iges", `{"quality":"draft"}`},
+		{"stl", "in.stl", "public/nasa-hubble-all-pieces.stl", `{"background":"transparent"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 			rec := postCADRender(t, repo, store, q, tc.filename, readCADFixture(t, tc.fixture), tc.opts)
-			if rec.Code != http.StatusAccepted {
-				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-			}
-			if repo.created == nil || repo.created.Operation != "render" || repo.created.TargetFormat != "png" || repo.created.Engine != "cad" {
-				t.Fatalf("created = %+v, want a cad render job targeting png", repo.created)
-			}
-			if !reflect.DeepEqual(repo.created.Opts, tc.want) {
-				t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, tc.want)
-			}
-			if q.enqueueCalls != 1 {
-				t.Errorf("enqueueCalls = %d, want 1", q.enqueueCalls)
-			}
+			assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
 		})
 	}
 }
@@ -186,6 +182,7 @@ func TestCreateJobRenderIsAcceptedForEachCADSource(t *testing.T) {
 func postDXFJob(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, target, operation, opts string) *httptest.ResponseRecorder {
 	t.Helper()
 	srv, _ := newTestServer(repo, store, q)
+	admitCADCatalog(srv)
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 	fw, err := w.CreateFormFile("file", "drawing.dxf")
@@ -252,7 +249,7 @@ func TestCreateJobDXFConvertWithAnyOptionIsOptsNotApplicable(t *testing.T) {
 	}
 }
 
-func TestCreateJobDXFConvertWithoutOptionsIsAcceptedOnTheCADQueue(t *testing.T) {
+func TestCreateJobDXFConvertWithoutOptionsUsesProtocol(t *testing.T) {
 	for _, target := range []string{"pdf", "svg"} {
 		t.Run(target, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
@@ -260,16 +257,7 @@ func TestCreateJobDXFConvertWithoutOptionsIsAcceptedOnTheCADQueue(t *testing.T) 
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if repo.created == nil || repo.created.Engine != "cad" || repo.created.Operation != "convert" ||
-				repo.created.SourceFormat != "dxf" || repo.created.TargetFormat != target {
-				t.Fatalf("created = %+v, want a cad convert job dxf -> %s", repo.created, target)
-			}
-			if len(repo.created.Opts) != 0 {
-				t.Errorf("stored opts = %#v, want none", repo.created.Opts)
-			}
-			if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-				t.Errorf("enqueueCalls = %d, enqueuedCAD = %s, want one cad enqueue of %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-			}
+			assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", target, "octoconv.convert.cad")
 			if store.uploadCalls != 1 {
 				t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
 			}
@@ -277,21 +265,20 @@ func TestCreateJobDXFConvertWithoutOptionsIsAcceptedOnTheCADQueue(t *testing.T) 
 	}
 }
 
-func TestCreateJobDXFRenderWithSizeBackgroundAndUnitIsAcceptedNormalized(t *testing.T) {
+func TestCreateJobDXFRenderWithoutOptionsUsesProtocol(t *testing.T) {
 	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
-	rec := postDXFJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
+	rec := postDXFJob(t, repo, store, q, "png", "render", "")
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.Engine != "cad" || repo.created.Operation != "render" ||
-		repo.created.SourceFormat != "dxf" || repo.created.TargetFormat != "png" {
-		t.Fatalf("created = %+v, want a cad render job dxf -> png", repo.created)
+	assertAdmittedCAD(t, repo, q, convert.OperationRender, "dxf", "png", "octoconv.render.cad")
+	if store.uploadCalls != 1 {
+		t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
 	}
-	want := map[string]any{"size": float64(2048), "background": "transparent", "assume_unit": "mm"}
-	if !reflect.DeepEqual(repo.created.Opts, want) {
-		t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, want)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedCAD != repo.createdID {
-		t.Errorf("enqueueCalls = %d, enqueuedCAD = %s, want one cad enqueue of %s", q.enqueueCalls, q.enqueuedCAD, repo.createdID)
-	}
+}
+
+func TestCreateJobDXFRenderWithSizeBackgroundAndUnitIsRefused(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postDXFJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
 }
