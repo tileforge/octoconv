@@ -138,8 +138,6 @@ jobs:
             probe-worker.cache-from=type=gha,scope=probe-worker
             tectonic-worker.cache-to=type=gha,mode=max,scope=tectonic-worker
             tectonic-worker.cache-from=type=gha,scope=tectonic-worker
-            cad-worker.cache-to=type=gha,mode=max,scope=cad-worker
-            cad-worker.cache-from=type=gha,scope=cad-worker
 
   # Tier 4: live E2E against the real compose stack (docker-compose.yml +
   # docker-compose.e2e.yml — the ONLY job referencing the .e2e.yml override,
@@ -190,7 +188,6 @@ jobs:
             pandoc-worker.cache-from=type=gha,scope=pandoc-worker
             probe-worker.cache-from=type=gha,scope=probe-worker
             tectonic-worker.cache-from=type=gha,scope=tectonic-worker
-            cad-worker.cache-from=type=gha,scope=cad-worker
       - name: Bring up compose stack
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d
         # deliberately NOT --build here: images are already loaded and tagged
