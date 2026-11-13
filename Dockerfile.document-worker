@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build -o /out/document-worker ./cmd/document-worker
 # emulated amd64 process cannot establish Landlock (landlock_create_ruleset
 # fails; measured 2026-09-19), which is why the whole-image pin had to go
 # before the document class could be confined.
-FROM --platform=linux/amd64 verapdf/cli:v1.30.3 AS verapdf
+FROM --platform=linux/amd64 verapdf/cli:v1.30.4 AS verapdf
 
 # Runtime stage: document engine needs LibreOffice (soffice) headless conversion.
 FROM debian:bookworm-slim
