@@ -7,35 +7,62 @@ import (
 )
 
 func TestCadManifestsCoverTheEightPairs(t *testing.T) {
-	convertParsed := mustParseCadManifest(t, "manifest-cad-convert.json")
-	renderParsed := mustParseCadManifest(t, "manifest-cad-render.json")
-	if convertParsed.id != "octoconv.convert.cad" || convertParsed.legacyEngine != convert.EngineCAD || convertParsed.legacyOp != convert.OperationConvert {
-		t.Fatalf("convert capability = %s %s %s", convertParsed.id, convertParsed.legacyOp, convertParsed.legacyEngine)
-	}
-	if renderParsed.id != "octoconv.render.cad" || renderParsed.legacyEngine != convert.EngineCAD || renderParsed.legacyOp != convert.OperationRender {
-		t.Fatalf("render capability = %s %s %s", renderParsed.id, renderParsed.legacyOp, renderParsed.legacyEngine)
-	}
-	assertPairs(t, convertParsed, convert.OperationConvert, map[string]string{
+	modelConvert := mustParseCadManifest(t, "manifest-cad-convert.json")
+	modelRender := mustParseCadManifest(t, "manifest-cad-render.json")
+	drawConvert := mustParseCadManifest(t, "manifest-caddraw-convert.json")
+	drawRender := mustParseCadManifest(t, "manifest-caddraw-render.json")
+	assertCadCapability(t, modelConvert, "octoconv.convert.cad", convert.OperationConvert)
+	assertCadCapability(t, modelRender, "octoconv.render.cad", convert.OperationRender)
+	assertCadCapability(t, drawConvert, "octoconv.convert.caddraw", convert.OperationConvert)
+	assertCadCapability(t, drawRender, "octoconv.render.caddraw", convert.OperationRender)
+	assertPairs(t, modelConvert, convert.OperationConvert, map[string]string{
 		"step\x00stl": "cad",
 		"iges\x00stl": "cad",
-		"dxf\x00svg":  "cad",
-		"dxf\x00pdf":  "cad",
 	})
-	assertPairs(t, renderParsed, convert.OperationRender, map[string]string{
+	assertPairs(t, drawConvert, convert.OperationConvert, map[string]string{
+		"dxf\x00svg": "cad",
+		"dxf\x00pdf": "cad",
+	})
+	assertPairs(t, modelRender, convert.OperationRender, map[string]string{
 		"step\x00png": "cad",
 		"iges\x00png": "cad",
 		"stl\x00png":  "cad",
-		"dxf\x00png":  "cad",
 	})
-	var measurements bool
-	for _, port := range renderParsed.ports {
-		if port.direction == "output" && port.role == "measurements" && port.min == 0 && port.max == 1 {
-			measurements = true
+	assertPairs(t, drawRender, convert.OperationRender, map[string]string{
+		"dxf\x00png": "cad",
+	})
+	assertOptionalMeasurements(t, modelRender)
+	assertOptionalMeasurements(t, drawRender)
+	seen := map[string]string{}
+	for _, parsed := range []parsedManifest{modelConvert, modelRender, drawConvert, drawRender} {
+		for _, format := range parsed.formats {
+			key := parsed.legacyOp + "\x00" + format.source + "\x00" + format.target
+			if prev, ok := seen[key]; ok {
+				t.Fatalf("pair %s claimed by %s and %s", key, prev, parsed.id)
+			}
+			seen[key] = parsed.id
 		}
 	}
-	if !measurements {
-		t.Fatal("render manifest missing optional measurements output")
+	if len(seen) != 8 {
+		t.Fatalf("covered pairs = %d, want 8", len(seen))
 	}
+}
+
+func assertCadCapability(t *testing.T, parsed parsedManifest, id, operation string) {
+	t.Helper()
+	if parsed.id != id || parsed.legacyEngine != convert.EngineCAD || parsed.legacyOp != operation {
+		t.Fatalf("capability = %s %s %s, want %s %s %s", parsed.id, parsed.legacyOp, parsed.legacyEngine, id, operation, convert.EngineCAD)
+	}
+}
+
+func assertOptionalMeasurements(t *testing.T, parsed parsedManifest) {
+	t.Helper()
+	for _, port := range parsed.ports {
+		if port.direction == "output" && port.role == "measurements" && port.min == 0 && port.max == 1 {
+			return
+		}
+	}
+	t.Fatalf("%s missing optional measurements output", parsed.id)
 }
 
 func mustParseCadManifest(t *testing.T, name string) parsedManifest {

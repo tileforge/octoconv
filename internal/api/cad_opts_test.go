@@ -257,7 +257,7 @@ func TestCreateJobDXFConvertWithoutOptionsUsesProtocol(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", target, "octoconv.convert.cad")
+			assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", target, "octoconv.convert.caddraw")
 			if store.uploadCalls != 1 {
 				t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
 			}
@@ -271,7 +271,7 @@ func TestCreateJobDXFRenderWithoutOptionsUsesProtocol(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	assertAdmittedCAD(t, repo, q, convert.OperationRender, "dxf", "png", "octoconv.render.cad")
+	assertAdmittedCAD(t, repo, q, convert.OperationRender, "dxf", "png", "octoconv.render.caddraw")
 	if store.uploadCalls != 1 {
 		t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
 	}

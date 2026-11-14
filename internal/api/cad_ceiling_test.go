@@ -517,5 +517,5 @@ func TestCADDXFPaddedInputIsAcceptedBelowTheCeiling(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", "svg", "octoconv.convert.cad")
+	assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dxf", "svg", "octoconv.convert.caddraw")
 }
