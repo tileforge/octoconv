@@ -190,14 +190,19 @@ func postCAD(t *testing.T, srv *Server, filename, target, operation string, data
 func admitCADCatalog(srv *Server) {
 	srv.SetCapabilityCatalog(&fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			id := "octoconv.convert.cad"
 			switch source {
-			case "step", "iges", "stl", "dxf":
+			case "step", "iges", "stl":
+			case "dxf":
+				id = "octoconv.convert.caddraw"
 			default:
 				return workerproto.Match{}, false
 			}
-			id := "octoconv.convert.cad"
 			if operation == convert.OperationRender {
 				id = "octoconv.render.cad"
+				if source == "dxf" {
+					id = "octoconv.render.caddraw"
+				}
 			}
 			return cadMatch(id, operation), true
 		},

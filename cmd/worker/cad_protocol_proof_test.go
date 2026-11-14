@@ -59,25 +59,40 @@ func TestCadProtocolWorkerCompletesEightPairs(t *testing.T) {
 	resetProtocolTables(t, pool)
 	clientID := insertProtocolClient(t, pool)
 
-	convertManifest := readProof(t, filepath.Join(manifestDir, "manifest-cad-convert.json"))
-	renderManifest := readProof(t, filepath.Join(manifestDir, "manifest-cad-render.json"))
+	modelConvertManifest := readProof(t, filepath.Join(manifestDir, "manifest-cad-convert.json"))
+	modelRenderManifest := readProof(t, filepath.Join(manifestDir, "manifest-cad-render.json"))
+	drawConvertManifest := readProof(t, filepath.Join(manifestDir, "manifest-caddraw-convert.json"))
+	drawRenderManifest := readProof(t, filepath.Join(manifestDir, "manifest-caddraw-render.json"))
 	repo := workerproto.NewRepo(pool)
 	ca, caKey := mintCA(t)
-	convertID := uuid.New()
-	renderID := uuid.New()
-	convertCert := mintClient(t, ca, caKey, convertID)
-	renderCert := mintClient(t, ca, caKey, renderID)
+	modelConvertID := uuid.New()
+	modelRenderID := uuid.New()
+	drawConvertID := uuid.New()
+	drawRenderID := uuid.New()
+	modelConvertCert := mintClient(t, ca, caKey, modelConvertID)
+	modelRenderCert := mintClient(t, ca, caKey, modelRenderID)
+	drawConvertCert := mintClient(t, ca, caKey, drawConvertID)
+	drawRenderCert := mintClient(t, ca, caKey, drawRenderID)
 	serverCert := mintIPServer(t, ca, caKey)
 	dir := t.TempDir()
 	caFile := filepath.Join(dir, "ca.pem")
 	writeCertPEM(t, caFile, [][]byte{ca.Raw})
-	convertFiles := writeClientMaterial(t, dir, "convert", convertCert, convertManifest)
-	renderFiles := writeClientMaterial(t, dir, "render", renderCert, renderManifest)
-	if err := repo.Approve(ctx, convertID, convertManifest); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Approve(ctx, renderID, renderManifest); err != nil {
-		t.Fatal(err)
+	modelConvertFiles := writeClientMaterial(t, dir, "model-convert", modelConvertCert, modelConvertManifest)
+	modelRenderFiles := writeClientMaterial(t, dir, "model-render", modelRenderCert, modelRenderManifest)
+	drawConvertFiles := writeClientMaterial(t, dir, "draw-convert", drawConvertCert, drawConvertManifest)
+	drawRenderFiles := writeClientMaterial(t, dir, "draw-render", drawRenderCert, drawRenderManifest)
+	for _, item := range []struct {
+		id   uuid.UUID
+		body []byte
+	}{
+		{modelConvertID, modelConvertManifest},
+		{modelRenderID, modelRenderManifest},
+		{drawConvertID, drawConvertManifest},
+		{drawRenderID, drawRenderManifest},
+	} {
+		if err := repo.Approve(ctx, item.id, item.body); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	store := newObjectBytes()
@@ -95,20 +110,23 @@ func TestCadProtocolWorkerCompletesEightPairs(t *testing.T) {
 	coreAddr := serveTLS(t, coreCfg, workerproto.NewHandler(repo, jobs.NewRepo(pool), store, 3*time.Minute).Routes(), true)
 
 	jobRepo := jobs.NewRepo(pool)
-	convertJobs := []proofJob{
+	coreURL := "https://" + coreAddr
+	runProofWorker(t, pool, workerBin, coreURL, modelConvertID, modelConvertFiles, caFile, "model", insertProofJobs(t, jobRepo, store, clientID, []proofJob{
 		{op: convert.OperationConvert, from: "step", to: "stl", name: "part.step", body: step, cap: "octoconv.convert.cad"},
 		{op: convert.OperationConvert, from: "iges", to: "stl", name: "part.iges", body: iges, cap: "octoconv.convert.cad"},
-		{op: convert.OperationConvert, from: "dxf", to: "svg", name: "part.dxf", body: dxf, cap: "octoconv.convert.cad"},
-		{op: convert.OperationConvert, from: "dxf", to: "pdf", name: "part.dxf", body: dxf, cap: "octoconv.convert.cad"},
-	}
-	renderJobs := []proofJob{
+	}))
+	runProofWorker(t, pool, workerBin, coreURL, modelRenderID, modelRenderFiles, caFile, "model", insertProofJobs(t, jobRepo, store, clientID, []proofJob{
 		{op: convert.OperationRender, from: "step", to: "png", name: "part.step", body: step, cap: "octoconv.render.cad"},
 		{op: convert.OperationRender, from: "iges", to: "png", name: "part.iges", body: iges, cap: "octoconv.render.cad"},
 		{op: convert.OperationRender, from: "stl", to: "png", name: "part.stl", body: stl, cap: "octoconv.render.cad"},
-		{op: convert.OperationRender, from: "dxf", to: "png", name: "part.dxf", body: dxf, cap: "octoconv.render.cad"},
-	}
-	runProofWorker(t, pool, workerBin, "https://"+coreAddr, convertID, convertFiles, caFile, insertProofJobs(t, jobRepo, store, clientID, convertJobs))
-	runProofWorker(t, pool, workerBin, "https://"+coreAddr, renderID, renderFiles, caFile, insertProofJobs(t, jobRepo, store, clientID, renderJobs))
+	}))
+	runProofWorker(t, pool, workerBin, coreURL, drawConvertID, drawConvertFiles, caFile, "drawing", insertProofJobs(t, jobRepo, store, clientID, []proofJob{
+		{op: convert.OperationConvert, from: "dxf", to: "svg", name: "part.dxf", body: dxf, cap: "octoconv.convert.caddraw"},
+		{op: convert.OperationConvert, from: "dxf", to: "pdf", name: "part.dxf", body: dxf, cap: "octoconv.convert.caddraw"},
+	}))
+	runProofWorker(t, pool, workerBin, coreURL, drawRenderID, drawRenderFiles, caFile, "drawing", insertProofJobs(t, jobRepo, store, clientID, []proofJob{
+		{op: convert.OperationRender, from: "dxf", to: "png", name: "part.dxf", body: dxf, cap: "octoconv.render.caddraw"},
+	}))
 }
 
 type proofJob struct {
@@ -166,7 +184,7 @@ func insertProofJobs(t *testing.T, repo *jobs.Repo, store *objectBytes, clientID
 	return ids
 }
 
-func runProofWorker(t *testing.T, pool *pgxpool.Pool, bin, core string, workerID uuid.UUID, mat proofMaterial, caFile string, ids []uuid.UUID) {
+func runProofWorker(t *testing.T, pool *pgxpool.Pool, bin, core string, workerID uuid.UUID, mat proofMaterial, caFile, stack string, ids []uuid.UUID) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -174,6 +192,7 @@ func runProofWorker(t *testing.T, pool *pgxpool.Pool, bin, core string, workerID
 	cmd.Env = []string{
 		"PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin",
 		"HOME=/tmp",
+		"CAD_STACK=" + stack,
 		"CAD_PROTOCOL_CORE_URL=" + core,
 		"CAD_PROTOCOL_CLIENT_CERT=" + mat.cert,
 		"CAD_PROTOCOL_CLIENT_KEY=" + mat.key,
