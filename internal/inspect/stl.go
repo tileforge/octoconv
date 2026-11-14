@@ -13,7 +13,7 @@ import (
 
 const stlCensusTriangles = 1 << 15
 
-var stlVertex = regexp.MustCompile(`(?i)vertex\s+(\S+)\s+(\S+)\s+(\S+)`)
+var stlVertex = regexp.MustCompile(`(?im)^[ \t]*vertex[ \t]+(\S+)[ \t]+(\S+)[ \t]+(\S+)[ \t]*\r?$`)
 
 var stlCodes = []Code{CodeSTLOpen, CodeSTLNonManifold, CodeSTLUnoriented}
 

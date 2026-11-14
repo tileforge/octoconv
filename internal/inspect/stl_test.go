@@ -71,6 +71,20 @@ func TestSTLOverCensusCapIsUnknown(t *testing.T) {
 	}
 }
 
+func TestSTLSolidNamedVertexIsOpen(t *testing.T) {
+	tris := [][3]int{{0, 1, 2}}
+	for _, name := range []string{"vertex", "myvertex"} {
+		t.Run(name, func(t *testing.T) {
+			buf := asciiSTLNamed(name, tris, "\n")
+			res := AnalyzeSTL(bytes.NewReader(buf), int64(len(buf)), int64(len(buf)), nil)
+			assertSTLResult(t, res, []Code{CodeSTLOpen})
+		})
+	}
+	buf := asciiSTLNamed("vertex", tris, "\r\n")
+	res := AnalyzeSTL(bytes.NewReader(buf), int64(len(buf)), int64(len(buf)), nil)
+	assertSTLResult(t, res, []Code{CodeSTLOpen})
+}
+
 func TestSTLBinaryTriangleIsOpen(t *testing.T) {
 	buf := binarySTL([][3][3]float32{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}})
 	res := AnalyzeSTL(bytes.NewReader(buf), int64(len(buf)), int64(len(buf)), nil)
@@ -172,20 +186,24 @@ func assertSTLResult(t *testing.T, res FamilyResult, want []Code) {
 }
 
 func asciiSTL(tris [][3]int) []byte {
+	return asciiSTLNamed("t", tris, "\n")
+}
+
+func asciiSTLNamed(name string, tris [][3]int, nl string) []byte {
 	var b bytes.Buffer
-	b.WriteString("solid t\n")
+	b.WriteString("solid " + name + nl)
 	for _, tri := range tris {
-		b.WriteString("facet normal 0 0 0\n outer loop\n")
+		b.WriteString("facet normal 0 0 0" + nl + " outer loop" + nl)
 		for _, v := range tri {
 			b.WriteString("  vertex ")
 			b.WriteString(strconv.Itoa(v))
-			b.WriteString(" 0 0\n")
+			b.WriteString(" 0 0" + nl)
 		}
-		b.WriteString(" endloop\nendfacet\n")
+		b.WriteString(" endloop" + nl + "endfacet" + nl)
 	}
-	b.WriteString("endsolid t\n")
+	b.WriteString("endsolid " + name + nl)
 	for stlBinarySize(b.Bytes()) {
-		b.WriteString("\n")
+		b.WriteString(nl)
 	}
 	return b.Bytes()
 }
