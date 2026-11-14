@@ -66,7 +66,7 @@ const ebmlInfoWindow = 256 * 1024
 // to characteristic extraction exactly as it does to findings.
 //
 // The media family declares no Findings and no Checks of its own: none of
-// this package's fourteen closed vocabulary Codes (findings.go) describe a
+// this package's closed vocabulary Codes (findings.go) describe a
 // media-format-specific risk -- the codes that exist today are container/
 // PDF/image concepts. Reducing every Code to not_applicable for a media
 // upload is the report ASSEMBLER's job (plan 58-07), which has the full

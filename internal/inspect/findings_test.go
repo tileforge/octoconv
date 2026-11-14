@@ -2,13 +2,13 @@ package inspect
 
 import "testing"
 
-// TestAllCodesCount pins the closed vocabulary at exactly fourteen codes
+// TestAllCodesCount pins the closed vocabulary at exactly seventeen codes
 // (D-05). A change to this number must be a deliberate ADDITION (never a
 // rename/removal) and must be reflected in docs/FINDINGS.md in the same
 // commit -- doc_sync_test.go enforces that half mechanically.
 func TestAllCodesCount(t *testing.T) {
-	if got := len(AllCodes()); got != 14 {
-		t.Fatalf("len(AllCodes()) = %d, want 14", got)
+	if got := len(AllCodes()); got != 17 {
+		t.Fatalf("len(AllCodes()) = %d, want 17", got)
 	}
 }
 
@@ -47,6 +47,9 @@ func TestAllCodesOrderIsDeclarationOrder(t *testing.T) {
 		CodePDFEncrypted,
 		CodeExternalReference,
 		CodeMetadataPresent,
+		CodeSTLOpen,
+		CodeSTLNonManifold,
+		CodeSTLUnoriented,
 	}
 	got := AllCodes()
 	if len(got) != len(want) {
