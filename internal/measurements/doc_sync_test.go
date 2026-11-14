@@ -74,6 +74,7 @@ func TestMeasurementsDocMatchesVocabularies(t *testing.T) {
 		{"## Units", AllUnits()},
 		{"## Unit sources", AllUnitSources()},
 		{"## Null reasons", AllNullReasons()},
+		{"## Mesh findings", AllMeshFindings()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.header, func(t *testing.T) {
