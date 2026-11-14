@@ -44,7 +44,7 @@ const (
 )
 
 // Code is a closed, machine-readable identifier for one class of finding.
-// The set below is closed at fourteen values (D-05: no typed findings exist
+// The set below is closed at seventeen values (D-05: no typed findings exist
 // anywhere in the project before this phase -- this is a new layer, not a
 // refactor of an existing bool/error/422 collapse). Later phases may ADD
 // codes; none may be renamed or repurposed once shipped (same discipline as
@@ -128,6 +128,12 @@ const (
 	// PNG eXIf/iTXt, TIFF IFD) or a PDF /Info dictionary. Severity info: a
 	// structural fact about embedded metadata, not itself a risk.
 	CodeMetadataPresent Code = "metadata_present"
+	// CodeSTLOpen: one undirected edge of an STL belongs to one triangle.
+	CodeSTLOpen Code = "stl_open"
+	// CodeSTLNonManifold: one undirected edge of an STL belongs to three or more triangles.
+	CodeSTLNonManifold Code = "stl_non_manifold"
+	// CodeSTLUnoriented: one undirected edge of an STL belongs to two triangles that traverse it in the same direction.
+	CodeSTLUnoriented Code = "stl_unoriented"
 )
 
 // Finding is one occurrence of Code detected inside a file's content.
@@ -162,6 +168,9 @@ var allCodes = []Code{
 	CodePDFEncrypted,
 	CodeExternalReference,
 	CodeMetadataPresent,
+	CodeSTLOpen,
+	CodeSTLNonManifold,
+	CodeSTLUnoriented,
 }
 
 // severityByCode is the closed severity assignment for every code in
@@ -182,6 +191,9 @@ var severityByCode = map[Code]Severity{
 	CodePDFEncrypted:        SeverityInfo,
 	CodeExternalReference:   SeverityWarning,
 	CodeMetadataPresent:     SeverityInfo,
+	CodeSTLOpen:             SeverityInfo,
+	CodeSTLNonManifold:      SeverityInfo,
+	CodeSTLUnoriented:       SeverityInfo,
 }
 
 // AllCodes returns every declared finding code exactly once, in declaration

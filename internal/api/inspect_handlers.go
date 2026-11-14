@@ -1430,6 +1430,8 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		budgeted := inspect.NewBudgetedReaderAt(file, maxBytes)
 		class := convert.ClassifyCFB(budgeted, size)
 		families = append(families, cfbFamilyResult(class, budgeted.Exceeded(), tr))
+	case detected == "stl":
+		families = append(families, inspect.AnalyzeSTL(file, size, maxBytes, tr))
 	default:
 		return families
 	}

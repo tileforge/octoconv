@@ -826,7 +826,7 @@ func xmlPartDecodePeak(n int64) int64 {
 }
 
 func otherAnalysisRows() []analysisRow {
-	const handlers, container, media, image = "internal/api/inspect_handlers.go", "internal/inspect/container.go", "internal/inspect/media.go", "internal/inspect/image.go"
+	const handlers, container, media, image, stlFile = "internal/api/inspect_handlers.go", "internal/inspect/container.go", "internal/inspect/media.go", "internal/inspect/image.go", "internal/inspect/stl.go"
 	return []analysisRow{
 		{"response_after_release", "the inspect response (writeJSON of the report): written after file.Close, dropMultipartForm and release, so it never lives with the form and the analysis slot; not in the term",
 			[]analysisSource{{handlers, "dropMultipartForm(r)"}, {handlers, "release()"}, {handlers, "writeJSON(w, http.StatusOK, inspectResponse{Report: report, Operations: operations})"}},
@@ -902,7 +902,23 @@ func otherAnalysisRows() []analysisRow {
 			[]analysisSource{{handlers, "budgeted := inspect.NewBudgetedReaderAt(file, maxBytes)"}, {handlers, "class := convert.ClassifyCFB(budgeted, size)"}},
 			[]string{"convert.ClassifyCFB", "inspect.NewBudgetedReaderAt"}, "small objects only; the detection window is dead",
 			func(int64) int64 { return cfbClassifyHeapBytes }},
+		{"stl_census", "STL: the file copy plus, for at most 32768 triangles, the 32-byte corner slice and the int32 id slice (stl.go stlCensusTriangles)",
+			[]analysisSource{{stlFile, "buf := make([]byte, size)"}, {stlFile, "corners := make([]stlCorner, 3*int(count))"}, {stlFile, "corners := make([]stlCorner, n)"}, {stlFile, "ids := make([]int32, len(corners))"}},
+			[]string{"inspect.AnalyzeSTL"}, "the detection windows are dead",
+			stlCensusHeap},
 	}
+}
+
+const (
+	stlCensusTriangleCap = 1 << 15
+	stlMinTriangleBytes  = 32
+	stlCornerSliceBytes  = 96
+	stlIDSliceBytes      = 12
+)
+
+func stlCensusHeap(work int64) int64 {
+	n := min(int64(stlCensusTriangleCap), work/stlMinTriangleBytes)
+	return roundAlloc(work, false) + roundAlloc(n*stlCornerSliceBytes, false) + roundAlloc(n*stlIDSliceBytes, false)
 }
 
 func inspectAnalysisRows() []analysisRow {
@@ -936,6 +952,7 @@ func inspectAnalysisPaths() []analysisPath {
 		{"media", "media_wav", []string{"small_objects", "media_wav_window"}},
 		{"image", "image", []string{"small_objects", "image_window", "image_dimensions"}},
 		{"cfb", "cfb", []string{"small_objects", "cfb_classify"}},
+		{"stl", "stl_census", []string{"small_objects", "stl_census"}},
 	}
 }
 

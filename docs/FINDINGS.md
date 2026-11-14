@@ -43,7 +43,7 @@ this list grows.
 
 ## Findings vocabulary
 
-Fourteen codes, closed (D-05: no typed findings existed anywhere in the project before this
+Seventeen codes, closed (D-05: no typed findings existed anywhere in the project before this
 phase). Source: `internal/inspect/findings.go` (`AllCodes()`, `SeverityOf()`).
 
 | Code | Severity | Applies to | Detected by | What a client should do |
@@ -62,6 +62,9 @@ phase). Source: `internal/inspect/findings.go` (`AllCodes()`, `SeverityOf()`).
 | `pdf_encrypted` | info | PDF | `/Encrypt` present in the trailer or XRef-stream dictionary | No action required; a privacy signal, not a code-execution risk |
 | `external_reference` | warning | PDF, OOXML, ODF | PDF `/URI`, or an OOXML/ODF relationship with `TargetMode="External"` (one code, two sources, deliberately unprefixed) | Consider `sanitize` before further processing; a passive exfiltration/tracking vector |
 | `metadata_present` | info | JPEG/PNG/TIFF/PDF | EXIF/XMP/GPS segment (JPEG APP1, PNG `eXIf`/`iTXt`, TIFF IFD) or PDF `/Info` | No action required; informational fact about embedded metadata |
+| `stl_open` | info | STL | An undirected edge belongs to one triangle (`internal/inspect/stl.go`) | No action required; inspect reports the mesh fact and does not reject the upload |
+| `stl_non_manifold` | info | STL | An undirected edge belongs to three or more triangles | No action required; inspect reports the mesh fact and does not reject the upload |
+| `stl_unoriented` | info | STL | An undirected edge belongs to two triangles that traverse it in the same direction | No action required; inspect reports the mesh fact and does not reject the upload |
 
 ## Severity tiers
 

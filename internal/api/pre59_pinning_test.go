@@ -32,6 +32,12 @@ package api
 //     `git rev-list --count` stays 1, and the assertion narrowed instead.
 //     Every OTHER operations entry is still compared element by element as
 //     the exact bytes it was pinned as.
+//  4. (Phase 94) The three checks stl_open, stl_non_manifold, and
+//     stl_unoriented. They are appended to the closed vocabulary, so every
+//     inspect report grows three checks. The golden bytes are not
+//     regenerated. These three elements are removed from the live checks
+//     array and the remainder is compared element by element. On these PDF
+//     fixtures each removed check is not_applicable / format_not_applicable.
 //
 // Everything else is frozen. A plan that needs a wider exception is changing
 // the contract, not the test: stop and escalate rather than editing this suite
@@ -168,7 +174,7 @@ func TestPre59GoldenInspectPDF(t *testing.T) {
 }
 
 // assertInspectGolden59ModuloSanitize compares the live inspect snapshot to
-// the pinned golden under permitted exception 3 at the top of this file.
+// the pinned golden under permitted exceptions 3 and 4 at the top of this file.
 //
 // Everything is compared as raw bytes at the level it was pinned at: each
 // fixture's status, each body field other than "operations", and each
@@ -224,7 +230,7 @@ func assertInspectGolden59ModuloSanitize(t *testing.T, got []byte) {
 		}
 
 		for field, goldenRaw := range goldenFields {
-			if field == "operations" {
+			if field == "operations" || field == "checks" {
 				continue
 			}
 			if !bytes.Equal(goldenRaw, liveFields[field]) {
@@ -239,6 +245,61 @@ func assertInspectGolden59ModuloSanitize(t *testing.T, got []byte) {
 		}
 
 		assertOperationsModuloSanitize(t, name, goldenFields["operations"], liveFields["operations"])
+		assertChecksModuloSTL(t, name, goldenFields["checks"], liveFields["checks"])
+	}
+}
+
+var stlInspectCheckCodes = map[string]bool{
+	"stl_open":         true,
+	"stl_non_manifold": true,
+	"stl_unoriented":   true,
+}
+
+// assertChecksModuloSTL drops the three phase-94 STL checks from the live
+// array and compares every remaining element to the golden as raw bytes.
+func assertChecksModuloSTL(t *testing.T, fixture string, goldenRaw, liveRaw json.RawMessage) {
+	t.Helper()
+
+	var goldenChecks, liveChecks []json.RawMessage
+	if err := json.Unmarshal(goldenRaw, &goldenChecks); err != nil {
+		t.Fatalf("%s: unmarshal golden checks: %v", fixture, err)
+	}
+	if err := json.Unmarshal(liveRaw, &liveChecks); err != nil {
+		t.Fatalf("%s: unmarshal live checks: %v", fixture, err)
+	}
+
+	var kept []json.RawMessage
+	stripped := 0
+	for _, check := range liveChecks {
+		var head struct {
+			Code   string `json:"code"`
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(check, &head); err != nil {
+			t.Fatalf("%s: unmarshal checks entry: %v", fixture, err)
+		}
+		if stlInspectCheckCodes[head.Code] {
+			stripped++
+			if head.Status != "not_applicable" || head.Reason != "format_not_applicable" {
+				t.Errorf("%s: check %s = %s/%s, want not_applicable/format_not_applicable",
+					fixture, head.Code, head.Status, head.Reason)
+			}
+			continue
+		}
+		kept = append(kept, check)
+	}
+	if stripped != len(stlInspectCheckCodes) {
+		t.Fatalf("%s: stripped %d STL checks, want %d", fixture, stripped, len(stlInspectCheckCodes))
+	}
+	if len(kept) != len(goldenChecks) {
+		t.Fatalf("%s: checks has %d non-STL entries, golden has %d", fixture, len(kept), len(goldenChecks))
+	}
+	for i := range goldenChecks {
+		if !bytes.Equal(goldenChecks[i], kept[i]) {
+			t.Errorf("%s: checks[%d] changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
+				fixture, i, kept[i], goldenChecks[i])
+		}
 	}
 }
 
