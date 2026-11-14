@@ -85,6 +85,27 @@ func TestSTLSolidNamedVertexIsOpen(t *testing.T) {
 	assertSTLResult(t, res, []Code{CodeSTLOpen})
 }
 
+func TestSTLShortVertexLineIsMalformed(t *testing.T) {
+	raws := []string{
+		"solid t\nfacet normal 0 0 0\n outer loop\n  vertex 0 0\n endloop\nendfacet\nendsolid t\n",
+		"solid t\r\n  vertex 0 0\r\nendsolid t\r\n",
+		"solid t\n  vertex 0 0 0\n  vertex 1 0 0\n  vertex 0 1 0\n  vertex 0 0\nendsolid t\n",
+	}
+	for _, raw := range raws {
+		buf := []byte(raw)
+		for stlBinarySize(buf) {
+			buf = append(buf, '\n')
+		}
+		res := AnalyzeSTL(bytes.NewReader(buf), int64(len(buf)), int64(len(buf)), nil)
+		if len(res.Findings) != 0 {
+			t.Fatalf("findings = %+v, want none", res.Findings)
+		}
+		for _, code := range stlCodes {
+			assertCheckReason(t, res, code, ReasonMalformedInput)
+		}
+	}
+}
+
 func TestSTLBinaryTriangleIsOpen(t *testing.T) {
 	buf := binarySTL([][3][3]float32{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}})
 	res := AnalyzeSTL(bytes.NewReader(buf), int64(len(buf)), int64(len(buf)), nil)

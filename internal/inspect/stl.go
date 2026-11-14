@@ -14,6 +14,7 @@ import (
 const stlCensusTriangles = 1 << 15
 
 var stlVertex = regexp.MustCompile(`(?im)^[ \t]*vertex[ \t]+(\S+)[ \t]+(\S+)[ \t]+(\S+)[ \t]*\r?$`)
+var stlVertexStart = regexp.MustCompile(`(?im)^[ \t]*vertex\b`)
 
 var stlCodes = []Code{CodeSTLOpen, CodeSTLNonManifold, CodeSTLUnoriented}
 
@@ -123,6 +124,9 @@ func asciiCorners(buf []byte) ([]stlCorner, error) {
 	if !ok {
 		return nil, errSTLCeiling
 	}
+	if err := asciiVertexLines(buf); err != nil {
+		return nil, err
+	}
 	if n == 0 {
 		if looksLikeASCIISTL(buf) {
 			return []stlCorner{}, nil
@@ -155,6 +159,24 @@ func asciiCorners(buf []byte) ([]stlCorner, error) {
 		rest = rest[loc[1]:]
 	}
 	return corners, nil
+}
+
+func asciiVertexLines(buf []byte) error {
+	rest := buf
+	for {
+		loc := stlVertexStart.FindIndex(rest)
+		if loc == nil {
+			return nil
+		}
+		line := rest[loc[0]:]
+		if nl := bytes.IndexByte(line, '\n'); nl >= 0 {
+			line = line[:nl]
+		}
+		if !stlVertex.Match(line) {
+			return errSTLMalformed
+		}
+		rest = rest[loc[0]+len(line):]
+	}
 }
 
 func countASCIIVertices(buf []byte) (int, bool) {
