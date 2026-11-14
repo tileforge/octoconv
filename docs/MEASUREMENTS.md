@@ -45,6 +45,7 @@ of them. The helper does not measure that ratio at run time. Two gaps stand:
 | `volume_null_reason` | string | present exactly when `volume` is null | one of the Null reasons below, allowed for the format and consistent with the solid counts |
 | `area` | number or null | key always present | null or finite and strictly greater than 0; null exactly when `volume` is null |
 | `area_null_reason` | string | present exactly when `area` is null | one of the Null reasons below, allowed for the format and consistent with the solid counts; equal to `volume_null_reason` |
+| `mesh_findings` | array of strings | `stl` only, omitted when empty | codes from Mesh findings, no duplicates, in that table's order |
 
 `volume` and `area` are never omitted: a missing key and an explicit null are different things, and only the
 second carries a reason.
@@ -197,6 +198,16 @@ replaces it, and it means the file states no unit, not that the reader failed to
 | `none` | no unit is known; pairs with `unspecified` |
 
 An STL never has source `declared`: the format carries no units.
+
+## Mesh findings
+
+An STL can carry one or more of these. They name the triangle mesh. They do not replace a volume null reason: an open or non-manifold mesh still has `volume: null` and `stl_not_watertight` when its edges do not pair. A closed mesh whose shells are all reversed stays `negative_volume` and does not gain `stl_unoriented`. A degenerate edge, where a triangle repeats a vertex, stays on that watertight failure and is not one of these codes.
+
+| Code | Meaning |
+|---|---|
+| `stl_open` | an undirected edge belongs to exactly one triangle |
+| `stl_non_manifold` | an undirected edge belongs to three or more triangles |
+| `stl_unoriented` | an undirected edge belongs to exactly two triangles that traverse it in the same direction |
 
 ## Null reasons
 
