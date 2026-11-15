@@ -51,13 +51,13 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 			}
 		}
 		for _, p := range pairs[OperationConvert] {
-			if p.To == "png" {
+			if p.To == "png" && p.From != "dwg" {
 				t.Errorf("the cad convert pair %s -> png is a preview outside render", p.From)
 			}
 		}
 		threeD := map[string]bool{}
 		for _, p := range pairs[OperationRender] {
-			if p.From != "dxf" {
+			if p.From != "dxf" && p.From != "dwg" {
 				threeD[p.From] = true
 			}
 		}
@@ -68,9 +68,11 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 				}
 			}
 		}
-		for _, v := range previewDocKeys(cadViews) {
-			if ValidateCADApplicability(EngineCAD, OperationRender, "dxf", "png", CADOpts{View: v}) == nil {
-				t.Errorf("a dxf render accepts the view %s", v)
+		for _, format := range []string{"dxf", "dwg"} {
+			for _, v := range previewDocKeys(cadViews) {
+				if ValidateCADApplicability(EngineCAD, OperationRender, format, "png", CADOpts{View: v}) == nil {
+					t.Errorf("a %s render accepts the view %s", format, v)
+				}
 			}
 		}
 		if !previewDocRefusal.MatchString(cadDocRead(t, previewDocHandlers)) {
@@ -120,7 +122,7 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 				outcomes[k] = true
 			}
 		}
-		cadDocSameSet(t, "non-previewable outcomes", outcomes, previewDocSet("cad_empty_result", "cad_unreadable", "cad_too_complex", "unsupported_conversion", "dwg_unsupported"))
+		cadDocSameSet(t, "non-previewable outcomes", outcomes, previewDocSet("cad_empty_result", "cad_unreadable", "cad_too_complex", "unsupported_conversion"))
 	})
 
 	t.Run("not_fixed", func(t *testing.T) {

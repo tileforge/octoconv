@@ -296,7 +296,7 @@ components:
             terminal status.
         stage:
           type: [string, "null"]
-          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          enum: [guard, mesh, render, dxf, dwg, ink, rsvg, judge, null]
           description: >-
             The stage a cad job is in. Present only for a job of engine cad;
             a job of any other class has no stage key at all, nor
@@ -323,6 +323,14 @@ components:
             convert dxf->pdf: guard, dxf, ink, rsvg, judge
 
             render dxf->png: guard, dxf, ink, rsvg, judge
+
+            convert dwg->svg: dwg, guard, dxf, ink
+
+            convert dwg->pdf: dwg, guard, dxf, ink, rsvg, judge
+
+            convert dwg->png: dwg, guard, dxf, ink, rsvg, judge
+
+            render dwg->png: dwg, guard, dxf, ink, rsvg, judge
 
             What each stage does is in docs/CAD.md, section Stages.
         stage_index:
@@ -428,7 +436,7 @@ components:
           minimum: 0
         stage:
           type: [string, "null"]
-          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          enum: [guard, mesh, render, dxf, dwg, ink, rsvg, judge, null]
           description: >-
             Only in the frames of a cad job, as in JobStatus.stage.
         stage_index:
@@ -479,7 +487,7 @@ components:
           minimum: 0
         stage:
           type: [string, "null"]
-          enum: [guard, mesh, render, dxf, ink, rsvg, judge, null]
+          enum: [guard, mesh, render, dxf, dwg, ink, rsvg, judge, null]
           description: >-
             Only in the deliveries of a cad job, as in JobStatus.stage.
         stage_index:
@@ -880,7 +888,7 @@ components:
               directory itself does not parse (checks carry
               malformed_input).
 
-            Four more values are sentinels for a CAD upload this service
+            Three more values are sentinels for a CAD upload this service
             recognized and refused. They are the same strings POST
             /v1/jobs returns as its 422 code, so one string names one
             verdict on both endpoints; this endpoint still answers 200:
@@ -891,8 +899,6 @@ components:
               binary (checks carry malformed_input).
             * `binary_dxf_unsupported` -- a binary DXF, which this service
               does not read (checks carry parser_unavailable).
-            * `dwg_unsupported` -- a DWG, which this service does not read
-              (checks carry parser_unavailable).
         declared_format:
           type: string
           description: >-
@@ -1331,11 +1337,12 @@ paths:
                     antivirus scanning. docs/SANITIZE.md carries the full
                     statement and the per-class wording.
 
-                    "render" draws a CAD file (step, iges, stl or dxf) as a
+                    "render" draws a CAD file (step, iges, stl, dxf or dwg) as a
                     png preview and adds a second output with
                     role=measurements. The cad pairs are render step->png,
-                    iges->png, stl->png and dxf->png; and convert
-                    step->stl, iges->stl, dxf->svg and dxf->pdf. The options
+                    iges->png, stl->png, dxf->png and dwg->png; and convert
+                    step->stl, iges->stl, dxf->svg, dxf->pdf, dwg->svg,
+                    dwg->pdf and dwg->png. The options
                     are CADOpts; the options each format accepts, the size
                     ceilings and the error codes are in docs/CAD.md.
                 workflow:

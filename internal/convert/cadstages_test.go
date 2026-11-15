@@ -23,7 +23,7 @@ func TestCADStageRoutesMatchTheRegistry(t *testing.T) {
 		}
 	}
 
-	want := []string{cadStageGuard, cadStageMesh, cadStageRender, cadStageDXF, cadStageInk, cadStageRsvg, cadStageJudge}
+	want := []string{cadStageGuard, cadStageMesh, cadStageRender, cadStageDXF, cadStageDWG, cadStageInk, cadStageRsvg, cadStageJudge}
 	slices.Sort(want)
 	if got := CADStageVocabulary(); !slices.Equal(got, want) {
 		t.Errorf("CADStageVocabulary() = %v, want %v", got, want)

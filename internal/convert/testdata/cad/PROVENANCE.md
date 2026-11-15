@@ -602,7 +602,7 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 - sha256: 470606dee17e8957a1b9504b284318bc0e5c5f02ac030e46d8a15f7a67c66a05
 - Command: see the generation command above
 
-**Proves:** DWG version magic. ASCII AC1027 (AutoCAD 2013) followed by 122 zero bytes, 128 bytes in all: a DWG is recognised by its magic and refused for being a binary format the service has no engine for.
+**Proves:** DWG version magic. ASCII AC1027 (AutoCAD 2013) followed by 122 zero bytes, 128 bytes in all. The sniffer accepts the prefix as `dwg`. The stub is not a readable drawing: `cad-dwg` returns `unreadable`.
 
 ## `reject/stl_binary_truncated.stl` — 683 bytes
 

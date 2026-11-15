@@ -478,11 +478,6 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusUnprocessableEntity, errcode.BinaryDXFUnsupported,
 					"binary dxf is not supported; re-export as ascii dxf")
 				return
-			case convert.CADRejectDWG:
-				log.Printf("content validation rejected: client_id=%s filename=%q reason=dwg_unsupported format=%s", client.ID, filename, res.Format)
-				writeError(w, http.StatusUnprocessableEntity, errcode.DWGUnsupported,
-					"dwg is not supported; re-export as dxf")
-				return
 			}
 			detected = res.Format
 		}

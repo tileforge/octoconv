@@ -44,6 +44,7 @@ var cadCodesSentinels = map[string]struct {
 	"ErrCADRenderFailed":        {convert.ErrCADRenderFailed, CodeEngineError},
 	"ErrCADMeasurementsInvalid": {convert.ErrCADMeasurementsInvalid, CodeEngineError},
 	"ErrCADDXFTimeout":          {convert.ErrCADDXFTimeout, CodeCADTooComplex},
+	"ErrCADDWGTimeout":          {convert.ErrCADDWGTimeout, CodeCADTooComplex},
 	"ErrCADRsvgTimeout":         {convert.ErrCADRsvgTimeout, CodeCADTooComplex},
 	"ErrCADDrawingFailed":       {convert.ErrCADDrawingFailed, CodeEngineError},
 	"ErrCADNothingDrawable":     {convert.ErrCADNothingDrawable, CodeCADEmptyResult},
@@ -73,7 +74,7 @@ var cadCodesSync = map[string]bool{
 	"truncated_cad_file":     true,
 	"ambiguous_stl":          true,
 	"binary_dxf_unsupported": true,
-	"dwg_unsupported":        true,
+	"dwg_unsupported":        false,
 	"internal_error":         false,
 }
 
@@ -301,8 +302,8 @@ func TestCADCodesDocMatchesTheMapping(t *testing.T) {
 			return true
 		})
 	}
-	if detected < 4 {
-		t.Fatalf("found %d CADReject mappings in internal/api, want at least 4: the scan read nothing", detected)
+	if detected < 3 {
+		t.Fatalf("found %d CADReject mappings in internal/api, want at least 3: the scan read nothing", detected)
 	}
 
 	b, err := os.ReadFile(cadCodesDocPath)

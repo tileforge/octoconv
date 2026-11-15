@@ -110,7 +110,6 @@ var RejectBindings = map[string]RejectBinding{
 	"truncated_cad_file":     {ErrCode: errcode.TruncatedCADFile},
 	"ambiguous_stl":          {ErrCode: errcode.AmbiguousSTL},
 	"binary_dxf_unsupported": {ErrCode: errcode.BinaryDXFUnsupported},
-	"dwg_unsupported":        {ErrCode: errcode.DWGUnsupported},
 
 	"zip_directory_too_large": {ErrCode: errcode.InvalidRequest},
 }

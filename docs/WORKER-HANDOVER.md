@@ -16,7 +16,7 @@ Image stays in this repository. Any other engine class uses `tileforge/octoconv-
 
 That process reads `<ENGINE>_PROTOCOL_CORE_URL`, `<ENGINE>_PROTOCOL_CLIENT_CERT`, `<ENGINE>_PROTOCOL_CLIENT_KEY`, `<ENGINE>_PROTOCOL_CLIENT_CA`, `<ENGINE>_PROTOCOL_WORKER_ID`, and `<ENGINE>_PROTOCOL_MANIFEST_PATH`. Cad uses the prefix `CAD_PROTOCOL_`.
 
-The process has no `DATABASE_URL` and no `REDIS_ADDR`. One manifest holds one capability. Cad publishes `manifest-cad-convert.json` (`octoconv.convert.cad`) and `manifest-cad-render.json` (`octoconv.render.cad`) for STEP, IGES, and STL, and `manifest-caddraw-convert.json` and `manifest-caddraw-render.json` for DXF. The model image sets `CAD_STACK` to `model`. The drawing image sets `CAD_STACK` to `drawing`. `legacy.engine` stays `cad`.
+The process has no `DATABASE_URL` and no `REDIS_ADDR`. One manifest holds one capability. Cad publishes `manifest-cad-convert.json` (`octoconv.convert.cad`) and `manifest-cad-render.json` (`octoconv.render.cad`) for STEP, IGES, and STL, and `manifest-caddraw-convert.json` and `manifest-caddraw-render.json` for DXF and DWG. The model image sets `CAD_STACK` to `model`. The drawing image sets `CAD_STACK` to `drawing`. `legacy.engine` stays `cad`.
 
 ## For an operator
 

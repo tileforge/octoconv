@@ -6,7 +6,7 @@ import (
 	"github.com/tileforge/octoconv/internal/convert"
 )
 
-func TestCadManifestsCoverTheEightPairs(t *testing.T) {
+func TestCadManifestsCoverTheCADPairs(t *testing.T) {
 	modelConvert := mustParseCadManifest(t, "manifest-cad-convert.json")
 	modelRender := mustParseCadManifest(t, "manifest-cad-render.json")
 	drawConvert := mustParseCadManifest(t, "manifest-caddraw-convert.json")
@@ -22,6 +22,9 @@ func TestCadManifestsCoverTheEightPairs(t *testing.T) {
 	assertPairs(t, drawConvert, convert.OperationConvert, map[string]string{
 		"dxf\x00svg": "cad",
 		"dxf\x00pdf": "cad",
+		"dwg\x00svg": "cad",
+		"dwg\x00pdf": "cad",
+		"dwg\x00png": "cad",
 	})
 	assertPairs(t, modelRender, convert.OperationRender, map[string]string{
 		"step\x00png": "cad",
@@ -30,6 +33,7 @@ func TestCadManifestsCoverTheEightPairs(t *testing.T) {
 	})
 	assertPairs(t, drawRender, convert.OperationRender, map[string]string{
 		"dxf\x00png": "cad",
+		"dwg\x00png": "cad",
 	})
 	assertOptionalMeasurements(t, modelRender)
 	assertOptionalMeasurements(t, drawRender)
@@ -43,8 +47,8 @@ func TestCadManifestsCoverTheEightPairs(t *testing.T) {
 			seen[key] = parsed.id
 		}
 	}
-	if len(seen) != 8 {
-		t.Fatalf("covered pairs = %d, want 8", len(seen))
+	if len(seen) != 12 {
+		t.Fatalf("covered pairs = %d, want 12", len(seen))
 	}
 }
 

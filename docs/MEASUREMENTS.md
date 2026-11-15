@@ -59,6 +59,8 @@ second carries a reason.
 | `stl` | 3D mesh; no solid counts; carries no units |
 | `dxf` | 2D; two coordinates per bbox corner; volume and area are always null |
 
+A DWG render's measurements document stays `format` `dxf`. The drawing worker measures the ASCII DXF it wrote, and this table does not add a `dwg` format.
+
 An STL is read as binary when its size is exactly 84 bytes plus 50 times the triangle count stored at byte 80; any other STL is read as ASCII, and its keywords (`solid`, `facet normal`, `outer loop`, `vertex`, `endloop`, `endfacet`, `endsolid`) match in any letter case. A vertex coordinate that does not fit a 32-bit float makes the file unreadable (`cad_unreadable`). The PNG is drawn from the same triangles that were measured.
 
 An STL's volume is computed per shell, where a shell is the set of triangles joined through shared edges. When every shell encloses a positive volume, the volume is their sum and the area is the sum of all triangle areas. When every shell is inward, the reason is `negative_volume`. When the signs are mixed, volume and area are null with `stl_ambiguous_shells` instead of a difference of shells. This includes a hollow part whose cavity is modelled as an inward shell: it is reported as null, never as a wrong number. A shell of exactly zero volume makes the document `invalid_solid`.

@@ -9,7 +9,7 @@ the next class. `TestPreviewDocMatchesTheCode` in `internal/convert` holds the f
 
 | property | value | source |
 |---|---|---|
-| operation | `render` | every CAD preview is a `render` job; `convert` never returns a preview |
+| operation | `render` | a measurements preview is a `render` job. A DWG `convert` to png writes the square PNG and no measurements document |
 | output | `png`, role `primary` | the PNG is the job's primary output |
 | size | `256..2048`, default `1280` | `size` is the edge of a square frame in pixels |
 | background | `opaque` (white #FFFFFF, the default) or `transparent` (alpha 0) | `background` |
@@ -41,7 +41,6 @@ or is refused at create, and the job has no output.
 | a file the reader cannot read | the job fails with `cad_unreadable` |
 | a model or drawing too complex to render within the limits | the job fails with `cad_too_complex` |
 | a format with no preview, or a pair the class does not serve | refused at create with 422 `unsupported_conversion`; the job is not created |
-| a DWG file | refused at create with 422 `dwg_unsupported`; re-export it as DXF |
 
 ## Not fixed
 

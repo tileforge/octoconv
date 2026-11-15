@@ -17,7 +17,10 @@ const (
 	CADDefaultMeshTimeout   = 324 * time.Second
 	CADDefaultRenderTimeout = 521 * time.Second
 	CADIOAllowance          = 20 * time.Second
-	CADDefaultEngineTimeout = max(CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance, CADDefaultGuardTimeout+CADDefaultDXFTimeout+2*CADDefaultRsvgTimeout+CADIOAllowance)
+	CADDefaultEngineTimeout = max(
+		CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance,
+		CADDefaultGuardTimeout+CADDefaultDXFTimeout+2*CADDefaultRsvgTimeout+CADIOAllowance,
+		CADDefaultGuardTimeout+CADDefaultDWGTimeout+CADDefaultDXFTimeout+2*CADDefaultRsvgTimeout+CADIOAllowance)
 
 	CADMaxDXFBytes            = 118 << 20
 	CADMaxDXFExpandedInserts  = 170031
@@ -26,6 +29,7 @@ const (
 	CADMaxDXFSVGBytes         = 134 << 20
 	CADMaxDXFPDFBytes         = 19 << 20
 	CADDefaultDXFTimeout      = 186 * time.Second
+	CADDefaultDWGTimeout      = 186 * time.Second
 	CADDefaultRsvgTimeout     = 217 * time.Second
 
 	CADDXFPDFTextFloorPt = 0.00469174
@@ -41,6 +45,7 @@ const (
 	cadStageMesh   = "mesh"
 	cadStageRender = "render"
 	cadStageDXF    = "dxf"
+	cadStageDWG    = "dwg"
 	cadStageRsvg   = "rsvg"
 	cadStageInk    = "ink"
 	cadStageJudge  = "judge"
@@ -60,6 +65,7 @@ var (
 	ErrCADMeasurementsInvalid = errors.New("cad: the measurements could not be produced")
 
 	ErrCADDXFTimeout      = errors.New("cad: the dxf stage did not finish within the time limit")
+	ErrCADDWGTimeout      = errors.New("cad: the dwg took too long to read; simplify the drawing or export fewer details")
 	ErrCADRsvgTimeout     = errors.New("cad: the rsvg stage did not finish within the time limit")
 	ErrCADDrawingFailed   = errors.New("cad: the drawing stage failed")
 	ErrCADNothingDrawable = errors.New("cad: the drawing has nothing drawable")
@@ -108,7 +114,10 @@ func (CADRenderConverter) Pairs() []Pair {
 type CADDXFConverter struct{ CADConverter }
 
 func (CADDXFConverter) Pairs() []Pair {
-	return []Pair{{From: "dxf", To: "svg"}, {From: "dxf", To: "pdf"}}
+	return []Pair{
+		{From: "dxf", To: "svg"}, {From: "dxf", To: "pdf"},
+		{From: "dwg", To: "svg"}, {From: "dwg", To: "pdf"}, {From: "dwg", To: "png"},
+	}
 }
 
 type CADDXFRenderConverter struct{ CADConverter }
@@ -116,5 +125,5 @@ type CADDXFRenderConverter struct{ CADConverter }
 func (CADDXFRenderConverter) Operation() string { return OperationRender }
 
 func (CADDXFRenderConverter) Pairs() []Pair {
-	return []Pair{{From: "dxf", To: "png"}}
+	return []Pair{{From: "dxf", To: "png"}, {From: "dwg", To: "png"}}
 }

@@ -574,6 +574,10 @@ var defaultMaxFormatBytes = map[string]map[string]int64{
 }
 
 func (s *Server) sizeLimit(engine, format string) (limit int64, perFormat, gated bool) {
+	// A DWG has no byte ceiling here. The worker applies CADMaxDXFBytes to the ASCII DXF it writes.
+	if engine == convert.EngineCAD && format == "dwg" {
+		return 0, false, false
+	}
 	if l, ok := s.maxFormatBytes[engine][format]; ok {
 		return l, true, true
 	}
