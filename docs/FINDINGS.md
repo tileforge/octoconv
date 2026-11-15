@@ -269,7 +269,6 @@ either with the prose (PR #20 review).
 | `truncated_cad_file` | not a finding — `errcode.truncated_cad_file` (the upload starts like a CAD format and its structure ends early; inspect reports the same string as its format) |
 | `ambiguous_stl` | not a finding — `errcode.ambiguous_stl` (an STL that is valid as both ASCII and binary; inspect reports the same string as its format) |
 | `binary_dxf_unsupported` | not a finding — `errcode.binary_dxf_unsupported` (a binary DXF, which this service does not read; inspect reports the same string as its format) |
-| `dwg_unsupported` | not a finding — `errcode.dwg_unsupported` (a DWG, which this service does not read; inspect reports the same string as its format) |
 | `zip_directory_too_large` | not a finding — `errcode.invalid_request` (the ZIP central directory declares more than this service reads; inspect reports the same string as its format) |
 
 **Migrating `handleCreateJob` onto this vocabulary is NOT done in this phase.** This section

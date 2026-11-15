@@ -80,7 +80,7 @@ func TestSniffCADRejectFixtures(t *testing.T) {
 		"dxf_truncated.dxf":            {"dxf", CADRejectTruncated},
 		"dxf_bom.dxf":                  {},
 		"dxf_binary.dxf":               {"dxf", CADRejectBinaryDXF},
-		"dwg_ac1027.dwg":               {"dwg", CADRejectDWG},
+		"dwg_ac1027.dwg":               {"dwg", CADRejectNone},
 		"stl_binary_truncated.stl":     {"stl", CADRejectTruncated},
 		"stl_binary_trailing_byte.stl": {"stl", CADRejectTruncated},
 		"stl_ascii_truncated.stl":      {"stl", CADRejectTruncated},
@@ -249,7 +249,7 @@ func TestSniffCADBinarySTLHeaderPrecedence(t *testing.T) {
 			}
 		})
 	}
-	if got := sniffBytes(binarySTLWith("AC1027 bracket", 12), "step"); got != (CADResult{"dwg", CADRejectDWG}) {
+	if got := sniffBytes(binarySTLWith("AC1027 bracket", 12), "step"); got != (CADResult{"dwg", CADRejectNone}) {
 		t.Fatalf("AC1027 header declared step: got %+v, want dwg", got)
 	}
 }
@@ -257,7 +257,7 @@ func TestSniffCADBinarySTLHeaderPrecedence(t *testing.T) {
 func TestSniffCADDWG(t *testing.T) {
 	for _, sig := range []string{"AC1002", "AC1015", "AC1032"} {
 		b := append([]byte(sig), make([]byte, 122)...)
-		if got := sniffBytes(b, "dwg"); got != (CADResult{"dwg", CADRejectDWG}) {
+		if got := sniffBytes(b, "dwg"); got != (CADResult{"dwg", CADRejectNone}) {
 			t.Fatalf("%s: got %+v", sig, got)
 		}
 	}
@@ -312,7 +312,7 @@ func TestSniffCADBoundedReads(t *testing.T) {
 
 func TestSniffCADAllRejections(t *testing.T) {
 	got := AllCADRejections()
-	want := []CADRejection{CADRejectTruncated, CADRejectAmbiguousSTL, CADRejectBinaryDXF, CADRejectDWG}
+	want := []CADRejection{CADRejectTruncated, CADRejectAmbiguousSTL, CADRejectBinaryDXF}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

@@ -18,7 +18,7 @@ CAD file as a PNG preview and adds its measurements as a second output with role
 | `pandoc` | `md` `rst` `org` `latex` `html` `docx` `epub`, across a curated allowlist | pandoc |
 | `probe` | `sanitize`: `pdf` `docx` `xlsx` `pptx` `jpg` `png` rebuilt in the same format, and `docm` `xlsm` `pptm` rebuilt into their macro-free extension; also serves `POST /v1/inspect` | in-process |
 | `tectonic` | `latex` → `pdf`, single file or multi-file project | [tectonic][tectonic] |
-| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres; `dxf` → `svg` `pdf`; `render`: `step` `iges` `stl` `dxf` → `png` | OCCT through cadquery-ocp; VTK for 3D previews; ezdxf and librsvg for DXF |
+| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres; `dxf` `dwg` → `svg` `pdf`; `render`: `step` `iges` `stl` `dxf` `dwg` → `png` | OCCT through cadquery-ocp; VTK for 3D previews; ezdxf and librsvg for DXF and DWG |
 
 `GET /v1/formats` returns this table as the service itself sees it — derived from the
 converter registry, never hand-maintained.

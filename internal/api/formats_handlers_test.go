@@ -307,8 +307,8 @@ func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 		"step": true, "stp": true, "iges": true, "igs": true,
 		"stl": true, "dxf": true, "dwg": true,
 	}
-	convertPairs := map[string]bool{"step>stl": true, "iges>stl": true, "dxf>svg": true, "dxf>pdf": true}
-	renderPairs := map[string]bool{"step>png": true, "iges>png": true, "stl>png": true, "dxf>png": true}
+	convertPairs := map[string]bool{"step>stl": true, "iges>stl": true, "dxf>svg": true, "dxf>pdf": true, "dwg>svg": true, "dwg>pdf": true}
+	renderPairs := map[string]bool{"step>png": true, "iges>png": true, "stl>png": true, "dxf>png": true, "dwg>png": true}
 	allowedAt := func(where string) map[string]bool {
 		if where == "operations."+convert.OperationRender {
 			return renderPairs
@@ -329,7 +329,7 @@ func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 			}
 			key := strings.Join(pair, ">")
 			if !allowedAt(where)[key] || class != convert.EngineCAD {
-				t.Errorf("%s advertises CAD pair %v under %q, want only step -> stl, iges -> stl, dxf -> svg and dxf -> pdf under cad for convert and step, iges, stl, dxf -> png under cad for render", where, pair, class)
+				t.Errorf("%s advertises CAD pair %v under %q, want only step -> stl, iges -> stl, dxf -> svg, dxf -> pdf, dwg -> svg and dwg -> pdf under cad for convert and step, iges, stl, dxf -> png and dwg -> png under cad for render", where, pair, class)
 				continue
 			}
 			found[where+"|"+key] = true

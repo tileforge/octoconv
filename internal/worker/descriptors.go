@@ -715,6 +715,7 @@ func isCADTerminal(err error) bool {
 		convert.ErrCADMeasurementsInvalid,
 		convert.ErrCADNothingDrawable,
 		convert.ErrCADDXFTimeout,
+		convert.ErrCADDWGTimeout,
 		convert.ErrCADRsvgTimeout,
 		convert.ErrCADSVGRejected,
 		convert.ErrCADPDFRejected,
@@ -750,6 +751,8 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeEngineError, "the preview could not be rendered"
 	case errors.Is(err, convert.ErrCADDXFTimeout):
 		return CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADDWGTimeout):
+		return CodeCADTooComplex, "the dwg took too long to read; simplify the drawing or export fewer details"
 	case errors.Is(err, convert.ErrCADRsvgTimeout):
 		return CodeCADTooComplex, "the drawing took too long to render or convert to PDF or PNG; simplify it or export fewer details"
 	case errors.Is(err, convert.ErrCADSVGRejected):

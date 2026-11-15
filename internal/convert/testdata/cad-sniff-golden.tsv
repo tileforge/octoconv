@@ -36,7 +36,7 @@ synthetic/stl_ascii_box.stl	synthetic	bae23d8e1edb895c48747466491e3e756b2498a4e4
 synthetic/stl_binary_solid_header.stl	synthetic	ade18261538a244c5320bf83524d49667048dd5c063dd298bb81064f670e7605	684	stl	-	stl-numpy	1	binary=1,triangles=12	agree
 synthetic/surfaces_only.iges	synthetic	8e4bce60557e9ac2881f9763797ced089824c3d477fc75bd7d420961826bcc9f	12393	iges	-	ocp-iges	1	parse=1,transfer=1	agree
 synthetic/units_inch.step	synthetic	7ddac77097685f6702bda25d2d1ed5169d5b7d033e1154e79cced5ddfdeb6120	15567	step	-	ocp-step	1	parse=1,transfer=1	agree
-reject/dwg_ac1027.dwg	reject	470606dee17e8957a1b9504b284318bc0e5c5f02ac030e46d8a15f7a67c66a05	128	dwg	dwg	none	-	-	policy:dwg
+reject/dwg_ac1027.dwg	reject	470606dee17e8957a1b9504b284318bc0e5c5f02ac030e46d8a15f7a67c66a05	128	dwg	-	cad-dwg	0	verdict=unreadable	later-stage
 reject/dxf_binary.dxf	reject	2ad2211c4f3a5bad0bed2027e6ef35f894b4e3d8a34a3b810b8b27824cafa06b	86	dxf	binary_dxf	ezdxf	0	strict=0:DXFStructureError,recover=0:DXFStructureError	agree
 reject/dxf_bom.dxf	reject	32e26185b5e59c51b647322242a75eaf5e06b1d2af68633aa1921ee2f305ab78	225	-	-	ezdxf	1	strict=0:OSError,recover=1	policy:bom
 reject/dxf_truncated.dxf	reject	113bd89166ed4233587ebb5ea143b8ac1390240fb1558cb5f8ddcb06aeb22b5e	212	dxf	truncated	ezdxf	1	strict=0:DXFStructureError,recover=1	policy:truncated

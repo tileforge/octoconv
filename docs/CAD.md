@@ -14,9 +14,10 @@ class: what it accepts, what it returns, the limits it enforces and the codes it
 | `iges` | `igs` | `convert`, `render` |
 | `stl` | — | `render` |
 | `dxf` | — | `convert`, `render` |
+| `dwg` | — | `convert`, `render` |
 
 An alias is accepted wherever a format is, in the upload's extension and in `target`, and in any letter case.
-A DWG upload is recognised and refused with `dwg_unsupported`; it is not a format of this class.
+A DWG whose header is `AC10` plus two digits is format `dwg`. A pre-R2.5 signature with a dot, such as `AC1.40`, is not recognised.
 `GET /v1/formats` lists the same pairs under its `operations` key.
 
 ## Operations and pairs
@@ -27,12 +28,15 @@ A DWG upload is recognised and refused with `dwg_unsupported`; it is not a forma
 | `convert` | `iges` | `stl` |
 | `convert` | `dxf` | `svg` |
 | `convert` | `dxf` | `pdf` |
+| `convert` | `dwg` | `svg` |
+| `convert` | `dwg` | `pdf` |
 | `render` | `step` | `png` |
 | `render` | `iges` | `png` |
 | `render` | `stl` | `png` |
 | `render` | `dxf` | `png` |
+| `render` | `dwg` | `png` |
 
-A 3D `convert` writes a binary STL in millimetres. A DXF `convert` draws model space to SVG or PDF. A `render`
+A 3D `convert` writes a binary STL in millimetres. A DXF or DWG `convert` draws the drawing to SVG or PDF. A `render`
 draws a square PNG preview and writes the measurements document beside it (see Outputs). Any other pair is
 `unsupported_conversion`.
 
@@ -77,19 +81,21 @@ The annotation font is the embedded Go Regular font. DXF drawings retain their o
 | `convert` | `step` | `quality` |
 | `convert` | `iges` | `quality` |
 | `convert` | `dxf` | — |
+| `convert` | `dwg` | — |
 | `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
 | `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
 | `render` | `stl` | `view`, `size`, `background`, `assume_unit`, `dimensions` |
 | `render` | `dxf` | `size`, `background`, `assume_unit` |
+| `render` | `dwg` | `size`, `background`, `assume_unit` |
 
 A well-formed option outside this table for its operation and format is refused at create with 422
-`opts_not_applicable`, before the upload is stored. A DXF is drawn top-down, so `view` does not apply to it.
+`opts_not_applicable`, before the upload is stored. A DXF or DWG is drawn top-down, so `view` does not apply to it.
 
 ## Outputs
 
 | role | format | when |
 |---|---|---|
-| `primary` | the requested target: `stl` for a 3D `convert`, `svg` or `pdf` for a DXF `convert`, `png` for every `render` | every successful job |
+| `primary` | the requested target: `stl` for a 3D `convert`, `svg` or `pdf` for a DXF or DWG `convert`, `png` for every `render` | every successful job |
 | `measurements` | `json`, the document of docs/MEASUREMENTS.md | every successful `render`, never a `convert` |
 
 The two outputs of a `render` are written together or not at all. The worker validates the measurements
@@ -123,8 +129,12 @@ before the event of the current state.
 | `render` | `iges` | `png` | `guard` → `mesh` → `render` → `judge` | `4` |
 | `render` | `stl` | `png` | `mesh` → `render` → `judge` | `3` |
 | `render` | `dxf` | `png` | `guard` → `dxf` → `ink` → `rsvg` → `judge` | `5` |
+| `convert` | `dwg` | `svg` | `dwg` → `guard` → `dxf` → `ink` | `4` |
+| `convert` | `dwg` | `pdf` | `dwg` → `guard` → `dxf` → `ink` → `rsvg` → `judge` | `6` |
+| `render` | `dwg` | `png` | `dwg` → `guard` → `dxf` → `ink` → `rsvg` → `judge` | `6` |
 
 - `guard` checks the input before the heavy work starts.
+- `dwg` reads the DWG and writes an ASCII DXF. The later stages draw that DXF.
 - `mesh` builds the mesh of the model; for `stl` → `png` it is the `cad-mesh stats` step over the uploaded mesh.
 - `render` draws the 3D preview.
 - `dxf` draws the DXF to SVG and validates that SVG.
@@ -133,7 +143,7 @@ before the event of the current state.
 - `judge` checks the finished result.
 
 `dxf` → `svg` has no `judge`. Its SVG is validated inside the `dxf` stage and no code runs after `ink`, so the
-route ends there and a `done` job reads `ink` 3/3.
+route ends there and a `done` job reads `ink` 3/3. `dwg` → `svg` also has no `judge`; a `done` job reads `ink` 4/4.
 
 ## Size ceilings
 
@@ -147,6 +157,7 @@ route ends there and a `done` job reads `ink` 3/3.
 | `dxf` | `convert` | 123731968 | 118 | 123731968 |
 | `dxf` | `render` | 123731968 | 118 | 123731968 |
 
+A DWG has no row here and no format ceiling. The worker checks the ASCII DXF it writes against the DXF ceiling.
 A file above its format's ceiling is refused at create with 413 `payload_too_large`, and the message names the
 format and its ceiling in MiB. `POST /v1/inspect` reports the same ceiling as `max_bytes` on every `cad` offer,
 and the worker checks it again before any engine runs (`input_too_large`). Convert and render share one ceiling
@@ -177,13 +188,16 @@ to process. Each of these is `cad_too_complex`:
 | `CAD_MESH_TIMEOUT` | 324 | tessellation of a STEP or IGES model, or reading an STL; past it the job is `cad_mesh_timeout` |
 | `CAD_RENDER_TIMEOUT` | 521 | drawing a 3D PNG; past it the job is `cad_too_complex` |
 | `CAD_DXF_TIMEOUT` | 186 | drawing a DXF to SVG; past it the job is `cad_too_complex` |
-| `CAD_RSVG_TIMEOUT` | 217 | each of the two `rsvg-convert` runs of a DXF job, the ink check and the PDF or PNG; past it the job is `cad_too_complex` |
+| `CAD_DWG_TIMEOUT` | 186 | reading a DWG into ASCII DXF, the same number as the DXF deadline and not a separate measurement; past it the job is `cad_too_complex` |
+| `CAD_RSVG_TIMEOUT` | 217 | each of the two `rsvg-convert` runs of a DXF or DWG job, the ink check and the PDF or PNG; past it the job is `cad_too_complex` |
 | `CAD_ENGINE_TIMEOUT` | 886 | the whole attempt, set on the queue task |
 
-Every default was measured, not assumed. Each stage's deadline is 1.5 times the slowest wall measured for it at
-the input ceilings in the production worker, and the 3D render takes the remainder of the engine budget. The
-engine timeout is the longer of the two routes plus a measured 20 s of I/O: 21 + 324 + 521 + 20 = 886 for 3D
-and 21 + 186 + 2 x 217 + 20 = 661 for DXF. The worst route is render_iges, on the cell IR16MiB
+The guard, mesh, render, DXF and rsvg defaults were measured, not assumed. Each of those deadlines is 1.5 times
+the slowest wall measured for it at the input ceilings in the production worker, and the 3D render takes the
+remainder of the engine budget. The DWG stage starts at the same 186 s as the DXF deadline; that number is not
+a separate measurement. The engine timeout is the longest of the three routes plus a measured 20 s of I/O:
+21 + 324 + 521 + 20 = 886 for 3D, 21 + 186 + 2 x 217 + 20 = 661 for DXF, and 21 + 186 + 186 + 2 x 217 + 20 = 847
+for a DWG drawing. The worst route is render_iges, on the cell IR16MiB
 (`internal/convert/testdata/evidence/76-measured-bounds-keda-proof-client-docs/76-03-derived.txt`). For `cad`,
 `POST /v1/inspect` reports `estimate_source: measured` and an estimated maximum of 886 s at the default.
 
@@ -243,16 +257,15 @@ status) or as the `error_code` of a failed job (`async`). Codes every class shar
 | code | kind | when |
 |---|---|---|
 | `invalid_request` | sync 400 | CAD content under a non-CAD extension, compressed or binary-flag IGES, a pre-R2.5 DWG signature, or a binary STL under another CAD extension: the content is not recognised |
-| `unsupported_conversion` | sync 422 | a pair the class does not serve, for example an STL `convert` or a DXF to PNG `convert` (use `render`) |
+| `unsupported_conversion` | sync 422 | a pair the class does not serve, for example an STL `convert` or a DXF or DWG to PNG `convert` (use `render`) |
 | `truncated_cad_file` | sync 422 | a STEP, IGES, DXF or STL whose structure ends early |
 | `ambiguous_stl` | sync 422 | an STL that is valid both as binary and as ASCII |
 | `binary_dxf_unsupported` | sync 422 | a binary DXF; re-export as ASCII DXF |
-| `dwg_unsupported` | sync 422 | a DWG file; re-export as DXF |
-| `payload_too_large` | sync 413 | the file is above its format's ceiling (see Size ceilings) or above the deployment's transport cap; nothing is stored |
+| `payload_too_large` | sync 413 | the file is above its format's ceiling (see Size ceilings) or above the deployment's transport cap; a DWG has no format ceiling; nothing is stored |
 | `opts_not_applicable` | sync 422 | a well-formed option that does not apply to the operation and source format (see Option applicability) |
 | `invalid_options` | sync 422 and async | an unknown option, a value outside its closed set or range, or a stored option that fails re-validation in the worker |
 | `input_too_large` | async | the worker re-checks the format ceiling before any engine runs and the file is above it |
-| `cad_too_complex` | async | the guard's entity or assembly caps; for DXF the expanded INSERT or entity caps, a block cycle or nesting deeper than the cap; the reader ran out of memory or was killed; a render, drawing or `rsvg-convert` stage passed its deadline; or a file the pipeline drew from the drawing (the SVGs, `texts.json`, the PDF) is above its size or volume limit, including a DXF drawing's PDF above the PDF size limit or the inflate limit |
+| `cad_too_complex` | async | the guard's entity or assembly caps; for DXF the expanded INSERT or entity caps, a block cycle or nesting deeper than the cap; the reader ran out of memory or was killed; a DWG read passed `CAD_DWG_TIMEOUT`; a render, drawing or `rsvg-convert` stage passed its deadline; or a file the pipeline drew from the drawing (the SVGs, `texts.json`, the PDF) is above its size or volume limit, including a DXF drawing's PDF above the PDF size limit or the inflate limit |
 | `cad_unreadable` | async | the reader refuses the file's structure or values |
 | `cad_empty_result` | async | no geometry to mesh; a drawing that shows nothing on a white page; or a PDF or PNG that shows no recognisable content |
 | `cad_mesh_timeout` | async | tessellation did not finish within `CAD_MESH_TIMEOUT` |

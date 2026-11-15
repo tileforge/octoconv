@@ -282,3 +282,101 @@ func TestCreateJobDXFRenderWithSizeBackgroundAndUnitIsRefused(t *testing.T) {
 	rec := postDXFJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
 	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
 }
+
+func postDWGJob(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, target, operation, opts string) *httptest.ResponseRecorder {
+	t.Helper()
+	srv, _ := newTestServer(repo, store, q)
+	admitCADCatalog(srv)
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, err := w.CreateFormFile("file", "drawing.dwg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write(readCADFixture(t, "reject/dwg_ac1027.dwg"))
+	_ = w.WriteField("target", target)
+	if operation != "" {
+		_ = w.WriteField("operation", operation)
+	}
+	if opts != "" {
+		_ = w.WriteField("opts", opts)
+	}
+	_ = w.Close()
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &b))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCreateJobDWGConvertWithoutOptionsUsesProtocol(t *testing.T) {
+	for _, target := range []string{"pdf", "svg"} {
+		t.Run(target, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDWGJob(t, repo, store, q, target, "", "")
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			assertAdmittedCAD(t, repo, q, convert.OperationConvert, "dwg", target, "octoconv.convert.caddraw")
+			if store.uploadCalls != 1 {
+				t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
+			}
+		})
+	}
+}
+
+func TestCreateJobDWGRenderWithoutOptionsUsesProtocol(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postDWGJob(t, repo, store, q, "png", "render", "")
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	assertAdmittedCAD(t, repo, q, convert.OperationRender, "dwg", "png", "octoconv.render.caddraw")
+	if store.uploadCalls != 1 {
+		t.Errorf("uploadCalls = %d, want 1", store.uploadCalls)
+	}
+}
+
+func TestCreateJobDWGConvertWithAnyOptionIsOptsNotApplicable(t *testing.T) {
+	cases := []struct {
+		target string
+		opts   string
+	}{
+		{"svg", `{"size":1024}`},
+		{"svg", `{"quality":"fine"}`},
+		{"svg", `{"assume_unit":"mm"}`},
+		{"pdf", `{"background":"transparent"}`},
+		{"pdf", `{"view":"top"}`},
+		{"pdf", `{"quality":"draft"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target+" "+tc.opts, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDWGJob(t, repo, store, q, tc.target, "", tc.opts)
+			assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+		})
+	}
+}
+
+func TestCreateJobDWGRenderViewOrQualityIsOptsNotApplicable(t *testing.T) {
+	for _, opts := range []string{
+		`{"view":"top"}`,
+		`{"quality":"fine"}`,
+		`{"size":512,"view":"iso"}`,
+		`{"background":"transparent","quality":"draft"}`,
+		`{"dimensions":true}`,
+		`{"dimensions":false}`,
+	} {
+		t.Run(opts, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postDWGJob(t, repo, store, q, "png", "render", opts)
+			assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+		})
+	}
+}
+
+func TestCreateJobDWGRenderWithSizeBackgroundAndUnitIsRefused(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postDWGJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+}

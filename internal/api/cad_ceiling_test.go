@@ -155,6 +155,16 @@ func TestCADFormatCeilingCallerMapNeverMutated(t *testing.T) {
 	}
 }
 
+func TestCADFormatCeilingDWGHasNoCeiling(t *testing.T) {
+	srv := newCADTestServer(t)
+	if limit, perFormat, gated := srv.sizeLimit(convert.EngineCAD, "dwg"); limit != 0 || perFormat || gated {
+		t.Errorf("dwg: got (%d, %t, %t), want (0, false, false)", limit, perFormat, gated)
+	}
+	if _, ok := srv.maxFormatBytes[convert.EngineCAD]["dwg"]; ok {
+		t.Error("dwg is a key in the format ceiling map")
+	}
+}
+
 func TestCADFormatCeilingSizeLimitPrefersFormatThenEngine(t *testing.T) {
 	srv := newFormatCeilingServer(t, &fakeRepo{}, &fakeStorage{}, &fakeQueue{}, map[string]map[string]int64{
 		convert.EnginePandoc: {"md": 1 << 20},

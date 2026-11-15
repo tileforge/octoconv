@@ -187,7 +187,7 @@ func TestCADCreateRejections(t *testing.T) {
 		{"stl_ascii_truncated.stl", errcode.TruncatedCADFile, "truncated or incomplete stl file"},
 		{"stl_ambiguous.stl", errcode.AmbiguousSTL, "stl file is valid as both ascii and binary; re-export as binary stl"},
 		{"dxf_binary.dxf", errcode.BinaryDXFUnsupported, "binary dxf is not supported; re-export as ascii dxf"},
-		{"dwg_ac1027.dwg", errcode.DWGUnsupported, "dwg is not supported; re-export as dxf"},
+		{"dwg_ac1027.dwg", errcode.UnsupportedConversion, "unsupported conversion: dwg -> png"},
 		{"step_bom.step", errcode.InvalidRequest, ""},
 		{"dxf_bom.dxf", errcode.InvalidRequest, ""},
 		{"stl_binary_ac10_header.stl", errcode.UnsupportedConversion, ""},
@@ -330,7 +330,6 @@ func TestCADCreateInspectAgree(t *testing.T) {
 		errcode.TruncatedCADFile:     inspect.ReasonMalformedInput,
 		errcode.AmbiguousSTL:         inspect.ReasonMalformedInput,
 		errcode.BinaryDXFUnsupported: inspect.ReasonParserUnavailable,
-		errcode.DWGUnsupported:       inspect.ReasonParserUnavailable,
 	}
 	for _, in := range inputs {
 		t.Run(in.name, func(t *testing.T) {
@@ -355,7 +354,7 @@ func TestCADCreateInspectAgree(t *testing.T) {
 			}
 			code := resp["code"]
 			switch code {
-			case errcode.TruncatedCADFile, errcode.AmbiguousSTL, errcode.BinaryDXFUnsupported, errcode.DWGUnsupported:
+			case errcode.TruncatedCADFile, errcode.AmbiguousSTL, errcode.BinaryDXFUnsupported:
 				if rep.Format != code {
 					t.Errorf("create code %q but inspect format %q", code, rep.Format)
 				}

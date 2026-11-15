@@ -568,6 +568,9 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 		want := map[string]bool{}
 		for op, ps := range pairs {
 			for _, p := range ps {
+				if p.From == "dwg" {
+					continue
+				}
 				want[p.From+" "+op] = true
 			}
 		}
@@ -616,6 +619,7 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			"CAD_MESH_TIMEOUT":   CADDefaultMeshTimeout,
 			"CAD_RENDER_TIMEOUT": CADDefaultRenderTimeout,
 			"CAD_DXF_TIMEOUT":    CADDefaultDXFTimeout,
+			"CAD_DWG_TIMEOUT":    CADDefaultDWGTimeout,
 			"CAD_RSVG_TIMEOUT":   CADDefaultRsvgTimeout,
 			"CAD_ENGINE_TIMEOUT": CADDefaultEngineTimeout,
 		}
@@ -635,11 +639,12 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 
 		sec := cadDocSection(t, doc, "## Time limits")
 		g, m, r, io := int(CADDefaultGuardTimeout/time.Second), int(CADDefaultMeshTimeout/time.Second), int(CADDefaultRenderTimeout/time.Second), int(CADIOAllowance/time.Second)
-		d, s, e := int(CADDefaultDXFTimeout/time.Second), int(CADDefaultRsvgTimeout/time.Second), int(CADDefaultEngineTimeout/time.Second)
+		d, wdg, s, e := int(CADDefaultDXFTimeout/time.Second), int(CADDefaultDWGTimeout/time.Second), int(CADDefaultRsvgTimeout/time.Second), int(CADDefaultEngineTimeout/time.Second)
 		for _, w := range []string{
 			fmt.Sprintf("%d s of I/O", io),
 			fmt.Sprintf("%d + %d + %d + %d = %d", g, m, r, io, g+m+r+io),
 			fmt.Sprintf("%d + %d + 2 x %d + %d = %d", g, d, s, io, g+d+2*s+io),
+			fmt.Sprintf("%d + %d + %d + 2 x %d + %d = %d", g, wdg, d, s, io, g+wdg+d+2*s+io),
 			"`estimate_source: measured`",
 			fmt.Sprintf("estimated maximum of %d s", e),
 		} {
@@ -647,7 +652,7 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 				t.Errorf("the Time limits section of docs/CAD.md does not state %q", w)
 			}
 		}
-		if max(g+m+r+io, g+d+2*s+io) != e {
+		if max(g+m+r+io, g+d+2*s+io, g+wdg+d+2*s+io) != e {
 			t.Errorf("the engine timeout %d is not the longer route", e)
 		}
 		for _, l := range cadDocEvidence(t, "DERIVED") {

@@ -163,14 +163,12 @@ var inspectPublicSentinelFormats = []string{
 	errcode.TruncatedCADFile,
 	errcode.AmbiguousSTL,
 	errcode.BinaryDXFUnsupported,
-	errcode.DWGUnsupported,
 }
 
 var cadRejectionCode = map[convert.CADRejection]string{
 	convert.CADRejectTruncated:    errcode.TruncatedCADFile,
 	convert.CADRejectAmbiguousSTL: errcode.AmbiguousSTL,
 	convert.CADRejectBinaryDXF:    errcode.BinaryDXFUnsupported,
-	convert.CADRejectDWG:          errcode.DWGUnsupported,
 }
 
 // inspectInternalOnlyFormats are sentinels that must NEVER reach the wire.
@@ -1541,7 +1539,7 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
 		}}
-	case detected == errcode.BinaryDXFUnsupported || detected == errcode.DWGUnsupported:
+	case detected == errcode.BinaryDXFUnsupported:
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonParserUnavailable},
 		}}

@@ -41,7 +41,6 @@ or is refused at create, and the job has no output.
 | a file the reader cannot read | the job fails with `cad_unreadable` |
 | a model or drawing too complex to render within the limits | the job fails with `cad_too_complex` |
 | a format with no preview, or a pair the class does not serve | refused at create with 422 `unsupported_conversion`; the job is not created |
-| a DWG file | refused at create with 422 `dwg_unsupported`; re-export it as DXF |
 
 ## Not fixed
 

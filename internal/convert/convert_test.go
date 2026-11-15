@@ -334,10 +334,13 @@ func TestDefaultRegistersOnlyAllowlistedCADPairs(t *testing.T) {
 		OperationConvert + " iges>stl": true,
 		OperationConvert + " dxf>svg":  true,
 		OperationConvert + " dxf>pdf":  true,
+		OperationConvert + " dwg>svg":  true,
+		OperationConvert + " dwg>pdf":  true,
 		OperationRender + " step>png":  true,
 		OperationRender + " iges>png":  true,
 		OperationRender + " stl>png":   true,
 		OperationRender + " dxf>png":   true,
+		OperationRender + " dwg>png":   true,
 	}
 
 	walked := 0
@@ -351,7 +354,7 @@ func TestDefaultRegistersOnlyAllowlistedCADPairs(t *testing.T) {
 			}
 			key := op + " " + p.From + ">" + p.To
 			if class != EngineCAD || !allowed[key] {
-				t.Errorf("%s registers CAD pair %s -> %s under operation %q class %q, want only (convert, step, stl), (convert, iges, stl), (convert, dxf, svg), (convert, dxf, pdf), (render, step, png), (render, iges, png), (render, stl, png) and (render, dxf, png) under cad", where, p.From, p.To, op, class)
+				t.Errorf("%s registers CAD pair %s -> %s under operation %q class %q, want only (convert, step, stl), (convert, iges, stl), (convert, dxf, svg), (convert, dxf, pdf), (convert, dwg, svg), (convert, dwg, pdf), (render, step, png), (render, iges, png), (render, stl, png), (render, dxf, png) and (render, dwg, png) under cad", where, p.From, p.To, op, class)
 				continue
 			}
 			found[key] = true

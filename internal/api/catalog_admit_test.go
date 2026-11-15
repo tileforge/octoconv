@@ -193,14 +193,14 @@ func admitCADCatalog(srv *Server) {
 			id := "octoconv.convert.cad"
 			switch source {
 			case "step", "iges", "stl":
-			case "dxf":
+			case "dxf", "dwg":
 				id = "octoconv.convert.caddraw"
 			default:
 				return workerproto.Match{}, false
 			}
 			if operation == convert.OperationRender {
 				id = "octoconv.render.cad"
-				if source == "dxf" {
+				if source == "dxf" || source == "dwg" {
 					id = "octoconv.render.caddraw"
 				}
 			}

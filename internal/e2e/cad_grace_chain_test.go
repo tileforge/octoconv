@@ -108,6 +108,7 @@ func TestCADGraceChainFollowsTheEngineTimeout(t *testing.T) {
 		"CAD_MESH_TIMEOUT":   convert.CADDefaultMeshTimeout,
 		"CAD_RENDER_TIMEOUT": convert.CADDefaultRenderTimeout,
 		"CAD_DXF_TIMEOUT":    convert.CADDefaultDXFTimeout,
+		"CAD_DWG_TIMEOUT":    convert.CADDefaultDWGTimeout,
 		"CAD_RSVG_TIMEOUT":   convert.CADDefaultRsvgTimeout,
 	}
 	for _, src := range []struct {
