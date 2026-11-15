@@ -1,7 +1,8 @@
 # Measurements contract
 
 The measurements document is the JSON a CAD job reports about the geometry it read: units, bounding box,
-solid counts, volume and area. This file is the contract; `internal/measurements` is the validator that
+solid counts, volume and area, and, when the producer has them, the box of each solid and the drawing's
+skip counts. This file is the contract; `internal/measurements` is the validator that
 enforces it, and a test holds the two equal.
 
 ## Schema
@@ -46,6 +47,8 @@ of them. The helper does not measure that ratio at run time. Two gaps stand:
 | `area` | number or null | key always present | null or finite and strictly greater than 0; null exactly when `volume` is null |
 | `area_null_reason` | string | present exactly when `area` is null | one of the Null reasons below, allowed for the format and consistent with the solid counts; equal to `volume_null_reason` |
 | `mesh_findings` | array of strings | `stl` only, omitted when empty | codes from Mesh findings, no duplicates, in that table's order |
+| `bodies` | array of `{bbox}` | `step` and `iges` only, omitted when absent; absent when `solids` is 0 | when present, one 3-coordinate box per solid, in the reader's solid order, under the same coordinate rules as `bbox`; length equals `solids`; a box need not lie inside `bbox` |
+| `skipped` | object of kind to integer | `dxf` only, omitted when empty | at most 64 kinds, each at most 128 characters; a kind is uppercase letters, digits and underscores, or that text once after `PROXY:`; each count is an integer of at least 1 |
 
 `volume` and `area` are never omitted: a missing key and an explicit null are different things, and only the
 second carries a reason.
@@ -54,10 +57,10 @@ second carries a reason.
 
 | Format | Notes |
 |---|---|
-| `step` | 3D; solid counts present |
-| `iges` | 3D; solid counts present |
+| `step` | 3D; solid counts present; `bodies` lists one box per solid when the producer wrote them |
+| `iges` | 3D; solid counts present; `bodies` lists one box per solid when the producer wrote them |
 | `stl` | 3D mesh; no solid counts; carries no units |
-| `dxf` | 2D; two coordinates per bbox corner; volume and area are always null |
+| `dxf` | 2D; two coordinates per bbox corner; volume and area are always null; `skipped` counts kinds the drawing did not draw |
 
 A DWG render's measurements document stays `format` `dxf`. The drawing worker measures the ASCII DXF it wrote, and this table does not add a `dwg` format.
 
@@ -86,10 +89,13 @@ JSON is unchanged by annotation; `dimensions: false` returns the checked model P
 
 ## DXF drawings
 
-A DXF document describes the same drawing as the picture. The `cad-dxf` helper draws model space only, with
-visible layers only (a layer that is off or frozen is absent from both), and it skips XREF, IMAGE, UNDERLAY,
-OLE, 3DSOLID, ACIS and proxy entities. Volume and area are always null with `not_applicable_2d`, and there are
-no solid counts.
+A DXF document describes the same drawing as the picture. The helper draws one layout: the paper layout the
+client names, or model space when the name is omitted, except when model space has nothing drawable and exactly
+one paper layout has a top view, which is the sheet that is drawn. It draws visible layers only (a layer that
+is off or frozen is absent from both). `skipped` counts entities classified as a kind the drawing does not
+draw, while drawing that layout: XREF, IMAGE, UNDERLAY, OLE, 3DSOLID, ACIS, other surfaces and proxy entities,
+and any further kind the reader refuses. A kind that does not appear was not skipped. Other layouts are not
+counted. Volume and area are always null with `not_applicable_2d`, and there are no solid counts.
 
 **Bounding box.** The bbox is the box of what is drawn: the drawn primitives plus the glyph box of every text.
 It is never taken from the header's `$EXTMIN`/`$EXTMAX`, which a file can state wrongly, and it is not ezdxf's
@@ -264,6 +270,15 @@ error so a caller can tell a contract violation from an I/O error.
 - A positive `volume` needs a bbox with extent on every axis, and a `step` or `iges` bbox is never a single
   point (the helper refuses a zero-size box instead of reporting one).
 - `solids` and `closed_solids` are present for `step` and `iges` and absent for `stl` and `dxf`.
+- `bodies` is omitted, or a non-empty array, and only for `step` and `iges`. When present its length equals
+  `solids`, so a document with no solids omits it. Each element is `{bbox}` with a 3-coordinate box under the
+  same coordinate rules as `bbox`. The order is the order the reader walks solids. A body box is the box of
+  that solid. It is not required to lie inside `bbox`, because `bbox` is the box of the whole shape and the
+  two measurements can disagree by a small amount. An older document that omits `bodies` stays valid.
+- `skipped` is omitted, or a non-empty object, and only for `dxf`. It has at most 64 kinds. Each kind is at
+  most 128 characters and is uppercase letters, digits and underscores, or that text once after `PROXY:`.
+  Each count is an integer of at least 1. An empty object and a null are rejected. The counts are for the
+  layout the picture shows.
 
 ## Keeping this document honest
 
