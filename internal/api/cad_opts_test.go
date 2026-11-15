@@ -310,7 +310,7 @@ func postDWGJob(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, 
 }
 
 func TestCreateJobDWGConvertWithoutOptionsUsesProtocol(t *testing.T) {
-	for _, target := range []string{"pdf", "svg"} {
+	for _, target := range []string{"pdf", "svg", "png"} {
 		t.Run(target, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 			rec := postDWGJob(t, repo, store, q, target, "", "")
@@ -348,6 +348,7 @@ func TestCreateJobDWGConvertWithAnyOptionIsOptsNotApplicable(t *testing.T) {
 		{"pdf", `{"background":"transparent"}`},
 		{"pdf", `{"view":"top"}`},
 		{"pdf", `{"quality":"draft"}`},
+		{"png", `{"size":1024}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.target+" "+tc.opts, func(t *testing.T) {

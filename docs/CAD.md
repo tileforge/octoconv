@@ -30,13 +30,14 @@ A DWG whose header is `AC10` plus two digits is format `dwg`. A pre-R2.5 signatu
 | `convert` | `dxf` | `pdf` |
 | `convert` | `dwg` | `svg` |
 | `convert` | `dwg` | `pdf` |
+| `convert` | `dwg` | `png` |
 | `render` | `step` | `png` |
 | `render` | `iges` | `png` |
 | `render` | `stl` | `png` |
 | `render` | `dxf` | `png` |
 | `render` | `dwg` | `png` |
 
-A 3D `convert` writes a binary STL in millimetres. A DXF or DWG `convert` draws the drawing to SVG or PDF. A `render`
+A 3D `convert` writes a binary STL in millimetres. A DXF `convert` draws the drawing to SVG or PDF. A DWG `convert` draws it to SVG, PDF or a square PNG and writes no measurements document. A `render`
 draws a square PNG preview and writes the measurements document beside it (see Outputs). Any other pair is
 `unsupported_conversion`.
 
@@ -95,7 +96,7 @@ A well-formed option outside this table for its operation and format is refused 
 
 | role | format | when |
 |---|---|---|
-| `primary` | the requested target: `stl` for a 3D `convert`, `svg` or `pdf` for a DXF or DWG `convert`, `png` for every `render` | every successful job |
+| `primary` | the requested target: `stl` for a 3D `convert`, `svg` or `pdf` for a DXF `convert`, `svg`, `pdf` or `png` for a DWG `convert`, `png` for every `render` | every successful job |
 | `measurements` | `json`, the document of docs/MEASUREMENTS.md | every successful `render`, never a `convert` |
 
 The two outputs of a `render` are written together or not at all. The worker validates the measurements
@@ -131,6 +132,7 @@ before the event of the current state.
 | `render` | `dxf` | `png` | `guard` → `dxf` → `ink` → `rsvg` → `judge` | `5` |
 | `convert` | `dwg` | `svg` | `dwg` → `guard` → `dxf` → `ink` | `4` |
 | `convert` | `dwg` | `pdf` | `dwg` → `guard` → `dxf` → `ink` → `rsvg` → `judge` | `6` |
+| `convert` | `dwg` | `png` | `dwg` → `guard` → `dxf` → `ink` → `rsvg` → `judge` | `6` |
 | `render` | `dwg` | `png` | `dwg` → `guard` → `dxf` → `ink` → `rsvg` → `judge` | `6` |
 
 - `guard` checks the input before the heavy work starts.

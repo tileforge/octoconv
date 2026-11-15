@@ -114,7 +114,10 @@ func (CADRenderConverter) Pairs() []Pair {
 type CADDXFConverter struct{ CADConverter }
 
 func (CADDXFConverter) Pairs() []Pair {
-	return []Pair{{From: "dxf", To: "svg"}, {From: "dxf", To: "pdf"}, {From: "dwg", To: "svg"}, {From: "dwg", To: "pdf"}}
+	return []Pair{
+		{From: "dxf", To: "svg"}, {From: "dxf", To: "pdf"},
+		{From: "dwg", To: "svg"}, {From: "dwg", To: "pdf"}, {From: "dwg", To: "png"},
+	}
 }
 
 type CADDXFRenderConverter struct{ CADConverter }

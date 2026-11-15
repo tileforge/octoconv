@@ -6,7 +6,7 @@ import (
 	"github.com/tileforge/octoconv/internal/convert"
 )
 
-func TestCadManifestsCoverTheElevenPairs(t *testing.T) {
+func TestCadManifestsCoverTheCADPairs(t *testing.T) {
 	modelConvert := mustParseCadManifest(t, "manifest-cad-convert.json")
 	modelRender := mustParseCadManifest(t, "manifest-cad-render.json")
 	drawConvert := mustParseCadManifest(t, "manifest-caddraw-convert.json")
@@ -24,6 +24,7 @@ func TestCadManifestsCoverTheElevenPairs(t *testing.T) {
 		"dxf\x00pdf": "cad",
 		"dwg\x00svg": "cad",
 		"dwg\x00pdf": "cad",
+		"dwg\x00png": "cad",
 	})
 	assertPairs(t, modelRender, convert.OperationRender, map[string]string{
 		"step\x00png": "cad",
@@ -46,8 +47,8 @@ func TestCadManifestsCoverTheElevenPairs(t *testing.T) {
 			seen[key] = parsed.id
 		}
 	}
-	if len(seen) != 11 {
-		t.Fatalf("covered pairs = %d, want 11", len(seen))
+	if len(seen) != 12 {
+		t.Fatalf("covered pairs = %d, want 12", len(seen))
 	}
 }
 

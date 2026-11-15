@@ -51,7 +51,7 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 			}
 		}
 		for _, p := range pairs[OperationConvert] {
-			if p.To == "png" {
+			if p.To == "png" && p.From != "dwg" {
 				t.Errorf("the cad convert pair %s -> png is a preview outside render", p.From)
 			}
 		}

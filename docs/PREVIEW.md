@@ -9,7 +9,7 @@ the next class. `TestPreviewDocMatchesTheCode` in `internal/convert` holds the f
 
 | property | value | source |
 |---|---|---|
-| operation | `render` | every CAD preview is a `render` job; `convert` never returns a preview |
+| operation | `render` | a measurements preview is a `render` job. A DWG `convert` to png writes the square PNG and no measurements document |
 | output | `png`, role `primary` | the PNG is the job's primary output |
 | size | `256..2048`, default `1280` | `size` is the edge of a square frame in pixels |
 | background | `opaque` (white #FFFFFF, the default) or `transparent` (alpha 0) | `background` |

@@ -328,6 +328,8 @@ components:
 
             convert dwg->pdf: dwg, guard, dxf, ink, rsvg, judge
 
+            convert dwg->png: dwg, guard, dxf, ink, rsvg, judge
+
             render dwg->png: dwg, guard, dxf, ink, rsvg, judge
 
             What each stage does is in docs/CAD.md, section Stages.
@@ -1339,8 +1341,8 @@ paths:
                     png preview and adds a second output with
                     role=measurements. The cad pairs are render step->png,
                     iges->png, stl->png, dxf->png and dwg->png; and convert
-                    step->stl, iges->stl, dxf->svg, dxf->pdf, dwg->svg and
-                    dwg->pdf. The options
+                    step->stl, iges->stl, dxf->svg, dxf->pdf, dwg->svg,
+                    dwg->pdf and dwg->png. The options
                     are CADOpts; the options each format accepts, the size
                     ceilings and the error codes are in docs/CAD.md.
                 workflow:
