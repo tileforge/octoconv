@@ -19,6 +19,8 @@ func TestParseCADOptsAccepts(t *testing.T) {
 		{"size min", `{"size":256}`, CADOpts{Size: cadIntPtr(256)}},
 		{"size max", `{"size":2048}`, CADOpts{Size: cadIntPtr(2048)}},
 		{"size plain", `{"size":1280}`, CADOpts{Size: cadIntPtr(1280)}},
+		{"layout", `{"layout":"Sheet"}`, CADOpts{Layout: "Sheet"}},
+		{"layout spaces", `{"layout":"Blatt 1"}`, CADOpts{Layout: "Blatt 1"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -26,7 +28,7 @@ func TestParseCADOptsAccepts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseCADOpts(%s) = %v", tc.raw, err)
 			}
-			if got.View != tc.want.View || got.Quality != tc.want.Quality || got.Background != tc.want.Background || got.AssumeUnit != tc.want.AssumeUnit {
+			if got.View != tc.want.View || got.Quality != tc.want.Quality || got.Background != tc.want.Background || got.AssumeUnit != tc.want.AssumeUnit || got.Layout != tc.want.Layout {
 				t.Errorf("ParseCADOpts(%s) = %+v, want %+v", tc.raw, got, tc.want)
 			}
 			if (got.Size == nil) != (tc.want.Size == nil) || (got.Size != nil && *got.Size != *tc.want.Size) {
@@ -77,6 +79,11 @@ func TestParseCADOptsRejects(t *testing.T) {
 		`{"view":"iso"} {}`,
 		`{"view":"iso"}x`,
 		``,
+		`{"layout":""}`,
+		`{"layout":"Sheet` + "\n" + `"}`,
+		`{"layout":1}`,
+		`{"layout":null}`,
+		`{"layout":"` + strings.Repeat("a", CADMaxLayoutName+1) + `"}`,
 	} {
 		if _, err := ParseCADOpts([]byte(raw)); err == nil {
 			t.Errorf("ParseCADOpts(%q) accepted", raw)
@@ -145,6 +152,14 @@ func TestValidateCADApplicability(t *testing.T) {
 		{"zero opts on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{}, ""},
 		{"zero opts on dxf to svg", EngineCAD, OperationConvert, "dxf", "svg", CADOpts{}, ""},
 		{"zero opts on dxf to pdf", EngineCAD, OperationConvert, "dxf", "pdf", CADOpts{}, ""},
+		{"layout on dxf convert", EngineCAD, OperationConvert, "dxf", "svg", CADOpts{Layout: "Sheet"}, ""},
+		{"layout on dwg convert", EngineCAD, OperationConvert, "dwg", "png", CADOpts{Layout: "Sheet"}, ""},
+		{"layout on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{Layout: "Sheet"}, ""},
+		{"layout and size on dwg render", EngineCAD, OperationRender, "dwg", "png", CADOpts{Layout: "Sheet", Size: cadIntPtr(512)}, ""},
+		{"layout and view on dxf convert", EngineCAD, OperationConvert, "dxf", "pdf", CADOpts{Layout: "Sheet", View: "top"}, "only layout"},
+		{"layout on step convert", EngineCAD, OperationConvert, "step", "stl", CADOpts{Layout: "Sheet"}, "layout does not apply"},
+		{"layout on step render", EngineCAD, OperationRender, "step", "png", CADOpts{Layout: "Sheet"}, "layout does not apply"},
+		{"layout on stl render", EngineCAD, OperationRender, "stl", "png", CADOpts{Layout: "Sheet"}, "layout does not apply"},
 	}
 	for _, target := range []string{"svg", "pdf"} {
 		for name, o := range map[string]CADOpts{
@@ -159,7 +174,7 @@ func TestValidateCADApplicability(t *testing.T) {
 				engine, op, source, target string
 				o                          CADOpts
 				wantErr                    string
-			}{name + " on dxf to " + target, EngineCAD, OperationConvert, "dxf", target, o, "no option applies to a dxf conversion"})
+			}{name + " on dxf to " + target, EngineCAD, OperationConvert, "dxf", target, o, "only layout applies to a dxf conversion"})
 		}
 	}
 	for _, tc := range cases {

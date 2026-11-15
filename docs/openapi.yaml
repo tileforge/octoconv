@@ -516,7 +516,7 @@ components:
       type: object
       description: >-
         Options of the cad engine class, for operation=render and for the
-        convert of a step or iges file. Every option is optional and an
+        convert of a step, iges, dxf, or dwg file. Every option is optional and an
         omitted one takes its default. An unknown option, a value outside
         its set or a size outside its range is 422 invalid_options; a
         well-formed option that does not apply to the operation and source
@@ -559,6 +559,15 @@ components:
             output; unknown and client-assumed units are labeled explicitly.
             False returns the original unannotated PNG. Applies only to 3D
             render jobs; dxf and convert reject this option even when false.
+        layout:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            Paper layout to draw for a dxf or dwg. Omitted, an empty model
+            with one top-view sheet draws that sheet, and any other drawing
+            stays in model space. A name draws that layout even when model
+            space has geometry. Unknown names fail the drawing.
       additionalProperties: false
 
     EngineFormats:

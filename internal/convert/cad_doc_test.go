@@ -299,6 +299,10 @@ func cadDocOnly(t *testing.T, tag string) CADOpts {
 		}
 		switch fv := f.Field(i); fv.Kind() {
 		case reflect.String:
+			if tag == "layout" {
+				fv.SetString("Sheet")
+				break
+			}
 			closed, ok := cadDocClosed(tag)
 			if !ok {
 				t.Fatalf("option %s is a string with no closed set in the test", tag)
@@ -497,6 +501,10 @@ func TestCADDocMatchesTheCode(t *testing.T) {
 			} else if tag == "size" {
 				if want := fmt.Sprintf("`%d..%d`", CADMinRenderSize, CADMaxRenderSize); r[1] != want {
 					t.Errorf("docs/CAD.md size values %q, want %q", r[1], want)
+				}
+			} else if tag == "layout" {
+				if want := fmt.Sprintf("`1..%d` characters", CADMaxLayoutName); r[1] != want {
+					t.Errorf("docs/CAD.md layout values %q, want %q", r[1], want)
 				}
 			} else {
 				t.Errorf("option %s has neither a closed set nor a range in the test", tag)
