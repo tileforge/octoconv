@@ -53,6 +53,7 @@ draws a square PNG preview and writes the measurements document beside it (see O
 | `background` | `opaque`, `transparent` | `opaque` |
 | `assume_unit` | `mm`, `cm`, `m`, `inch`, `foot`, `micrometre` | `none` |
 | `dimensions` | `true`, `false` | `true` |
+| `layout` | `1..255` characters | `none` |
 
 `size` is the edge of the square PNG in pixels, an integer. `quality` is the tessellation density of a STEP or
 IGES model. `background` `opaque` is white #FFFFFF; `transparent` leaves the background at alpha 0.
@@ -81,16 +82,20 @@ The annotation font is the embedded Go Regular font. DXF drawings retain their o
 |---|---|---|
 | `convert` | `step` | `quality` |
 | `convert` | `iges` | `quality` |
-| `convert` | `dxf` | — |
-| `convert` | `dwg` | — |
+| `convert` | `dxf` | `layout` |
+| `convert` | `dwg` | `layout` |
 | `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
 | `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
 | `render` | `stl` | `view`, `size`, `background`, `assume_unit`, `dimensions` |
-| `render` | `dxf` | `size`, `background`, `assume_unit` |
-| `render` | `dwg` | `size`, `background`, `assume_unit` |
+| `render` | `dxf` | `size`, `background`, `assume_unit`, `layout` |
+| `render` | `dwg` | `size`, `background`, `assume_unit`, `layout` |
 
 A well-formed option outside this table for its operation and format is refused at create with 422
 `opts_not_applicable`, before the upload is stored. A DXF or DWG is drawn top-down, so `view` does not apply to it.
+`layout` names one paper layout. It is 1 to 255 characters and is not a closed set. Omitted, the drawing stays in
+model space, except when model space has nothing drawable and exactly one paper layout has a top view: that sheet
+is drawn. A name draws that layout even when model space has geometry and when several sheets exist. `Model` and a
+name that is not in the file fail the drawing. `layout` does not apply to a STEP, IGES, or STL file.
 
 ## Outputs
 
@@ -271,7 +276,7 @@ status) or as the `error_code` of a failed job (`async`). Codes every class shar
 | `cad_unreadable` | async | the reader refuses the file's structure or values |
 | `cad_empty_result` | async | no geometry to mesh; a drawing that shows nothing on a white page; or a PDF or PNG that shows no recognisable content |
 | `cad_mesh_timeout` | async | tessellation did not finish within `CAD_MESH_TIMEOUT` |
-| `engine_error` | async | the measurements could not be produced, the drawing's SVG failed the safety check, a render or drawing stage failed on every attempt, or an unexpected engine failure |
+| `engine_error` | async | the measurements could not be produced, the drawing's SVG failed the safety check, a render or drawing stage failed on every attempt, the requested paper layout is not in the file, or an unexpected engine failure |
 | `reconciler_exhausted` | async | the job stopped making progress and the reconciler's recovery attempts ran out |
 
 ## Known limits

@@ -259,6 +259,25 @@ func TestCADOpenAPIMatchesTheCode(t *testing.T) {
 				if p["type"] != "string" {
 					t.Errorf("CADOpts.%s type is %q, want string", tag, p["type"])
 				}
+				if tag == "layout" {
+					if p["minLength"] != "1" || p["maxLength"] != strconv.Itoa(CADMaxLayoutName) {
+						t.Errorf("CADOpts.layout length is %q..%q, want 1..%d", p["minLength"], p["maxLength"], CADMaxLayoutName)
+					}
+					if _, ok := p["enum"]; ok {
+						t.Error("CADOpts.layout has an enum; names come from the file")
+					}
+					if d, ok := p["default"]; ok {
+						t.Errorf("CADOpts.layout has default %q, the code resolves none", d)
+					}
+					raw, _ := json.Marshal(map[string]string{tag: "Sheet"})
+					if _, err := ParseCADOpts(raw); err != nil {
+						t.Errorf("ParseCADOpts refuses layout Sheet: %v", err)
+					}
+					if _, err := ParseCADOpts([]byte(`{"layout":""}`)); err == nil {
+						t.Error("ParseCADOpts accepts an empty layout")
+					}
+					break
+				}
 				closed, ok := cadDocClosed(tag)
 				if !ok {
 					t.Fatalf("CADOpts.%s is a string with no closed set in the test", tag)
