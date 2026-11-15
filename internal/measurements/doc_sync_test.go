@@ -1,6 +1,7 @@
 package measurements
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"regexp"
@@ -121,6 +122,18 @@ func TestMeasurementsDocNamesSchema(t *testing.T) {
 	doc := readMeasurementsDoc(t)
 	if !strings.Contains(doc, "`"+Schema+"`") {
 		t.Fatalf("docs/MEASUREMENTS.md does not name the schema `%s`", Schema)
+	}
+}
+
+func TestMeasurementsDocStatesTheSkipLimits(t *testing.T) {
+	doc := readMeasurementsDoc(t)
+	for _, phrase := range []string{
+		fmt.Sprintf("at most %d kinds", MaxSkippedKinds),
+		fmt.Sprintf("at most %d characters", MaxSkipKindLen),
+	} {
+		if !strings.Contains(doc, phrase) {
+			t.Errorf("docs/MEASUREMENTS.md does not state %q", phrase)
+		}
 	}
 }
 
