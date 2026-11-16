@@ -13,7 +13,7 @@ the next class. `TestPreviewDocMatchesTheCode` in `internal/convert` holds the f
 | output | `png`, role `primary` | the PNG is the job's primary output |
 | size | `256..2048`, default `1280` | `size` is the edge of a square frame in pixels |
 | background | `opaque` (white #FFFFFF, the default) or `transparent` (alpha 0) | `background` |
-| 3D framing | orthographic, the model's bounding box fitted with a margin of `0.06` of the frame on every side, centred | the 3D renderer |
+| 3D framing | orthographic, the model's bounding box fitted with a margin of `0.06` of the frame on every side, centred. Crease, boundary and non-manifold edges are drawn, plus the view silhouette | the 3D renderer |
 | DXF framing | top-down, letterboxed with a margin of at least `0.03` of the frame, centred, never cropped or stretched | the DXF letterbox |
 | 3D views | `iso` (the default), `front`, `back`, `left`, `right`, `top`, `bottom` | `view` |
 | DXF views | `top` only; any `view` on a DXF render is refused with 422 `opts_not_applicable` | `view` |
