@@ -56,7 +56,9 @@ draws a square PNG preview and writes the measurements document beside it (see O
 | `layout` | `1..255` characters | `none` |
 
 `size` is the edge of the square PNG in pixels, an integer. `quality` is the tessellation density of a STEP or
-IGES model. `background` `opaque` is white #FFFFFF; `transparent` leaves the background at alpha 0.
+IGES model. An IGES model with no solid is sewn at tolerance 1e-6 before meshing. Sewing runs for IGES only,
+and a volume is reported only when every face joins a closed valid solid (docs/MEASUREMENTS.md).
+`background` `opaque` is white #FFFFFF; `transparent` leaves the background at alpha 0.
 The shaded picture draws crease, boundary and non-manifold edges, and the view silhouette where a
 front face meets a face turned away from the camera. Triangle edges of a smooth surface stay hidden.
 `assume_unit` names the unit of a file that declares none; its default `none` assumes nothing, and it never
