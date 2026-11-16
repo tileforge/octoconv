@@ -616,6 +616,46 @@ func TestDocumentCreateStillEnqueues(t *testing.T) {
 	}
 }
 
+func TestApprovedDocumentCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "docx" && target == "pdf" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.document",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineDocument,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
+		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineDocument || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want document on asynq", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.document" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
 func legacyImageCatalog(schema string) *fakeCatalog {
 	return &fakeCatalog{
 		found: true,
