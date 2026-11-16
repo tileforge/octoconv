@@ -65,6 +65,9 @@ a `size` outside the range is `invalid_options`.
 preview. It is a boolean, not a string. Dimensions are enabled by default; use `{"dimensions":false}`
 for the original unannotated PNG. This changes the default appearance of 3D render jobs, including
 jobs whose stored options omit `dimensions`; existing stored images are unchanged.
+When the measurements document includes `bodies`, the same kind of line is drawn for each solid box,
+at most 12 boxes, largest diagonal first. A box that matches the overall box is omitted. The heading
+stays the overall size. An STL has no per-solid boxes, so its preview stays overall-only.
 
 Values and units come from the same measurements document returned with the PNG, in X, Y, Z order.
 They describe the axis-aligned bounding box in the file's coordinates, not hole diameters or tolerances.

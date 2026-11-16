@@ -29,6 +29,7 @@ starting at 14% from the left and 16% from the top (rounded to pixels). The head
 arrows and labels are composed around it; output size and background remain as requested. Labels use
 the embedded Go Regular font. The values and unit provenance match the measurements JSON. Dimensions
 along an axis hidden by the view, or spanning less than one pixel, appear only in the heading.
+A STEP or IGES document that includes `bodies` also gets those lines for up to 12 solid boxes.
 
 ## Non-previewable input
 
