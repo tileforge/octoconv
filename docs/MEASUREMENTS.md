@@ -68,6 +68,8 @@ An STL is read as binary when its size is exactly 84 bytes plus 50 times the tri
 
 An STL's volume is computed per shell, where a shell is the set of triangles joined through shared edges. When every shell encloses a positive volume, the volume is their sum and the area is the sum of all triangle areas. When every shell is inward, the reason is `negative_volume`. When the signs are mixed, volume and area are null with `stl_ambiguous_shells` instead of a difference of shells. This includes a hollow part whose cavity is modelled as an inward shell: it is reported as null, never as a wrong number. A shell of exactly zero volume makes the document `invalid_solid`.
 
+An IGES file the reader loads with no solid is sewn at tolerance 1e-6 in model units. Volume and area are reported only when every face joins a closed valid solid. An open sheet, a gap wider than 1e-6, and a model with more than 20000 faces stay `no_solids`. Sewing runs for IGES only.
+
 **PNG check.** Before a PNG is returned, the worker checks that it shows the model, on the white page the DXF
 route judges emptiness on (see Empty): a pixel is part of the picture when, laid over white, one of its
 channels is below 250. That holds whatever `background` was asked for, so an opaque and a transparent PNG of
