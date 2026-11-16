@@ -1083,7 +1083,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	var attemptBudget time.Duration
 	imageProtocol := engine == convert.EngineImage
 	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
-	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol) {
+	documentProtocol := engine == convert.EngineDocument && len(normalizedOpts) == 0 && !progressWebhook
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol) {
 		budget := s.engineTimeouts[engine]
 		if budget <= 0 {
 			budget = 120 * time.Second

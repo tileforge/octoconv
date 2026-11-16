@@ -616,12 +616,109 @@ func TestDocumentCreateStillEnqueues(t *testing.T) {
 	}
 }
 
-func TestApprovedDocumentCreateStillEnqueues(t *testing.T) {
+func TestApprovedDocumentCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
-	srv.SetCapabilityCatalog(&fakeCatalog{
+	srv.SetCapabilityCatalog(documentCatalog())
+
+	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 0 || q.enqueuedDocument != uuid.Nil {
+		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineDocument || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol document", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 300*time.Second {
+		t.Fatalf("budget = %s, want 300s", repo.created.ProtocolAttemptBudget)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.document" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func TestDocumentPDFProfileStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(documentCatalog())
+
+	body, ct := multipartBodyWithOpts(t, "in.docx", "pdf", docxFixture(t), `{"pdf_profile":"pdf/a-2b"}`)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
+		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.Opts["pdf_profile"] != "pdf/a-2b" {
+		t.Fatalf("created = %+v, want pdf profile on asynq", repo.created)
+	}
+}
+
+func TestDocumentProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(documentCatalog())
+
+	body, ct := multipartBodyWithCallback(t, "in.docx", "pdf", docxFixture(t), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
+		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want progress webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedDocumentOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts = map[string]time.Duration{
+		convert.EngineDocument: time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second,
+	}
+	srv.SetCapabilityCatalog(documentCatalog())
+
+	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
+		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("created = %+v, want asynq", repo.created)
+	}
+}
+
+func documentCatalog() *fakeCatalog {
+	return &fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
 			if operation == convert.OperationConvert && source == "docx" && target == "pdf" {
 				return workerproto.Match{
@@ -635,24 +732,6 @@ func TestApprovedDocumentCreateStillEnqueues(t *testing.T) {
 			}
 			return workerproto.Match{}, false
 		},
-	})
-
-	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
-	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
-	req.Header.Set("Content-Type", ct)
-	rec := httptest.NewRecorder()
-	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
-		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineDocument || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want document on asynq", repo.created)
-	}
-	if repo.created.CapabilityID != "octoconv.convert.document" || repo.created.CapabilityVersion != 1 {
-		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
 	}
 }
 
