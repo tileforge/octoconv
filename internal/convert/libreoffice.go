@@ -6,19 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"strings"
 )
 
-// documentFormats are the office document formats LibreOffice converts to pdf.
+// documentFormats are the office document formats the document capability admits.
 var documentFormats = []string{"docx", "odt", "xlsx", "ods", "pptx", "odp"}
 
-// crossPairs is the explicit, flat list of the 6 symmetric intra-family
-// cross-format pairs (D-01): docx<->odt, xlsx<->ods, pptx<->odp. Deliberately
-// NOT a cross-product of documentFormats -- that would also generate the
-// forbidden cross-family pairs (e.g. docx->ods). Each pair is listed by hand
-// so the supported surface is auditable at a glance.
+// crossPairs is the explicit list of the six intra-family pairs. It is not a
+// cross-product of documentFormats, which would also admit docx to ods.
 var crossPairs = []Pair{
 	{From: "docx", To: "odt"},
 	{From: "odt", To: "docx"},
@@ -28,28 +22,12 @@ var crossPairs = []Pair{
 	{From: "odp", To: "pptx"},
 }
 
-// LibreOfficeConverter converts office documents to PDF, and between odt/odt-
-// family sibling formats, by shelling out to the `soffice` CLI in headless
-// mode.
-//
-// Sandbox is the filesystem sandbox soffice and veraPDF run under; nil (the
-// zero value) runs both engines directly, which is what tests want. A POINTER
-// for the same reason PandocConverter.Sandbox is one: the type stays
-// comparable, so LibreOfficeConverter{}.WithSandbox(nil) still equals the zero
-// value.
-type LibreOfficeConverter struct {
-	// Sandbox is set only by WithSandbox / ConfinedDocument.
-	Sandbox *engineSandbox
-	// sharedTmp is the container's shared /tmp, swept before every task. Set
-	// ONLY by ConfinedDocument, and only for a confined converter whose soffice
-	// ruleset grants /tmp read-write (the route 70-02 measured): the sweep is
-	// safe solely because that same grant holds concurrency to 1
-	// (sharedTmpGuard). Empty means no sweep.
-	sharedTmp string
-}
+// LibreOfficeConverter admits the twelve document pairs. Conversion runs in
+// tileforge/octoconv-worker-document. Convert fails closed so this process
+// cannot shell out to soffice.
+type LibreOfficeConverter struct{}
 
-// Pairs returns one {format, "pdf"} pair per supported source document format,
-// plus the 6 symmetric intra-family cross pairs in crossPairs (D-01).
+// Pairs returns one pdf target per office format, then the six cross pairs.
 func (LibreOfficeConverter) Pairs() []Pair {
 	pairs := make([]Pair, 0, len(documentFormats)+len(crossPairs))
 	for _, f := range documentFormats {
@@ -59,171 +37,19 @@ func (LibreOfficeConverter) Pairs() []Pair {
 	return pairs
 }
 
-// Convert runs `soffice --headless --convert-to <target>:<filter>` against
-// inPath, isolating this invocation's LibreOffice profile inside a
-// subdirectory of filepath.Dir(outPath) (the caller's per-job workDir —
-// already unique and already cleaned up) so concurrent jobs never share a
-// profile/lock. The target format is derived from filepath.Ext(outPath) — the
-// worker builds outPath as "out."+job.TargetFormat (internal/worker/worker.go)
-// — so Convert is target-agnostic: it drives whichever pair Pairs()
-// advertised. ctx must carry the engine timeout.
-//
-// soffice and veraPDF each run under their own ruleset (sofficeExec and
-// verapdfExec), built once here for the whole task and never shared between
-// the two engines (D-10, D-12). Convert hands inPath to soffice directly and
-// never copies it into the job directory, so a Convert on a file outside every
-// grant is a meaningful negative through the production path.
-func (c LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	workDir := filepath.Dir(outPath) // caller's per-job workDir; already unique, already cleaned up
-	// The sweep comes first of all: it removes whatever an earlier task left in
-	// the shared /tmp (soffice's own socket included), sparing this job's own
-	// directory. Empty sharedTmp -- unconfined, or a ruleset that grants no
-	// shared /tmp -- means there is nothing to sweep.
-	if c.sharedTmp != "" {
-		if err := sweepSharedTmp(c.sharedTmp, workDir); err != nil {
-			return fmt.Errorf("libreoffice: %w", err)
-		}
-	}
-	profileDir := filepath.Join(workDir, "lo-profile")
-	if err := os.MkdirAll(profileDir, 0o700); err != nil {
-		return fmt.Errorf("libreoffice: mkdir profile: %w", err)
-	}
-	// The per-job directory both engines' temp files go to (sofficeEnv and
-	// verapdfEnv point TMPDIR and java.io.tmpdir at it).
-	if err := os.MkdirAll(filepath.Join(workDir, documentEngineTmpDir), 0o700); err != nil {
-		return fmt.Errorf("libreoffice: mkdir engine tmp: %w", err)
-	}
-	sx := c.sofficeExec(workDir)
-	vx := c.verapdfExec(workDir)
-
-	// Garbage opts (e.g. a corrupt jobs.options column) is a deterministic
-	// failure, not a transient one -- DocOptsFromMap applies the same
-	// strictness (DisallowUnknownFields + allow-list) here as at the API
-	// write path (D-10).
-	docOpts, err := DocOptsFromMap(opts)
-	if err != nil {
-		return fmt.Errorf("libreoffice: %w", err)
-	}
-	// suffix is a compile-time server constant selected only by the
-	// validated pdf_profile enum -- never built from opts' raw bytes
-	// (D-07, Pitfall 9).
-	suffix, isPDFA := PDFAFilterOptions(docOpts)
-	// A PDF/A conversion runs veraPDF, whose launcher script expands JAVA_OPTS
-	// unquoted, so a job directory containing whitespace would tear
-	// -Djava.io.tmpdir=<dir> into separate JVM arguments (review IN-02). The
-	// job is refused here, before any engine runs, with the cause named. The
-	// startup preflight makes the same check on its own job directory, so a
-	// whitespace TMPDIR also stops a confined worker from starting.
-	if isPDFA {
-		if err := requireNoWhitespaceJobDir(workDir); err != nil {
-			return fmt.Errorf("libreoffice: %w", err)
-		}
-	}
-
-	targetFormat := NormalizeFormat(filepath.Ext(outPath))
-	// The PDF/A suffix may only ever ride on a pdf export filter. The API's
-	// ValidateApplicability guarantees this at write time, but the worker
-	// deliberately skips the applicability re-check -- so enforce the
-	// invariant HERE, where the argv is assembled: a jobs.options row
-	// carrying pdf_profile on a non-pdf target (DB corruption, manual
-	// insert, a future write path) must fail terminally instead of handing
-	// a PDF-export filter-JSON to a non-PDF filter, or worse, silently
-	// reporting "done" with the archival profile unhonored (WR-03). The
-	// error string is coupled into terminalLibreOfficeSignatures
-	// (internal/worker/worker.go) -- a retry can never fix it.
-	if isPDFA && targetFormat != "pdf" {
-		return fmt.Errorf("libreoffice: pdf_profile requested for non-pdf target %q", targetFormat)
-	}
-	filter, err := filterFor(filepath.Ext(inPath), filepath.Ext(outPath))
-	if err != nil {
-		return fmt.Errorf("libreoffice: %w", err)
-	}
-
-	convertTo := targetFormat + ":" + filter
-	if isPDFA {
-		// Appended onto the SAME argv element (no shell involved --
-		// runCommand/exec.Command takes an argv array, exec.go:19-20), so no
-		// new escaping mechanism is needed.
-		convertTo += ":" + suffix
-	}
-
-	args := []string{
-		"--headless", "--invisible", "--nocrashreport", "--nodefault",
-		"--nologo", "--nofirststartwizard", "--norestore",
-		"-env:UserInstallation=file://" + profileDir,
-		"--convert-to", convertTo,
-		"--outdir", workDir,
-		inPath,
-	}
-	if _, err := sx.run(ctx, "soffice", args...); err != nil {
-		return fmt.Errorf("libreoffice: %w", err)
-	}
-
-	// soffice writes <input-basename>.<targetFormat> into --outdir; the
-	// worker's inPath convention (internal/worker/worker.go) is always
-	// "in.<sourceFormat>", so the produced file is deterministically
-	// workDir/in.<targetFormat>. Rename it to the caller's outPath.
-	producedPath := filepath.Join(workDir, strings.TrimSuffix(filepath.Base(inPath), filepath.Ext(inPath))+"."+targetFormat)
-	// soffice's documented failure mode includes exiting 0 WITHOUT producing
-	// an output file (e.g. a refused/unknown export filter). That outcome is
-	// deterministic, so it must surface as a terminal-classified error
-	// ("produced no output file" is in terminalLibreOfficeSignatures), not
-	// the transient-looking rename ENOENT it would otherwise become (D-04).
-	if _, err := os.Stat(producedPath); err != nil {
-		return fmt.Errorf("libreoffice: produced no output file for %q: %v", targetFormat, err)
-	}
-	if err := os.Rename(producedPath, outPath); err != nil {
-		return fmt.Errorf("libreoffice: rename output: %w", err)
-	}
-
-	return validateDocumentOutput(ctx, vx, outPath, targetFormat, isPDFA)
-}
-
-// Engine reports the document engine class (D-01).
+// Engine returns the document engine class.
 func (LibreOfficeConverter) Engine() string { return EngineDocument }
 
-// filterTable is the explicit (source, target) -> LibreOffice export filter
-// name table (D-02). There is deliberately no auto-derivation from extension:
-// every supported pair is listed here by hand, so an unsupported combination
-// is a hard "unsupported" error rather than a guessed filter name. The
-// researched LO 7.4 (bookworm) filter names below are the starting point,
-// live-confirmed against a real container in Plan 13-03.
-var filterTable = map[[2]string]string{
-	{"docx", "pdf"}: "writer_pdf_Export",
-	{"odt", "pdf"}:  "writer_pdf_Export",
-	{"xlsx", "pdf"}: "calc_pdf_Export",
-	{"ods", "pdf"}:  "calc_pdf_Export",
-	{"pptx", "pdf"}: "impress_pdf_Export",
-	{"odp", "pdf"}:  "impress_pdf_Export",
-
-	{"docx", "odt"}: "writer8",
-	{"odt", "docx"}: "MS Word 2007 XML",
-	{"xlsx", "ods"}: "calc8",
-	{"ods", "xlsx"}: "Calc MS Excel 2007 XML",
-	{"pptx", "odp"}: "impress8",
-	{"odp", "pptx"}: "Impress MS PowerPoint 2007 XML",
-}
-
-// filterFor maps a (source, target) document format pair to the LibreOffice
-// export filter that produces the correct output for that pair's application
-// (Writer/Calc/Impress). filterTable is the single source of truth (D-02); an
-// unsupported (source, target) combination returns "" and an error whose
-// message contains "no export filter for".
-func filterFor(sourceExt, targetFormat string) (string, error) {
-	key := [2]string{NormalizeFormat(sourceExt), NormalizeFormat(targetFormat)}
-	if filter, ok := filterTable[key]; ok {
-		return filter, nil
-	}
-	return "", fmt.Errorf("no export filter for %s -> %s", sourceExt, targetFormat)
+// Convert refuses the call. The in-repo LibreOffice process has been removed.
+func (LibreOfficeConverter) Convert(context.Context, string, string, map[string]any) error {
+	return errors.New("libreoffice: the in-repo engine is retired")
 }
 
 // pdfMagic is the leading byte sequence every valid PDF file begins with.
 var pdfMagic = []byte("%PDF-")
 
-// validatePDF guards against LibreOffice's documented "exit 0 but empty/
-// corrupt output" failure mode (D-02): it requires the output file to be
-// non-zero size AND begin with the %PDF- magic bytes before a conversion is
-// treated as successful.
+// validatePDF guards against an engine that exits 0 with an empty or corrupt
+// PDF. Chromium reuses it. The output must be non-empty and begin with %PDF-.
 func validatePDF(path string) error {
 	fi, err := statJobOutput(path)
 	if err != nil {
@@ -249,85 +75,6 @@ func validatePDF(path string) error {
 	}
 	if !bytes.Equal(buf, pdfMagic) {
 		return fmt.Errorf("libreoffice: output missing %%PDF- magic bytes")
-	}
-	return nil
-}
-
-// gtsPDFAMarker is the OutputIntent identifier every ISO 19005 (PDF/A)
-// conforming PDF is required to embed. This is a family match (not the
-// stricter "/GTS_PDFA2" per-part variant) -- a deliberate, explicitly
-// NON-authoritative sanity check (Pitfall 8): it proves LibreOffice at least
-// attempted PDF/A tagging, not full ISO 19005 conformance. Full veraPDF
-// validation is accepted residual risk (DOCV3-01).
-var gtsPDFAMarker = []byte("/GTS_PDFA")
-
-// validateDocumentOutput dispatches to the correct structural validator for
-// targetFormat (D-03): validatePDF (unchanged %PDF- magic check) for pdf
-// targets, or -- symmetric to the input-side guarantee -- output validated by
-// the same sniff (SniffContainer) that validates input, for every non-pdf
-// document target. A mismatched/wrong-container output (e.g. a docx handed
-// as target "odt") is treated identically to an empty/corrupt output: a
-// deterministic, unrecoverable failure that must never be marked "done"
-// (T-13-01). When wantPDFA is set (a pdf_profile was requested, D-05), a pdf
-// target additionally requires the /GTS_PDFA OutputIntent marker to be
-// present -- a regressed LibreOffice that silently returns a plain PDF under
-// a PDF/A request must never be reported as a successful archival export
-// (the cheap pre-filter, D-05) -- and, once that marker passes, real ISO
-// 19005-2b conformance is verified via validatePDFA (phase 23, D-05/D-06):
-// the marker alone was always a non-authoritative sanity check (Pitfall 8),
-// never a substitute for full veraPDF validation. ctx carries the
-// DOCUMENT_ENGINE_TIMEOUT budget the caller (Convert) already holds;
-// validatePDFA derives its own bounded sub-context from it (D-04). vx is the
-// job's veraPDF engineExec (its own, narrower ruleset -- D-10); a zero
-// engineExec runs veraPDF directly.
-func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetFormat string, wantPDFA bool) error {
-	target := NormalizeFormat(targetFormat)
-	if target == "pdf" {
-		if err := validatePDF(path); err != nil {
-			return err
-		}
-		if !wantPDFA {
-			return nil
-		}
-		data, err := ReadJobFile(path)
-		if errors.Is(err, ErrJobFileIrregular) {
-			return fmt.Errorf("libreoffice: stat output: %w", err)
-		}
-		if err != nil {
-			return fmt.Errorf("libreoffice: read output for PDF/A check: %w", err)
-		}
-		if !bytes.Contains(data, gtsPDFAMarker) {
-			return fmt.Errorf("libreoffice: output missing PDF/A OutputIntent marker")
-		}
-		// D-05: veraPDF only ever runs AFTER the cheap marker pre-filter
-		// above passes -- a plain PDF fast-fails on the marker without
-		// paying the JVM cold-start cost. D-06: a non-compliant or
-		// unverifiable veraPDF verdict is fail-closed here; its two terminal
-		// signatures ("pdf/a non-compliant", "pdf/a validation error") are
-		// coupled into terminalVeraPDFSignatures (internal/worker/worker.go)
-		// in this SAME commit.
-		if err := validatePDFA(ctx, vx, path); err != nil {
-			return fmt.Errorf("libreoffice: %w", err)
-		}
-		return nil
-	}
-
-	fi, err := statJobOutput(path)
-	if err != nil {
-		return fmt.Errorf("libreoffice: stat output: %w", err)
-	}
-	if fi.Size() == 0 {
-		return fmt.Errorf("libreoffice: output is empty")
-	}
-	f, _, err := OpenJobFile(path)
-	if err != nil {
-		return jobOutputOpenFailure("libreoffice", err)
-	}
-	defer f.Close()
-
-	cr, serr := SniffContainer(f, fi.Size())
-	if serr != nil || cr.Format != target {
-		return fmt.Errorf("libreoffice: output does not match expected container format %s", targetFormat)
 	}
 	return nil
 }

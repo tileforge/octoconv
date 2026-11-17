@@ -31,7 +31,6 @@ func TestChartGraceOutlivesAsynqShutdown(t *testing.T) {
 	// against values.yaml below.
 	workers := map[string]string{
 		"worker":         "ENGINE_TIMEOUT",
-		"documentWorker": "DOCUMENT_ENGINE_TIMEOUT",
 		"chromiumWorker": "HTML_ENGINE_TIMEOUT",
 		"audioWorker":    "AUDIO_ENGINE_TIMEOUT",
 		"avWorker":       "AV_ENGINE_TIMEOUT",

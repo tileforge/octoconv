@@ -1112,6 +1112,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if engine == convert.EngineDocument && dispatchOwner != "protocol" {
+		switch {
+		case progressWebhook:
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=document_progress_webhook", client.ID, filename)
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "document jobs do not accept progress_webhook")
+		case len(normalizedOpts) > 0:
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=document_opts", client.ID, filename)
+			writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
+		default:
+			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+				"unsupported conversion: "+detected+" -> "+target)
+		}
+		return
+	}
 
 	jobID := uuid.New()
 	key := storage.InputKey(jobID, 0, filename)

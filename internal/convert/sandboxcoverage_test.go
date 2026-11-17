@@ -90,12 +90,6 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return htmlEngines, true
 	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
 		return probeEngines, true
-	case "libreoffice.go":
-		return sofficeEngines, true
-	case "verapdf.go":
-		return verapdfEngines, true
-	case "documentsandbox.go":
-		return sandboxUnion(sofficeEngines, verapdfEngines), true
 	}
 	return nil, false
 }
@@ -120,8 +114,6 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"html"}
 	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
 		return []string{"probe"}
-	case "libreoffice.go", "verapdf.go", "documentsandbox.go":
-		return []string{"document"}
 	}
 	return nil
 }
@@ -143,23 +135,8 @@ func sandboxGroupEngines(group string) []string {
 		return htmlEngines
 	case "probe":
 		return probeEngines
-	case "document":
-		return sandboxUnion(sofficeEngines, verapdfEngines)
 	}
 	return nil
-}
-
-// sandboxUnion is a followed by whichever of b's entries a lacks: the document
-// image runs two engines, each with its own ruleset, and the class-level check
-// compares the union.
-func sandboxUnion(a, b []string) []string {
-	out := append([]string{}, a...)
-	for _, x := range b {
-		if !sandboxContains(out, x) {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 func sandboxIntersect(a, b []string) []string {
@@ -496,13 +473,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go", "libreoffice.go", "verapdf.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe", "document"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)

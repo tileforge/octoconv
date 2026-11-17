@@ -567,7 +567,7 @@ func TestCatalogSchemaRejectsBeforeUpload(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestDocumentCreateStillEnqueues(t *testing.T) {
+func TestUnapprovedDocumentIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -594,21 +594,17 @@ func TestDocumentCreateStillEnqueues(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID || q.enqueuedImage != uuid.Nil {
-		t.Fatalf("document enqueue calls=%d document=%s image=%s", q.enqueueCalls, q.enqueuedDocument, q.enqueuedImage)
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineDocument {
-		t.Fatalf("engine = %+v, want document", repo.created)
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
+	if q.enqueuedDocument != uuid.Nil {
+		t.Fatalf("enqueuedDocument = %s, want none", q.enqueuedDocument)
 	}
 
 	rec = postCreate(t, srv, "in.png", "webp")
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedImage != uuid.Nil {
+	if q.enqueueCalls != 0 || q.enqueuedImage != uuid.Nil {
 		t.Fatalf("image enqueue calls=%d image=%s", q.enqueueCalls, q.enqueuedImage)
 	}
 	if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.Engine != convert.EngineImage {
@@ -645,7 +641,7 @@ func TestApprovedDocumentCreateSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestDocumentPDFProfileStaysOnAsynq(t *testing.T) {
+func TestDocumentPDFProfileIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -657,18 +653,11 @@ func TestDocumentPDFProfileStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
-		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.Opts["pdf_profile"] != "pdf/a-2b" {
-		t.Fatalf("created = %+v, want pdf profile on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.OptsNotApplicable)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestDocumentProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestDocumentProgressWebhookIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -680,18 +669,11 @@ func TestDocumentProgressWebhookStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
-		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
-	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want progress webhook on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidRequest)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestApprovedDocumentOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedDocumentOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -706,15 +688,8 @@ func TestApprovedDocumentOverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedDocument != repo.createdID {
-		t.Fatalf("enqueue calls=%d document=%s", q.enqueueCalls, q.enqueuedDocument)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("created = %+v, want asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func documentCatalog() *fakeCatalog {

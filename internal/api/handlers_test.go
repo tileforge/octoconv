@@ -24,6 +24,7 @@ import (
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/presets"
+	"github.com/tileforge/octoconv/internal/workerproto"
 )
 
 // testClientKey is the raw key fakeResolver accepts; requests present it via
@@ -1735,15 +1736,15 @@ func TestCreateJob_DimensionsUnknown(t *testing.T) {
 	}
 }
 
-// TestCreateJob_DocumentDetectedAndAccepted verifies DOC-01/D-01/D-02: a
-// well-formed docx is structurally detected before any storage write, passes
-// the pair-check, and is routed to the document queue with Engine="document"
-// -- never the image queue.
+// TestCreateJob_DocumentDetectedAndAccepted verifies a well-formed docx is
+// structurally detected before any storage write, passes the pair-check, and
+// is admitted on the protocol path with Engine="document".
 func TestCreateJob_DocumentDetectedAndAccepted(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(documentCatalog())
 
 	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1770,8 +1771,11 @@ func TestCreateJob_DocumentDetectedAndAccepted(t *testing.T) {
 	if repo.created.Engine != "document" {
 		t.Errorf("job Engine = %q, want document", repo.created.Engine)
 	}
-	if queue.enqueuedDocument != repo.createdID {
-		t.Errorf("enqueuedDocument = %s, want %s", queue.enqueuedDocument, repo.createdID)
+	if repo.created.DispatchOwner != "protocol" {
+		t.Errorf("dispatch = %q, want protocol", repo.created.DispatchOwner)
+	}
+	if queue.enqueuedDocument != uuid.Nil {
+		t.Errorf("enqueuedDocument = %s, want uuid.Nil", queue.enqueuedDocument)
 	}
 	if queue.enqueuedImage != uuid.Nil {
 		t.Errorf("enqueuedImage = %s, want uuid.Nil (document upload must never touch the image queue)", queue.enqueuedImage)
@@ -1780,12 +1784,27 @@ func TestCreateJob_DocumentDetectedAndAccepted(t *testing.T) {
 
 // TestCreateJob_ODFDetectedAndAccepted proves the ODF disambiguation path
 // (index-0 mimetype check) is reached and produces the same
-// detected-and-accepted, document-queue-routed outcome as OOXML.
+// detected-and-accepted outcome as OOXML.
 func TestCreateJob_ODFDetectedAndAccepted(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "odt" && target == "pdf" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.document",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineDocument,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
 
 	body, ct := multipartBody(t, "in.odt", "pdf", odtFixture(t))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1812,8 +1831,11 @@ func TestCreateJob_ODFDetectedAndAccepted(t *testing.T) {
 	if repo.created.Engine != "document" {
 		t.Errorf("job Engine = %q, want document", repo.created.Engine)
 	}
-	if queue.enqueuedDocument != repo.createdID {
-		t.Errorf("enqueuedDocument = %s, want %s", queue.enqueuedDocument, repo.createdID)
+	if repo.created.DispatchOwner != "protocol" {
+		t.Errorf("dispatch = %q, want protocol", repo.created.DispatchOwner)
+	}
+	if queue.enqueuedDocument != uuid.Nil {
+		t.Errorf("enqueuedDocument = %s, want uuid.Nil", queue.enqueuedDocument)
 	}
 	if queue.enqueuedImage != uuid.Nil {
 		t.Errorf("enqueuedImage = %s, want uuid.Nil (document upload must never touch the image queue)", queue.enqueuedImage)
@@ -1829,6 +1851,7 @@ func TestCreateJob_DocumentSkipsDimensionCheck(t *testing.T) {
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
 	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, MaxImagePixels: 1})
+	srv.SetCapabilityCatalog(documentCatalog())
 
 	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2694,13 +2717,13 @@ func TestCancelJob_PublishesOnSuccess(t *testing.T) {
 
 // --- opts tests (OPTS-01/OPTS-02, D-02/D-03/D-04/D-08/D-09) ---
 
-// TestCreateJob_OptsAccepted verifies a valid opts field on a docx->pdf
-// request is accepted, normalized, threaded into CreateParams.Opts, and
-// echoed back in the 202 response.
-func TestCreateJob_OptsAccepted(t *testing.T) {
+// TestCreateJob_DocumentOptsRefused verifies pdf_profile on docx->pdf is
+// refused before upload. Protocol v1 cannot carry the option.
+func TestCreateJob_DocumentOptsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
-	srv, _ := newTestServer(repo, store, &fakeQueue{})
+	queue := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, queue)
 
 	body, ct := multipartBodyWithOpts(t, "in.docx", "pdf", docxFixture(t), `{"pdf_profile":"pdf/a-2b"}`)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2709,20 +2732,12 @@ func TestCreateJob_OptsAccepted(t *testing.T) {
 
 	srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil {
-		t.Fatal("expected job to be created")
-	}
-	if repo.created.Opts["pdf_profile"] != "pdf/a-2b" {
-		t.Errorf("CreateParams.Opts = %+v, want pdf_profile=pdf/a-2b", repo.created.Opts)
-	}
-	var resp map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	optsResp, ok := resp["opts"].(map[string]any)
-	if !ok || optsResp["pdf_profile"] != "pdf/a-2b" {
-		t.Errorf("response opts = %v, want echoed pdf_profile=pdf/a-2b", resp["opts"])
+	assertErrorCode(t, rec.Body.Bytes(), errcode.OptsNotApplicable)
+	if store.uploaded || repo.created != nil || queue.enqueueCalls != 0 {
+		t.Fatalf("refused opts uploaded=%v created=%v enqueueCalls=%d", store.uploaded, repo.created != nil, queue.enqueueCalls)
 	}
 }
 
@@ -4082,7 +4097,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		callID func(*fakeQueue) uuid.UUID
 	}{
 		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
-		{convert.EngineDocument, fixture{"in.docx", "pdf", func(t *testing.T) []byte { return docxFixture(t) }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedDocument }},
 		{convert.EngineHTML, fixture{"in.html", "pdf", func(*testing.T) []byte { return htmlFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedHTML }},
 		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
@@ -4121,6 +4135,9 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			if got := tc.callID(queue); got != repo.createdID {
 				t.Fatalf("engine %q: matching Enqueue call id = %s, want %s (repo.createdID)", tc.engine, got, repo.createdID)
 			}
+			if queue.enqueuedDocument != uuid.Nil {
+				t.Fatalf("engine %q: enqueuedDocument = %s, want uuid.Nil", tc.engine, queue.enqueuedDocument)
+			}
 			for otherEngine, accessor := range allAccessors {
 				if otherEngine == tc.engine {
 					continue
@@ -4131,6 +4148,28 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("document_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedDocument != uuid.Nil {
+			t.Fatalf("refused document created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
 
 	t.Run("cad_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}

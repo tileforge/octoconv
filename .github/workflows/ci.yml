@@ -118,8 +118,6 @@ jobs:
             api.cache-from=type=gha,scope=api
             worker.cache-to=type=gha,mode=max,scope=worker
             worker.cache-from=type=gha,scope=worker
-            document-worker.cache-to=type=gha,mode=max,scope=document-worker
-            document-worker.cache-from=type=gha,scope=document-worker
             chromium-worker.cache-to=type=gha,mode=max,scope=chromium-worker
             chromium-worker.cache-from=type=gha,scope=chromium-worker
             webhook-worker-1.cache-to=type=gha,mode=max,scope=webhook-worker
@@ -178,7 +176,6 @@ jobs:
           set: |
             api.cache-from=type=gha,scope=api
             worker.cache-from=type=gha,scope=worker
-            document-worker.cache-from=type=gha,scope=document-worker
             chromium-worker.cache-from=type=gha,scope=chromium-worker
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker

@@ -367,7 +367,18 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		case convert.EngineImage:
 			enqueueErr = s.enq.EnqueueImageConvert(ctx, j.ID)
 		case convert.EngineDocument:
-			enqueueErr = s.enq.EnqueueDocumentConvert(ctx, j.ID)
+			job, _ := s.store.Get(ctx, j.ID)
+			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "engine_error", "unsupported conversion", map[string]any{"action": "document_retired"})
+			if ferr == nil {
+				metrics.RecordReconcilerAction("document_retired")
+			}
+			if job != nil && ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, jobs.StatusFailed)
+			}
+			if job != nil && ferr == nil && job.CallbackURL != "" {
+				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
+			}
+			continue
 		case convert.EngineHTML:
 			enqueueErr = s.enq.EnqueueHTMLConvert(ctx, j.ID)
 		case convert.EngineAudio:

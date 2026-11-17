@@ -34,6 +34,7 @@ type fakeStore struct {
 
 	markFailedCalls    []uuid.UUID
 	markFailedAttempts []time.Duration
+	markFailedDetails  []map[string]any
 	// markFailedErr, if non-nil, is returned by every MarkFailed call
 	// instead of nil -- used by TestSweepExhaustedActionGuardedOnMarkFailed
 	// to exercise the ferr != nil branch of the exhaustion path.
@@ -91,6 +92,7 @@ func (f *fakeStore) RequeueStale(ctx context.Context, id uuid.UUID, reason strin
 func (f *fakeStore) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
 	f.markFailedCalls = append(f.markFailedCalls, id)
 	f.markFailedAttempts = append(f.markFailedAttempts, attempt)
+	f.markFailedDetails = append(f.markFailedDetails, detail)
 	return f.markFailedErr
 }
 
@@ -392,7 +394,7 @@ func TestSweepRecoversUnderCap(t *testing.T) {
 	}
 }
 
-func TestSweepRoutesDocumentJobsToDocumentQueue(t *testing.T) {
+func TestSweepFailsStrandedDocumentJobs(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "document"}},
@@ -403,17 +405,20 @@ func TestSweepRoutesDocumentJobsToDocumentQueue(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.documentCalls) != 1 || enq.documentCalls[0] != id {
-		t.Fatalf("EnqueueDocumentConvert calls = %+v, want [%s]", enq.documentCalls, id)
+	if len(enq.documentCalls) != 0 {
+		t.Fatalf("EnqueueDocumentConvert calls = %+v, want none", enq.documentCalls)
 	}
 	if len(enq.imageCalls) != 0 {
 		t.Fatalf("EnqueueImageConvert should not be called for a document job, got %d calls", len(enq.imageCalls))
 	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
-	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	if len(store.markFailedCalls) != 1 || store.markFailedCalls[0] != id {
+		t.Fatalf("MarkFailed calls = %+v, want [%s]", store.markFailedCalls, id)
+	}
+	if len(store.markFailedDetails) != 1 || store.markFailedDetails[0]["action"] != "document_retired" {
+		t.Fatalf("MarkFailed detail = %+v, want action document_retired", store.markFailedDetails)
 	}
 }
 
@@ -666,15 +671,15 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineCAD {
+			if want.engine == convert.EngineCAD || want.engine == convert.EngineDocument {
 				if len(got) != 0 {
-					t.Fatalf("engine cad: EnqueueCADJob calls = %+v, want none", got)
+					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}
 				if store.requeueStaleCalls != 0 {
-					t.Fatalf("engine cad: RequeueStale calls = %d, want 0", store.requeueStaleCalls)
+					t.Fatalf("engine %s: RequeueStale calls = %d, want 0", want.engine, store.requeueStaleCalls)
 				}
 				if len(store.markFailedCalls) != 1 || store.markFailedCalls[0] != id {
-					t.Fatalf("engine cad: MarkFailed calls = %+v, want [%s]", store.markFailedCalls, id)
+					t.Fatalf("engine %s: MarkFailed calls = %+v, want [%s]", want.engine, store.markFailedCalls, id)
 				}
 				return
 			}

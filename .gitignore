@@ -17,9 +17,7 @@ deploy/worker-tls/*.key
 /api
 /audio-worker
 /av-worker
-/cad-worker
 /chromium-worker
-/document-worker
 /manage-clients
 /manage-presets
 /mcp-http
