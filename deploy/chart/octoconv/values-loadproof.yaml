@@ -98,16 +98,6 @@ worker:
       # well over a minute at 1 replica. memory is inherited from values.yaml.
       cpu: "200m"
 
-documentWorker:
-  extraEnv:
-    # One job per pod (Phase 28 D-08): with the default ConfigMap value of
-    # "2", a single document-worker pod could pick up both the long-first
-    # and short-second SC3 jobs, making pod<->job victim selection
-    # ambiguous. Forcing concurrency=1 guarantees the submission order
-    # (long job first) deterministically maps pod1=long-job, so the
-    # downscale-victim annotation targets the correct pod.
-    DOCUMENT_WORKER_CONCURRENCY: "1"
-
 pandocWorker:
   extraEnv:
     # One job per pod (Phase 50, mirrors documentWorker.extraEnv above). This

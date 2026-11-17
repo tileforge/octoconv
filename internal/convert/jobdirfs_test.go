@@ -439,12 +439,7 @@ func requireOldOpenText(prefix string) func(t *testing.T, path string, err error
 }
 
 func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
-	ctx := context.Background()
 	pdf := func(t *testing.T) string { return filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf") }
-	pdfa := func(t *testing.T) string {
-		return jobDirOutsideBytes(t, []byte("%PDF-1.4\n1 0 obj << /S /GTS_PDFA1 >> endobj\n%%EOF\n"))
-	}
-	docx := func(t *testing.T) string { return filepath.Join(sanitizeCorpusDir, "ooxml_rel_targets_main.docx") }
 	html := func(t *testing.T) string {
 		return jobDirOutsideBytes(t, []byte("<!DOCTYPE html>\n<html><head><title>t</title></head><body><p>outside</p></body></html>\n"))
 	}
@@ -468,12 +463,6 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 	lo := "libreoffice: stat output: "
 	for _, tc := range []outputValidatorCase{
 		{"validatePDF", "pdf", pdf, validatePDF,
-			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
-		{"validateDocumentOutput pdf", "pdf", pdf, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", false) },
-			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
-		{"validateDocumentOutput pdf/a", "pdf", pdfa, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", true) },
-			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
-		{"validateDocumentOutput docx", "docx", docx, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "docx", false) },
 			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
 		{"pandocValidateOutput html", "html", html, func(p string) error { return pandocValidateOutput("html", p) },
 			requireIrregular("pandoc: stat output: "), requireOldMissingText("pandoc: stat output: "), isNil, requireOldOpenText("pandoc: open output: ")},

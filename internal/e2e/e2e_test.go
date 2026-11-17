@@ -1,7 +1,5 @@
-// Package e2e is the project's first true end-to-end suite: it drives the
-// FULL document conversion pipeline over real HTTP against a live
-// docker-compose stack (API + document-worker + Postgres/Redis/MinIO), per
-// Phase 11 D-03/D-04/D-05. It is env-gated on E2E_BASE_URL and self-skips
+// Package e2e drives conversions over real HTTP against a live
+// docker-compose stack. It is env-gated on E2E_BASE_URL and self-skips
 // silently without it, so `go test ./...` stays green offline.
 //
 // Required environment for a live run (see docker-compose.e2e.yml):
@@ -379,18 +377,15 @@ func startWebhookReceiver(t *testing.T, webhookHost string) (string, <-chan webh
 	return callbackURL, received
 }
 
-// TestDocumentConversionE2E drives all 6 document format pairs
-// (docx/xlsx/pptx/odt/ods/odp -> pdf) through the LIVE pipeline: multipart
-// upload -> poll to done -> presigned download -> %PDF- magic-byte check
-// (D-04, SC#2/SC#4). Exactly one pair (docx) additionally registers a
-// callback_url at the in-test webhook receiver and asserts a signed webhook
-// payload arrives (D-05, SC#3); the other 5 pairs poll only.
+// TestDocumentConversionE2E proves the twelve office pairs are refused before
+// upload. Execution lives in the external worker, and this stack has no
+// approved document manifest.
 func TestDocumentConversionE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
 
 	fixtures := []string{
-		"sample.docx", // the one webhook-asserting pair (D-05)
+		"sample.docx",
 		"sample.xlsx",
 		"sample.pptx",
 		"sample.odt",
@@ -404,28 +399,9 @@ func TestDocumentConversionE2E(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read fixture %s: %v", filename, err)
 			}
-
-			// D-05: exactly one pair also exercises webhook delivery.
-			var callbackURL string
-			var received <-chan webhookHit
-			if filename == "sample.docx" {
-				callbackURL, received = startWebhookReceiver(t, cfg.webhookHost)
-			}
-
-			jobID := postJob(t, cfg.baseURL, apiKey, filename, data, "pdf", callbackURL, "")
-
-			// Generous bound: LibreOffice cold start in a fresh container is
-			// slow, and the document queue may serialize the 6 jobs.
-			body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
-
-			downloadURL, _ := body["download_url"].(string)
-			if downloadURL == "" {
-				t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
-			}
-			assertDownloadIsPDF(t, downloadURL)
-
-			if received != nil {
-				assertSignedWebhook(t, received, jobID)
+			body := postJobExpectStatus(t, cfg.baseURL, apiKey, filename, data, "pdf", "", http.StatusUnprocessableEntity)
+			if !bytes.Contains(body, []byte("unsupported_conversion")) {
+				t.Errorf("body = %s, want unsupported_conversion", body)
 			}
 		})
 	}
@@ -497,14 +473,8 @@ var crossFormatPairs = []struct {
 	{"sample.odp", "pptx"},
 }
 
-// TestCrossFormatConversionE2E drives all 6 intra-family cross-format pairs
-// (docx<->odt, xlsx<->ods, pptx<->odp) through the LIVE pipeline: multipart
-// upload -> poll to done -> presigned download -> convert.SniffContainer
-// structural check against the expected target format (D-01/D-02/D-07). This
-// is the live confirmation that the D-02 LibreOffice 7.4 filter names
-// actually produce valid output -- a wrong filter name makes its pair fail
-// here, not in an offline unit test. No webhook assertion needed in this
-// table; the existing ->pdf table already covers the webhook path (D-05).
+// TestCrossFormatConversionE2E proves the six intra-family pairs are refused
+// before upload on a stack with no approved document manifest.
 func TestCrossFormatConversionE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
@@ -515,18 +485,10 @@ func TestCrossFormatConversionE2E(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read fixture %s: %v", pair.filename, err)
 			}
-
-			jobID := postJob(t, cfg.baseURL, apiKey, pair.filename, data, pair.target, "", "")
-
-			// Generous bound: LibreOffice cold start in a fresh container is
-			// slow, and the document queue may serialize the 6 jobs.
-			body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
-
-			downloadURL, _ := body["download_url"].(string)
-			if downloadURL == "" {
-				t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+			body := postJobExpectStatus(t, cfg.baseURL, apiKey, pair.filename, data, pair.target, "", http.StatusUnprocessableEntity)
+			if !bytes.Contains(body, []byte("unsupported_conversion")) {
+				t.Errorf("body = %s, want unsupported_conversion", body)
 			}
-			assertDownloadIsFormat(t, downloadURL, pair.target)
 		})
 	}
 }
@@ -614,12 +576,8 @@ func TestOLECFBRejectionE2E(t *testing.T) {
 // export (D-01, the single accepted pdf_profile value).
 const pdfAProfileOpts = `{"pdf_profile":"pdf/a-2b"}`
 
-// TestPDFAExportE2E drives the OPTS-01/OPTS-02 happy path live: sample.docx
-// -> pdf with opts={"pdf_profile":"pdf/a-2b"} polls to done, the create
-// response echoes the normalized opts (D-09), and the downloaded PDF carries
-// the /GTS_PDFA OutputIntent marker on the real LibreOffice 7.4 engine
-// (T-14-03). A "NoOpts" subtest proves the existing no-opts document->pdf
-// path is unaffected (success criterion 3 regression).
+// TestPDFAExportE2E proves pdf_profile is refused before upload, and that a
+// document job with no options is refused on a stack with no approved manifest.
 func TestPDFAExportE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
@@ -630,57 +588,22 @@ func TestPDFAExportE2E(t *testing.T) {
 	}
 
 	t.Run("PDFA", func(t *testing.T) {
-		createResp := postJobFull(t, cfg.baseURL, apiKey, "sample.docx", data, "pdf", "", pdfAProfileOpts)
-		opts, ok := createResp["opts"].(map[string]any)
-		if !ok || opts["pdf_profile"] != "pdf/a-2b" {
-			t.Errorf("create response opts = %v, want echoed pdf_profile=pdf/a-2b", createResp["opts"])
+		body := postJobExpectStatus(t, cfg.baseURL, apiKey, "sample.docx", data, "pdf", pdfAProfileOpts, http.StatusUnprocessableEntity)
+		if !bytes.Contains(body, []byte("opts_not_applicable")) {
+			t.Errorf("body = %s, want opts_not_applicable", body)
 		}
-		jobID, _ := createResp["job_id"].(string)
-
-		body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
-
-		getOpts, ok := body["opts"].(map[string]any)
-		if !ok || getOpts["pdf_profile"] != "pdf/a-2b" {
-			t.Errorf("GET response opts = %v, want echoed pdf_profile=pdf/a-2b", body["opts"])
-		}
-
-		downloadURL, _ := body["download_url"].(string)
-		if downloadURL == "" {
-			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
-		}
-		assertDownloadIsPDFA(t, downloadURL)
 	})
 
-	t.Run("NoOptsRegression", func(t *testing.T) {
-		jobID := postJob(t, cfg.baseURL, apiKey, "sample.docx", data, "pdf", "", "")
-
-		body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
-
-		if _, present := body["opts"]; present {
-			t.Errorf("GET response = %v, want no \"opts\" key for a no-opts job", body)
+	t.Run("NoOpts", func(t *testing.T) {
+		body := postJobExpectStatus(t, cfg.baseURL, apiKey, "sample.docx", data, "pdf", "", http.StatusUnprocessableEntity)
+		if !bytes.Contains(body, []byte("unsupported_conversion")) {
+			t.Errorf("body = %s, want unsupported_conversion", body)
 		}
-
-		downloadURL, _ := body["download_url"].(string)
-		if downloadURL == "" {
-			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
-		}
-		assertDownloadIsPDF(t, downloadURL)
 	})
 }
 
-// TestPDFANonCompliantE2E is the LIVE HARD GATE (D-09, ROADMAP success
-// criterion 1): a deliberately non-compliant, /GTS_PDFA-marker-bearing PDF
-// (trigger.docx, intercepted by the e2e-only soffice shim -- see
-// docker-compose.e2e.yml) fed through the real validation path must fail the
-// job TERMINALLY, never succeed, and never retry-storm. pollUntilFailed's
-// 5-minute bound is itself part of the proof: a retry loop burning
-// DOCUMENT_MAX_RETRY x backoff would blow this bound, so simply reaching
-// "failed" within it demonstrates the failure was classified terminal on the
-// FIRST attempt, not after exhausting retries. The veraPDF reason is then
-// cross-checked directly in job_events.detail via a live Postgres query
-// (provisionClient's DATABASE_URL precedent) -- proving the diagnostics
-// trail (D-07), not just the terminal status code, actually reached the
-// audit log.
+// TestPDFANonCompliantE2E proves a pdf_profile request is refused before a
+// job row exists. The in-repo veraPDF path is gone.
 func TestPDFANonCompliantE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
@@ -690,36 +613,9 @@ func TestPDFANonCompliantE2E(t *testing.T) {
 		t.Fatalf("read fixture trigger.docx: %v", err)
 	}
 
-	jobID := postJob(t, cfg.baseURL, apiKey, "trigger.docx", data, "pdf", "", pdfAProfileOpts)
-
-	body := pollUntilFailed(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
-
-	if code, _ := body["error_code"].(string); code != "engine_error" {
-		t.Errorf("job %s error_code = %v, want \"engine_error\"", jobID, body["error_code"])
-	}
-
-	ctx := context.Background()
-	pool, err := db.Connect(ctx) // reads DATABASE_URL
-	if err != nil {
-		t.Fatalf("db.Connect: %v", err)
-	}
-	defer pool.Close()
-
-	jid, err := uuid.Parse(jobID)
-	if err != nil {
-		t.Fatalf("parse job id %q: %v", jobID, err)
-	}
-
-	var reason string
-	row := pool.QueryRow(ctx,
-		`SELECT detail->>'engine_stderr' FROM job_events WHERE job_id = $1 AND to_status = 'failed'`,
-		jid,
-	)
-	if err := row.Scan(&reason); err != nil {
-		t.Fatalf("query job_events.detail for job %s: %v", jobID, err)
-	}
-	if !strings.Contains(reason, "pdf/a non-compliant") {
-		t.Errorf("job_events.detail.engine_stderr for job %s = %q, want it to contain \"pdf/a non-compliant\"", jobID, reason)
+	body := postJobExpectStatus(t, cfg.baseURL, apiKey, "trigger.docx", data, "pdf", pdfAProfileOpts, http.StatusUnprocessableEntity)
+	if !bytes.Contains(body, []byte("opts_not_applicable")) {
+		t.Errorf("body = %s, want opts_not_applicable", body)
 	}
 }
 

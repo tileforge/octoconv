@@ -70,16 +70,6 @@ worker:
       cpu: "2"
       memory: "1Gi"
 
-documentWorker:
-  image:
-    repository: "octoconv-document-worker"
-  replicas: 1
-  terminationGracePeriodSeconds: 330
-  resources:
-    limits:
-      cpu: "2"
-      memory: "1Gi"
-
 audioWorker:
   image:
     repository: "octoconv-audio-worker"

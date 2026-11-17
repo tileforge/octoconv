@@ -462,6 +462,9 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 				MaxFormatBytes:        tc.formats,
 			}, intakeReadDeadline, intakeMinBytesPerSecond)
 			admitCADCatalog(srv)
+			if tc.name == "docx container" {
+				srv.SetCapabilityCatalog(documentCatalog())
+			}
 			pr, pw := io.Pipe()
 			mw := multipart.NewWriter(pw)
 			go func() {

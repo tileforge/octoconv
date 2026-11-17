@@ -112,4 +112,9 @@ var RejectBindings = map[string]RejectBinding{
 	"binary_dxf_unsupported": {ErrCode: errcode.BinaryDXFUnsupported},
 
 	"zip_directory_too_large": {ErrCode: errcode.InvalidRequest},
+
+	"cad_opts":                  {ErrCode: errcode.OptsNotApplicable},
+	"document_opts":             {ErrCode: errcode.OptsNotApplicable},
+	"cad_progress_webhook":      {ErrCode: errcode.InvalidRequest},
+	"document_progress_webhook": {ErrCode: errcode.InvalidRequest},
 }
