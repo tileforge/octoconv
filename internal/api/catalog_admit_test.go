@@ -1024,7 +1024,7 @@ func audioCatalog() *fakeCatalog {
 	}
 }
 
-func TestApprovedAVCreateStillEnqueues(t *testing.T) {
+func TestApprovedAVCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1039,29 +1039,173 @@ func TestApprovedAVCreateStillEnqueues(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedAV != uuid.Nil {
 		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want av on asynq", repo.created)
+	if repo.created == nil || repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol av", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 753*time.Second {
+		t.Fatalf("budget = %s, want 753s", repo.created.ProtocolAttemptBudget)
 	}
 	if repo.created.CapabilityID != "octoconv.convert.av" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
 	}
 }
 
-func avCatalog() *fakeCatalog {
-	return &fakeCatalog{
+func TestApprovedAVOptionsStayOnAsynq(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		target   string
+		opts     string
+		data     []byte
+		wantKey  string
+		wantVal  any
+	}{
+		{"timecode zero", "in.mp4", "jpg", `{"timecode":0}`, mp4BytesFixture(), "timecode", float64(0)},
+		{"height 480 webm", "in.mp4", "webm", `{"resolution_height":480}`, mp4BytesFixture(), "resolution_height", float64(480)},
+		{"height 720 webm", "in.mp4", "webm", `{"resolution_height":720}`, mp4BytesFixture(), "resolution_height", float64(720)},
+		{"height 1080 webm", "in.mp4", "webm", `{"resolution_height":1080}`, mp4BytesFixture(), "resolution_height", float64(1080)},
+		{"height 480 mp4", "in.mkv", "mp4", `{"resolution_height":480}`, mkvBytesFixture(), "resolution_height", float64(480)},
+		{"height 720 mp4", "in.mkv", "mp4", `{"resolution_height":720}`, mkvBytesFixture(), "resolution_height", float64(720)},
+		{"height 1080 mp4", "in.mkv", "mp4", `{"resolution_height":1080}`, mkvBytesFixture(), "resolution_height", float64(1080)},
+		{"codec h264", "in.mkv", "mp4", `{"codec":"h264"}`, mkvBytesFixture(), "codec", "h264"},
+		{"codec hevc", "in.mkv", "mp4", `{"codec":"hevc"}`, mkvBytesFixture(), "codec", "hevc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(avCatalog())
+
+			body, ct := multipartBodyWithOpts(t, tc.filename, tc.target, tc.data, tc.opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+				t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+				t.Fatalf("created = %+v, want av on asynq", repo.created)
+			}
+			if repo.created.Opts[tc.wantKey] != tc.wantVal {
+				t.Fatalf("opts = %#v, want %s=%v", repo.created.Opts, tc.wantKey, tc.wantVal)
+			}
+		})
+	}
+}
+
+func TestApprovedAVProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(avCatalog())
+
+	body, ct := multipartBodyWithCallback(t, "in.mp4", "mp3", mp4BytesFixture(), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedAVOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts[convert.EngineAV] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.SetCapabilityCatalog(avCatalog())
+
+	body, ct := multipartBody(t, "in.mp4", "mp3", mp4BytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want av on asynq", repo.created)
+	}
+}
+
+func TestUnapprovedAVStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
-			if operation == convert.OperationConvert && source == "mp4" && target == "mp3" {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
 				return workerproto.Match{
-					CapabilityID:      "octoconv.convert.av",
+					CapabilityID:      "octoconv.convert.image",
 					CapabilityVersion: 1,
 					ClientOperation:   convert.OperationConvert,
 					LegacyOperation:   convert.OperationConvert,
-					LegacyEngine:      convert.EngineAV,
+					LegacyEngine:      convert.EngineImage,
 					ParameterSchema:   []byte(`{}`),
 				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.mp4", "mp3", mp4BytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
+		t.Fatalf("created = %+v, want unpinned av on asynq", repo.created)
+	}
+}
+
+func avCatalog() *fakeCatalog {
+	allowed := map[string]struct{}{
+		"mp4/mp3":  {},
+		"mp4/jpg":  {},
+		"mp4/webm": {},
+		"mkv/mp4":  {},
+	}
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert {
+				if _, ok := allowed[source+"/"+target]; ok {
+					return workerproto.Match{
+						CapabilityID:      "octoconv.convert.av",
+						CapabilityVersion: 1,
+						ClientOperation:   convert.OperationConvert,
+						LegacyOperation:   convert.OperationConvert,
+						LegacyEngine:      convert.EngineAV,
+						ParameterSchema:   []byte(`{}`),
+					}, true
+				}
 			}
 			return workerproto.Match{}, false
 		},
