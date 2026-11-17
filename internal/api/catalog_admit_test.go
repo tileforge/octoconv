@@ -1212,7 +1212,7 @@ func avCatalog() *fakeCatalog {
 	}
 }
 
-func TestApprovedOCRCreateStillEnqueues(t *testing.T) {
+func TestApprovedOCRCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1227,14 +1227,164 @@ func TestApprovedOCRCreateStillEnqueues(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedOCR != uuid.Nil {
 		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EngineOCR || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("created = %+v, want ocr on asynq", repo.created)
+	if repo.created == nil || repo.created.Engine != convert.EngineOCR || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol ocr", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 744*time.Second {
+		t.Fatalf("budget = %s, want 744s", repo.created.ProtocolAttemptBudget)
+	}
+	if repo.created.ProtocolAttemptBudget > time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second {
+		t.Fatalf("budget = %s exceeds the file-link window", repo.created.ProtocolAttemptBudget)
 	}
 	if repo.created.CapabilityID != "octoconv.convert.ocr" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func TestApprovedOCREmptyLanguageSkipsEnqueue(t *testing.T) {
+	for _, opts := range []string{`{}`, `{"language":""}`} {
+		t.Run(opts, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(ocrCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.png", "txt", pngBytesFixture(), opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 0 || q.enqueuedOCR != uuid.Nil {
+				t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 744*time.Second {
+				t.Fatalf("created = %+v, want protocol ocr", repo.created)
+			}
+			if len(repo.created.Opts) != 0 {
+				t.Fatalf("opts = %#v, want none", repo.created.Opts)
+			}
+		})
+	}
+}
+
+func TestApprovedOCRLanguageStaysOnAsynq(t *testing.T) {
+	for _, language := range []string{"eng", "rus", "eng+rus"} {
+		t.Run(language, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(ocrCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.png", "txt", pngBytesFixture(), `{"language":"`+language+`"}`)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+				t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+				t.Fatalf("created = %+v, want ocr on asynq", repo.created)
+			}
+			if repo.created.Opts["language"] != language {
+				t.Fatalf("opts = %#v, want language=%s", repo.created.Opts, language)
+			}
+		})
+	}
+}
+
+func TestApprovedOCRProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(ocrCatalog())
+
+	body, ct := multipartBodyWithCallback(t, "in.png", "txt", pngBytesFixture(), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedOCROverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts[convert.EngineOCR] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.SetCapabilityCatalog(ocrCatalog())
+
+	body, ct := multipartBody(t, "in.png", "txt", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want ocr on asynq", repo.created)
+	}
+}
+
+func TestUnapprovedOCRStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.png", "txt", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
+		t.Fatalf("created = %+v, want unpinned ocr on asynq", repo.created)
 	}
 }
 
