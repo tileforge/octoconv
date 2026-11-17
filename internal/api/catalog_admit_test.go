@@ -692,7 +692,7 @@ func TestApprovedDocumentOverLinkWindowIsRefused(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestApprovedHTMLCreateStillEnqueues(t *testing.T) {
+func TestApprovedHTMLCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -707,14 +707,133 @@ func TestApprovedHTMLCreateStillEnqueues(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedHTML != uuid.Nil {
 		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EngineHTML || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want html on asynq", repo.created)
+	if repo.created == nil || repo.created.Engine != convert.EngineHTML || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol html", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 60*time.Second {
+		t.Fatalf("budget = %s, want 60s", repo.created.ProtocolAttemptBudget)
 	}
 	if repo.created.CapabilityID != "octoconv.convert.html" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func TestApprovedHTMLPrintOptionStaysOnAsynq(t *testing.T) {
+	for _, opts := range []string{
+		`{"page_size":"a4"}`,
+		`{"margin_mm":10}`,
+		`{"landscape":true}`,
+		`{"print_background":true}`,
+	} {
+		t.Run(opts, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(htmlCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.html", "pdf", htmlFixture(), opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+				t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+				t.Fatalf("created = %+v, want html on asynq", repo.created)
+			}
+		})
+	}
+}
+
+func TestApprovedHTMLProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(htmlCatalog())
+
+	body, ct := multipartBodyWithCallback(t, "in.html", "pdf", htmlFixture(), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedHTMLOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts[convert.EngineHTML] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.SetCapabilityCatalog(htmlCatalog())
+
+	body, ct := multipartBody(t, "in.html", "pdf", htmlFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want html on asynq", repo.created)
+	}
+}
+
+func TestUnapprovedHTMLStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.html", "pdf", htmlFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
+		t.Fatalf("created = %+v, want unpinned html on asynq", repo.created)
 	}
 }
 
