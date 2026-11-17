@@ -24,6 +24,10 @@ func TestProtocolOutputLimit(t *testing.T) {
 		{engine: convert.EngineCAD, target: "stl", want: convert.CADMaxSTLBytes},
 		{engine: convert.EngineCAD, target: "pdf", want: protocolDefaultOutputBytes},
 		{engine: convert.EngineCAD, target: "png", want: protocolDefaultOutputBytes},
+		{engine: convert.EngineAV, target: "wav", want: 2 << 30},
+		{engine: convert.EngineAV, target: "jpg", want: 2 << 30},
+		{engine: convert.EngineAV, target: "mp4", want: 2 << 30},
+		{engine: convert.EngineAV, target: "stl", want: protocolDefaultOutputBytes},
 		{engine: "", target: "stl", want: protocolDefaultOutputBytes},
 	}
 	for _, tc := range cases {
@@ -62,7 +66,10 @@ func TestArtifactListedHonorsCADCeilings(t *testing.T) {
 		want        bool
 	}{
 		{name: "jpg at the image ceiling", format: "jpg", contentType: "image/jpeg", size: protocolDefaultOutputBytes, want: true},
-		{name: "jpg above the image ceiling", format: "jpg", contentType: "image/jpeg", size: protocolDefaultOutputBytes + 1, want: false},
+		{name: "jpg between the image ceiling and the av ceiling", format: "jpg", contentType: "image/jpeg", size: protocolDefaultOutputBytes + 1, want: true},
+		{name: "jpg above the av ceiling", format: "jpg", contentType: "image/jpeg", size: (2 << 30) + 1, want: false},
+		{name: "wav above the image ceiling", format: "wav", contentType: "audio/wav", size: protocolDefaultOutputBytes + 1, want: true},
+		{name: "wav above the av ceiling", format: "wav", contentType: "audio/wav", size: (2 << 30) + 1, want: false},
 		{name: "svg at the dxf ceiling", format: "svg", contentType: "image/svg+xml", size: convert.CADMaxDXFSVGBytes, want: true},
 		{name: "svg above the dxf ceiling", format: "svg", contentType: "image/svg+xml", size: convert.CADMaxDXFSVGBytes + 1, want: false},
 		{name: "stl at the stl ceiling", format: "stl", contentType: "model/stl", size: convert.CADMaxSTLBytes, want: true},

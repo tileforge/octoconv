@@ -837,14 +837,23 @@ func (h *Handler) removeUnnamedCopy(ctx context.Context, tx pgx.Tx, dst string) 
 const protocolDefaultOutputBytes int64 = 100 << 20
 
 func protocolOutputLimit(engine, target string) int64 {
-	if engine != convert.EngineCAD {
-		return protocolDefaultOutputBytes
-	}
-	switch convert.NormalizeFormat(target) {
-	case "svg":
-		return convert.CADMaxDXFSVGBytes
-	case "stl":
-		return convert.CADMaxSTLBytes
+	switch engine {
+	case convert.EngineCAD:
+		switch convert.NormalizeFormat(target) {
+		case "svg":
+			return convert.CADMaxDXFSVGBytes
+		case "stl":
+			return convert.CADMaxSTLBytes
+		default:
+			return protocolDefaultOutputBytes
+		}
+	case convert.EngineAV:
+		switch convert.NormalizeFormat(target) {
+		case "mp4", "webm", "mp3", "wav", "m4a", "jpg", "png", "webp":
+			return 2 << 30
+		default:
+			return protocolDefaultOutputBytes
+		}
 	default:
 		return protocolDefaultOutputBytes
 	}
@@ -862,7 +871,11 @@ func artifactListed(art completeArtifact) bool {
 		return false
 	}
 	size, kind := integerToken(art.ByteSize)
-	return kind == numOK && size >= 0 && size <= protocolOutputLimit(convert.EngineCAD, art.Format)
+	ceiling := protocolOutputLimit(convert.EngineCAD, art.Format)
+	if av := protocolOutputLimit(convert.EngineAV, art.Format); av > ceiling {
+		ceiling = av
+	}
+	return kind == numOK && size >= 0 && size <= ceiling
 }
 
 func parseArtifacts(raw json.RawMessage) ([]completeArtifact, error) {
