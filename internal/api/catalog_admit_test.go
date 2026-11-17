@@ -855,7 +855,7 @@ func htmlCatalog() *fakeCatalog {
 	}
 }
 
-func TestApprovedAudioCreateStillEnqueues(t *testing.T) {
+func TestApprovedAudioCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -870,14 +870,139 @@ func TestApprovedAudioCreateStillEnqueues(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedAudio != uuid.Nil {
 		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EngineAudio || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want audio on asynq", repo.created)
+	if repo.created == nil || repo.created.Engine != convert.EngineAudio || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol audio", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 742*time.Second {
+		t.Fatalf("budget = %s, want 742s", repo.created.ProtocolAttemptBudget)
 	}
 	if repo.created.CapabilityID != "octoconv.convert.audio" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func TestApprovedAudioLanguageOrTranslateStaysOnAsynq(t *testing.T) {
+	for _, opts := range []string{
+		`{"language":"auto"}`,
+		`{"language":"en"}`,
+		`{"language":"ru"}`,
+		`{"language":"es"}`,
+		`{"language":"fr"}`,
+		`{"language":"de"}`,
+		`{"translate":true}`,
+	} {
+		t.Run(opts, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(audioCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.mp3", "txt", audioMP3Fixture(t), opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+				t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+				t.Fatalf("created = %+v, want audio on asynq", repo.created)
+			}
+			if opts == `{"translate":true}` && repo.created.Opts["translate"] != true {
+				t.Fatalf("opts = %#v, want translate true", repo.created.Opts)
+			}
+		})
+	}
+}
+
+func TestApprovedAudioProgressWebhookStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(audioCatalog())
+
+	body, ct := multipartBodyWithCallback(t, "in.mp3", "txt", audioMP3Fixture(t), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedAudioOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts[convert.EngineAudio] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.SetCapabilityCatalog(audioCatalog())
+
+	body, ct := multipartBody(t, "in.mp3", "txt", audioMP3Fixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want audio on asynq", repo.created)
+	}
+}
+
+func TestUnapprovedAudioStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.mp3", "txt", audioMP3Fixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
+		t.Fatalf("created = %+v, want unpinned audio on asynq", repo.created)
 	}
 }
 
