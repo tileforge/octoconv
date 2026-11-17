@@ -1212,6 +1212,50 @@ func avCatalog() *fakeCatalog {
 	}
 }
 
+func TestApprovedOCRCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(ocrCatalog())
+
+	body, ct := multipartBody(t, "in.png", "txt", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineOCR || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("created = %+v, want ocr on asynq", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.ocr" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func ocrCatalog() *fakeCatalog {
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "txt" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.ocr",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineOCR,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	}
+}
+
 func documentCatalog() *fakeCatalog {
 	return &fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
