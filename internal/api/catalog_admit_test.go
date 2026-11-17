@@ -1024,6 +1024,50 @@ func audioCatalog() *fakeCatalog {
 	}
 }
 
+func TestApprovedAVCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(avCatalog())
+
+	body, ct := multipartBody(t, "in.mp4", "mp3", mp4BytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want av on asynq", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.av" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func avCatalog() *fakeCatalog {
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "mp4" && target == "mp3" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.av",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineAV,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	}
+}
+
 func documentCatalog() *fakeCatalog {
 	return &fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
