@@ -45,15 +45,6 @@ type Client struct {
 	// comment for the worst-case-lifetime derivation this TTL must always
 	// exceed.
 	documentUniqueTTL time.Duration
-	// avMaxRetry is the per-task MaxRetry budget for av conversion tasks
-	// (AV_MAX_RETRY, LOCKED default 2 per D-03 — fewer attempts than
-	// audio's 3, since each av attempt costs materially more).
-	avMaxRetry int
-	// avUniqueTTL is the per-job asynq.Unique lock TTL for av conversion
-	// tasks, derived once at construction from avMaxRetry and
-	// AV_ENGINE_TIMEOUT via AVUniqueTTL. Derived fresh, never reused from
-	// another engine class's TTL.
-	avUniqueTTL time.Duration
 	// ocrMaxRetry is the per-task MaxRetry budget for OCR conversion tasks
 	// (OCR_MAX_RETRY, default 2 — mirrors avMaxRetry's bounded-retry budget
 	// since a genuine tesseract/pdftoppm failure is deterministic on the
@@ -95,11 +86,7 @@ type Client struct {
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
 // 4), ENGINE_TIMEOUT (default 120s — same env var the worker reads to bound
 // a conversion attempt), DOCUMENT_MAX_RETRY (default 3),
-// DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01), AV_MAX_RETRY (default 2, D-03 LOCKED), and
-// AV_ENGINE_TIMEOUT (default 600s — [ASSUMED] provisional, mirroring the
-// exact precedent AUDIO_ENGINE_TIMEOUT set: a 600s Go-code placeholder later
-// replaced by a 742s production value after Phase 32's RTF measurement;
-// Phase 36 re-derives AV_ENGINE_TIMEOUT the same way from an RTF matrix),
+// DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01),
 // OCR_MAX_RETRY (default 2), and OCR_ENGINE_TIMEOUT (default 300s — a
 // PROVISIONAL code placeholder this phase, mirroring the AV_ENGINE_TIMEOUT
 // [ASSUMED] precedent; Phase 45 supplies the measured OCR_ENGINE_TIMEOUT and
@@ -131,8 +118,6 @@ func NewClient() (*Client, error) {
 	engineTimeout := envDuration("ENGINE_TIMEOUT", 120*time.Second)
 	documentMaxRetry := envInt("DOCUMENT_MAX_RETRY", 3)
 	documentEngineTimeout := envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second)
-	avMaxRetry := envInt("AV_MAX_RETRY", 2)
-	avEngineTimeout := envDuration("AV_ENGINE_TIMEOUT", 600*time.Second)
 	ocrMaxRetry := envInt("OCR_MAX_RETRY", 2)
 	ocrEngineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second)
 	pandocMaxRetry := envInt("PANDOC_MAX_RETRY", 2)
@@ -165,8 +150,6 @@ func NewClient() (*Client, error) {
 		webhookUniqueTTL:  WebhookUniqueTTL(webhookMaxRetry, webhookPerAttemptTimeout),
 		documentMaxRetry:  documentMaxRetry,
 		documentUniqueTTL: DocumentUniqueTTL(documentMaxRetry, documentEngineTimeout),
-		avMaxRetry:        avMaxRetry,
-		avUniqueTTL:       AVUniqueTTL(avMaxRetry, avEngineTimeout),
 		ocrMaxRetry:       ocrMaxRetry,
 		ocrUniqueTTL:      OCRUniqueTTL(ocrMaxRetry, ocrEngineTimeout),
 		pandocMaxRetry:    pandocMaxRetry,
@@ -216,18 +199,6 @@ func (c *Client) EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) er
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue document convert %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// EnqueueAVConvert puts a video conversion job onto the av queue.
-func (c *Client) EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error {
-	task, err := NewAVConvertTask(jobID, c.avMaxRetry, c.avUniqueTTL)
-	if err != nil {
-		return err
-	}
-	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
-		return fmt.Errorf("enqueue av convert %s: %w", jobID, err)
 	}
 	return nil
 }

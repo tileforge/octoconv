@@ -178,20 +178,6 @@ var DocumentDescriptor = EngineDescriptor{
 	IsTerminal: isDocumentTerminal,
 }
 
-// AVDescriptor's isAVTerminal is D-02's stage-aware split, derived fresh
-// for video with the OPPOSITE polarity from isAudioTerminal's: a transcode
-// (expensive) stage timeout stays transient, but any audio-extract/
-// thumbnail (cheap) stage failure is terminal regardless of timeout.
-var AVDescriptor = EngineDescriptor{
-	Engine: convert.EngineAV,
-	Type:   queue.TypeAVConvert,
-	OptsFromMap: func(m map[string]any) (any, error) {
-		return convert.AVOptsFromMap(m)
-	},
-	IsTerminal:  isAVTerminal,
-	FailureCode: avFailureCode,
-}
-
 // OCRDescriptor's isOCRTerminal is D-04's stage-aware split: deterministic
 // guard rejections are always terminal, but an OCR_ENGINE_TIMEOUT expiry
 // stays transient (mirroring isAVTerminal's transcode-timeout treatment,

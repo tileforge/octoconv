@@ -18,9 +18,9 @@ import (
 // different lock TTLs for the same job, and the shorter one lets a duplicate
 // through. Duplicate processing is the failure, and it is silent.
 //
-// Nine compose services construct a client, each carrying the full set of
-// engine vars by hand. Eight engine classes x two vars is sixteen values
-// replicated nine times, maintained by copying: the exact shape where the
+// Seven compose services construct a client, each carrying the full set of
+// engine vars by hand. Seven engine classes x two vars is fourteen values
+// replicated seven times, maintained by copying: the exact shape where the
 // next engine gets added to every service but one and the miss is found in
 // production. This file is the mechanism that makes that impossible to ship,
 // and it is deliberately DERIVED rather than listed -- the var names come from
@@ -65,9 +65,9 @@ func engineVarsReadByNewClient(t *testing.T) []string {
 	sort.Strings(vars)
 	// Vacuity guard. A regex that matched nothing would make every assertion
 	// below pass while proving nothing -- the failure mode this project has
-	// recorded more than once ("a scan of nothing is never clean"). Eight
+	// recorded more than once ("a scan of nothing is never clean"). Seven
 	// engine classes x 2 vars is the floor, not an estimate.
-	if len(vars) < 16 {
+	if len(vars) < 14 {
 		t.Fatalf("only %d engine vars found in %s (%v) -- the extraction regex has drifted and every "+
 			"assertion below would be vacuous", len(vars), clientPath, vars)
 	}
@@ -139,7 +139,7 @@ func TestComposeReplicatesEveryEngineVarToEveryQueueClientService(t *testing.T) 
 				"it silently produces duplicate processing", name, carries, len(vars), missing)
 		}
 	}
-	if enqueuing < 9 {
+	if enqueuing < 7 {
 		t.Fatalf("only %d compose services look like queue clients -- expected the full fleet; this test "+
 			"would be checking almost nothing", enqueuing)
 	}

@@ -33,7 +33,6 @@ appends to an append-only event log in the same transaction.
 cmd/
   api/                — HTTP server: upload, inspect, status, presigned downloads
   worker/             — image conversion (libvips)
-  av-worker/          — video transcode/extract/thumbnail (ffmpeg)
   ocr-worker/         — text extraction (Tesseract)
   pandoc-worker/      — markup-family conversion (pandoc)
   probe-worker/       — sanitize operation

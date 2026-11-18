@@ -1077,7 +1077,7 @@ func TestApprovedAVOptionsSkipEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedAVProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestApprovedAVProgressWebhookUsesProtocol(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1092,15 +1092,15 @@ func TestApprovedAVProgressWebhookStaysOnAsynq(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedAV != uuid.Nil {
 		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
 	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol av with progress webhook", repo.created)
 	}
 }
 
-func TestApprovedAVOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedAVOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1113,18 +1113,11 @@ func TestApprovedAVOverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
-		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want av on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestUnapprovedAVStaysOnAsynq(t *testing.T) {
+func TestUnapprovedAVIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1150,15 +1143,8 @@ func TestUnapprovedAVStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
-		t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
-		t.Fatalf("created = %+v, want unpinned av on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func avCatalog() *fakeCatalog {
@@ -1167,6 +1153,7 @@ func avCatalog() *fakeCatalog {
 		"mp4/jpg":  {},
 		"mp4/webm": {},
 		"mkv/mp4":  {},
+		"webm/mp4": {},
 	}
 	return &fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {

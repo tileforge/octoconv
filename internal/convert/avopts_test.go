@@ -276,6 +276,13 @@ func TestValidateAVApplicability(t *testing.T) {
 		}
 	})
 
+	t.Run("h264 codec on webm rejected", func(t *testing.T) {
+		o := AVOpts{Codec: "h264"}
+		if err := ValidateAVApplicability(EngineAV, "mov", "webm", o); err == nil {
+			t.Error("ValidateAVApplicability(codec=h264 on webm target) = nil error, want error")
+		}
+	})
+
 	t.Run("hevc codec on mp4 accepted", func(t *testing.T) {
 		o := AVOpts{Codec: "hevc"}
 		if err := ValidateAVApplicability(EngineAV, "mov", "mp4", o); err != nil {

@@ -716,20 +716,6 @@ func avFailureCode(err error) (code, message string) {
 	}
 }
 
-// HandleAVConvert runs one video conversion (transcode / audio-extract /
-// thumbnail) end to end, entirely through Runner.Handle over AVDescriptor
-// (D-09). AVE-03's two divergences from DocumentDescriptor's SIMPLE shape
-// (no PreConvertGuard: AVConverter.Convert already self-contains its own
-// duration/resolution guard, av.go:388-400) now live as DATA: isAVTerminal
-// (D-02's stage-aware split, the OPPOSITE polarity from isAudioTerminal)
-// and FailureCode = avFailureCode, so a client can distinguish a
-// timecode/duration/resolution/no-video-stream rejection from a generic
-// corrupted-input failure. See HandleImageConvert's doc comment for why
-// this method still exists as a thin delegator.
-func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, AVDescriptor).Handle(ctx, t)
-}
-
 // HandleOCRConvert runs one OCR extraction (image or scanned/image-only PDF
 // -> txt/hOCR/ALTO) end to end, entirely through Runner.Handle over
 // OCRDescriptor (D-09). OCRConverter.Convert already self-contains every
