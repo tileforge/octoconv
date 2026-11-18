@@ -150,7 +150,7 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 }
 
 var jobDirDescriptors = []EngineDescriptor{
-	ImageDescriptor, DocumentDescriptor, HTMLDescriptor, AudioDescriptor, AVDescriptor,
+	ImageDescriptor, DocumentDescriptor, AudioDescriptor, AVDescriptor,
 	OCRDescriptor, PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
 }
 
@@ -227,9 +227,6 @@ func TestValidatorFailureTextsKeepTheirClassification(t *testing.T) {
 		{"document missing", DocumentDescriptor, convertErr("libreoffice: stat output: %w", missing), true},
 		{"document irregular", DocumentDescriptor, convertErr("libreoffice: stat output: %w", irregular), true},
 		{"document open failure", DocumentDescriptor, convertErr("libreoffice: open output: %w", denied), false},
-		{"html missing", HTMLDescriptor, convertErr("libreoffice: stat output: %w", missing), true},
-		{"html irregular", HTMLDescriptor, convertErr("libreoffice: stat output: %w", irregular), true},
-		{"html open failure", HTMLDescriptor, convertErr("libreoffice: open output: %w", denied), false},
 		{"pandoc missing", PandocDescriptor, convertErr("pandoc: stat output: %w", missing), true},
 		{"pandoc irregular", PandocDescriptor, convertErr("pandoc: stat output: %w", irregular), true},
 		{"pandoc open failure", PandocDescriptor, convertErr("pandoc: open output: %w", denied), true},

@@ -19,6 +19,10 @@ import (
 	"github.com/tileforge/octoconv/internal/jobs"
 )
 
+type progressDeliverer interface {
+	Deliver(ctx context.Context, url string, body []byte, timestamp int64, signature string) (int, error)
+}
+
 const maxMessageBytes = 262144
 
 type numKind int
@@ -36,6 +40,9 @@ type Handler struct {
 	store              objectStore
 	imageAttemptBudget time.Duration
 	engineBudgets      map[string]time.Duration
+	progressDeliverer  progressDeliverer
+	progressSecret     []byte
+	progressTimeout    time.Duration
 }
 
 type objectStore interface {
@@ -50,6 +57,14 @@ type objectStore interface {
 // NewHandler returns a handler bound to the catalog, the object store, and the image attempt budget.
 func NewHandler(repo *Repo, jobsRepo *jobs.Repo, store objectStore, imageAttemptBudget time.Duration) *Handler {
 	return &Handler{repo: repo, jobsRepo: jobsRepo, store: store, imageAttemptBudget: imageAttemptBudget}
+}
+
+// SetProgressWebhook installs the detached client progress-webhook delivery.
+// A nil deliverer, an empty secret, or a non-positive timeout leaves delivery off.
+func (h *Handler) SetProgressWebhook(d progressDeliverer, secret []byte, timeout time.Duration) {
+	h.progressDeliverer = d
+	h.progressSecret = append([]byte(nil), secret...)
+	h.progressTimeout = timeout
 }
 
 // SetEngineBudgets sets the attempt budget used for each engine class.

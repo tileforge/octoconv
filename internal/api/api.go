@@ -124,7 +124,6 @@ type Storage interface {
 type Enqueuer interface {
 	EnqueueImageConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) error
-	EnqueueHTMLConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueAudioConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error

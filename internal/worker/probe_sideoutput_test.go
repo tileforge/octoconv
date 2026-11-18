@@ -112,7 +112,6 @@ func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 	}{
 		{"image", ImageDescriptor},
 		{"document", DocumentDescriptor},
-		{"html", HTMLDescriptor},
 		{"audio", AudioDescriptor},
 		{"av", AVDescriptor},
 		{"ocr", OCRDescriptor},

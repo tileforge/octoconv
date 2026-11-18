@@ -433,8 +433,8 @@ func TestSweepRoutesHTMLJobsToHTMLQueue(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.htmlCalls) != 1 || enq.htmlCalls[0] != id {
-		t.Fatalf("EnqueueHTMLConvert calls = %+v, want [%s]", enq.htmlCalls, id)
+	if len(enq.htmlCalls) != 0 {
+		t.Fatalf("EnqueueHTMLConvert calls = %+v, want none", enq.htmlCalls)
 	}
 	if len(enq.imageCalls) != 0 {
 		t.Fatalf("EnqueueImageConvert should not be called for an html job, got %d calls", len(enq.imageCalls))
@@ -442,11 +442,11 @@ func TestSweepRoutesHTMLJobsToHTMLQueue(t *testing.T) {
 	if len(enq.documentCalls) != 0 {
 		t.Fatalf("EnqueueDocumentConvert should not be called for an html job, got %d calls", len(enq.documentCalls))
 	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
 	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+		t.Fatalf("MarkFailed calls = %+v, want none", store.markFailedCalls)
 	}
 }
 
@@ -671,6 +671,18 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
+			if want.engine == convert.EngineHTML {
+				if len(got) != 0 {
+					t.Fatalf("engine html: enqueue calls = %+v, want none", got)
+				}
+				if store.requeueStaleCalls != 0 {
+					t.Fatalf("engine html: RequeueStale calls = %d, want 0", store.requeueStaleCalls)
+				}
+				if len(store.markFailedCalls) != 0 {
+					t.Fatalf("engine html: MarkFailed calls = %+v, want none", store.markFailedCalls)
+				}
+				return
+			}
 			if want.engine == convert.EngineCAD || want.engine == convert.EngineDocument {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)

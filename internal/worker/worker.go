@@ -250,35 +250,6 @@ func isDocumentTerminal(err error) bool {
 	return timeoutIsTerminal(err)
 }
 
-// isHTMLTerminal is the html engine's engine-scoped terminal classifier —
-// HTML-01's deliberate divergence from the image engine, mirroring
-// isDocumentTerminal exactly (DOC-08's timeout-is-terminal pattern applied
-// to the chromium engine). An HTML_ENGINE_TIMEOUT expiry surfaces as a
-// wrapped context.DeadlineExceeded (same exec.go process-group-kill shape,
-// preserved through chromium.go's fmt.Errorf("chromium: %w", err) and
-// process()'s fmt.Errorf("convert: %w", err)) and is classified terminal
-// here rather than retried: a stuck chromium render is no more likely to
-// succeed on retry than a stuck soffice render. Every non-timeout error is
-// classified identically to the image/document paths by delegating (via
-// timeoutIsTerminal) to the shared isTerminal (which now also checks
-// terminalChromiumSignatures).
-func isHTMLTerminal(err error) bool {
-	// Phase 69/CONF-06: a node that cannot confine the engine or sweep its
-	// shared /tmp is retried elsewhere, never blamed on the file -- checked
-	// before delegating to timeoutIsTerminal, so this sentinel is never
-	// misclassified even when the wrapped text also carries one of
-	// terminalChromiumSignatures's own substrings (e.g. "stat output").
-	// Every other confined class already has this exact guard at the top of
-	// its own classifier (isPandocTerminal/isOCRTerminal/isAVTerminal/
-	// isAudioTerminal); this was html's own accidental (not stated) safety
-	// until now, since terminalChromiumSignatures happened not to match the
-	// sentinel's own wrapped text.
-	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
-		return false
-	}
-	return timeoutIsTerminal(err)
-}
-
 // isAudioTerminal is the audio engine's engine-scoped terminal classifier —
 // Key Decision 1 (STATE.md, BINDING): a stage-aware split, deliberately NOT
 // a copy of timeoutIsTerminal's blanket "any wrapped context.DeadlineExceeded
@@ -841,17 +812,6 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 // compatibility, D-10 step 2) rather than being deleted outright.
 func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) error {
 	return NewRunner(h, DocumentDescriptor).Handle(ctx, t)
-}
-
-// HandleHTMLConvert runs one html->pdf conversion end to end, entirely
-// through Runner.Handle over HTMLDescriptor (D-09). HTML-01's two
-// divergences from ImageDescriptor now live as DATA on the descriptor,
-// mirroring DocumentDescriptor's shape exactly: OptsFromMap and
-// isHTMLTerminal (an HTML_ENGINE_TIMEOUT expiry takes the terminal path).
-// See HandleImageConvert's doc comment for why this method still exists as
-// a thin delegator.
-func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, HTMLDescriptor).Handle(ctx, t)
 }
 
 // HandleAudioConvert runs one audio transcription end to end, entirely

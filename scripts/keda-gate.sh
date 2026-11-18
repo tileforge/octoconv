@@ -5,9 +5,8 @@
 #   SC1 (D-12a): octoconv_queue_depth resolves via `kubectl get --raw` on the
 #     external.metrics.k8s.io API while the image `worker` Deployment is
 #     GENUINELY at 0 replicas -- the load-bearing scale-from-zero proof.
-#   SC2 (D-12b): all three scaled classes (image/document/html) scale 0->1
-#     from a single real conversion job of their own type -- catches
-#     doc/html-specific cold-start issues now, not in Phase 28.
+#   SC2 (D-12b): image and document scale 0->1 from a single real conversion
+#     job of their own type. Html has no in-repo queue.
 #   SC2 cont. (D-12c): the image class (fastest) cycles back to 0 replicas
 #     after its cooldownPeriod -- one full 0->1->0 cycle proof.
 #   SC3 (D-12d/D-09): webhook-worker holds replicas:2 throughout, with NO
@@ -234,8 +233,8 @@ log "STEP 4b: seed asynq queue registry (Redis) so the absent-metric fallback (D
 
 REDIS_POD=$(kubectl get pod -n "$NAMESPACE" -l "app.kubernetes.io/component=redis" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 assert_nonempty "$REDIS_POD" "redis pod discovered for queue-registry seeding"
-kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli SADD asynq:queues image document html webhook >/dev/null
-echo "PASS: asynq:queues seeded (image, document, html, webhook) -- zero tasks created, no worker processing triggered"
+kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli SADD asynq:queues image document webhook >/dev/null
+echo "PASS: asynq:queues seeded (image, document, webhook) -- zero tasks created, no worker processing triggered"
 
 # ---------------------------------------------------------------------------
 # STEP 5 (SC3/D-12d/D-09 part 1 -- checked at START): webhook-worker fixed
@@ -421,19 +420,8 @@ DOCUMENT_REPLICAS_AFTER=$(waitForReplicasAtLeast document-worker 1 180) || {
 PASS_COUNT=$((PASS_COUNT + 1))
 echo "PASS: SC2 -- document-worker scaled 0->${DOCUMENT_REPLICAS_AFTER} after job $DOCUMENT_JOB_ID"
 
-# --- html class: sample.html -> pdf -------------------------------------
-HTML_JOB_ID=$(postJob "sample.html" "pdf" "text/html")
-assert_nonempty "$HTML_JOB_ID" "html class job submitted (sample.html -> pdf)"
-
-HTML_REPLICAS_AFTER=$(waitForReplicasAtLeast chromium-worker 1 150) || {
-	echo "FAIL: SC2 -- chromium-worker never reached >=1 replica within 150s after job submission (observed: $HTML_REPLICAS_AFTER)" >&2
-	exit 1
-}
-PASS_COUNT=$((PASS_COUNT + 1))
-echo "PASS: SC2 -- chromium-worker scaled 0->${HTML_REPLICAS_AFTER} after job $HTML_JOB_ID"
-
 # ---------------------------------------------------------------------------
-# STEP 8 (SC3/D-12d part 2 -- checked MID, after all three classes scaled
+# STEP 8 (SC3/D-12d part 2 -- checked MID, after image and document scaled
 # up): webhook-worker still fixed at 2, still no ScaledObject.
 # ---------------------------------------------------------------------------
 log "STEP 8: webhook-worker gate check (MID) -- D-09 fail-closed"
@@ -558,6 +546,6 @@ GATE_OK="1"
 echo ""
 echo "=== ALL $PASS_COUNT ASSERTIONS PASSED ==="
 echo "SC1 (D-12a): octoconv_queue_depth resolved at genuinely 0 replicas -- PASS"
-echo "SC2 (D-12b): image/document/html all scaled 0->1 from their own job type -- PASS"
+echo "SC2 (D-12b): image and document scaled 0->1 from their own job type -- PASS"
 echo "SC2 (D-12c): image class cycled back to 0 after cooldown -- PASS"
 echo "SC3 (D-12d/D-09): webhook-worker held replicas:2, no ScaledObject, START/MID/END -- PASS"

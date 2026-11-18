@@ -352,15 +352,6 @@ var pinEngines = []pinEngine{
 		terminalErr: errors.New("convert: libreoffice: output missing %PDF- magic bytes"),
 	},
 	{
-		name:        "html",
-		taskType:    queue.TypeHTMLConvert,
-		engine:      convert.EngineHTML,
-		wrapper:     (*Handler).HandleHTMLConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: errors.New("convert: chromium: output is empty"),
-	},
-	{
 		name:        "audio",
 		taskType:    queue.TypeAudioConvert,
 		engine:      convert.EngineAudio,
@@ -862,7 +853,6 @@ var pinInvalidOptsCases = []struct {
 	opts   map[string]any
 }{
 	{"document", map[string]any{"pdf_profile": "bogus"}},
-	{"html", map[string]any{"page_size": "bogus"}},
 	{"audio", map[string]any{"language": "xx"}},
 	{"av", map[string]any{"codec": "bogus"}},
 	{"ocr", map[string]any{"language": "fra"}},

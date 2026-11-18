@@ -1349,7 +1349,7 @@ func TestProgressLocksTheJobBeforeTheHold(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
-		_, err := h.storeProgress(ctx, live.sessionID, attemptID, parsedProgress{percent: 10})
+		_, _, err := h.storeProgress(ctx, live.sessionID, attemptID, parsedProgress{percent: 10})
 		done <- err
 	}()
 	waitForJobLock(t, live.pool)

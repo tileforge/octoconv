@@ -1866,7 +1866,6 @@ func (s *apiStubs) EnqueueImageConvert(context.Context, uuid.UUID) error {
 }
 
 func (s *apiStubs) EnqueueDocumentConvert(context.Context, uuid.UUID) error { return nil }
-func (s *apiStubs) EnqueueHTMLConvert(context.Context, uuid.UUID) error     { return nil }
 func (s *apiStubs) EnqueueAudioConvert(context.Context, uuid.UUID) error    { return nil }
 func (s *apiStubs) EnqueueAVConvert(context.Context, uuid.UUID) error       { return nil }
 func (s *apiStubs) EnqueueOCRConvert(context.Context, uuid.UUID) error      { return nil }

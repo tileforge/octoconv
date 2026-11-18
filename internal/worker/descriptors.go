@@ -194,17 +194,6 @@ var DocumentDescriptor = EngineDescriptor{
 	IsTerminal: isDocumentTerminal,
 }
 
-// HTMLDescriptor mirrors DocumentDescriptor's timeout-is-terminal shape
-// (isHTMLTerminal delegates to the same timeoutIsTerminal helper).
-var HTMLDescriptor = EngineDescriptor{
-	Engine: convert.EngineHTML,
-	Type:   queue.TypeHTMLConvert,
-	OptsFromMap: func(m map[string]any) (any, error) {
-		return convert.HTMLOptsFromMap(m)
-	},
-	IsTerminal: isHTMLTerminal,
-}
-
 // AudioDescriptor is the one engine with a non-nil PreConvertGuard need —
 // deliberately left nil HERE (see NewRunner's doc comment in runner.go for
 // the full rationale: audioMaxDuration is per-Handler, env-configured

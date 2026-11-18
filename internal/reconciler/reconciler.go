@@ -84,7 +84,6 @@ type enqueuer interface {
 	EnqueueImageConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
-	EnqueueHTMLConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueAudioConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueAVConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error
@@ -380,7 +379,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			}
 			continue
 		case convert.EngineHTML:
-			enqueueErr = s.enq.EnqueueHTMLConvert(ctx, j.ID)
+			continue
 		case convert.EngineAudio:
 			enqueueErr = s.enq.EnqueueAudioConvert(ctx, j.ID)
 		case convert.EngineAV:

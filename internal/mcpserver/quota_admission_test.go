@@ -533,9 +533,6 @@ func (e *quotaCountingEnqueuer) EnqueueImageConvert(_ context.Context, _ uuid.UU
 func (e *quotaCountingEnqueuer) EnqueueDocumentConvert(_ context.Context, _ uuid.UUID) error {
 	return e.inc()
 }
-func (e *quotaCountingEnqueuer) EnqueueHTMLConvert(_ context.Context, _ uuid.UUID) error {
-	return e.inc()
-}
 func (e *quotaCountingEnqueuer) EnqueueAudioConvert(_ context.Context, _ uuid.UUID) error {
 	return e.inc()
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/tileforge/octoconv/internal/presets"
 	"github.com/tileforge/octoconv/internal/queue"
 	"github.com/tileforge/octoconv/internal/storage"
+	"github.com/tileforge/octoconv/internal/webhook"
 	"github.com/tileforge/octoconv/internal/workerproto"
 	"github.com/tileforge/octoconv/internal/workflow"
 )
@@ -373,6 +374,13 @@ func main() {
 		tlsCfg.ClientCAs = clientCAs
 		workerHandler := workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage])
 		workerHandler.SetEngineBudgets(engineTimeoutsFromEnv())
+		if secret := os.Getenv("WEBHOOK_SIGNING_SECRET"); secret != "" {
+			progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)
+			workerHandler.SetProgressWebhook(webhook.NewDeliverer(), []byte(secret), progressWebhookTimeout)
+			log.Printf("🔔 progress webhooks enabled (PROGRESS_WEBHOOK_TIMEOUT=%v)", progressWebhookTimeout)
+		} else {
+			log.Printf("🔕 progress webhooks disabled (WEBHOOK_SIGNING_SECRET unset)")
+		}
 		workerSrv = api.NewHTTPServer(listenerEnv.Addr, workerHandler.Routes())
 		workerSrv.TLSConfig = tlsCfg
 	}

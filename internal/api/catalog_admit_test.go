@@ -756,7 +756,7 @@ func TestApprovedHTMLPrintOptionSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedHTMLProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestApprovedHTMLProgressWebhookUsesProtocol(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -771,15 +771,15 @@ func TestApprovedHTMLProgressWebhookStaysOnAsynq(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedHTML != uuid.Nil {
 		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
 	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol html with progress webhook", repo.created)
 	}
 }
 
-func TestApprovedHTMLOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedHTMLOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -792,18 +792,11 @@ func TestApprovedHTMLOverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
-		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want html on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestUnapprovedHTMLStaysOnAsynq(t *testing.T) {
+func TestUnapprovedHTMLIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -829,15 +822,8 @@ func TestUnapprovedHTMLStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
-		t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
-		t.Fatalf("created = %+v, want unpinned html on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func htmlCatalog() *fakeCatalog {
