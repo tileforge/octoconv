@@ -7,9 +7,10 @@
 #   scripts/sandbox-liveproof.sh <class>...
 #
 # Every class this script knows about is in the table below from the start
-# (image, pandoc, ocr, av, probe, document, cad). Html confinement is
+# (image, pandoc, ocr, probe, document, cad). Html confinement is
 # measured in tileforge/octoconv-worker-html. Audio confinement is measured
-# in tileforge/octoconv-worker-audio. A class that lands later extends
+# in tileforge/octoconv-worker-audio. Av confinement is measured in
+# tileforge/octoconv-worker-av. A class that lands later extends
 # the CONVERTER, never this script.
 #
 # The document and cad classes add emulated-amd64-refuses after the four
@@ -43,13 +44,13 @@ class_row() {
     image)  echo "Dockerfile.worker worker IMAGE_SANDBOX_DISABLED no -" ;;
     pandoc) echo "Dockerfile.pandoc-worker pandoc-worker PANDOC_SANDBOX_DISABLED yes -" ;;
     ocr)    echo "Dockerfile.ocr-worker ocr-worker OCR_SANDBOX_DISABLED yes -" ;;
-    av)     echo "Dockerfile.av-worker av-worker AV_SANDBOX_DISABLED yes -" ;;
+    av)     die "av confinement is measured in tileforge/octoconv-worker-av" ;;
     audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
     html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
     document) echo "Dockerfile.document-worker document-worker DOCUMENT_SANDBOX_DISABLED yes -" ;;
     cad) echo "Dockerfile.cad-worker cad-worker CAD_SANDBOX_DISABLED yes -" ;;
-    *) die "unknown class: $1 (expected image, pandoc, ocr, av, probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html; audio confinement is measured in tileforge/octoconv-worker-audio)" ;;
+    *) die "unknown class: $1 (expected image, pandoc, ocr, probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html; audio confinement is measured in tileforge/octoconv-worker-audio; av confinement is measured in tileforge/octoconv-worker-av)" ;;
   esac
 }
 

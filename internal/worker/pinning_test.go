@@ -352,15 +352,6 @@ var pinEngines = []pinEngine{
 		terminalErr: errors.New("convert: libreoffice: output missing %PDF- magic bytes"),
 	},
 	{
-		name:        "av",
-		taskType:    queue.TypeAVConvert,
-		engine:      convert.EngineAV,
-		wrapper:     (*Handler).HandleAVConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: fmt.Errorf("convert: %w", fmt.Errorf("%w: %w", convert.ErrAVTranscodeFailed, errors.New("exit status 1: Invalid data found when processing input"))),
-	},
-	{
 		name:        "ocr",
 		taskType:    queue.TypeOCRConvert,
 		engine:      convert.EngineOCR,
@@ -470,13 +461,6 @@ type pinFailureCodeCase struct {
 }
 
 var pinFailureCodeCases = []pinFailureCodeCase{
-	// av: TestAVFailureCode.
-	{"av", "timecode out of range", fmt.Errorf("convert: %w", convert.ErrAVTimecodeOutOfRange), "timecode_out_of_range"},
-	{"av", "duration exceeded", fmt.Errorf("convert: %w", convert.ErrAudioDurationExceeded), "duration_exceeded"},
-	{"av", "resolution exceeded", fmt.Errorf("convert: %w", convert.ErrAVResolutionExceeded), "resolution_exceeded"},
-	{"av", "no video stream", fmt.Errorf("convert: %w", convert.ErrAVNoVideoStream), "no_video_stream"},
-	{"av", "generic engine failure", fmt.Errorf("convert: %w", convert.ErrAVTranscodeFailed), "engine_error"},
-
 	// ocr: TestOCRFailureCode.
 	{"ocr", "too many pages", fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages), "too_many_pages"},
 	{"ocr", "page box too large", convert.ErrOCRPageBoxTooLarge, "page_too_large"},
@@ -840,7 +824,6 @@ var pinInvalidOptsCases = []struct {
 	opts   map[string]any
 }{
 	{"document", map[string]any{"pdf_profile": "bogus"}},
-	{"av", map[string]any{"codec": "bogus"}},
 	{"ocr", map[string]any{"language": "fra"}},
 	{"pandoc", map[string]any{"wrap": "bogus"}},
 }
@@ -926,96 +909,6 @@ func TestPinnedImageHasNoOptsGuard(t *testing.T) {
 	}
 	if n := countToken(calls, "MarkActive"); n != 1 {
 		t.Fatalf("image: MarkActive calls = %d, want 1 (image performs no opts re-parse guard)", n)
-	}
-}
-
-// --- TestPinnedAudioStageAsymmetry / TestPinnedAVStageAsymmetry ----------
-
-// stageAsymmetryCase is one row of a stage-tagged terminal/transient
-// assertion, driven through the real handler wrapper.
-type stageAsymmetryCase struct {
-	name     string
-	err      error
-	terminal bool
-}
-
-// TestPinnedAudioStageAsymmetry and TestPinnedAVStageAsymmetry are the two
-// engines PITFALLS.md Pitfall 2 names by name: isAudioTerminal and
-// isAVTerminal encode DELIBERATELY OPPOSITE stage-level polarities for the
-// "same shaped" wrapped-context.DeadlineExceeded timeout error --
-// isAudioTerminal's ffmpeg (normalize) stage timeout is TERMINAL while its
-// whisper (transcribe) stage timeout is TRANSIENT; isAVTerminal's
-// transcode stage timeout is TRANSIENT while its audio-extract/thumbnail
-// stage failure (timeout or not) is TERMINAL -- the exact opposite
-// polarity from audio's cheap/expensive-stage split. Any future descriptor
-// that models terminal/transient as a function of (engine, isTimeout)
-// instead of (stage, isTimeout) cannot satisfy both classifiers
-// simultaneously; these two tests are therefore the acceptance gate for
-// plan 56-04's per-engine descriptor design, driven through the real
-// wrapper (not the pure isAudioTerminal/isAVTerminal functions directly)
-// so a descriptor refactor that silently drops the stage tag fails here
-// even if the pure classifier were somehow preserved unchanged elsewhere.
-func TestPinnedAVStageAsymmetry(t *testing.T) {
-	tc := pinEngineByName(t, "av")
-	cases := []stageAsymmetryCase{
-		{
-			name:     "transcode-stage timeout is transient",
-			err:      fmt.Errorf("convert: %w", fmt.Errorf("%w: %w", convert.ErrAVTranscodeFailed, fmt.Errorf("ffmpeg killed: %w", context.DeadlineExceeded))),
-			terminal: false,
-		},
-		{
-			name:     "audio-extract-stage failure is terminal",
-			err:      fmt.Errorf("convert: %w", fmt.Errorf("%w: %w", convert.ErrAVAudioExtractFailed, errors.New("exit status 1"))),
-			terminal: true,
-		},
-	}
-	runStageAsymmetryCases(t, tc, cases)
-}
-
-// runStageAsymmetryCases drives every stageAsymmetryCase through the real
-// wrapper and asserts the terminal-vs-transient verdict through observable
-// effects (MarkFailed count, SkipRetry wrapping, counter movement) --
-// never by calling the pure classifier function directly.
-func runStageAsymmetryCases(t *testing.T, tc pinEngine, cases []stageAsymmetryCase) {
-	t.Helper()
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			job, jobID := newPinJob("")
-			calls := []string{}
-			repo := &pinRepo{job: job, calls: &calls}
-			enq := &pinEnqueuer{calls: &calls}
-			h := newPinHandler(t, repo, enq)
-			h.processFn = func(context.Context, *jobs.Job) error { return c.err }
-
-			labels := map[string]string{"engine": tc.engine, "status": jobs.StatusFailed}
-			before := readCounter(t, "octoconv_job_outcomes_total", labels)
-
-			err := tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
-
-			after := readCounter(t, "octoconv_job_outcomes_total", labels)
-
-			if c.terminal {
-				if !errors.Is(err, asynq.SkipRetry) {
-					t.Fatalf("%s: err = %v, want errors.Is(err, asynq.SkipRetry) (terminal)", c.name, err)
-				}
-				if len(repo.markFailed) != 1 {
-					t.Fatalf("%s: MarkFailed calls = %d, want 1 (terminal)", c.name, len(repo.markFailed))
-				}
-				if after != before+1 {
-					t.Fatalf("%s: octoconv_job_outcomes_total delta = %v, want 1 (terminal)", c.name, after-before)
-				}
-				return
-			}
-			if errors.Is(err, asynq.SkipRetry) {
-				t.Fatalf("%s: err = %v, want NOT errors.Is(err, asynq.SkipRetry) (transient)", c.name, err)
-			}
-			if len(repo.markFailed) != 0 {
-				t.Fatalf("%s: MarkFailed calls = %d, want 0 (transient)", c.name, len(repo.markFailed))
-			}
-			if after != before {
-				t.Fatalf("%s: octoconv_job_outcomes_total moved on a transient error", c.name)
-			}
-		})
 	}
 }
 

@@ -133,8 +133,6 @@ api:
 # state why in writing, and leave the rest out of the measurement.
 keda:
   enabled: false
-avWorker:
-  replicas: 0
 ocrWorker:
   replicas: 0
 pandocWorker:

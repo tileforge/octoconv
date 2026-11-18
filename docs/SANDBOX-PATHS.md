@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
+| worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -115,7 +115,8 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 |---|---|---|
 | `tectonic` | — (PR #21) | **да** |
 | `image` | да | **да** (эта ветка) |
-| `pandoc`, `ocr`, `av` | да | **да (фаза 68)** |
+| `pandoc`, `ocr` | да | **да (фаза 68)** |
+| `av` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-av`; встроенный процесс удалён |
 | `audio` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-audio`; встроенный процесс удалён |
 | `probe` | да | **да (фаза 69)** |
 | `html` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-html`; встроенный процесс удалён |
@@ -675,6 +676,8 @@ pdftotext
 <!-- /conf05:ocr:engines -->
 
 ## av (ffmpeg + ffprobe) — замерено и доказано 2026-09-20
+
+Замер ниже — запись встроенного av-воркера. Этот процесс удалён. Ruleset теперь живёт в `tileforge/octoconv-worker-av`. Цифры ниже — историческая запись, их не пересчитывали. Внешний замер образа `octoconv-av:confinement-measure` (`sha256:4ead4f7bf2bb1cb4a47cac59c15fe6c334a489e8f590d0011946c54e36e5a0df`, ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`) дал выход 2791 байт.
 
 **Read-write:** каталог задачи. **Read-only:** `/usr/local/bin/ffmpeg`,
 `/usr/local/bin/ffprobe`, `/lib`, `/etc/ld.so.cache`, `/dev/urandom`,

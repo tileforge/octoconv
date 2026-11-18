@@ -138,7 +138,7 @@ func AVOptsFromMap(m map[string]any) (AVOpts, error) {
 // (engine, source, target) conversion. Empty opts always apply (nothing was
 // requested). A non-zero Timecode applies only to thumbnail targets
 // (jpg/png/webp); a non-zero ResolutionHeight applies only to transcode
-// targets (mp4/webm); Codec=="hevc" applies only to an mp4 target -- all
+// targets (mp4/webm); a nonempty Codec applies only to an mp4 target -- all
 // gated on engine==EngineAV. Deliberately its own function scoped to
 // EngineAV, not merged into the shared ValidateApplicability (opts.go) --
 // mirrors ValidateAudioApplicability's engine-scoped shape (audioopts.go).
@@ -156,8 +156,8 @@ func ValidateAVApplicability(engine, source, target string, o AVOpts) error {
 	if o.ResolutionHeight != 0 && !avTranscodeTargets[normTarget] {
 		return fmt.Errorf("resolution_height is only valid for transcode targets")
 	}
-	if o.Codec == "hevc" && normTarget != "mp4" {
-		return fmt.Errorf("codec hevc is only valid for mp4 targets")
+	if o.Codec != "" && normTarget != "mp4" {
+		return fmt.Errorf("codec is only valid for mp4 targets")
 	}
 	return nil
 }

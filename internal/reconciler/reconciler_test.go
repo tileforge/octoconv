@@ -484,10 +484,8 @@ func TestSweepRoutesAudioJobsToAudioQueue(t *testing.T) {
 	}
 }
 
-// TestSweepRoutesAVJobsToAVQueue proves a stranded engine="av" job routes to
-// EnqueueAVConvert and NONE of the other four Enqueue* methods (AVE-03:
-// sweep() must no longer fail-closed-default an av job). Mirrors
-// TestSweepRoutesAudioJobsToAudioQueue exactly.
+// TestSweepRoutesAVJobsToAVQueue proves a stranded engine="av" job is not
+// re-enqueued and is not failed. The av queue was not observed empty.
 func TestSweepRoutesAVJobsToAVQueue(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
@@ -499,8 +497,8 @@ func TestSweepRoutesAVJobsToAVQueue(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.avCalls) != 1 || enq.avCalls[0] != id {
-		t.Fatalf("EnqueueAVConvert calls = %+v, want [%s]", enq.avCalls, id)
+	if len(enq.avCalls) != 0 {
+		t.Fatalf("EnqueueAVConvert calls = %+v, want none", enq.avCalls)
 	}
 	if len(enq.imageCalls) != 0 {
 		t.Fatalf("EnqueueImageConvert should not be called for an av job, got %d calls", len(enq.imageCalls))
@@ -514,11 +512,11 @@ func TestSweepRoutesAVJobsToAVQueue(t *testing.T) {
 	if len(enq.audioCalls) != 0 {
 		t.Fatalf("EnqueueAudioConvert should not be called for an av job, got %d calls", len(enq.audioCalls))
 	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
 	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+		t.Fatalf("MarkFailed calls = %+v, want none", store.markFailedCalls)
 	}
 }
 
@@ -671,7 +669,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio {
+			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}
@@ -735,6 +733,31 @@ func TestSweepAudioStrandedRowStaysQueued(t *testing.T) {
 		s.sweep(context.Background())
 		if len(enq.audioCalls) != 0 {
 			t.Fatalf("tick %d: EnqueueAudioConvert calls = %+v, want none", tick, enq.audioCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
+	}
+}
+
+// TestSweepAVStrandedRowStaysQueued proves a stranded av row is not
+// re-enqueued and is not failed. The av queue was not observed empty.
+func TestSweepAVStrandedRowStaysQueued(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "av"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.avCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueAVConvert calls = %+v, want none", tick, enq.avCalls)
 		}
 		if store.requeueStaleCalls != 0 {
 			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)

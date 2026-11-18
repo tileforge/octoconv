@@ -3585,6 +3585,7 @@ func TestCreateJob_MKVDetectedAndAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(avCatalog())
 
 	data := mkvBytesFixture()
 	body, ct := multipartBody(t, "in.mkv", "mp4", data)
@@ -3606,11 +3607,11 @@ func TestCreateJob_MKVDetectedAndAccepted(t *testing.T) {
 	if repo.created.SourceFormat != "mkv" || repo.created.TargetFormat != "mp4" {
 		t.Errorf("job format = %s -> %s, want mkv -> mp4", repo.created.SourceFormat, repo.created.TargetFormat)
 	}
-	if repo.created.Engine != convert.EngineAV {
-		t.Errorf("job Engine = %q, want av", repo.created.Engine)
+	if repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("job = %+v, want protocol av", repo.created)
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 	}
 	if queue.enqueuedAudio != uuid.Nil {
 		t.Errorf("enqueuedAudio = %s, want uuid.Nil (mkv->mp4 transcode must never touch the audio queue)", queue.enqueuedAudio)
@@ -3626,6 +3627,7 @@ func TestCreateJob_WebMDetectedAndAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(avCatalog())
 
 	data := webmBytesFixture()
 	body, ct := multipartBody(t, "in.webm", "mp4", data)
@@ -3647,11 +3649,11 @@ func TestCreateJob_WebMDetectedAndAccepted(t *testing.T) {
 	if repo.created.SourceFormat != "webm" || repo.created.TargetFormat != "mp4" {
 		t.Errorf("job format = %s -> %s, want webm -> mp4", repo.created.SourceFormat, repo.created.TargetFormat)
 	}
-	if repo.created.Engine != convert.EngineAV {
-		t.Errorf("job Engine = %q, want av", repo.created.Engine)
+	if repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("job = %+v, want protocol av", repo.created)
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 	}
 }
 
@@ -3668,6 +3670,7 @@ func TestCreateJob_MP4StillDetectedBySniffPrefixTable(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(avCatalog())
 
 	data := mp4BytesFixture()
 	body, ct := multipartBody(t, "in.mp4", "mp3", data)
@@ -3683,11 +3686,11 @@ func TestCreateJob_MP4StillDetectedBySniffPrefixTable(t *testing.T) {
 	if repo.created == nil || repo.created.SourceFormat != "mp4" {
 		t.Fatalf("job SourceFormat = %+v, want mp4 (Sniff's prefix table must still win, not SniffVideo)", repo.created)
 	}
-	if repo.created.Engine != convert.EngineAV {
-		t.Errorf("job Engine = %q, want av", repo.created.Engine)
+	if repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("job = %+v, want protocol av", repo.created)
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 	}
 }
 
@@ -3702,6 +3705,7 @@ func TestCreateJob_AVOptsAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(avCatalog())
 
 	body, ct := multipartBodyWithOpts(t, "in.mp4", "jpg", mp4BytesFixture(), `{"timecode":2.5}`)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3713,14 +3717,14 @@ func TestCreateJob_AVOptsAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (valid av opts must be accepted via ParseAVOpts, not rejected as DocOpts); body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.Opts["timecode"] != 2.5 {
-		t.Errorf("CreateParams.Opts = %+v, want timecode=2.5", repo.created)
+	if repo.created == nil || repo.created.Opts["timecode"] != 2.5 || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("CreateParams = %+v, want protocol av with timecode=2.5", repo.created)
 	}
 	if repo.created.Engine != convert.EngineAV {
 		t.Errorf("job Engine = %q, want av", repo.created.Engine)
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 	}
 }
 
@@ -3734,6 +3738,7 @@ func TestCreateJob_AVOptsAbsentAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(avCatalog())
 
 	body, ct := multipartBody(t, "in.mp4", "jpg", mp4BytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3745,8 +3750,8 @@ func TestCreateJob_AVOptsAbsentAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (absent opts must be accepted for the av engine); body=%s", rec.Code, rec.Body.String())
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" || queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("created=%+v enqueueCalls=%d enqueuedAV=%s, want protocol av and no enqueue", repo.created, queue.enqueueCalls, queue.enqueuedAV)
 	}
 }
 
@@ -4031,7 +4036,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineHTML || engine == convert.EngineAudio {
+		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -4092,7 +4097,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		callID func(*fakeQueue) uuid.UUID
 	}{
 		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
-		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
 		// The ninth engine joins the SAME table rather than getting a bespoke
 		// test of its own (64-04 Task 2): the value of this test is the
 		// negative half -- every other engine's accessor must stay uuid.Nil --
@@ -4167,6 +4171,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		}
 		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedAudio != uuid.Nil {
 			t.Fatalf("refused audio created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
+
+	t.Run("av_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.mp4", "mp3", mp4BytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "mp4 -> mp3") {
+			t.Fatalf("body = %s, want mp4 -> mp3", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+			t.Fatalf("refused av created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
 		}
 	})
 
@@ -4293,6 +4322,7 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		store := &fakeStorage{}
 		queue := &fakeQueue{}
 		srv, _ := newTestServer(repo, store, queue)
+		srv.SetCapabilityCatalog(avCatalog())
 
 		body, ct := multipartBody(t, "in.mp4", "webm", mp4BytesFixture())
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4304,11 +4334,11 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		if rec.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 		}
-		if repo.created == nil || repo.created.Engine != convert.EngineAV {
-			t.Fatalf("job Engine = %+v, want av", repo.created)
+		if repo.created == nil || repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+			t.Fatalf("job = %+v, want protocol av", repo.created)
 		}
-		if queue.enqueuedAV != repo.createdID {
-			t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+		if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+			t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 		}
 		if queue.enqueuedAudio != uuid.Nil {
 			t.Errorf("enqueuedAudio = %s, want uuid.Nil (mp4 -> webm must never touch the audio queue)", queue.enqueuedAudio)
@@ -4391,6 +4421,21 @@ func TestCreateJob_EngineSizeLimitAcceptsLargeAVUpload(t *testing.T) {
 		MaxUploadBytes: 10 << 20,
 		MaxEngineBytes: map[string]int64{convert.EngineImage: 1, convert.EngineAV: 5 << 20},
 	})
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "mp4" && target == avTestTarget {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.av",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineAV,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
 
 	body, ct := multipartBody(t, "in.mp4", avTestTarget, paddedMP4Fixture(1<<20))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4408,11 +4453,11 @@ func TestCreateJob_EngineSizeLimitAcceptsLargeAVUpload(t *testing.T) {
 	if repo.created == nil {
 		t.Fatal("must create a job for an av upload within the av engine's ceiling")
 	}
-	if repo.created.Engine != convert.EngineAV {
-		t.Errorf("job Engine = %q, want av", repo.created.Engine)
+	if repo.created.Engine != convert.EngineAV || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("job = %+v, want protocol av", repo.created)
 	}
-	if queue.enqueuedAV != repo.createdID {
-		t.Errorf("enqueuedAV = %s, want %s", queue.enqueuedAV, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAV=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAV)
 	}
 }
 

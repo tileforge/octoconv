@@ -70,22 +70,6 @@ worker:
       cpu: "2"
       memory: "1Gi"
 
-avWorker:
-  image:
-    repository: "octoconv-av-worker"
-  replicas: 1
-  # 783s = AV_ENGINE_TIMEOUT (753s, ConfigMap) + 30s, the same
-  # ENGINE_TIMEOUT+30s chart convention as worker/documentWorker/
-  # audioWorker/chromiumWorker (RESEARCH Pattern 4, D-04).
-  terminationGracePeriodSeconds: 783
-  resources:
-    limits:
-      # MUST match the RTF-measurement container exactly (Phase 36
-      # docker-compose.yml av-worker deploy.resources.limits) -- the
-      # measured 753s timeout is only valid at these limits.
-      cpu: "2"
-      memory: "1Gi"
-
 ocrWorker:
   image:
     repository: "octoconv-ocr-worker"
