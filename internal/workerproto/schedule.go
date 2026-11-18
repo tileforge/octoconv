@@ -1124,6 +1124,10 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 				return fmt.Errorf("store job progress: %w", err)
 			}
 		} else if advanced {
+			var previous *int16
+			if err := tx.QueryRow(ctx, `SELECT progress_pct FROM jobs WHERE id = $1`, jobID).Scan(&previous); err != nil {
+				return fmt.Errorf("read job progress: %w", err)
+			}
 			var callback *string
 			var hook bool
 			var correlation *string
@@ -1141,7 +1145,7 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 			if err != nil {
 				return fmt.Errorf("store job progress: %w", err)
 			}
-			if hook && callback != nil && *callback != "" {
+			if hook && callback != nil && *callback != "" && (previous == nil || int(*previous) < parsed.percent) {
 				notice = progressNotice{
 					fire:        true,
 					jobID:       jobID,

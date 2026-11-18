@@ -171,6 +171,25 @@ func TestStoreProgressEarnsAClientWebhook(t *testing.T) {
 	}
 }
 
+func TestStoreProgressRepeatDoesNotEarnAWebhook(t *testing.T) {
+	live := openHello(t)
+	attemptID, _ := armProgressJob(t, live, true, "https://client.example/hook", "")
+	h := NewHandler(NewRepo(live.pool), jobs.NewRepo(live.pool), newMemStore(), 120*time.Second)
+
+	_, first, err := h.storeProgress(context.Background(), live.sessionID, attemptID, parsedProgress{percent: 0})
+	if err != nil || !first.fire || first.percent != 0 {
+		t.Fatalf("first zero notice=%+v err=%v", first, err)
+	}
+	_, repeat, err := h.storeProgress(context.Background(), live.sessionID, attemptID, parsedProgress{percent: 0})
+	if err != nil || repeat.fire {
+		t.Fatalf("repeat of 0 notice=%+v err=%v", repeat, err)
+	}
+	_, next, err := h.storeProgress(context.Background(), live.sessionID, attemptID, parsedProgress{percent: 99})
+	if err != nil || !next.fire || next.percent != 99 {
+		t.Fatalf("99 notice=%+v err=%v", next, err)
+	}
+}
+
 func TestStoreProgressSkipsWebhookWhenTheJobDoesNotAdvance(t *testing.T) {
 	live := openHello(t)
 	attemptID, jobID := armProgressJob(t, live, true, "https://client.example/hook", "")
