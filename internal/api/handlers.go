@@ -1088,7 +1088,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	audioProtocol := engine == convert.EngineAudio && len(normalizedOpts) == 0 && !progressWebhook
 	avProtocol := engine == convert.EngineAV && len(normalizedOpts) == 0 && !progressWebhook
 	ocrProtocol := engine == convert.EngineOCR && len(normalizedOpts) == 0 && !progressWebhook
-	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol) {
+	pandocProtocol := engine == convert.EnginePandoc && len(normalizedOpts) == 0 && !progressWebhook
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol) {
 		budget := s.engineTimeouts[engine]
 		if budget <= 0 {
 			budget = 120 * time.Second

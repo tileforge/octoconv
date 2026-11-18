@@ -1461,7 +1461,7 @@ func TestCatalogEngineMismatchIsInternal(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestApprovedPandocCreateStillEnqueues(t *testing.T) {
+func TestApprovedPandocCreateSkipsEnqueue(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1476,25 +1476,105 @@ func TestApprovedPandocCreateStillEnqueues(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
 		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EnginePandoc || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
+	if repo.created == nil || repo.created.Engine != convert.EnginePandoc || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol pandoc", repo.created)
+	}
+	if repo.created.ProtocolAttemptBudget != 65*time.Second {
+		t.Fatalf("budget = %s, want 65s", repo.created.ProtocolAttemptBudget)
+	}
+	if repo.created.ProtocolAttemptBudget > time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second {
+		t.Fatalf("budget = %s exceeds the file-link window", repo.created.ProtocolAttemptBudget)
 	}
 	if repo.created.CapabilityID != "octoconv.convert.pandoc" || repo.created.CapabilityVersion != 1 {
 		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
 	}
 }
 
-func TestApprovedPandocOptionStillEnqueues(t *testing.T) {
+func TestApprovedPandocEmptyOptionsSkipEnqueue(t *testing.T) {
+	for _, opts := range []string{`{}`, `{"standalone":false}`, `{"wrap":""}`, `{"toc":false,"number_sections":false,"section_divs":false}`} {
+		t.Run(opts, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(pandocCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.md", "html", markdownFixture(), opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
+				t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 65*time.Second {
+				t.Fatalf("created = %+v, want protocol pandoc", repo.created)
+			}
+			if len(repo.created.Opts) != 0 {
+				t.Fatalf("opts = %#v, want none", repo.created.Opts)
+			}
+		})
+	}
+}
+
+func TestApprovedPandocOptionStaysOnAsynq(t *testing.T) {
+	cases := []struct {
+		name string
+		opts string
+		key  string
+		want any
+	}{
+		{name: "standalone", opts: `{"standalone":true}`, key: "standalone", want: true},
+		{name: "toc", opts: `{"toc":true}`, key: "toc", want: true},
+		{name: "number_sections", opts: `{"number_sections":true}`, key: "number_sections", want: true},
+		{name: "section_divs", opts: `{"section_divs":true}`, key: "section_divs", want: true},
+		{name: "wrap auto", opts: `{"wrap":"auto"}`, key: "wrap", want: "auto"},
+		{name: "wrap none", opts: `{"wrap":"none"}`, key: "wrap", want: "none"},
+		{name: "wrap preserve", opts: `{"wrap":"preserve"}`, key: "wrap", want: "preserve"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(pandocCatalog())
+
+			body, ct := multipartBodyWithOpts(t, "in.md", "html", markdownFixture(), tc.opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+				t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+			}
+			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+				t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
+			}
+			if repo.created.Opts[tc.key] != tc.want {
+				t.Fatalf("opts = %#v, want %s=%v", repo.created.Opts, tc.key, tc.want)
+			}
+		})
+	}
+}
+
+func TestApprovedPandocProgressWebhookStaysOnAsynq(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
 	srv.SetCapabilityCatalog(pandocCatalog())
 
-	body, ct := multipartBodyWithOpts(t, "in.md", "html", markdownFixture(), `{"standalone":true}`)
+	body, ct := multipartBodyWithCallback(t, "in.md", "html", markdownFixture(), "https://8.8.8.8/hook", "true")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
@@ -1505,12 +1585,86 @@ func TestApprovedPandocOptionStillEnqueues(t *testing.T) {
 	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
 		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
 	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
+		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	}
+}
+
+func TestApprovedPandocOverLinkWindowStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.engineTimeouts[convert.EnginePandoc] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.SetCapabilityCatalog(pandocCatalog())
+
+	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" {
 		t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
 	}
-	if repo.created.Opts["standalone"] != true {
-		t.Fatalf("opts = %#v, want standalone", repo.created.Opts)
+}
+
+func TestUnapprovedPandocStaysOnAsynq(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+
+	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
+	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
+		t.Fatalf("created = %+v, want unpinned pandoc on asynq", repo.created)
+	}
+}
+
+func TestUnknownPandocWrapIs422(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(pandocCatalog())
+
+	body, ct := multipartBodyWithOpts(t, "in.md", "html", markdownFixture(), `{"wrap":"sideways"}`)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.InvalidOptions)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func pandocCatalog() *fakeCatalog {
