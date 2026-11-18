@@ -76,7 +76,7 @@ class_go_file() {
     ocr)    echo "internal/convert/ocrsandbox.go" ;;
     av)     echo "internal/convert/avsandbox.go" ;;
     audio)  echo "internal/convert/audiosandbox.go" ;;
-    html)   echo "internal/convert/htmlsandbox.go" ;;
+    html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "internal/convert/probesandbox.go" ;;
     soffice|verapdf) echo "internal/convert/documentsandbox.go" ;;
     cadguard|cadmesh|cadrender|caddxf|cadrsvg) echo "internal/convert/cadsandbox.go" ;;
@@ -89,7 +89,7 @@ class_go_readonly_var() {
     ocr)    echo "ocrReadOnly" ;;
     av)     echo "avReadOnly" ;;
     audio)  echo "audioReadOnly" ;;
-    html)   echo "htmlReadOnly" ;;
+    html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "probeReadOnly" ;;
     soffice)  echo "sofficeReadOnly" ;;
     verapdf)  echo "verapdfReadOnly" ;;
@@ -106,7 +106,7 @@ class_go_engines_var() {
     ocr)    echo "ocrEngines" ;;
     av)     echo "avEngines" ;;
     audio)  echo "audioEngines" ;;
-    html)   echo "htmlEngines" ;;
+    html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "probeEngines" ;;
     soffice)  echo "sofficeEngines" ;;
     verapdf)  echo "verapdfEngines" ;;
@@ -125,7 +125,7 @@ class_go_engines_var() {
 # whose set is empty (probe) is read as count 0, and a MISSING block is exit 2.
 class_go_readwrite_var() {
   case "$1" in
-    html)    echo "htmlReadWrite" ;;
+    html)    die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)   echo "probeReadWrite" ;;
     soffice) echo "sofficeReadWrite" ;;
     verapdf) echo "verapdfReadWrite" ;;

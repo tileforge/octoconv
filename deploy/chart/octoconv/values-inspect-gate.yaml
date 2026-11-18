@@ -141,8 +141,6 @@ ocrWorker:
   replicas: 0
 pandocWorker:
   replicas: 0
-chromiumWorker:
-  replicas: 0
 webhookWorker:
   replicas: 0
 mcpHttp:

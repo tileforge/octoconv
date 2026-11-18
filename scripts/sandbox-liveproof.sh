@@ -7,9 +7,9 @@
 #   scripts/sandbox-liveproof.sh <class>...
 #
 # Every class this script knows about is in the table below from the start
-# (image, pandoc, ocr, av, audio, html, probe, document, cad), including classes not yet
-# confined by any converter -- so a class that lands later extends the
-# CONVERTER, never this script.
+# (image, pandoc, ocr, av, audio, probe, document, cad). Html confinement is
+# measured in tileforge/octoconv-worker-html. A class that lands later extends
+# the CONVERTER, never this script.
 #
 # The document and cad classes add emulated-amd64-refuses after the four
 # generic ones: the SAME Dockerfile built for linux/amd64 and run emulated
@@ -26,11 +26,6 @@
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
-
-# CSP_LIVE_ROWS must equal the row count of cspShapeTable
-# (internal/convert/chromium_test.go) -- all 18 top-level rows (s1-s9,
-# x1-x5, f1-f4) of 69-04-PLAN.md's Shape table.
-CSP_LIVE_ROWS=18
 
 # class_row prints "dockerfile binary envvar expects_proven extra_run_args"
 # for class, or dies on an unknown one. extra_run_args is "-" (meaning none)
@@ -49,11 +44,11 @@ class_row() {
     ocr)    echo "Dockerfile.ocr-worker ocr-worker OCR_SANDBOX_DISABLED yes -" ;;
     av)     echo "Dockerfile.av-worker av-worker AV_SANDBOX_DISABLED yes -" ;;
     audio)  echo "Dockerfile.audio-worker audio-worker AUDIO_SANDBOX_DISABLED yes -" ;;
-    html)   echo "Dockerfile.chromium-worker chromium-worker HTML_SANDBOX_DISABLED yes -" ;;
+    html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
     document) echo "Dockerfile.document-worker document-worker DOCUMENT_SANDBOX_DISABLED yes -" ;;
     cad) echo "Dockerfile.cad-worker cad-worker CAD_SANDBOX_DISABLED yes -" ;;
-    *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, html, probe, document or cad)" ;;
+    *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html)" ;;
   esac
 }
 
@@ -319,287 +314,6 @@ check_preflight_catches_restrict_self() {
   fi
 }
 
-# check_html_concurrency_guard (D-03): a confined worker whose configured
-# concurrency is above 1 must refuse to start, naming HTML_WORKER_CONCURRENCY
-# and the shared /tmp, before ever reaching Postgres or claiming confinement
-# proven -- the ruleset's shared-/tmp grant is safe only at concurrency 1.
-check_html_concurrency_guard() {
-  local tag=$1
-  shift
-  local extra=("$@")
-
-  local result out status
-  result=$(run_gated html concurrencyguard "" "$tag" -e "HTML_WORKER_CONCURRENCY=2" ${extra[@]+"${extra[@]}"})
-  status=${result%%$'\x1e'*}
-  out=${result#*$'\x1e'}
-
-  local ok=1 reasons=()
-  printf '%s\n' "$out" | grep -qF "HTML_WORKER_CONCURRENCY=2" \
-    || { ok=0; reasons+=("refusal does not name HTML_WORKER_CONCURRENCY=2"); }
-  printf '%s\n' "$out" | grep -qF "shared /tmp" \
-    || { ok=0; reasons+=("refusal does not name the shared /tmp"); }
-  printf '%s\n' "$out" | grep -qF "🔒 html sandbox proven:" \
-    && { ok=0; reasons+=("output claims 🔒 html sandbox proven: -- should have refused before the preflight ever ran"); }
-  printf '%s\n' "$out" | grep -qF "postgres:" \
-    && { ok=0; reasons+=("reached the postgres connect attempt -- should have refused at startup"); }
-  [ "$status" -ne 0 ] \
-    || { ok=0; reasons+=("exit status 0, want non-zero"); }
-
-  if [ "$ok" = 1 ]; then
-    pass "html concurrency-guard"
-    printf '%s\n' "$out" | grep -F "HTML_WORKER_CONCURRENCY=2" | head -1 | sed 's/^/  /'
-  else
-    fail "html concurrency-guard" "${reasons[@]}" "--- full output ---" "$out"
-  fi
-}
-
-# check_html_wrapper_as_measured (D-08): a package update that changes the
-# wrapper shows up here. PASS iff the four values are EXACTLY the measured
-# ones: the wrapper's first line, its interpreter (resolved from /bin/sh),
-# the count of lines naming the real binary, and the wrapper's byte count.
-check_html_wrapper_as_measured() {
-  local tag=$1
-  shift
-  local extra=("$@")
-  local cname="octoconv-liveproof-html-wrapper-${RUN_ID}"
-
-  ( sleep 300; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-  local watchdog=$!
-
-  set +e
-  local out status
-  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} --entrypoint sh "$tag" -c '
-    head -n1 /usr/bin/chromium-headless-shell
-    readlink -f /bin/sh
-    grep -c "^/usr/lib/chromium/chromium-headless-shell " /usr/bin/chromium-headless-shell
-    wc -c < /usr/bin/chromium-headless-shell
-  ' 2>&1)
-  status=$?
-  set -e
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-
-  local trimmed
-  trimmed=$(printf '%s\n' "$out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  local want
-  want=$(printf '%s\n' '#!/bin/sh -e' '/usr/bin/dash' '1' '61')
-
-  if [ "$status" -eq 0 ] && [ "$trimmed" = "$want" ]; then
-    pass "html wrapper-as-measured"
-  else
-    fail "html wrapper-as-measured" "found: $(printf '%s' "$trimmed" | tr '\n' '|')" \
-      "want: $(printf '%s' "$want" | tr '\n' '|')" "--- full output ---" "$out"
-  fi
-}
-
-# check_html_sweeps_shared_tmp (D-04): a leftover planted in the container's
-# /tmp before startup -- a plain file (mimics a killed gs-style scratch file)
-# and a chromium-shm-shaped name -- must be gone once the confined worker's
-# preflight has proven the sandbox and swept /tmp, BEFORE the engine would
-# run a real task.
-check_html_sweeps_shared_tmp() {
-  local tag=$1
-  shift
-  local extra=("$@")
-  local cname="octoconv-liveproof-html-sweep-${RUN_ID}"
-
-  ( sleep 300; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-  local watchdog=$!
-
-  set +e
-  local out status
-  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
-    -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
-    --entrypoint sh "$tag" -c '
-    touch /tmp/octoconv-liveproof-leftover
-    touch /tmp/.org.chromium.Chromium.liveproof
-    /usr/local/bin/chromium-worker
-    echo "--- after ---"
-    ls -A /tmp
-  ' 2>&1)
-  status=$?
-  set -e
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-
-  local ok=1 reasons=()
-  printf '%s\n' "$out" | grep -qF "🔒 html sandbox proven:" \
-    || { ok=0; reasons+=("missing '🔒 html sandbox proven:' -- the preflight never cleared, so the sweep proves nothing here"); }
-  local after
-  after=$(printf '%s\n' "$out" | awk '/^--- after ---$/{f=1; next} f')
-  if printf '%s\n' "$after" | grep -qF "octoconv-liveproof-leftover"; then
-    ok=0
-    reasons+=("the planted plain-file leftover survived the sweep")
-  fi
-  if printf '%s\n' "$after" | grep -qF ".org.chromium.Chromium.liveproof"; then
-    ok=0
-    reasons+=("the planted chromium-shm-shaped leftover survived the sweep")
-  fi
-
-  if [ "$ok" = 1 ]; then
-    pass "html sweeps-shared-tmp"
-  else
-    fail "html sweeps-shared-tmp" "${reasons[@]}" "--- full output ---" "$out"
-  fi
-}
-
-# run_html_csp_live_test docker-runs the freshly cross-compiled convert.test
-# binary, read-only bind-mounted at /liveproof, inside tag under tini,
-# invoking only TestChromiumCSPPrecedesEveryScriptLive with
-# OCTOCONV_CHROMIUM_LIVE=1 -- modeled on run_gated's watchdog discipline
-# (background watchdog, stdio redirected to /dev/null, so a $(...) capture is
-# not held open) but with a longer watchdog period (900s): the live test
-# builds one docker-run per shape-table row, all inside a single process.
-run_html_csp_live_test() {
-  local tag=$1 bindir=$2
-  shift 2
-  local extra=("$@")
-  local cname="octoconv-liveproof-html-csplive-${RUN_ID}"
-
-  ( sleep 900; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-  local watchdog=$!
-
-  set +e
-  local out status
-  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
-    -v "${bindir}:/liveproof:ro" -e OCTOCONV_CHROMIUM_LIVE=1 \
-    --entrypoint /usr/bin/tini "$tag" -- \
-    /liveproof/convert.test -test.run '^TestChromiumCSPPrecedesEveryScriptLive$' -test.v -test.timeout 10m 2>&1)
-  status=$?
-  set -e
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  printf '%s\x1e%s' "$status" "$out"
-}
-
-# check_html_csp_live (G-69-2): PASS iff exit 0, the output contains
-# "--- PASS: TestChromiumCSPPrecedesEveryScriptLive" (unanchored -- -test.v
-# indents subtest lines), the count of
-# "--- PASS: TestChromiumCSPPrecedesEveryScriptLive/" lines equals
-# CSP_LIVE_ROWS, and there is no "--- SKIP" and no "--- FAIL" line.
-check_html_csp_live() {
-  local tag=$1 bindir=$2
-  shift 2
-  local extra=("$@")
-
-  local result out status
-  result=$(run_html_csp_live_test "$tag" "$bindir" ${extra[@]+"${extra[@]}"})
-  status=${result%%$'\x1e'*}
-  out=${result#*$'\x1e'}
-
-  local ok=1 reasons=()
-  if [ "$status" -ne 0 ]; then
-    ok=0
-    reasons+=("exit status ${status}, want 0")
-  fi
-  printf '%s\n' "$out" | grep -q -- "--- PASS: TestChromiumCSPPrecedesEveryScriptLive" \
-    || { ok=0; reasons+=("missing '--- PASS: TestChromiumCSPPrecedesEveryScriptLive'"); }
-  local pass_count
-  pass_count=$(printf '%s\n' "$out" | grep -c -- "--- PASS: TestChromiumCSPPrecedesEveryScriptLive/" || true)
-  if [ "$pass_count" -ne "$CSP_LIVE_ROWS" ]; then
-    ok=0
-    reasons+=("found ${pass_count} passing subtests, want ${CSP_LIVE_ROWS}")
-  fi
-  if printf '%s\n' "$out" | grep -q -- "--- SKIP"; then
-    ok=0
-    reasons+=("output contains a --- SKIP line")
-  fi
-  if printf '%s\n' "$out" | grep -q -- "--- FAIL"; then
-    ok=0
-    while IFS= read -r line; do reasons+=("$line"); done < <(printf '%s\n' "$out" | grep -- "--- FAIL")
-  fi
-
-  if [ "$ok" = 1 ]; then
-    pass "html csp-precedes-every-script"
-    printf '%s\n' "$out" | grep -F "csp-live:" | head -1 | sed 's/^/  /'
-  else
-    fail "html csp-precedes-every-script" "${reasons[@]}" "--- full output ---" "$out"
-  fi
-}
-
-# run_html_large_document_live_test docker-runs the freshly cross-compiled
-# convert.test binary, modeled on run_html_csp_live_test (same read-only
-# bind mount, tini entrypoint, 900s watchdog), but ADDS --cpus=2 --memory=2g
-# to the docker-run arguments -- the deployed limits (chart values.yaml
-# chromiumWorker.resources.limits and compose's chromium-worker deploy
-# limits) -- and invokes ONLY TestChromiumLargeDocumentNeedsNoDevShmLive
-# (69-05-PLAN.md Task 1, G-69-3).
-run_html_large_document_live_test() {
-  local tag=$1 bindir=$2
-  shift 2
-  local extra=("$@")
-  local cname="octoconv-liveproof-html-largedoc-${RUN_ID}"
-
-  ( sleep 900; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
-  local watchdog=$!
-
-  set +e
-  local out status
-  out=$(docker run --name "$cname" --rm --cpus=2 --memory=2g ${extra[@]+"${extra[@]}"} \
-    -v "${bindir}:/liveproof:ro" -e OCTOCONV_CHROMIUM_LIVE=1 \
-    --entrypoint /usr/bin/tini "$tag" -- \
-    /liveproof/convert.test -test.run '^TestChromiumLargeDocumentNeedsNoDevShmLive$' -test.v -test.timeout 10m 2>&1)
-  status=$?
-  set -e
-  kill "$watchdog" >/dev/null 2>&1 || true
-  wait "$watchdog" 2>/dev/null || true
-  printf '%s\x1e%s' "$status" "$out"
-}
-
-# check_html_large_document_live (G-69-3): PASS iff exit 0, the output
-# contains "--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive" (unanchored
-# -- -test.v indents subtest lines), no "--- SKIP" and no "--- FAIL". Runs at
-# the deployed limits (--cpus=2 --memory=2g) with no shared-memory docker
-# flag of any kind: the whole point of this check is that the confined
-# engine needs none.
-#
-# The test's negative control was rebuilt in 70-06. It no longer demands that
-# a run without --disable-dev-shm-usage FAIL on a denied /dev/shm (Chromium 154
-# does not fail there: its shared memory is memfd_create), because a failure
-# is only one thing a denial can cause. Instead the test runs under the
-# production ruleset plus one extra entry, rw:/dev/shm, where /dev/shm is
-# reachable and no fallback can hide a wish for it, and an inotify observer
-# outside the sandbox must see a control program create an entry there and
-# must see the production argv create none. The PASS output carries the
-# engine's version (the image installs chromium-headless-shell unpinned, on
-# purpose) and the observer's counts.
-check_html_large_document_live() {
-  local tag=$1 bindir=$2
-  shift 2
-  local extra=("$@")
-
-  local result out status
-  result=$(run_html_large_document_live_test "$tag" "$bindir" ${extra[@]+"${extra[@]}"})
-  status=${result%%$'\x1e'*}
-  out=${result#*$'\x1e'}
-
-  local ok=1 reasons=()
-  if [ "$status" -ne 0 ]; then
-    ok=0
-    reasons+=("exit status ${status}, want 0")
-  fi
-  printf '%s\n' "$out" | grep -q -- "--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive" \
-    || { ok=0; reasons+=("missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'"); }
-  if printf '%s\n' "$out" | grep -q -- "--- SKIP"; then
-    ok=0
-    reasons+=("output contains a --- SKIP line")
-  fi
-  if printf '%s\n' "$out" | grep -q -- "--- FAIL"; then
-    ok=0
-    while IFS= read -r line; do reasons+=("$line"); done < <(printf '%s\n' "$out" | grep -- "--- FAIL")
-  fi
-
-  if [ "$ok" = 1 ]; then
-    pass "html large-document-without-dev-shm"
-    printf '%s\n' "$out" | grep -F "dev-shm:" | head -1 | sed 's/^/  /'
-    printf '%s\n' "$out" | grep -F "chromium:" | head -1 | sed 's/^/  /'
-    printf '%s\n' "$out" | grep -F "dev-shm-observe:" | head -1 | sed 's/^/  /'
-    printf '%s\n' "$out" | grep -F "large-doc:" | head -1 | sed 's/^/  /'
-  else
-    fail "html large-document-without-dev-shm" "${reasons[@]}" "--- full output ---" "$out"
-  fi
-}
-
 # check_document_concurrency_guard (D-09, CONF-06): 70-02 measured that
 # soffice needs the shared /tmp read-write, so a confined document worker
 # configured above one task at a time must refuse to start, naming
@@ -775,32 +489,6 @@ for class in "$@"; do
   check_refuses_without_landlock "$class" "$envvar" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
   check_escape_hatch "$class" "$envvar" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
   check_preflight_catches_restrict_self "$class" "$bin" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
-
-  if [ "$class" = "html" ]; then
-    # Cross-compile the convert.test binary for the IMAGE's architecture, on
-    # go.mod's own toolchain (never the host default -- the host toolchain is
-    # newer than go.mod, #4619/#4748 class of drift), so the binary the live
-    # check runs is proven to be the tree's own build, not an incidental one.
-    image_arch=$(docker image inspect "$tag" --format '{{.Architecture}}')
-    [ -n "$image_arch" ] || die "cannot read the architecture of $tag"
-    go_toolchain="go$(awk '$1=="go"{print $2; exit}' go.mod)"
-    echo "toolchain: $(GOTOOLCHAIN="$go_toolchain" go version)"
-    bindir=$(mktemp -d)
-    if ! CGO_ENABLED=0 GOOS=linux GOARCH="$image_arch" GOTOOLCHAIN="$go_toolchain" \
-        go test -c -o "$bindir/convert.test" ./internal/convert >"$bindir/build.log" 2>&1; then
-      cat "$bindir/build.log"
-      rm -rf "$bindir"
-      die "cross-compile of convert.test failed for class ${class}"
-    fi
-
-    check_html_concurrency_guard "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
-    check_html_wrapper_as_measured "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
-    check_html_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
-    check_html_csp_live "$tag" "$bindir" ${extra_run_args[@]+"${extra_run_args[@]}"}
-    check_html_large_document_live "$tag" "$bindir" ${extra_run_args[@]+"${extra_run_args[@]}"}
-
-    rm -rf "$bindir"
-  fi
 
   if [ "$class" = "document" ] || [ "$class" = "cad" ]; then
     check_emulated_amd64_refuses "$class" "$dockerfile" "$envvar" ${extra_run_args[@]+"${extra_run_args[@]}"}

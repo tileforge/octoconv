@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| worker, chromium-worker, audio-worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
+| worker, audio-worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -116,7 +116,8 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 | `tectonic` | — (PR #21) | **да** |
 | `image` | да | **да** (эта ветка) |
 | `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
-| `html`, `probe` | да | **да (фаза 69)** |
+| `probe` | да | **да (фаза 69)** |
+| `html` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-html`; встроенный процесс удалён |
 | `document` | да (фаза 70, ниже) | **да (фаза 70)** |
 | `cad` (guard + mesh) | да (фаза 73, ниже) | наборы лежат в `cadsandbox.go`; класс не зарегистрирован |
 
@@ -188,7 +189,9 @@ veraPDF не получает ни права записи, кроме `/dev/nul
 
 ## html (chromium) — замерено и доказано 2026-09-20
 
-Образ `octoconv-chromium-worker:latest`, argv как в `internal/convert/chromium.go`.
+Замер ниже — запись встроенного chromium-воркера. Этот процесс удалён. Ruleset теперь живёт в `tileforge/octoconv-worker-html`. Цифры ниже — историческая запись, их не пересчитывали.
+
+Образ `octoconv-chromium-worker:latest`, argv того встроенного процесса, который этот раздел записывает.
 
 **Read-write:** каталог задачи, **`/tmp`**, `/dev/null`.
 
@@ -271,8 +274,8 @@ ruleset, под продакшен-ruleset, под ним же плюс `rw:/dev
 `rw:/dev/shm`» и «убрать флаг» на 154 провалиться не могут по построению (движок
 ничего не создаёт при любом раскладе) и не запускались.
 
-*Chromium не закреплён.* Пакет `chromium-headless-shell` в
-`Dockerfile.chromium-worker` остаётся без версии — решение пользователя
+*Chromium не закреплён.* Пакет `chromium-headless-shell` в удалённом
+`Dockerfile.chromium-worker` был без версии — решение пользователя
 2026-09-30: Debian убирает старые версии, закрепление гниёт и оставляет браузер
 без патчей. Проверка логирует версию, а контроль не опирается на поведение
 конкретной версии. Непроверенным остаётся одно: поведение при запрещённом

@@ -309,7 +309,7 @@ func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusBadRequest, code)
 		return
 	}
-	limited, err := h.storeProgress(r.Context(), sess.ID, attemptID, parsed)
+	limited, notice, err := h.storeProgress(r.Context(), sess.ID, attemptID, parsed)
 	if errors.Is(err, errAttemptInactive) {
 		writeCode(w, http.StatusConflict, "attempt_not_active")
 		return
@@ -322,6 +322,7 @@ func (h *Handler) handleProgress(w http.ResponseWriter, r *http.Request) {
 		writeCode(w, http.StatusTooManyRequests, "rate_limited")
 		return
 	}
+	h.fireProgress(notice)
 	h.writeControl(w, r, sess.ID)
 }
 
@@ -1022,8 +1023,9 @@ func optionalInt(raw json.RawMessage, min int) (*int, string) {
 	return &n, ""
 }
 
-func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.UUID, parsed parsedProgress) (bool, error) {
+func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.UUID, parsed parsedProgress) (bool, progressNotice, error) {
 	var limited bool
+	var notice progressNotice
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if _, err := lockReportingJob(ctx, tx, attemptID, sessionID); err != nil {
 			return err
@@ -1122,13 +1124,40 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 				return fmt.Errorf("store job progress: %w", err)
 			}
 		} else if advanced {
-			if _, err := tx.Exec(ctx, `
+			var previous *int16
+			if err := tx.QueryRow(ctx, `SELECT progress_pct FROM jobs WHERE id = $1`, jobID).Scan(&previous); err != nil {
+				return fmt.Errorf("read job progress: %w", err)
+			}
+			var callback *string
+			var hook bool
+			var correlation *string
+			err := tx.QueryRow(ctx, `
 				UPDATE jobs
 				SET progress_pct = $2, progress_updated_at = now()
 				WHERE id = $1 AND status = 'active'
 				  AND workflow_snapshot_id IS NULL
-				  AND (progress_pct IS NULL OR progress_pct <= $2)`, jobID, parsed.percent); err != nil {
+				  AND (progress_pct IS NULL OR progress_pct <= $2)
+				RETURNING callback_url, progress_webhook, correlation_id`, jobID, parsed.percent).
+				Scan(&callback, &hook, &correlation)
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = nil
+			}
+			if err != nil {
 				return fmt.Errorf("store job progress: %w", err)
+			}
+			if hook && callback != nil && *callback != "" && (previous == nil || int(*previous) < parsed.percent) {
+				notice = progressNotice{
+					fire:        true,
+					jobID:       jobID,
+					callbackURL: *callback,
+					percent:     parsed.percent,
+				}
+				if correlation != nil {
+					notice.correlationID = *correlation
+				}
+				if !parsed.etaNull {
+					notice.eta = parsed.eta
+				}
 			}
 		}
 		if stageName, stageAt, stageN, ok := cadJobStage(stage, stageIndex, stageCount); ok {
@@ -1144,7 +1173,10 @@ func (h *Handler) storeProgress(ctx context.Context, sessionID, attemptID uuid.U
 		}
 		return nil
 	})
-	return limited, err
+	if err != nil {
+		return false, progressNotice{}, err
+	}
+	return limited, notice, nil
 }
 
 func (h *Handler) failLiveAttempt(ctx context.Context, sessionID, attemptID uuid.UUID, code, message string) error {

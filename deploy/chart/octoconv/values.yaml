@@ -213,16 +213,6 @@ tectonicWorker:
       cpu: "2"
       memory: "1Gi"
 
-chromiumWorker:
-  image:
-    repository: "octoconv-chromium-worker"
-  replicas: 1
-  terminationGracePeriodSeconds: 90
-  resources:
-    limits:
-      cpu: "2"
-      memory: "2Gi"
-
 webhookWorker:
   image:
     repository: "octoconv-webhook-worker"

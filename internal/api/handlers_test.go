@@ -244,12 +244,6 @@ func (f *fakeQueue) EnqueueDocumentConvert(_ context.Context, id uuid.UUID) erro
 	return nil
 }
 
-func (f *fakeQueue) EnqueueHTMLConvert(_ context.Context, id uuid.UUID) error {
-	f.enqueuedHTML = id
-	f.enqueueCalls++
-	return nil
-}
-
 func (f *fakeQueue) EnqueueAudioConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedAudio = id
 	f.enqueueCalls++
@@ -3002,8 +2996,7 @@ func htmlFixture() []byte {
 }
 
 // TestCreateJob_HTMLDetectedAndAccepted proves a valid .html upload targeting
-// pdf is detected (fail-closed content check, D-07), routed to the html
-// engine, and enqueued via EnqueueHTMLConvert (not any other queue).
+// pdf is detected and refused before upload when no html manifest is approved.
 func TestCreateJob_HTMLDetectedAndAccepted(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
@@ -3017,32 +3010,14 @@ func TestCreateJob_HTMLDetectedAndAccepted(t *testing.T) {
 
 	srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if !store.uploaded {
-		t.Error("must upload a valid html upload")
+	if !strings.Contains(rec.Body.String(), "html -> pdf") {
+		t.Fatalf("body = %s, want html -> pdf", rec.Body.String())
 	}
-	if store.contentType != "text/html" {
-		t.Errorf("contentType = %q, want text/html", store.contentType)
-	}
-	if repo.created == nil {
-		t.Fatal("must create job for a valid html -> pdf conversion")
-	}
-	if repo.created.SourceFormat != "html" || repo.created.TargetFormat != "pdf" {
-		t.Errorf("job format = %s -> %s, want html -> pdf", repo.created.SourceFormat, repo.created.TargetFormat)
-	}
-	if repo.created.Engine != "html" {
-		t.Errorf("job Engine = %q, want html", repo.created.Engine)
-	}
-	if queue.enqueuedHTML != repo.createdID {
-		t.Errorf("enqueuedHTML = %s, want %s", queue.enqueuedHTML, repo.createdID)
-	}
-	if queue.enqueuedDocument != uuid.Nil {
-		t.Errorf("enqueuedDocument = %s, want uuid.Nil (html upload must never touch the document queue)", queue.enqueuedDocument)
-	}
-	if queue.enqueuedImage != uuid.Nil {
-		t.Errorf("enqueuedImage = %s, want uuid.Nil (html upload must never touch the image queue)", queue.enqueuedImage)
+	if store.uploaded || repo.created != nil || queue.enqueueCalls != 0 || queue.enqueuedHTML != uuid.Nil {
+		t.Fatalf("refused html uploaded=%v created=%v enqueueCalls=%d", store.uploaded, repo.created != nil, queue.enqueueCalls)
 	}
 }
 
@@ -3062,11 +3037,14 @@ func TestCreateJob_HTMExtensionAliasAccepted(t *testing.T) {
 
 	srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.SourceFormat != "html" {
-		t.Fatalf("must create job with SourceFormat=html for a .htm upload, got %+v", repo.created)
+	if !strings.Contains(rec.Body.String(), "html -> pdf") {
+		t.Fatalf("body = %s, want html -> pdf (htm alias detected as html)", rec.Body.String())
+	}
+	if store.uploaded || repo.created != nil || queue.enqueueCalls != 0 {
+		t.Fatalf("refused htm uploaded=%v created=%v enqueueCalls=%d", store.uploaded, repo.created != nil, queue.enqueueCalls)
 	}
 }
 
@@ -3104,7 +3082,9 @@ func TestCreateJob_HTMLContentRejected(t *testing.T) {
 func TestCreateJob_HTMLOptsAccepted(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
-	srv, _ := newTestServer(repo, store, &fakeQueue{})
+	queue := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(htmlCatalog())
 
 	body, ct := multipartBodyWithOpts(t, "in.html", "pdf", htmlFixture(), `{"page_size":"a4","margin_mm":10,"landscape":true,"print_background":true}`)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3121,6 +3101,9 @@ func TestCreateJob_HTMLOptsAccepted(t *testing.T) {
 	}
 	if repo.created.Opts["page_size"] != "a4" {
 		t.Errorf("CreateParams.Opts = %+v, want page_size=a4", repo.created.Opts)
+	}
+	if repo.created.DispatchOwner != "protocol" || queue.enqueueCalls != 0 {
+		t.Fatalf("created = %+v enqueueCalls=%d, want protocol and no enqueue", repo.created, queue.enqueueCalls)
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
@@ -3441,6 +3424,7 @@ func TestCreateJob_PresetHTMLOptsResolved(t *testing.T) {
 	}}
 	resolver := newFakeResolver()
 	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv.SetCapabilityCatalog(htmlCatalog())
 
 	body, ct := multipartBodyWithPreset(t, "in.html", "a4pdf", "", htmlFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3452,11 +3436,11 @@ func TestCreateJob_PresetHTMLOptsResolved(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.Opts["page_size"] != "a4" {
-		t.Errorf("CreateParams.Opts = %+v, want page_size=a4", repo.created)
+	if repo.created == nil || repo.created.Opts["page_size"] != "a4" || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("CreateParams = %+v, want protocol html with page_size=a4", repo.created)
 	}
-	if q.enqueuedHTML != repo.createdID {
-		t.Errorf("enqueuedHTML = %s, want %s", q.enqueuedHTML, repo.createdID)
+	if q.enqueueCalls != 0 || q.enqueuedHTML != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedHTML=%s, want no enqueue", q.enqueueCalls, q.enqueuedHTML)
 	}
 }
 
@@ -4045,6 +4029,15 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
+		if engine == convert.EngineHTML {
+			if routed {
+				t.Errorf("engine html is still routed to an asynq queue")
+			}
+			if err != nil {
+				t.Errorf("engine html: %v", err)
+			}
+			continue
+		}
 		if !routed {
 			t.Errorf("engine %q has no case in handleCreateJob's enqueue switch: every job for it would 500 with \"failed to enqueue job\"", engine)
 		}
@@ -4097,7 +4090,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		callID func(*fakeQueue) uuid.UUID
 	}{
 		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
-		{convert.EngineHTML, fixture{"in.html", "pdf", func(*testing.T) []byte { return htmlFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedHTML }},
 		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
 		// The ninth engine joins the SAME table rather than getting a bespoke
@@ -4138,6 +4130,9 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			if queue.enqueuedDocument != uuid.Nil {
 				t.Fatalf("engine %q: enqueuedDocument = %s, want uuid.Nil", tc.engine, queue.enqueuedDocument)
 			}
+			if queue.enqueuedHTML != uuid.Nil {
+				t.Fatalf("engine %q: enqueuedHTML = %s, want uuid.Nil", tc.engine, queue.enqueuedHTML)
+			}
 			for otherEngine, accessor := range allAccessors {
 				if otherEngine == tc.engine {
 					continue
@@ -4148,6 +4143,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("html_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.html", "pdf", htmlFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "html -> pdf") {
+			t.Fatalf("body = %s, want html -> pdf", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedHTML != uuid.Nil {
+			t.Fatalf("refused html created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
 
 	t.Run("document_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}
