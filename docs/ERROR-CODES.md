@@ -135,15 +135,15 @@ A DWG job fails with `cad_too_complex` when `cad-dwg` does not finish (`CAD_DWG_
 
 Nineteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D-04; `unsupported_package` was added by Phase 64 for the tex engine; `cad_too_complex`, `cad_unreadable`, `cad_empty_result` and `cad_mesh_timeout` were added by Phase 73 for the cad engine). Source:
 `internal/worker/descriptors.go` (`AllFailureCodes()`), with per-engine mapping logic in
-`internal/worker/worker.go` (`avFailureCode`, `ocrFailureCode`, `pandocFailureCode`,
-`audioFailureCode`) and the sole non-`internal/worker` emitter in
+`internal/worker/worker.go` (`avFailureCode`, `ocrFailureCode`, `pandocFailureCode`)
+and the sole non-`internal/worker` emitter in
 `internal/reconciler/reconciler.go`.
 
 | Code | Emitted by | Meaning |
 |------|-----------|---------|
 | `engine_error` | All engine classes except where a finer code below names the outcome | Deliberate catch-all: unsupported or corrupted input format, or any terminal engine failure with no more specific mapping. Frozen against renaming (D-05). The cad engine uses it only for four fixed sentences: "the measurements of this model could not be produced" and "the drawing could not be converted into a safe vector file" (both terminal; the second means the SVG a DXF drawing produced failed the safety check, or disagreed with its own text list or with the render-only SVG on a text's content, opacity or font, or on how many elements are visible), and "the preview could not be rendered" and "the drawing could not be produced" (both retried, so they reach a client only when the attempts run out); it does not use it for an unreadable file, an empty result or a timeout: those have their own `cad_*` codes because the client's action differs, and a client must never have to parse `message` to tell them apart |
 | `invalid_options` | Every engine class that re-parses persisted `opts` in the worker (document, HTML, audio, AV, OCR, pandoc, probe, tectonic, cad — not image, which has no opts re-parse guard; cad re-parses `view`, `size`, `quality`, `background`, `assume_unit` and the boolean `dimensions` against their accepted values, while which of them apply to an operation and source format is decided at the API with `opts_not_applicable`) | Persisted `opts` failed re-validation inside the worker. Same code string as the sync `invalid_options` above — one code space (D-03) |
-| `duration_exceeded` | audio, AV | Declared audio/video duration exceeds the configured maximum (`AudioDescriptor`/`AVDescriptor` share this sentinel deliberately, keeping the two engines' client-facing contracts symmetric) |
+| `duration_exceeded` | AV | Declared video duration exceeds the configured maximum (`AVDescriptor`) |
 | `timecode_out_of_range` | AV | An explicit thumbnail timecode requested via `opts` exceeds the source's actual duration — a client fault, deliberately not clamped |
 | `resolution_exceeded` | AV | Declared video resolution exceeds the configured maximum |
 | `no_video_stream` | AV | No video stream found in an input misrouted to the AV engine (e.g. an audio-only ISOBMFF container) |

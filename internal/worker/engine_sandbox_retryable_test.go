@@ -23,7 +23,6 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		{"pandoc", isPandocTerminal, fmt.Errorf("pandoc: pandoc: %w", convert.ErrEngineSandboxUnavailable)},
 		{"ocr", isOCRTerminal, fmt.Errorf("ocr: tesseract: %w", convert.ErrEngineSandboxUnavailable)},
 		{"av", isAVTerminal, fmt.Errorf("av: transcode: %w: %w", convert.ErrAVTranscodeFailed, convert.ErrEngineSandboxUnavailable)},
-		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", convert.ErrEngineSandboxUnavailable)},
 		// The wrapped text ALSO carries ErrSanitizeMalformedInput, which
 		// classifyEngineFailure's OWN doc comment says is terminal on its
 		// own -- the non-vacuous case: the sentinel must win even when the
@@ -65,7 +64,6 @@ func TestEngineSandboxControlShapesAreTerminal(t *testing.T) {
 		{"pandoc", isPandocTerminal, fmt.Errorf("pandoc: pandoc: %w", plain)},
 		{"ocr", isOCRTerminal, fmt.Errorf("ocr: tesseract: %w", plain)},
 		{"av", isAVTerminal, fmt.Errorf("av: transcode: %w: %w", convert.ErrAVTranscodeFailed, plain)},
-		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", plain)},
 		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w", convert.ErrSanitizeMalformedInput, plain)},
 		{"document", isDocumentTerminal, fmt.Errorf("libreoffice: verapdf: pdf/a validation error: %w", plain)},
 		{"cad", isCADTerminal, fmt.Errorf("cad guard: %w: no_data_section", convert.ErrCADUnreadable)},

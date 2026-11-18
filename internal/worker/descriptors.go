@@ -149,22 +149,6 @@ func HistoricalFailureCodes() []string {
 	return out
 }
 
-// audioFailureCode maps a terminal process() error for an audio job to the
-// distinguishable client-facing (error_code, message) pair MarkFailed
-// records — lifted verbatim (Task 2, 56-04-PLAN.md) from HandleAudioConvert's
-// own inline two-way branch into a named, unit-testable function, mirroring
-// avFailureCode/ocrFailureCode/pandocFailureCode's precedent (worker.go):
-// a duration-guard rejection gets its own distinguishable, actionable
-// client-facing code (31-RESEARCH.md A3) rather than the generic
-// "engine_error" — the client can react to it differently than a generic
-// corrupted-input failure.
-func audioFailureCode(err error) (code, message string) {
-	if errors.Is(err, convert.ErrAudioDurationExceeded) {
-		return CodeDurationExceeded, "declared audio duration exceeds the configured maximum"
-	}
-	return CodeEngineError, "unsupported or corrupted input format"
-}
-
 // The eight package-level engine descriptors (D-09: never a
 // map[string]EngineDescriptor registry — each worker binary imports its own
 // directly, matching the one-engine-per-binary deployment model every
@@ -192,24 +176,6 @@ var DocumentDescriptor = EngineDescriptor{
 		return convert.DocOptsFromMap(m)
 	},
 	IsTerminal: isDocumentTerminal,
-}
-
-// AudioDescriptor is the one engine with a non-nil PreConvertGuard need —
-// deliberately left nil HERE (see NewRunner's doc comment in runner.go for
-// the full rationale: audioMaxDuration is per-Handler, env-configured
-// config unavailable to a package-level var built at init time). NewRunner
-// special-cases convert.EngineAudio and installs the guard itself.
-// isAudioTerminal is Key Decision 1's stage-aware split (ffmpeg-stage
-// terminal, whisper-stage transient) — NOT a copy of the
-// timeout-is-terminal shape above.
-var AudioDescriptor = EngineDescriptor{
-	Engine: convert.EngineAudio,
-	Type:   queue.TypeAudioConvert,
-	OptsFromMap: func(m map[string]any) (any, error) {
-		return convert.AudioOptsFromMap(m)
-	},
-	IsTerminal:  isAudioTerminal,
-	FailureCode: audioFailureCode,
 }
 
 // AVDescriptor's isAVTerminal is D-02's stage-aware split, derived fresh

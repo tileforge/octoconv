@@ -75,7 +75,7 @@ class_go_file() {
     pandoc) echo "internal/convert/pandocsandbox.go" ;;
     ocr)    echo "internal/convert/ocrsandbox.go" ;;
     av)     echo "internal/convert/avsandbox.go" ;;
-    audio)  echo "internal/convert/audiosandbox.go" ;;
+    audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
     html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "internal/convert/probesandbox.go" ;;
     soffice|verapdf) echo "internal/convert/documentsandbox.go" ;;
@@ -88,7 +88,7 @@ class_go_readonly_var() {
     pandoc) echo "pandocReadOnly" ;;
     ocr)    echo "ocrReadOnly" ;;
     av)     echo "avReadOnly" ;;
-    audio)  echo "audioReadOnly" ;;
+    audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
     html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "probeReadOnly" ;;
     soffice)  echo "sofficeReadOnly" ;;
@@ -105,7 +105,7 @@ class_go_engines_var() {
     pandoc) echo "pandocEngines" ;;
     ocr)    echo "ocrEngines" ;;
     av)     echo "avEngines" ;;
-    audio)  echo "audioEngines" ;;
+    audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
     html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
     probe)  echo "probeEngines" ;;
     soffice)  echo "sofficeEngines" ;;

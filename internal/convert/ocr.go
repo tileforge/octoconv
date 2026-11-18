@@ -186,7 +186,7 @@ func ocrTesseractArgs(inPath, outBase string, langArgs []string, configfile stri
 // crashed or was killed mid-write). Deliberately does NOT check size>0:
 // an empty txt/hocr/alto file is a VALID, successful result for an image
 // with no recognizable text (OCRE-05, PITFALLS.md Pitfall 9) -- unlike
-// validateAudioOutput's/validateAVOutput's size>0 check, an empty-output
+// validateAVOutput's size>0 check, an empty-output
 // branch here would misclassify a correct "nothing to OCR" result as a
 // failure.
 func validateOCROutput(path string) error {

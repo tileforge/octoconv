@@ -352,15 +352,6 @@ var pinEngines = []pinEngine{
 		terminalErr: errors.New("convert: libreoffice: output missing %PDF- magic bytes"),
 	},
 	{
-		name:        "audio",
-		taskType:    queue.TypeAudioConvert,
-		engine:      convert.EngineAudio,
-		wrapper:     (*Handler).HandleAudioConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: fmt.Errorf("convert: %w", fmt.Errorf("audio: ffmpeg: %w", errors.New("exit status 1: Invalid data found when processing input"))),
-	},
-	{
 		name:        "av",
 		taskType:    queue.TypeAVConvert,
 		engine:      convert.EngineAV,
@@ -500,10 +491,6 @@ var pinFailureCodeCases = []pinFailureCodeCase{
 	{"pandoc", "unsupported wrap opt", fmt.Errorf("pandoc: unsupported wrap %q", "bogus"), "invalid_options"},
 	{"pandoc", "opts parse failure", fmt.Errorf("pandoc: parse opts: %w", errors.New("unexpected EOF")), "invalid_options"},
 	{"pandoc", "generic engine failure", errors.New("pandoc: pandoc: exit status 1"), "engine_error"},
-
-	// audio: TestIsAudioTerminal's duration-guard and ffmpeg-stage rows.
-	{"audio", "duration exceeded", fmt.Errorf("convert: %w", convert.ErrAudioDurationExceeded), "duration_exceeded"},
-	{"audio", "generic engine failure (ffmpeg stage)", fmt.Errorf("convert: %w", fmt.Errorf("audio: ffmpeg: %w", errors.New("exit status 1: Invalid data found when processing input"))), "engine_error"},
 }
 
 // TestPinnedFailureCodePerEngine drives each pinFailureCodeCases row
@@ -853,7 +840,6 @@ var pinInvalidOptsCases = []struct {
 	opts   map[string]any
 }{
 	{"document", map[string]any{"pdf_profile": "bogus"}},
-	{"audio", map[string]any{"language": "xx"}},
 	{"av", map[string]any{"codec": "bogus"}},
 	{"ocr", map[string]any{"language": "fra"}},
 	{"pandoc", map[string]any{"wrap": "bogus"}},
@@ -969,23 +955,6 @@ type stageAsymmetryCase struct {
 // wrapper (not the pure isAudioTerminal/isAVTerminal functions directly)
 // so a descriptor refactor that silently drops the stage tag fails here
 // even if the pure classifier were somehow preserved unchanged elsewhere.
-func TestPinnedAudioStageAsymmetry(t *testing.T) {
-	tc := pinEngineByName(t, "audio")
-	cases := []stageAsymmetryCase{
-		{
-			name:     "ffmpeg-stage timeout is terminal",
-			err:      fmt.Errorf("convert: %w", fmt.Errorf("audio: ffmpeg: %w", fmt.Errorf("ffmpeg killed: %w", context.DeadlineExceeded))),
-			terminal: true,
-		},
-		{
-			name:     "whisper-stage timeout is transient",
-			err:      fmt.Errorf("convert: %w", fmt.Errorf("audio: whisper-cli: %w", fmt.Errorf("whisper-cli killed: %w", context.DeadlineExceeded))),
-			terminal: false,
-		},
-	}
-	runStageAsymmetryCases(t, tc, cases)
-}
-
 func TestPinnedAVStageAsymmetry(t *testing.T) {
 	tc := pinEngineByName(t, "av")
 	cases := []stageAsymmetryCase{

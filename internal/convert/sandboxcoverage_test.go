@@ -68,46 +68,32 @@ var sandboxLegacyConfinedFiles = map[string]bool{
 var sandboxPendingFiles = map[string]string{}
 
 // sandboxClassFileEngines maps a class file to the literal engine names its
-// engineExec.run/.stream calls may use. audioduration.go's probe
-// (probeDuration, shared by EnforceMaxDuration for audio and avduration.go's
-// own callers for av) is restricted to the INTERSECTION of
-// avEngines/audioEngines: whatever it calls must be legitimate under BOTH
-// classes' rulesets, since forJob's caller decides which measured set
-// actually applies at run time (68-RESEARCH.md Pitfall 2).
+// engineExec.run/.stream calls may use. audioduration.go's probeDuration is
+// classified with the av ruleset: av.go calls it.
 func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 	switch base {
 	case "pandoc.go", "pandocsandbox.go":
 		return pandocEngines, true
 	case "ocr.go", "ocrpdf.go", "ocrguards.go", "ocrsandbox.go":
 		return ocrEngines, true
-	case "av.go", "avduration.go", "avsandbox.go":
+	case "av.go", "avduration.go", "avsandbox.go", "audioduration.go":
 		return avEngines, true
-	case "whisper.go", "audiosandbox.go":
-		return audioEngines, true
-	case "audioduration.go":
-		return sandboxIntersect(avEngines, audioEngines), true
 	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
 		return probeEngines, true
 	}
 	return nil, false
 }
 
-// sandboxClassFileGroups maps a class file to the class(es) whose "found
-// engines" union it contributes to, for the per-class equality check below.
-// audioduration.go contributes to BOTH av and audio -- its probe serves
-// both classes -- everything else contributes to exactly one.
+// sandboxClassFileGroups maps a class file to the class whose found-engines
+// union it contributes to, for the per-class equality check below.
 func sandboxClassFileGroups(base string) []string {
 	switch base {
 	case "pandoc.go", "pandocsandbox.go":
 		return []string{"pandoc"}
 	case "ocr.go", "ocrpdf.go", "ocrguards.go", "ocrsandbox.go":
 		return []string{"ocr"}
-	case "av.go", "avduration.go", "avsandbox.go":
+	case "av.go", "avduration.go", "avsandbox.go", "audioduration.go":
 		return []string{"av"}
-	case "whisper.go", "audiosandbox.go":
-		return []string{"audio"}
-	case "audioduration.go":
-		return []string{"av", "audio"}
 	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
 		return []string{"probe"}
 	}
@@ -116,7 +102,7 @@ func sandboxClassFileGroups(base string) []string {
 
 // sandboxGroupEngines is the oracle a class's found-engines union is
 // compared against: the SAME package vars the converters themselves build
-// their rulesets from (pandocEngines, ocrEngines, avEngines, audioEngines).
+// their rulesets from (pandocEngines, ocrEngines, avEngines, probeEngines).
 func sandboxGroupEngines(group string) []string {
 	switch group {
 	case "pandoc":
@@ -125,26 +111,10 @@ func sandboxGroupEngines(group string) []string {
 		return ocrEngines
 	case "av":
 		return avEngines
-	case "audio":
-		return audioEngines
 	case "probe":
 		return probeEngines
 	}
 	return nil
-}
-
-func sandboxIntersect(a, b []string) []string {
-	bs := make(map[string]bool, len(b))
-	for _, x := range b {
-		bs[x] = true
-	}
-	var out []string
-	for _, x := range a {
-		if bs[x] {
-			out = append(out, x)
-		}
-	}
-	return out
 }
 
 func sandboxContains(ss []string, want string) bool {
@@ -467,13 +437,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "sanitizepdf.go", "sanitizeverify.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "sanitizepdf.go", "sanitizeverify.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio", "probe"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "probe"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)

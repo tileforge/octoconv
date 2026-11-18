@@ -150,7 +150,7 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 }
 
 var jobDirDescriptors = []EngineDescriptor{
-	ImageDescriptor, DocumentDescriptor, AudioDescriptor, AVDescriptor,
+	ImageDescriptor, DocumentDescriptor, AVDescriptor,
 	OCRDescriptor, PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
 }
 
@@ -233,8 +233,6 @@ func TestValidatorFailureTextsKeepTheirClassification(t *testing.T) {
 		{"av missing", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, missing)), true},
 		{"av irregular", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, irregular)), true},
 		{"av open failure", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, denied)), true},
-		{"audio missing", AudioDescriptor, convertErr("audio: stat output: %w", missing), true},
-		{"audio irregular", AudioDescriptor, convertErr("audio: stat output: %w", irregular), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.d.IsTerminal(tc.err); got != tc.terminal {
