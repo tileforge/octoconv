@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| worker, audio-worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
+| worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -115,7 +115,8 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 |---|---|---|
 | `tectonic` | — (PR #21) | **да** |
 | `image` | да | **да** (эта ветка) |
-| `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
+| `pandoc`, `ocr`, `av` | да | **да (фаза 68)** |
+| `audio` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-audio`; встроенный процесс удалён |
 | `probe` | да | **да (фаза 69)** |
 | `html` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-html`; встроенный процесс удалён |
 | `document` | да (фаза 70, ниже) | **да (фаза 70)** |
@@ -779,6 +780,8 @@ ffprobe
 <!-- /conf05:av:engines -->
 
 ## audio (whisper.cpp + ffmpeg) — замерено и доказано 2026-09-20
+
+Замер ниже — запись встроенного audio-воркера. Этот процесс удалён. Ruleset теперь живёт в `tileforge/octoconv-worker-audio`. Цифры ниже — историческая запись, их не пересчитывали.
 
 Две стадии: нормализация через ffmpeg, затем `whisper-cli`.
 

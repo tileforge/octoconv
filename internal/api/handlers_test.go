@@ -3472,6 +3472,7 @@ func TestCreateJob_AudioDetectedAndAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(audioCatalog())
 
 	data := audioMP3Fixture(t)
 	body, ct := multipartBody(t, "in.mp3", "txt", data)
@@ -3502,8 +3503,8 @@ func TestCreateJob_AudioDetectedAndAccepted(t *testing.T) {
 	if repo.created.Engine != "audio" {
 		t.Errorf("job Engine = %q, want audio", repo.created.Engine)
 	}
-	if queue.enqueuedAudio != repo.createdID {
-		t.Errorf("enqueuedAudio = %s, want %s", queue.enqueuedAudio, repo.createdID)
+	if repo.created.DispatchOwner != "protocol" || queue.enqueueCalls != 0 || queue.enqueuedAudio != uuid.Nil {
+		t.Errorf("dispatch=%q enqueueCalls=%d enqueuedAudio=%s, want protocol and no enqueue", repo.created.DispatchOwner, queue.enqueueCalls, queue.enqueuedAudio)
 	}
 	if queue.enqueuedHTML != uuid.Nil {
 		t.Errorf("enqueuedHTML = %s, want uuid.Nil (mp3 upload must never touch the html queue)", queue.enqueuedHTML)
@@ -3525,6 +3526,7 @@ func TestCreateJob_AudioOptsAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(audioCatalog())
 
 	body, ct := multipartBodyWithOpts(t, "in.mp3", "txt", audioMP3Fixture(t), `{"language":"ru"}`)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3536,11 +3538,11 @@ func TestCreateJob_AudioOptsAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (audio opts must be validated via ParseAudioOpts, not rejected as DocOpts); body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created == nil || repo.created.Opts["language"] != "ru" {
-		t.Errorf("CreateParams.Opts = %+v, want language=ru", repo.created)
+	if repo.created == nil || repo.created.Opts["language"] != "ru" || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("CreateParams = %+v, want protocol audio with language=ru", repo.created)
 	}
-	if queue.enqueuedAudio != repo.createdID {
-		t.Errorf("enqueuedAudio = %s, want %s", queue.enqueuedAudio, repo.createdID)
+	if queue.enqueueCalls != 0 || queue.enqueuedAudio != uuid.Nil {
+		t.Errorf("enqueueCalls=%d enqueuedAudio=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAudio)
 	}
 }
 
@@ -4029,12 +4031,12 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineHTML {
+		if engine == convert.EngineHTML || engine == convert.EngineAudio {
 			if routed {
-				t.Errorf("engine html is still routed to an asynq queue")
+				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
 			if err != nil {
-				t.Errorf("engine html: %v", err)
+				t.Errorf("engine %s: %v", engine, err)
 			}
 			continue
 		}
@@ -4090,7 +4092,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		callID func(*fakeQueue) uuid.UUID
 	}{
 		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
-		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
 		// The ninth engine joins the SAME table rather than getting a bespoke
 		// test of its own (64-04 Task 2): the value of this test is the
@@ -4143,6 +4144,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("audio_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.mp3", "txt", audioMP3Fixture(t))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "mp3 -> txt") {
+			t.Fatalf("body = %s, want mp3 -> txt", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedAudio != uuid.Nil {
+			t.Fatalf("refused audio created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
 
 	t.Run("html_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}
@@ -4225,6 +4251,21 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		store := &fakeStorage{}
 		queue := &fakeQueue{}
 		srv, _ := newTestServer(repo, store, queue)
+		srv.SetCapabilityCatalog(&fakeCatalog{
+			allow: func(operation, source, target string) (workerproto.Match, bool) {
+				if operation == convert.OperationConvert && source == "mp4" && target == "srt" {
+					return workerproto.Match{
+						CapabilityID:      "octoconv.convert.audio",
+						CapabilityVersion: 1,
+						ClientOperation:   convert.OperationConvert,
+						LegacyOperation:   convert.OperationConvert,
+						LegacyEngine:      convert.EngineAudio,
+						ParameterSchema:   []byte(`{}`),
+					}, true
+				}
+				return workerproto.Match{}, false
+			},
+		})
 
 		body, ct := multipartBody(t, "in.mp4", "srt", mp4BytesFixture())
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4236,11 +4277,11 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		if rec.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 		}
-		if repo.created == nil || repo.created.Engine != convert.EngineAudio {
-			t.Fatalf("job Engine = %+v, want audio", repo.created)
+		if repo.created == nil || repo.created.Engine != convert.EngineAudio || repo.created.DispatchOwner != "protocol" {
+			t.Fatalf("job = %+v, want protocol audio", repo.created)
 		}
-		if queue.enqueuedAudio != repo.createdID {
-			t.Errorf("enqueuedAudio = %s, want %s", queue.enqueuedAudio, repo.createdID)
+		if queue.enqueueCalls != 0 || queue.enqueuedAudio != uuid.Nil {
+			t.Errorf("enqueueCalls=%d enqueuedAudio=%s, want no enqueue", queue.enqueueCalls, queue.enqueuedAudio)
 		}
 		if queue.enqueuedAV != uuid.Nil {
 			t.Errorf("enqueuedAV = %s, want uuid.Nil (mp4 -> srt must never touch the av queue)", queue.enqueuedAV)

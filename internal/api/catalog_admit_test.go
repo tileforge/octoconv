@@ -911,7 +911,7 @@ func TestApprovedAudioLanguageOrTranslateSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedAudioProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestApprovedAudioProgressWebhookUsesProtocol(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -926,15 +926,15 @@ func TestApprovedAudioProgressWebhookStaysOnAsynq(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedAudio != uuid.Nil {
 		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
 	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol audio with progress webhook", repo.created)
 	}
 }
 
-func TestApprovedAudioOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedAudioOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -947,18 +947,11 @@ func TestApprovedAudioOverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
-		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want audio on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestUnapprovedAudioStaysOnAsynq(t *testing.T) {
+func TestUnapprovedAudioIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -984,15 +977,8 @@ func TestUnapprovedAudioStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
-		t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
-		t.Fatalf("created = %+v, want unpinned audio on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func audioCatalog() *fakeCatalog {

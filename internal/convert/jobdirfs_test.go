@@ -444,7 +444,6 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 		return jobDirOutsideBytes(t, []byte("<!DOCTYPE html>\n<html><head><title>t</title></head><body><p>outside</p></body></html>\n"))
 	}
 	png := func(t *testing.T) string { return jobDirOutsideBytes(t, []byte("png-body")) }
-	txt := func(t *testing.T) string { return jobDirOutsideBytes(t, []byte("transcribed text\n")) }
 	exact := func(want string) func(t *testing.T, err error) {
 		return func(t *testing.T, err error) { t.Helper(); requireErrText(t, err, want) }
 	}
@@ -476,9 +475,6 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 				avSentinel(t, err)
 				requireErrText(t, err, "av: output missing or empty: open "+path+": permission denied")
 			}},
-		{"validateAudioOutput txt", "txt", txt, validateAudioOutput,
-			requireIrregular("audio: stat output: "), requireOldMissingText("audio: stat output: "), exact("audio: output is empty"),
-			func(t *testing.T, _ string, err error) { t.Helper(); isNil(t, err) }},
 	} {
 		t.Run(tc.name+" a planted link", func(t *testing.T) {
 			link := jobDirLinkTo(t, tc.outside(t), "out."+tc.ext)

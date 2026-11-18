@@ -54,11 +54,7 @@ data:
   DOCUMENT_ENGINE_TIMEOUT: "300s"
   DOCUMENT_MAX_RETRY: "3"
   HTML_ENGINE_TIMEOUT: "60s"
-  AUDIO_WORKER_CONCURRENCY: "1"
   AUDIO_ENGINE_TIMEOUT: "742s"
-  AUDIO_MAX_RETRY: "3"
-  AUDIO_MAX_DURATION_SECONDS: "1800"
-  AUDIO_MODEL_PATH: "/models/ggml-base.bin"
   # Compose-parity byte-for-byte (docker-compose.yml av-worker block,
   # Phase 36 measured). The engine timeout below (753s) must stay under
   # the 15m/900s reconciler active-stale threshold so the reconciler never

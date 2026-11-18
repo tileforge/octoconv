@@ -93,29 +93,6 @@ var terminalChromiumSignatures = []string{
 	"stat output",
 }
 
-// terminalAudioSignatures are lowercased error-message substrings that
-// classify validateAudioOutput's "exit 0 but empty/missing output" failure
-// mode (internal/convert/whisper.go) as deterministically unrecoverable:
-// whisper-cli can exit 0 while writing an empty file ("audio: output is
-// empty") or no file at all ("audio: stat output", validateAudioOutput's
-// os.Stat failure branch) — a deterministic no-output render produces no
-// output again on retry, so retrying only burns AUDIO_MAX_RETRY budget.
-// Before WR-03 these two errors classified terminal only by ACCIDENT —
-// substring-matching the foreign "output is empty"/"stat output" entries in
-// terminalLibreOfficeSignatures/terminalChromiumSignatures inside the shared
-// isTerminal loop — so rewording another engine's signature (or
-// validateAudioOutput's message) would have silently flipped audio retry
-// behavior with no failing test. This dedicated list, checked explicitly in
-// isAudioTerminal BEFORE the shared-isTerminal fallthrough, makes the audio
-// outcome self-contained; coupling validateAudioOutput's exact error strings
-// into this slice follows the same commit-coupling discipline the
-// LibreOffice/veraPDF lists document (D-04/D-06 precedent). The "audio: "
-// prefix keeps these entries from ever matching another engine's stderr.
-var terminalAudioSignatures = []string{
-	"audio: output is empty",
-	"audio: stat output",
-}
-
 // terminalVeraPDFSignatures are lowercased error-message substrings that
 // classify a real ISO 19005-2b PDF/A validation failure as deterministically
 // unrecoverable (D-06, phase 23): "pdf/a non-compliant" is emitted by
@@ -248,96 +225,6 @@ func isDocumentTerminal(err error) bool {
 		return false
 	}
 	return timeoutIsTerminal(err)
-}
-
-// isAudioTerminal is the audio engine's engine-scoped terminal classifier —
-// Key Decision 1 (STATE.md, BINDING): a stage-aware split, deliberately NOT
-// a copy of timeoutIsTerminal's blanket "any wrapped context.DeadlineExceeded
-// is terminal" shape (the superseded interpretation FEATURES.md/
-// ARCHITECTURE.md recommended). A ffmpeg-stage failure OR timeout (the
-// "audio: ffmpeg:" prefix emitted by whisper.go's stage 1, normalize) is
-// classified terminal — a malformed/adversarial input signal, mirroring the
-// image engine's dimension-bomb terminal philosophy (T-31-08); a
-// whisper-stage timeout on audio that already passed the ffprobe
-// duration/format check (the "audio: whisper-cli:" prefix, stage 2) stays
-// transient, bounded by AUDIO_MAX_RETRY (T-31-07) — mirroring the image
-// engine's own timeout-stays-transient behavior, NOT
-// isDocumentTerminal's/isHTMLTerminal's timeoutIsTerminal delegation.
-// ErrAudioDurationExceeded (the EnforceMaxDuration guard spliced into
-// process(), T-30-08/IN-02) always classifies terminal — a declared-duration
-// rejection can never succeed on retry. Deterministic ffprobe-stage failures
-// (the duration guard's own probe: a non-zero ffprobe exit on broken
-// container metadata, or an unparseable/implausible reported duration) are
-// likewise terminal (WR-01) — the probe runs BEFORE ffmpeg on the same
-// untrusted input, so a parse-level probe failure is the same
-// malformed/adversarial-input signal Key Decision 1 already classifies
-// terminal at the ffmpeg stage; ffprobe environment/timeout shapes ("start
-// ffprobe:", "ffprobe killed:") deliberately stay transient. Every other
-// error (S3/Postgres blips, no-converter, non-timeout whisper-cli failures,
-// ffprobe environment/timeout shapes) falls through to
-// the shared isTerminal classifier — per 31-RESEARCH.md A2 (Claude's
-// Discretion, adopted): the input to whisper-cli is a server-produced
-// normalized WAV, so a non-timeout whisper-cli failure is most plausibly
-// environment/config, not malformed client input. One deliberate exception
-// to that transient default (WR-03): validateAudioOutput's exit-0-but-no-
-// output shapes ("audio: output is empty", "audio: stat output") ARE
-// terminal, via the dedicated terminalAudioSignatures list checked here —
-// previously they classified terminal only by accidentally matching the
-// LibreOffice/Chromium signature lists inside isTerminal; the explicit list
-// makes that outcome self-contained and pinned.
-//
-// Deliberately does NOT call timeoutIsTerminal.
-func isAudioTerminal(err error) bool {
-	if err == nil {
-		return false
-	}
-	// A node that cannot confine the engine is retried elsewhere, never
-	// blamed on the file -- checked before every prefix/substring match below,
-	// including "audio: ffmpeg:", so a node fault never misclassifies as one.
-	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
-		return false
-	}
-	if errors.Is(err, convert.ErrAudioDurationExceeded) {
-		// T-30-08/IN-02: a rejected declared duration can never succeed on
-		// retry.
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "audio: ffmpeg:") {
-		// Key Decision 1: ffmpeg-stage failure OR timeout is a
-		// malformed/adversarial input signal — terminal, no retry.
-		return true
-	}
-	if strings.Contains(msg, "ffprobe: unparseable duration") ||
-		strings.Contains(msg, "ffprobe: implausible duration") ||
-		strings.Contains(msg, "ffprobe failed:") {
-		// WR-01: duration-guard (ffprobe) stage. The probe runs BEFORE ffmpeg
-		// on the same untrusted input, so a deterministic probe-level failure
-		// (non-zero exit on malformed container metadata — exec.go's
-		// "ffprobe failed:" shape — or audioduration.go's
-		// unparseable/implausible duration rejections) is the same
-		// malformed/adversarial-input signal Key Decision 1 already
-		// classifies terminal at the ffmpeg stage: a corrupt-but-sniffable
-		// file must fail terminal at the very first probe instead of burning
-		// the AUDIO_MAX_RETRY + reconciler budget. Environment/timeout shapes
-		// are deliberately NOT matched here and stay transient: "start
-		// ffprobe:" (binary missing/unrunnable — a deployment problem, not an
-		// input problem) and "ffprobe killed:" (probe-ctx expiry under
-		// enforceAudioGuardBeforeConvert's short probe bound — a hung probe
-		// on a loaded host may succeed on retry).
-		return true
-	}
-	for _, sig := range terminalAudioSignatures {
-		if strings.Contains(msg, sig) {
-			// WR-03: whisper-cli's exit-0-but-empty/missing-output failure
-			// mode (validateAudioOutput) is deterministic — terminal via
-			// audio's OWN signature list, independent of the
-			// LibreOffice/Chromium lists these strings previously (and
-			// accidentally) matched inside the shared isTerminal loop.
-			return true
-		}
-	}
-	return isTerminal(err)
 }
 
 // isAVTerminal is the av engine's engine-scoped terminal classifier — D-02
@@ -672,23 +559,6 @@ type Handler struct {
 	enqueuer      webhookEnqueuer
 	signingSecret []byte
 	presignTTL    time.Duration
-	// audioMaxDuration is the AUDIO_MAX_DURATION_SECONDS ceiling passed to
-	// convert.EnforceMaxDuration for EngineAudio jobs inside process()
-	// (T-30-08/IN-02). Zero (the value every non-audio worker cmd passes) is
-	// inert — process() only invokes the guard when job.Engine ==
-	// convert.EngineAudio, so image/document/html/webhook workers never read
-	// this field. The real value is wired by the audio worker cmd (Plan 04).
-	audioMaxDuration time.Duration
-	// audioSandboxHelper is the audio worker's own sandbox helper argv
-	// prefix (Phase 68 Plan 05, orchestrator decision 1). nil for every
-	// worker cmd but audio, and nil for audio too when
-	// AUDIO_SANDBOX_DISABLED=true. Threaded the same way audioMaxDuration
-	// already is (cmd/audio-worker -> NewHandler -> this field -> NewRunner
-	// -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert ->
-	// convert.EnforceMaxDuration) so the guard's ffprobe -- the first engine
-	// to read the client's file, before Convert ever runs -- confines under
-	// the SAME ruleset the converter's own two stages use.
-	audioSandboxHelper []string
 
 	progressMinInterval time.Duration
 	progressMinDeltaPct int
@@ -749,7 +619,7 @@ func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int
 // interfaces (D-10 step 1): both concrete types satisfy those interfaces
 // structurally, so no production wiring changes, and no external package
 // gains a way to inject an alternative store (T-56-01).
-func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration, audioSandboxHelper []string) *Handler {
+func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration) *Handler {
 	if engineTimeout == 0 {
 		engineTimeout = 120 * time.Second
 	}
@@ -759,17 +629,15 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		presignTTL = 6 * time.Hour
 	}
 	h := &Handler{
-		repo:               repo,
-		store:              store,
-		registry:           registry,
-		engineTimout:       engineTimeout,
-		webhookRepo:        webhookRepo,
-		deliverer:          deliverer,
-		enqueuer:           enqueuer,
-		signingSecret:      signingSecret,
-		presignTTL:         presignTTL,
-		audioMaxDuration:   audioMaxDuration,
-		audioSandboxHelper: audioSandboxHelper,
+		repo:          repo,
+		store:         store,
+		registry:      registry,
+		engineTimout:  engineTimeout,
+		webhookRepo:   webhookRepo,
+		deliverer:     deliverer,
+		enqueuer:      enqueuer,
+		signingSecret: signingSecret,
+		presignTTL:    presignTTL,
 	}
 	// processFn defaults to h.process (D-10): the struct literal above cannot
 	// reference h while h is still being constructed, so the method value is
@@ -812,22 +680,6 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 // compatibility, D-10 step 2) rather than being deleted outright.
 func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) error {
 	return NewRunner(h, DocumentDescriptor).Handle(ctx, t)
-}
-
-// HandleAudioConvert runs one audio transcription end to end, entirely
-// through Runner.Handle over AudioDescriptor (D-09). AUD-05's three
-// divergences from ImageDescriptor now live as DATA on the descriptor:
-// OptsFromMap; isAudioTerminal (Key Decision 1's stage-aware classifier,
-// NOT a blanket timeout-is-terminal copy); and FailureCode = audioFailureCode
-// (descriptors.go), which gives a duration-guard rejection its own distinct
-// "duration_exceeded" client-facing code (31-RESEARCH.md A3) instead of the
-// generic "engine_error". process()'s own EnforceMaxDuration splice
-// (T-30-08/IN-02) is installed via NewRunner's audio-specific
-// preConvertGuard wiring, not through anything in this method. See
-// HandleImageConvert's doc comment for why this method still exists as a
-// thin delegator.
-func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, AudioDescriptor).Handle(ctx, t)
 }
 
 // avFailureCode maps a terminal process() error for an av job to the
@@ -1055,52 +907,6 @@ func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error
 		return derr
 	}
 	return nil
-}
-
-// audioProbeTimeout is the SHORT bound the duration guard's ffprobe
-// invocation runs under (WR-02/T-30-03): ProbeDuration's contract is explicit
-// that its ctx must never carry the full AUDIO_ENGINE_TIMEOUT budget —
-// ffprobe reads container metadata and is near-instant even for large files,
-// while a hung/adversarial probe (the guard's own threat model: it runs on
-// untrusted input BEFORE any decode) would otherwise consume the entire
-// whole-attempt deadline on every retry. A probe-ctx expiry surfaces as
-// "ffprobe: ffprobe killed: context deadline exceeded", which isAudioTerminal
-// deliberately classifies TRANSIENT (WR-01's documented split — a hung probe
-// on a loaded host may succeed on retry), so this bound converts a
-// full-budget hang into a fast, retryable failure.
-const audioProbeTimeout = 15 * time.Second
-
-// enforceAudioGuardBeforeConvert splices the T-30-08/IN-02 declared-duration
-// guard in front of the engine's Convert call, gated on engine ==
-// convert.EngineAudio (image/document/html jobs never pay the ffprobe cost
-// and audioMaxDuration, 0 for every non-audio worker cmd, is never
-// consulted for them). Factored out of process() as its own package-level
-// function so the guard-runs-strictly-before-Convert ordering is
-// unit-testable (the IN-02 pinning test) without a live-Postgres/S3
-// Handler — process()'s h.repo/h.store are concrete types, not interfaces
-// (ARCHITECTURE.md's "Key Abstractions" note), so a full Handler cannot be
-// constructed in a pure unit test. A rejection here surfaces as
-// ErrAudioDurationExceeded, unwrapped, which isAudioTerminal classifies
-// terminal.
-func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, audioMaxDuration time.Duration, audioSandboxHelper []string, convertFn func() error) error {
-	if engine == convert.EngineAudio {
-		// WR-02/T-30-03: derive a short probe-only deadline from the
-		// whole-attempt ctx rather than passing it through — ProbeDuration
-		// must never run under the full AUDIO_ENGINE_TIMEOUT budget.
-		//
-		// audioSandboxHelper (Phase 68 Plan 05, orchestrator decision 1):
-		// this ffprobe call reads the client's file BEFORE Convert ever
-		// runs, so it confines under the same ruleset the converter's own
-		// two stages use -- nil is the zero-value/unconfined contract every
-		// other guard/engine call in this codebase already carries.
-		probeCtx, cancel := context.WithTimeout(ctx, audioProbeTimeout)
-		err := convert.EnforceMaxDuration(probeCtx, audioSandboxHelper, inPath, audioMaxDuration)
-		cancel()
-		if err != nil {
-			return err
-		}
-	}
-	return convertFn()
 }
 
 // progressRepo is the narrow subset of *jobs.Repo the progress sink writes

@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -89,28 +88,6 @@ func TestFfprobeDurationArgs_FilePrefix(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("ffprobeDurationArgs = %v, want %v", got, want)
 		}
-	}
-}
-
-func TestEnforceMaxDuration_UnderCeilingPasses(t *testing.T) {
-	requireFFprobe(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err := EnforceMaxDuration(ctx, nil, "testdata/audio/sample.wav", time.Hour)
-	if err != nil {
-		t.Fatalf("EnforceMaxDuration under a generous ceiling returned error: %v", err)
-	}
-}
-
-func TestEnforceMaxDuration_OverCeilingRejected(t *testing.T) {
-	requireFFprobe(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err := EnforceMaxDuration(ctx, nil, "testdata/audio/sample.wav", 1*time.Millisecond)
-	if !errors.Is(err, ErrAudioDurationExceeded) {
-		t.Fatalf("EnforceMaxDuration over a tiny ceiling = %v, want errors.Is(err, ErrAudioDurationExceeded)", err)
 	}
 }
 

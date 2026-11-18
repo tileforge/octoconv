@@ -177,8 +177,6 @@ func main() {
 		qc,
 		nil, // signingSecret — webhook-only; HandlePandocConvert never reads it
 		0,   // presignTTL — webhook-only; HandlePandocConvert never reads it
-		0,   // audioMaxDuration — 0 for every non-audio worker cmd (worker.go); pandoc's guards are self-contained inside PandocConverter.Convert, not spliced through this parameter
-		nil, // audioSandboxHelper — audio-only
 	)
 
 	h.SetProgressThrottle(progressMinInterval, progressMinDeltaPct)

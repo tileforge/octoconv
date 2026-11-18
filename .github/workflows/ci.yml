@@ -122,8 +122,6 @@ jobs:
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-to=type=gha,mode=max,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker
-            audio-worker.cache-to=type=gha,mode=max,scope=audio-worker
-            audio-worker.cache-from=type=gha,scope=audio-worker
             av-worker.cache-to=type=gha,mode=max,scope=av-worker
             av-worker.cache-from=type=gha,scope=av-worker
             ocr-worker.cache-to=type=gha,mode=max,scope=ocr-worker
@@ -176,7 +174,6 @@ jobs:
             worker.cache-from=type=gha,scope=worker
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker
-            audio-worker.cache-from=type=gha,scope=audio-worker
             av-worker.cache-from=type=gha,scope=av-worker
             ocr-worker.cache-from=type=gha,scope=ocr-worker
             pandoc-worker.cache-from=type=gha,scope=pandoc-worker

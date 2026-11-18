@@ -1085,7 +1085,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
 	documentProtocol := engine == convert.EngineDocument && len(normalizedOpts) == 0 && !progressWebhook
 	htmlProtocol := engine == convert.EngineHTML
-	audioProtocol := engine == convert.EngineAudio && !progressWebhook
+	audioProtocol := engine == convert.EngineAudio
 	avProtocol := engine == convert.EngineAV && !progressWebhook
 	ocrProtocol := engine == convert.EngineOCR && !progressWebhook
 	pandocProtocol := engine == convert.EnginePandoc && !progressWebhook
@@ -1132,6 +1132,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if engine == convert.EngineHTML && dispatchOwner != "protocol" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+			"unsupported conversion: "+detected+" -> "+target)
+		return
+	}
+	if engine == convert.EngineAudio && dispatchOwner != "protocol" {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
@@ -1363,8 +1368,6 @@ func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UU
 		return true, s.queue.EnqueueImageConvert(ctx, id)
 	case convert.EngineDocument:
 		return true, s.queue.EnqueueDocumentConvert(ctx, id)
-	case convert.EngineAudio:
-		return true, s.queue.EnqueueAudioConvert(ctx, id)
 	case convert.EngineAV:
 		return true, s.queue.EnqueueAVConvert(ctx, id)
 	case convert.EngineOCR:

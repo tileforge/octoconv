@@ -464,8 +464,8 @@ func TestSweepRoutesAudioJobsToAudioQueue(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.audioCalls) != 1 || enq.audioCalls[0] != id {
-		t.Fatalf("EnqueueAudioConvert calls = %+v, want [%s]", enq.audioCalls, id)
+	if len(enq.audioCalls) != 0 {
+		t.Fatalf("EnqueueAudioConvert calls = %+v, want none", enq.audioCalls)
 	}
 	if len(enq.imageCalls) != 0 {
 		t.Fatalf("EnqueueImageConvert should not be called for an audio job, got %d calls", len(enq.imageCalls))
@@ -476,11 +476,11 @@ func TestSweepRoutesAudioJobsToAudioQueue(t *testing.T) {
 	if len(enq.htmlCalls) != 0 {
 		t.Fatalf("EnqueueHTMLConvert should not be called for an audio job, got %d calls", len(enq.htmlCalls))
 	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
 	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+		t.Fatalf("MarkFailed calls = %+v, want none", store.markFailedCalls)
 	}
 }
 
@@ -671,15 +671,15 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineHTML {
+			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio {
 				if len(got) != 0 {
-					t.Fatalf("engine html: enqueue calls = %+v, want none", got)
+					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}
 				if store.requeueStaleCalls != 0 {
-					t.Fatalf("engine html: RequeueStale calls = %d, want 0", store.requeueStaleCalls)
+					t.Fatalf("engine %s: RequeueStale calls = %d, want 0", want.engine, store.requeueStaleCalls)
 				}
 				if len(store.markFailedCalls) != 0 {
-					t.Fatalf("engine html: MarkFailed calls = %+v, want none", store.markFailedCalls)
+					t.Fatalf("engine %s: MarkFailed calls = %+v, want none", want.engine, store.markFailedCalls)
 				}
 				return
 			}
@@ -720,38 +720,28 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 	}
 }
 
-// TestSweepAudioZeroSpuriousRecoveryUnderRepeatedTicks is the SC4 proof: with
-// enqueueAudioErr = asynq.ErrDuplicateTask (the AudioUniqueTTL lock still
-// live for a long in-flight audio job), repeated sweep ticks against the SAME
-// stranded-looking job must fire ZERO reconciler_recovery events --
-// RequeueStale is never called and recoveryCount never increments across any
-// tick. This proves AudioUniqueTTL + asynq.ErrDuplicateTask (Plan 01), not
-// the staleness threshold, is the actual safety property preventing
-// double-processing of a slow whisper-cli transcription.
-func TestSweepAudioZeroSpuriousRecoveryUnderRepeatedTicks(t *testing.T) {
+// TestSweepAudioStrandedRowStaysQueued proves a stranded audio row is not
+// re-enqueued and is not failed. The audio queue was not observed empty.
+func TestSweepAudioStrandedRowStaysQueued(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "audio"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
-	enq := &fakeEnqueuer{enqueueAudioErr: asynq.ErrDuplicateTask}
+	enq := &fakeEnqueuer{}
 	s := NewSweeper(store, enq, testConfig())
 
 	for tick := 0; tick < 5; tick++ {
 		s.sweep(context.Background())
-
-		if store.requeueStaleCalls != 0 {
-			t.Fatalf("tick %d: RequeueStale should NEVER be called while AudioUniqueTTL's lock is live, got %d calls", tick, store.requeueStaleCalls)
+		if len(enq.audioCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueAudioConvert calls = %+v, want none", tick, enq.audioCalls)
 		}
-		if store.recoveryCount[id] != 0 {
-			t.Fatalf("tick %d: recovery count = %d, want 0 (zero spurious reconciler_recovery events, SC4)", tick, store.recoveryCount[id])
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
 		}
 		if len(store.markFailedCalls) != 0 {
-			t.Fatalf("tick %d: MarkFailed should not be called, got %d calls", tick, len(store.markFailedCalls))
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
 		}
-	}
-	if len(enq.audioCalls) != 5 {
-		t.Fatalf("EnqueueAudioConvert calls = %d, want 5 (one attempted enqueue per tick)", len(enq.audioCalls))
 	}
 }
 

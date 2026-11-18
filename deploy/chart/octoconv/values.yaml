@@ -70,23 +70,6 @@ worker:
       cpu: "2"
       memory: "1Gi"
 
-audioWorker:
-  image:
-    repository: "octoconv-audio-worker"
-  replicas: 1
-  # 772s = AUDIO_ENGINE_TIMEOUT (742s, ConfigMap) + 30s, the same
-  # ENGINE_TIMEOUT+30s chart convention as worker/documentWorker/
-  # chromiumWorker (RESEARCH Pattern 4).
-  terminationGracePeriodSeconds: 772
-  resources:
-    limits:
-      # MUST match the RTF-measurement container exactly (Phase 32
-      # scripts/audio-rtf-measure.sh, docker-compose.yml audio-worker
-      # deploy.resources.limits) -- the measured 742s timeout is only
-      # valid at these limits.
-      cpu: "2"
-      memory: "1Gi"
-
 avWorker:
   image:
     repository: "octoconv-av-worker"

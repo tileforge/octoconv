@@ -11,7 +11,6 @@ import (
 
 	"github.com/hibiken/asynq"
 
-	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/logfmt"
 	"github.com/tileforge/octoconv/internal/metrics"
@@ -125,53 +124,15 @@ type Runner struct {
 	d EngineDescriptor
 }
 
-// NewRunner builds a Runner bound to h and d, installing d's pre-convert
-// guard (if any) onto h.preConvertGuard so process()'s splice
-// (worker.go) picks it up on every subsequent attempt -- mirrors the
-// established post-construction-setter precedent already used by
-// SetProgressThrottle/SetProgressWebhook: one Handler per binary, one
-// Runner per binary, the verified deployment model. Every worker cmd calls
-// this exactly once at startup, immediately before registering
-// r.Handle on the asynq mux, so the install always happens-before any
-// concurrent request processing (same happens-before boundary every other
-// process-wide config write in this codebase uses).
-//
-// AudioDescriptor.PreConvertGuard is deliberately left nil in
-// descriptors.go and special-cased here instead: EngineDescriptor is a
-// package-level var built once at package-init time, before any *Handler
-// (and therefore before h.audioMaxDuration, itself env-configured per
-// binary via NewHandler's last parameter) exists, so a closure assigned at
-// var-init time could never read a specific Handler's audioMaxDuration.
-// NewRunner is the one place with both the descriptor AND a concrete
-// *Handler in scope, so it is where the ceiling actually gets threaded
-// into enforceAudioGuardBeforeConvert (unmodified, T-30-08/IN-02) via
-// audioPreConvertGuard below. Chosen over adding a dedicated
-// EngineDescriptor.AudioMaxDuration field, which would violate the "exactly
-// these fields" instruction for a value only one of seven engines needs.
+// NewRunner builds a Runner bound to h and d. A descriptor PreConvertGuard
+// is installed on h so process() runs it before Convert. sideOutputs is
+// copied from d.
 func NewRunner(h *Handler, d EngineDescriptor) *Runner {
-	switch {
-	case d.Engine == convert.EngineAudio:
-		h.preConvertGuard = audioPreConvertGuard(h.audioMaxDuration, h.audioSandboxHelper)
-	case d.PreConvertGuard != nil:
-		// Generic hook for any future engine whose guard needs no
-		// per-Handler runtime config -- unused today (audio is the only
-		// PreConvertGuard consumer and takes the case above instead).
+	if d.PreConvertGuard != nil {
 		h.preConvertGuard = d.PreConvertGuard
 	}
 	h.sideOutputs = d.SideOutputs
 	return &Runner{h: h, d: d}
-}
-
-// audioPreConvertGuard builds a Handler.preConvertGuard-shaped closure
-// bound to a specific duration ceiling and sandbox helper, so NewRunner can
-// thread h.audioMaxDuration/h.audioSandboxHelper (per-Handler, env-configured
-// values) into enforceAudioGuardBeforeConvert. helper travels alongside the
-// ceiling for the same reason (Phase 68 Plan 05): both are per-Handler
-// config the package-level EngineDescriptor var cannot see at init time.
-func audioPreConvertGuard(maxDuration time.Duration, helper []string) func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
-	return func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
-		return enforceAudioGuardBeforeConvert(ctx, job.Engine, inPath, maxDuration, helper, convertFn)
-	}
 }
 
 // Handle runs one conversion attempt for r.d.Engine: parse payload -> load

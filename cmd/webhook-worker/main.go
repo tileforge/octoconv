@@ -76,8 +76,6 @@ func main() {
 		qc,
 		signingSecret,
 		envDuration("WEBHOOK_PRESIGN_TTL", 6*time.Hour),
-		0,   // audioMaxDuration — audio-only; HandleWebhookDeliver never reads it
-		nil, // audioSandboxHelper — audio-only
 	)
 
 	sweeper := reconciler.NewSweeper(repo, qc, reconciler.Config{
