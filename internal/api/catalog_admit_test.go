@@ -1460,3 +1460,73 @@ func TestCatalogEngineMismatchIsInternal(t *testing.T) {
 	assertClientError(t, rec, http.StatusInternalServerError, errcode.InternalError)
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
+
+func TestApprovedPandocCreateStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(pandocCatalog())
+
+	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+	}
+	if repo.created == nil || repo.created.Engine != convert.EnginePandoc || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.convert.pandoc" || repo.created.CapabilityVersion != 1 {
+		t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+	}
+}
+
+func TestApprovedPandocOptionStillEnqueues(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(pandocCatalog())
+
+	body, ct := multipartBodyWithOpts(t, "in.md", "html", markdownFixture(), `{"standalone":true}`)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
+		t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
+	}
+	if repo.created.Opts["standalone"] != true {
+		t.Fatalf("opts = %#v, want standalone", repo.created.Opts)
+	}
+}
+
+func pandocCatalog() *fakeCatalog {
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationConvert && source == "md" && target == "html" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.pandoc",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EnginePandoc,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	}
+}
