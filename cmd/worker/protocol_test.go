@@ -486,7 +486,7 @@ func TestHeartbeatDuringCoveredLeasePostsCancel(t *testing.T) {
 	if len(reasons) != 1 || reasons[0] != "cancel" || fails != 0 || posts != 0 || beats < 1 || attempt || !auth {
 		t.Fatal("heartbeat cancel")
 	}
-	if !bytes.Equal(first, []byte(`{"protocol_version":1}`)) {
+	if !bytes.Equal(first, []byte(`{"protocol_version":2}`)) {
 		t.Fatal("heartbeat body")
 	}
 }
@@ -1220,7 +1220,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 		s.writeLease(w, r)
 	case strings.HasSuffix(r.URL.Path, "/progress"):
 		s.keep(&s.progress, body)
-		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":2}`))
 	case strings.HasSuffix(r.URL.Path, "/fail"):
 		s.keep(&s.fails, body)
 		s.mu.Lock()
@@ -1230,7 +1230,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 			return
 		}
-		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":2}`))
 	case strings.HasSuffix(r.URL.Path, "/stopped"):
 		s.keep(&s.stopped, body)
 		s.mu.Lock()
@@ -1243,7 +1243,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.stoppedReplies++
 		s.mu.Unlock()
-		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":2}`))
 	case strings.HasSuffix(r.URL.Path, "/complete"):
 		if s.maybeHijackComplete(w, body) {
 			return
@@ -1256,7 +1256,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 			return
 		}
-		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1}`))
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":2}`))
 	case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 		s.writeHeartbeat(w, r, body)
 	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/sessions/"):
@@ -1266,7 +1266,7 @@ func (s *scriptState) serveCore(w http.ResponseWriter, r *http.Request) {
 			s.deleteAttempt = true
 		}
 		s.mu.Unlock()
-		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":1,"control":{"cancel_attempt_ids":[],"drain":false,"terminate":false}}`))
+		writeJSONStatus(w, http.StatusOK, []byte(`{"protocol_version":2,"control":{"cancel_attempt_ids":[],"drain":false,"terminate":false}}`))
 	default:
 		http.NotFound(w, r)
 	}
@@ -1289,7 +1289,7 @@ func (s *scriptState) writeHeartbeat(w http.ResponseWriter, r *http.Request, bod
 		ProtocolVersion int         `json:"protocol_version"`
 		Control         controlJSON `json:"control"`
 	}{
-		ProtocolVersion: 1,
+		ProtocolVersion: 2,
 		Control: controlJSON{
 			CancelAttemptIDs: cancel,
 			Drain:            drain,

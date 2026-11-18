@@ -340,7 +340,7 @@ func assertNoAssignment(t *testing.T, live liveSession, canceled uuid.UUID) {
 	if err := json.Unmarshal(resp, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ProtocolVersion != 1 || len(payload.Assignments) != 0 || payload.Control.Drain || payload.Control.Terminate {
+	if payload.ProtocolVersion != ProtocolVersion || len(payload.Assignments) != 0 || payload.Control.Drain || payload.Control.Terminate {
 		t.Fatalf("pull %s", resp)
 	}
 	if len(payload.Control.CancelAttemptIDs) != 1 || payload.Control.CancelAttemptIDs[0] != canceled.String() {

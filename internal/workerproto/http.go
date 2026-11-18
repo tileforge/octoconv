@@ -206,7 +206,7 @@ func (h *Handler) handleHello(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, helloWire{
-		ProtocolVersion:           1,
+		ProtocolVersion:           ProtocolVersion,
 		SessionID:                 sessionID.String(),
 		SessionToken:              wire,
 		PullWaitSeconds:           20,
@@ -272,7 +272,7 @@ func (h *Handler) finishSession(w http.ResponseWriter, r *http.Request, closeSes
 		control.CancelAttemptIDs = ids
 		control.Drain = draining
 	}
-	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: control})
+	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: ProtocolVersion, Control: control})
 }
 
 func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (storedSession, bool) {
@@ -385,13 +385,17 @@ func bearerHash(header string) (string, error) {
 	return HashToken(header[len(prefix):])
 }
 
+// ProtocolVersion is the only generation this process accepts.
+// Any other integer is incompatible_protocol. Assignments may carry parameters.
+const ProtocolVersion = 2
+
 func protocolVersionOK(w http.ResponseWriter, n json.Number) bool {
 	version, kind := integerToken(n)
 	if kind != numOK {
 		writeCode(w, http.StatusBadRequest, "invalid_message")
 		return false
 	}
-	if version != 1 {
+	if version != ProtocolVersion {
 		writeCode(w, http.StatusBadRequest, "incompatible_protocol")
 		return false
 	}

@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "engine_code": "engine_error",
   "message": "the engine failed"
 }

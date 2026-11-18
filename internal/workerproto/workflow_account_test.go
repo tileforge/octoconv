@@ -190,7 +190,7 @@ func TestWorkflowTwoSessions(t *testing.T) {
 func postPercent(t *testing.T, live liveSession, assignment map[string]json.RawMessage) {
 	t.Helper()
 	attemptID, token := assignmentAttempt(t, assignment)
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, []byte(`{"protocol_version":1,"percent":40}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, []byte(`{"protocol_version":2,"percent":40}`))
 	if status != http.StatusOK {
 		t.Fatalf("progress %d %s", status, resp)
 	}

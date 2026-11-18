@@ -27,7 +27,7 @@
 ## Operate and maintain
 
 - [Operations](OPERATIONS.md): architecture, quotas, recovery and configuration.
-- [Worker handover](WORKER-HANDOVER.md): protocol version 1, certificates, and the image worker.
+- [Worker handover](WORKER-HANDOVER.md): protocol version 2, certificates, and the image worker.
 - [Sandbox paths](SANDBOX-PATHS.md): measured filesystem access for each engine.
 - [Environment variables](../.env.example): configuration defaults and limit derivations.
 - [Helm chart](../deploy/chart/octoconv): Kubernetes deployment and KEDA scaling.

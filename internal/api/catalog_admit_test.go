@@ -721,7 +721,7 @@ func TestApprovedHTMLCreateSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedHTMLPrintOptionStaysOnAsynq(t *testing.T) {
+func TestApprovedHTMLPrintOptionSkipsEnqueue(t *testing.T) {
 	for _, opts := range []string{
 		`{"page_size":"a4"}`,
 		`{"margin_mm":10}`,
@@ -743,11 +743,14 @@ func TestApprovedHTMLPrintOptionStaysOnAsynq(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if q.enqueueCalls != 1 || q.enqueuedHTML != repo.createdID {
+			if q.enqueueCalls != 0 || q.enqueuedHTML != uuid.Nil {
 				t.Fatalf("enqueue calls=%d html=%s", q.enqueueCalls, q.enqueuedHTML)
 			}
-			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-				t.Fatalf("created = %+v, want html on asynq", repo.created)
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 60*time.Second {
+				t.Fatalf("created = %+v, want protocol html", repo.created)
+			}
+			if len(repo.created.Opts) == 0 {
+				t.Fatalf("opts = %#v, want print options", repo.created.Opts)
 			}
 		})
 	}
@@ -884,7 +887,7 @@ func TestApprovedAudioCreateSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedAudioLanguageOrTranslateStaysOnAsynq(t *testing.T) {
+func TestApprovedAudioLanguageOrTranslateSkipsEnqueue(t *testing.T) {
 	for _, opts := range []string{
 		`{"language":"auto"}`,
 		`{"language":"en"}`,
@@ -909,11 +912,11 @@ func TestApprovedAudioLanguageOrTranslateStaysOnAsynq(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if q.enqueueCalls != 1 || q.enqueuedAudio != repo.createdID {
+			if q.enqueueCalls != 0 || q.enqueuedAudio != uuid.Nil {
 				t.Fatalf("enqueue calls=%d audio=%s", q.enqueueCalls, q.enqueuedAudio)
 			}
-			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-				t.Fatalf("created = %+v, want audio on asynq", repo.created)
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 742*time.Second {
+				t.Fatalf("created = %+v, want protocol audio", repo.created)
 			}
 			if opts == `{"translate":true}` && repo.created.Opts["translate"] != true {
 				t.Fatalf("opts = %#v, want translate true", repo.created.Opts)
@@ -1053,7 +1056,7 @@ func TestApprovedAVCreateSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedAVOptionsStayOnAsynq(t *testing.T) {
+func TestApprovedAVOptionsSkipEnqueue(t *testing.T) {
 	cases := []struct {
 		name     string
 		filename string
@@ -1089,11 +1092,11 @@ func TestApprovedAVOptionsStayOnAsynq(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if q.enqueueCalls != 1 || q.enqueuedAV != repo.createdID {
+			if q.enqueueCalls != 0 || q.enqueuedAV != uuid.Nil {
 				t.Fatalf("enqueue calls=%d av=%s", q.enqueueCalls, q.enqueuedAV)
 			}
-			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-				t.Fatalf("created = %+v, want av on asynq", repo.created)
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 753*time.Second {
+				t.Fatalf("created = %+v, want protocol av", repo.created)
 			}
 			if repo.created.Opts[tc.wantKey] != tc.wantVal {
 				t.Fatalf("opts = %#v, want %s=%v", repo.created.Opts, tc.wantKey, tc.wantVal)
@@ -1274,7 +1277,7 @@ func TestApprovedOCREmptyLanguageSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedOCRLanguageStaysOnAsynq(t *testing.T) {
+func TestApprovedOCRLanguageSkipsEnqueue(t *testing.T) {
 	for _, language := range []string{"eng", "rus", "eng+rus"} {
 		t.Run(language, func(t *testing.T) {
 			repo := &fakeRepo{}
@@ -1291,11 +1294,11 @@ func TestApprovedOCRLanguageStaysOnAsynq(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+			if q.enqueueCalls != 0 || q.enqueuedOCR != uuid.Nil {
 				t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
 			}
-			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-				t.Fatalf("created = %+v, want ocr on asynq", repo.created)
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 744*time.Second {
+				t.Fatalf("created = %+v, want protocol ocr", repo.created)
 			}
 			if repo.created.Opts["language"] != language {
 				t.Fatalf("opts = %#v, want language=%s", repo.created.Opts, language)
@@ -1523,7 +1526,7 @@ func TestApprovedPandocEmptyOptionsSkipEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedPandocOptionStaysOnAsynq(t *testing.T) {
+func TestApprovedPandocOptionSkipsEnqueue(t *testing.T) {
 	cases := []struct {
 		name string
 		opts string
@@ -1554,11 +1557,11 @@ func TestApprovedPandocOptionStaysOnAsynq(t *testing.T) {
 			if rec.Code != http.StatusAccepted {
 				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 			}
-			if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+			if q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
 				t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
 			}
-			if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-				t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
+			if repo.created == nil || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 65*time.Second {
+				t.Fatalf("created = %+v, want protocol pandoc", repo.created)
 			}
 			if repo.created.Opts[tc.key] != tc.want {
 				t.Fatalf("opts = %#v, want %s=%v", repo.created.Opts, tc.key, tc.want)

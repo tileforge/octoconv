@@ -146,7 +146,7 @@ func TestApprovedImageHelloAndHeartbeat(t *testing.T) {
 	clientCert := mintClientCert(t, ca, caKey, workerID)
 	client := workerHTTPClient(t, ca, clientCert)
 
-	helloBody := []byte(`{"protocol_version":1,"worker_id":"` + workerID.String() + `","manifest_sha256":"` + storedHash + `","free_slots":3}`)
+	helloBody := []byte(`{"protocol_version":2,"worker_id":"` + workerID.String() + `","manifest_sha256":"` + storedHash + `","free_slots":3}`)
 	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", helloBody, nil)
 	if status != http.StatusOK {
 		t.Fatalf("HELLO status %d", status)
@@ -171,7 +171,7 @@ func TestApprovedImageHelloAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(respBody, &hello); err != nil {
 		t.Fatalf("decode HELLO: %v", err)
 	}
-	if hello.ProtocolVersion != 1 || hello.PullWaitSeconds != 20 || hello.HeartbeatIntervalSeconds != 10 || hello.LeaseSeconds != 30 || hello.SessionMaxLifetimeSeconds != 86400 || hello.MaxMessageBytes != 262144 || hello.FileLinkMaxTTLSeconds != FileLinkMaxTTLSeconds || hello.ClockSkewMarginSeconds != 5 || hello.PullRatePerSecond != 2 || hello.ProgressRatePerSecond != 4 || hello.FileAccess != "direct" {
+	if hello.ProtocolVersion != ProtocolVersion || hello.PullWaitSeconds != 20 || hello.HeartbeatIntervalSeconds != 10 || hello.LeaseSeconds != 30 || hello.SessionMaxLifetimeSeconds != 86400 || hello.MaxMessageBytes != 262144 || hello.FileLinkMaxTTLSeconds != FileLinkMaxTTLSeconds || hello.ClockSkewMarginSeconds != 5 || hello.PullRatePerSecond != 2 || hello.ProgressRatePerSecond != 4 || hello.FileAccess != "direct" {
 		t.Fatal("HELLO advertisement does not match the published starting numbers")
 	}
 	assertEmptyCancelList(t, hello.Control)
@@ -225,7 +225,7 @@ func TestApprovedImageHelloAndHeartbeat(t *testing.T) {
 		t.Fatalf("slot holds = %d, want 0", holds)
 	}
 
-	status, hdr, respBody = doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions/"+sessionID.String()+"/heartbeat", hello.SessionToken, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, respBody = doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions/"+sessionID.String()+"/heartbeat", hello.SessionToken, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d", status)
 	}
@@ -234,7 +234,7 @@ func TestApprovedImageHelloAndHeartbeat(t *testing.T) {
 	if err := json.Unmarshal(respBody, &hb); err != nil {
 		t.Fatalf("decode heartbeat: %v", err)
 	}
-	if string(hb["protocol_version"]) != "1" {
+	if string(hb["protocol_version"]) != "2" {
 		t.Fatal("heartbeat protocol_version")
 	}
 	if _, ok := hb["session_id"]; ok {
@@ -501,7 +501,7 @@ func TestManifestMismatchInsertsNothing(t *testing.T) {
 	addr := listenWorker(t, repo, ca, caKey)
 	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  strings.Repeat("b", 64),
 		"free_slots":       1,
@@ -528,7 +528,7 @@ func TestHelloWorkerIDMismatch(t *testing.T) {
 	addr := listenWorker(t, repo, ca, caKey)
 	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        uuid.New().String(),
 		"manifest_sha256":  hex.EncodeToString(sum[:]),
 		"free_slots":       1,
@@ -555,7 +555,7 @@ func TestHelloUnknownField(t *testing.T) {
 	addr := listenWorker(t, repo, ca, caKey)
 	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
 	unknown := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  digest,
 		"free_slots":       1,
@@ -578,7 +578,7 @@ func TestHelloUnknownField(t *testing.T) {
 	}
 
 	extended := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  digest,
 		"free_slots":       1,
@@ -593,7 +593,7 @@ func TestHelloUnknownField(t *testing.T) {
 	}
 }
 
-func TestHelloProtocolVersionTwo(t *testing.T) {
+func TestHelloRejectsProtocolVersionOne(t *testing.T) {
 	pool := testPool(t)
 	resetWorkerState(t, pool)
 	repo := NewRepo(pool)
@@ -607,16 +607,16 @@ func TestHelloProtocolVersionTwo(t *testing.T) {
 	ca, caKey := mintTestCA(t)
 	addr := listenWorker(t, repo, ca, caKey)
 	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
-	two := mustJSON(t, map[string]any{
-		"protocol_version": 2,
+	one := mustJSON(t, map[string]any{
+		"protocol_version": 1,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  digest,
 		"free_slots":       1,
 	})
-	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", two, nil)
+	status, hdr, respBody := doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", one, nil)
 	assertProtocolError(t, status, hdr, respBody, http.StatusBadRequest, "incompatible_protocol")
 	if sessionCount(t, pool, workerID) != 0 {
-		t.Fatal("protocol 2 opened a session")
+		t.Fatal("protocol 1 opened a session")
 	}
 	fractional := []byte(`{"protocol_version":1.5,"worker_id":"` + workerID.String() + `","manifest_sha256":"` + digest + `","free_slots":1}`)
 	status, hdr, respBody = doJSON(t, client, http.MethodPost, "https://"+addr+"/worker/v1/sessions", "", fractional, nil)
@@ -897,7 +897,7 @@ func TestClosedSessionStaysClosedAfterDedupDelete(t *testing.T) {
 		INSERT INTO worker_request_dedup (session_id, dedup_key) VALUES ($1, 'pull-1')`, live.sessionID); err != nil {
 		t.Fatalf("insert dedup: %v", err)
 	}
-	status, hdr, body := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, body := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("delete status %d", status)
 	}
@@ -920,7 +920,7 @@ func TestClosedSessionStaysClosedAfterDedupDelete(t *testing.T) {
 	if !exists {
 		t.Fatal("close deleted the session row")
 	}
-	status, hdr, body = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, body = doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "session_closed")
 }
 
@@ -934,13 +934,13 @@ func TestSlotHoldSurvivesCloseAndNewHello(t *testing.T) {
 		t.Fatalf("insert hold: %v", err)
 	}
 	before := readHold(t, live.pool, holdID)
-	status, _, _ := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, _ := doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("delete status %d", status)
 	}
 	sum := sha256.Sum256(live.manifest)
 	hello := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        live.workerID.String(),
 		"manifest_sha256":  hex.EncodeToString(sum[:]),
 		"free_slots":       1,
@@ -968,7 +968,7 @@ func TestExpiredSessionIsClosed(t *testing.T) {
 		UPDATE worker_sessions SET expires_at = now() - interval '1 second' WHERE id = $1`, live.sessionID); err != nil {
 		t.Fatalf("expire: %v", err)
 	}
-	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "session_closed")
 }
 
@@ -984,7 +984,7 @@ func TestAttemptHeaderOnHeartbeatChangesNothing(t *testing.T) {
 	before := readHold(t, live.pool, holdID)
 	header := make(http.Header)
 	header.Set("Octoconv-Attempt", strings.Repeat("c", 64))
-	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), header)
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), header)
 	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "unauthorized")
 	var closedAt *time.Time
 	if err := live.pool.QueryRow(ctx, `SELECT closed_at FROM worker_sessions WHERE id = $1`, live.sessionID).Scan(&closedAt); err != nil {
@@ -1029,7 +1029,7 @@ func openHello(t *testing.T) liveSession {
 	addr := listenWorker(t, repo, ca, caKey)
 	client := workerHTTPClient(t, ca, mintClientCert(t, ca, caKey, workerID))
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  hex.EncodeToString(sum[:]),
 		"free_slots":       1,
@@ -1086,7 +1086,7 @@ func assertHeartbeatShape(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode heartbeat: %v", err)
 	}
-	if string(payload["protocol_version"]) != "1" || len(payload) != 2 {
+	if string(payload["protocol_version"]) != "2" || len(payload) != 2 {
 		t.Fatal("success body is not protocol_version and control")
 	}
 	assertEmptyCancelList(t, payload["control"])
