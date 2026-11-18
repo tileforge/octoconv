@@ -150,7 +150,7 @@ func helloCapability(t *testing.T, pool *pgxpool.Pool, addr string, ca *x509.Cer
 	cert := mintClientCert(t, ca, caKey, workerID)
 	client := workerHTTPClient(t, ca, cert)
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"worker_id":        workerID.String(),
 		"manifest_sha256":  digest,
 		"free_slots":       1,
@@ -318,7 +318,7 @@ func failTimeout(t *testing.T, live liveSession, assignment map[string]json.RawM
 	t.Helper()
 	attemptID, token := assignmentAttempt(t, assignment)
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"engine_code":      "timeout",
 		"message":          message,
 	})

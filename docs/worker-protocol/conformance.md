@@ -38,7 +38,7 @@ An independent author can execute the numbered scenarios later, without a runnin
 
 15. Bad client certificate or DNS SAN mismatch: message the TLS handshake. Expected: no session. Unchanged: no session row and no capability grant.
 
-16. Incompatible version: message any body whose `protocol_version` is an integer other than 1, including the pull fields in [examples/negative/protocol-version-2.json](examples/negative/protocol-version-2.json). Expected: the schema rejects that fixture, and the core answers HTTP 400 `incompatible_protocol`. Unchanged: no session and no attempt are created.
+16. Incompatible version: message any body whose `protocol_version` is an integer other than 2, including the pull fields in [examples/negative/protocol-version-1.json](examples/negative/protocol-version-1.json). Expected: the schema rejects that fixture, and the core answers HTTP 400 `incompatible_protocol`. Unchanged: no session and no attempt are created.
 
 17. Unknown field: message a top-level field outside the schema, as in [examples/negative/pull-unknown-field.json](examples/negative/pull-unknown-field.json). Expected: HTTP 400 `unknown_field`. The same unknown key inside `extensions` is ignored, and [examples/positive/pull-with-extensions.json](examples/positive/pull-with-extensions.json) is accepted. Unchanged: `unknown_field` creates no attempt, and an ignored `extensions` key changes no state beyond the request without that key.
 

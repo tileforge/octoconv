@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:octoconv:worker-protocol:v1",
-  "title": "OctoConv Worker Protocol v1",
+  "$id": "urn:octoconv:worker-protocol:v2",
+  "title": "OctoConv Worker Protocol v2",
   "oneOf": [
     { "$ref": "#/$defs/helloRequest" },
     { "$ref": "#/$defs/helloResponse" },
@@ -27,7 +27,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "worker_id", "manifest_sha256", "free_slots"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "worker_id": { "type": "string", "format": "uuid" },
         "manifest_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "free_slots": { "type": "integer", "minimum": 0 },
@@ -54,7 +54,7 @@
         "file_access"
       ],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "session_id": { "type": "string", "format": "uuid" },
         "session_token": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "pull_wait_seconds": { "type": "integer", "minimum": 0 },
@@ -76,7 +76,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "pull_request_id", "free_slots", "wait_seconds"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "pull_request_id": { "type": "string", "format": "uuid" },
         "free_slots": { "type": "integer", "minimum": 0 },
         "wait_seconds": { "type": "integer" },
@@ -88,7 +88,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "assignments", "control"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "assignments": {
           "type": "array",
           "maxItems": 1,
@@ -103,7 +103,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "artifacts"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "artifacts": {
           "type": "array",
           "items": { "$ref": "#/$defs/artifact" }
@@ -116,7 +116,7 @@
       "additionalProperties": false,
       "required": ["protocol_version"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
     },
@@ -132,7 +132,7 @@
         ]
       },
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "control": { "$ref": "#/$defs/control" },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
@@ -142,7 +142,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "lease_expires_at", "attempt_deadline", "control"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "lease_expires_at": { "type": "string", "format": "date-time" },
         "attempt_deadline": { "type": "string", "format": "date-time" },
         "control": { "$ref": "#/$defs/control" },
@@ -154,7 +154,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "percent"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "percent": {
           "oneOf": [
             { "type": "integer", "minimum": 0, "maximum": 99 },
@@ -178,7 +178,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "engine_code", "message"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "engine_code": { "type": "string", "minLength": 1 },
         "message": { "type": "string", "minLength": 1 },
         "extensions": { "$ref": "#/$defs/extensions" }
@@ -189,7 +189,7 @@
       "additionalProperties": false,
       "required": ["protocol_version", "reason"],
       "properties": {
-        "protocol_version": { "const": 1 },
+        "protocol_version": { "const": 2 },
         "reason": { "type": "string", "enum": ["cancel", "terminate", "lease_lost"] },
         "extensions": { "$ref": "#/$defs/extensions" }
       }
@@ -282,6 +282,10 @@
         "outputs": {
           "type": "array",
           "items": { "$ref": "#/$defs/fileLink" }
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": true
         },
         "extensions": { "$ref": "#/$defs/extensions" }
       }

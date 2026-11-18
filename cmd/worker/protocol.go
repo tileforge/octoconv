@@ -326,7 +326,7 @@ func heartbeatEvery(seconds int) time.Duration {
 }
 
 func (c *protocolClient) heartbeatLoop(ctx context.Context) {
-	body := []byte(`{"protocol_version":1}`)
+	body := []byte(`{"protocol_version":2}`)
 	timer := time.NewTimer(c.beatEvery)
 	defer timer.Stop()
 	for {
@@ -414,7 +414,7 @@ func (c *protocolClient) deleteSession(ctx context.Context) error {
 		c.coreHTTP,
 		http.MethodDelete,
 		target,
-		[]byte(`{"protocol_version":1}`),
+		[]byte(`{"protocol_version":2}`),
 		c.sessionToken,
 		"",
 		"",
@@ -454,7 +454,7 @@ type helloRequestJSON struct {
 
 func (c *protocolClient) hello(ctx context.Context) (helloJSON, error) {
 	body, err := json.Marshal(helloRequestJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: 2,
 		WorkerID:        c.workerID.String(),
 		ManifestSHA256:  c.manifestSHA,
 		FreeSlots:       c.freeSlots,
@@ -524,7 +524,7 @@ func (c *protocolClient) pull(ctx context.Context) (pullResponseJSON, error) {
 		wait = 20
 	}
 	body, err := json.Marshal(pullRequestJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: 2,
 		PullRequestID:   uuid.NewString(),
 		FreeSlots:       c.freeSlots,
 		WaitSeconds:     wait,
@@ -662,7 +662,7 @@ func (c *protocolClient) runAssignment(ctx context.Context, asgn assignmentJSON,
 	}
 	sum := sha256.Sum256(produced)
 	completeBody, err := json.Marshal(completeJSON{
-		ProtocolVersion: 1,
+		ProtocolVersion: 2,
 		Artifacts: []artifactJSON{{
 			Role:        "primary",
 			Ordinal:     0,
@@ -899,7 +899,7 @@ func (c *protocolClient) renewUntil(attempt context.Context, asgn assignmentJSON
 }
 
 func (c *protocolClient) renew(ctx context.Context, asgn assignmentJSON) (time.Time, controlJSON, error) {
-	body := []byte(`{"protocol_version":1}`)
+	body := []byte(`{"protocol_version":2}`)
 	raw, err := c.postCore(
 		ctx,
 		"/worker/v1/attempts/"+url.PathEscape(asgn.AttemptID)+"/lease",
@@ -932,7 +932,7 @@ func (c *protocolClient) postProgress(ctx context.Context, asgn assignmentJSON, 
 	if percent < 0 || percent > 99 {
 		return errors.New("progress")
 	}
-	body, err := json.Marshal(progressJSON{ProtocolVersion: 1, Percent: percent})
+	body, err := json.Marshal(progressJSON{ProtocolVersion: 2, Percent: percent})
 	if err != nil {
 		return err
 	}
@@ -964,7 +964,7 @@ func (c *protocolClient) fail(ctx context.Context, asgn assignmentJSON, code, me
 	if message == "" {
 		message = "conversion failed"
 	}
-	body, err := json.Marshal(failJSON{ProtocolVersion: 1, EngineCode: code, Message: message})
+	body, err := json.Marshal(failJSON{ProtocolVersion: 2, EngineCode: code, Message: message})
 	if err != nil {
 		return err
 	}
@@ -994,7 +994,7 @@ func (c *protocolClient) postStopped(ctx context.Context, asgn assignmentJSON, r
 	}
 	notify, cancel := context.WithTimeout(ctx, stoppedNotifyTimeout)
 	defer cancel()
-	body, err := json.Marshal(stoppedJSON{ProtocolVersion: 1, Reason: reason})
+	body, err := json.Marshal(stoppedJSON{ProtocolVersion: 2, Reason: reason})
 	if err != nil {
 		return err
 	}

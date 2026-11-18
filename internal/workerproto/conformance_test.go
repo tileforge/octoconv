@@ -68,7 +68,7 @@ func TestRevokeOnLiveConnection(t *testing.T) {
 		t.Fatalf("HELLO status %d", status)
 	}
 	sessionID, token := decodeHello(t, respBody)
-	hb := []byte(`{"protocol_version":1}`)
+	hb := []byte(`{"protocol_version":2}`)
 	path := "/worker/v1/sessions/" + sessionID.String() + "/heartbeat"
 	status, _, _ = client.exchange(http.MethodPost, path, token, hb, nil)
 	if status != http.StatusOK {
@@ -142,7 +142,7 @@ func TestDenylistSerialLeavesNewCertificate(t *testing.T) {
 	body := helloBody(workerID, digest, 1)
 	oldID := helloOn(t, oldClient, body)
 	newID := helloOn(t, newClient, body)
-	hb := []byte(`{"protocol_version":1}`)
+	hb := []byte(`{"protocol_version":2}`)
 
 	if err := repo.DenylistSerial(ctx, workerID, oldCert.Leaf.SerialNumber, issuerSHA256(oldCert.Leaf)); err != nil {
 		t.Fatalf("denylist: %v", err)
@@ -205,7 +205,7 @@ func TestRevokeDoesNotZeroSlotHold(t *testing.T) {
 	if state != "canceled" {
 		t.Fatalf("hold state %s", state)
 	}
-	status, hdr, respBody := client.exchange(http.MethodPost, "/worker/v1/attempts/"+holdID.String()+"/complete", opened.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, respBody := client.exchange(http.MethodPost, "/worker/v1/attempts/"+holdID.String()+"/complete", opened.token, []byte(`{"protocol_version":2}`), nil)
 	assertProtocolError(t, status, hdr, respBody, http.StatusUnauthorized, "session_closed")
 	var closed bool
 	if err := pool.QueryRow(ctx, `
@@ -261,7 +261,7 @@ func decodeHello(t *testing.T, body []byte) (uuid.UUID, string) {
 
 func helloBody(workerID uuid.UUID, digest string, slots int) []byte {
 	return []byte(fmt.Sprintf(
-		`{"protocol_version":1,"worker_id":"%s","manifest_sha256":"%s","free_slots":%d}`,
+		`{"protocol_version":2,"worker_id":"%s","manifest_sha256":"%s","free_slots":%d}`,
 		workerID.String(), digest, slots,
 	))
 }
@@ -539,7 +539,7 @@ func TestAttemptTokenOnWrongAttempt(t *testing.T) {
 	for _, path := range attemptPaths(live.addr, attemptB) {
 		header := make(http.Header)
 		header.Set("Octoconv-Attempt", tokenA)
-		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), header)
+		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":2}`), header)
 		assertProtocolError(t, status, hdr, body, http.StatusForbidden, "capability_denied")
 		if readAttemptCredential(t, live.pool, attemptA) != beforeA || readAttemptCredential(t, live.pool, attemptB) != beforeB {
 			t.Fatal("wrong attempt token changed a credential")
@@ -558,7 +558,7 @@ func TestMatchingAttemptTokenWritesNothing(t *testing.T) {
 	for _, path := range attemptPaths(live.addr, attemptB) {
 		header := make(http.Header)
 		header.Set("Octoconv-Attempt", tokenB)
-		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), header)
+		status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":2}`), header)
 		assertProtocolError(t, status, hdr, body, http.StatusConflict, "attempt_not_active")
 		if readAttemptCredential(t, live.pool, attemptB) != beforeB {
 			t.Fatal("matching attempt token changed the credential")
@@ -574,7 +574,7 @@ func TestMissingAttemptHeaderIsUnauthorized(t *testing.T) {
 	_, _, _, _, _, attemptB := insertAttemptPair(t, live)
 	beforeB := readAttemptCredential(t, live.pool, attemptB)
 	path := attemptPaths(live.addr, attemptB)[0]
-	status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, path, live.token, []byte(`{"protocol_version":2}`), nil)
 	assertProtocolError(t, status, hdr, body, http.StatusUnauthorized, "unauthorized")
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -591,7 +591,7 @@ func TestMissingAttemptHeaderIsUnauthorized(t *testing.T) {
 func TestPullIncompleteBodyWritesNothing(t *testing.T) {
 	live := openHello(t)
 	before := readGateState(t, live.pool)
-	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, []byte(`{"protocol_version":2}`), nil)
 	assertProtocolError(t, status, hdr, body, http.StatusBadRequest, "invalid_message")
 	if readGateState(t, live.pool) != before || before.attempts != 0 {
 		t.Fatal("pull created an attempt row")
@@ -641,7 +641,7 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	}
 
 	body := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"pull_request_id":  uuid.New().String(),
 		"free_slots":       1,
 		"wait_seconds":     0,
@@ -744,7 +744,7 @@ func TestPullAssignsOneImageAttempt(t *testing.T) {
 	}
 
 	second := mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"pull_request_id":  uuid.New().String(),
 		"free_slots":       1,
 		"wait_seconds":     0,
@@ -912,6 +912,9 @@ func TestScenario01PullReplayDoesNotExtendLease(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("pull status %d: %s", status, first)
 	}
+	if !bytes.Contains(first, []byte(`"parameters"`)) || !bytes.Contains(first, []byte(`"protocol-pull"`)) {
+		t.Fatalf("assignment dropped stored options: %s", first)
+	}
 	assertNoStoreJSON(t, hdr)
 	var lease time.Time
 	if err := live.pool.QueryRow(context.Background(), `
@@ -1073,7 +1076,7 @@ func TestScenario05PullAfterClose(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("pull status %d: %s", status, resp)
 	}
-	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("delete status %d: %s", status, resp)
 	}
@@ -1101,10 +1104,10 @@ func TestScenario05PullAfterClose(t *testing.T) {
 func TestScenario17PullUnknownField(t *testing.T) {
 	live := openHello(t)
 	deletePullFixtures(t, live.pool)
-	unknown := []byte(`{"protocol_version":1,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"priority":1}`)
+	unknown := []byte(`{"protocol_version":2,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"priority":1}`)
 	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, unknown, nil)
 	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "unknown_field")
-	withExt := []byte(`{"protocol_version":1,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"extensions":{"priority":1}}`)
+	withExt := []byte(`{"protocol_version":2,"pull_request_id":"` + uuid.New().String() + `","free_slots":1,"wait_seconds":0,"extensions":{"priority":1}}`)
 	without := pullBody(uuid.New(), 1, 0)
 	status, _, extended := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/pull", live.token, withExt, nil)
 	if status != http.StatusOK {
@@ -1265,7 +1268,7 @@ func TestFencedFailLeavesTheReplacement(t *testing.T) {
 	if !errors.Is(err, errAttemptInactive) {
 		t.Fatalf("fail: %v", err)
 	}
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"late"}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"engine_error","message":"late"}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if jobStatusOf(t, live.pool, jobID) != "active" || holdState(t, live.pool, replacement) != "active" {
 		t.Fatal("fenced fail changed the replacement")
@@ -1647,7 +1650,7 @@ func TestLimitedLoadKeepsDedup(t *testing.T) {
 	if dedup != 8 || holds != 0 {
 		t.Fatalf("oversized dedup %d holds %d", dedup, holds)
 	}
-	status, _, _ = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, _ = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("delete status %d", status)
 	}
@@ -1763,7 +1766,7 @@ func TestRenewMovesOnlyLeaseExpiresAt(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, _ := insertActiveAttempt(t, live, 10, 20)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	if status != http.StatusOK {
 		t.Fatalf("renew status %d: %s", status, resp)
 	}
@@ -1773,7 +1776,7 @@ func TestRenewMovesOnlyLeaseExpiresAt(t *testing.T) {
 		t.Fatalf("renew moved more than the lease: before %+v after %+v", before, after)
 	}
 	assertLeaseResponse(t, resp, after.lease, after.deadline)
-	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if readAttemptSnap(t, live.pool, attemptID) != after {
 		t.Fatal("second renew changed the hold")
@@ -1781,7 +1784,7 @@ func TestRenewMovesOnlyLeaseExpiresAt(t *testing.T) {
 
 	shortToken, shortID, _ := insertActiveAttempt(t, live, 1, 4)
 	shortBefore := readAttemptSnap(t, live.pool, shortID)
-	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, shortID)[0], shortToken, []byte(`{"protocol_version":1}`))
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, shortID)[0], shortToken, []byte(`{"protocol_version":2}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if readAttemptSnap(t, live.pool, shortID) != shortBefore {
 		t.Fatal("short renew changed the hold")
@@ -1792,7 +1795,7 @@ func TestScenario07HeartbeatDoesNotMoveLease(t *testing.T) {
 	live := openHello(t)
 	_, attemptID, _ := insertActiveAttempt(t, live, 20, 120)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, hdr, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d: %s", status, resp)
 	}
@@ -1841,7 +1844,7 @@ func TestScenario08RenewPastAttemptDeadline(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, _ := insertActiveAttempt(t, live, 10, -1)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if readAttemptSnap(t, live.pool, attemptID) != before {
 		t.Fatal("renew past the deadline changed the hold")
@@ -1852,12 +1855,12 @@ func TestLapsedLeaseRejectsProgress(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, _ := insertActiveAttempt(t, live, -30, 120)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, []byte(`{"protocol_version":1,"percent":10}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, []byte(`{"protocol_version":2,"percent":10}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if readAttemptSnap(t, live.pool, attemptID) != before {
 		t.Fatal("lapsed progress changed the hold")
 	}
-	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp = postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	if status != http.StatusOK {
 		t.Fatalf("renew status %d: %s", status, resp)
 	}
@@ -1872,7 +1875,7 @@ func TestScenario18Progress100(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
 	before := readAttemptSnap(t, live.pool, attemptID)
-	body := []byte(`{"protocol_version":1,"percent":100}`)
+	body := []byte(`{"protocol_version":2,"percent":100}`)
 	for i := 0; i < 2; i++ {
 		status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[1], token, body)
 		assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_progress")
@@ -1886,7 +1889,7 @@ func TestProgressUnknownStaysNull(t *testing.T) {
 	live := openHello(t)
 	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
 	path := attemptPaths(live.addr, attemptID)[1]
-	status, _, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":null}`))
+	status, _, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"percent":null}`))
 	if status != http.StatusOK {
 		t.Fatalf("null progress status %d: %s", status, resp)
 	}
@@ -1894,7 +1897,7 @@ func TestProgressUnknownStaysNull(t *testing.T) {
 	if percent != nil || !unknown || jobProgress(t, live.pool, jobID) != nil {
 		t.Fatal("null progress stored a number")
 	}
-	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":10,"stage":"ink"}`))
+	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"percent":10,"stage":"ink"}`))
 	if status != http.StatusOK {
 		t.Fatalf("progress status %d: %s", status, resp)
 	}
@@ -1905,14 +1908,14 @@ func TestProgressUnknownStaysNull(t *testing.T) {
 	if jobStage(t, live.pool, jobID) != nil || holdStage(t, live.pool, attemptID) != "ink" {
 		t.Fatal("stage was written on the job")
 	}
-	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":5}`))
+	status, _, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"percent":5}`))
 	if status != http.StatusOK {
 		t.Fatalf("lower progress status %d: %s", status, resp)
 	}
 	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 10 {
 		t.Fatal("lower percent replaced the stored progress")
 	}
-	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":10,"stage_index":3,"stage_count":2}`))
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"percent":10,"stage_index":3,"stage_count":2}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_message")
 	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 10 {
 		t.Fatal("invalid stage indexes changed progress")
@@ -1930,23 +1933,23 @@ func TestUnknownProgressClearsClientValue(t *testing.T) {
 			t.Fatalf("progress status %d: %s", status, resp)
 		}
 	}
-	post(`{"protocol_version":1,"percent":40}`)
+	post(`{"protocol_version":2,"percent":40}`)
 	percent, unknown := holdProgress(t, live.pool, attemptID)
 	job := jobProgress(t, live.pool, jobID)
 	if percent == nil || *percent != 40 || unknown || job == nil || *job != 40 {
 		t.Fatal("percent 40 was not stored")
 	}
-	post(`{"protocol_version":1,"percent":null}`)
+	post(`{"protocol_version":2,"percent":null}`)
 	percent, unknown = holdProgress(t, live.pool, attemptID)
 	if percent == nil || *percent != 40 || !unknown || jobProgress(t, live.pool, jobID) != nil {
 		t.Fatal("unknown progress cleared the hold high-water or left the job percent")
 	}
-	post(`{"protocol_version":1,"percent":10}`)
+	post(`{"protocol_version":2,"percent":10}`)
 	percent, unknown = holdProgress(t, live.pool, attemptID)
 	if percent == nil || *percent != 40 || !unknown || jobProgress(t, live.pool, jobID) != nil {
 		t.Fatal("lower percent after unknown replaced the high-water")
 	}
-	post(`{"protocol_version":1,"percent":50}`)
+	post(`{"protocol_version":2,"percent":50}`)
 	percent, unknown = holdProgress(t, live.pool, attemptID)
 	job = jobProgress(t, live.pool, jobID)
 	if percent == nil || *percent != 50 || unknown || job == nil || *job != 50 {
@@ -1965,7 +1968,7 @@ func TestScenario19RetryClearsProgress(t *testing.T) {
 	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
 		t.Fatalf("read step: %v", err)
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"timeout","message":"timed out"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"timeout","message":"timed out"}`))
 	if status != http.StatusOK {
 		t.Fatalf("fail status %d: %s", status, resp)
 	}
@@ -1993,7 +1996,7 @@ func TestScenario19RetryClearsProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, gotAttempt)[1], nextToken, []byte(`{"protocol_version":1,"percent":25}`))
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, gotAttempt)[1], nextToken, []byte(`{"protocol_version":2,"percent":25}`))
 	if status != http.StatusOK {
 		t.Fatalf("progress status %d: %s", status, resp)
 	}
@@ -2010,7 +2013,7 @@ func TestFailTimeoutRequeues(t *testing.T) {
 	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
 		t.Fatalf("set client: %v", err)
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"timeout","message":"timed out"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"timeout","message":"timed out"}`))
 	if status != http.StatusOK {
 		t.Fatalf("fail status %d: %s", status, resp)
 	}
@@ -2041,7 +2044,7 @@ func TestFailAllowListIsTerminal(t *testing.T) {
 	if _, err := live.pool.Exec(context.Background(), `UPDATE jobs SET client_id = $2 WHERE id = $1`, jobID, clientID); err != nil {
 		t.Fatalf("set client: %v", err)
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"engine failed"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"engine_error","message":"engine failed"}`))
 	if status != http.StatusOK {
 		t.Fatalf("fail status %d: %s", status, resp)
 	}
@@ -2052,13 +2055,13 @@ func TestFailAllowListIsTerminal(t *testing.T) {
 	if rows != 1 || jobs != 1 {
 		t.Fatalf("usage rows=%d jobs=%d", rows, jobs)
 	}
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"again"}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"engine_error","message":"again"}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if _, jobs := usageSnapshot(t, live.pool, clientID); jobs != 1 {
 		t.Fatal("second fail recorded usage")
 	}
 	otherToken, otherID, otherJob := insertActiveAttempt(t, live, 60, 120)
-	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, otherID)[2], otherToken, []byte(`{"protocol_version":1,"engine_code":"nope","message":"unknown"}`))
+	status, _, resp = postAttempt(t, live, attemptPaths(live.addr, otherID)[2], otherToken, []byte(`{"protocol_version":2,"engine_code":"nope","message":"unknown"}`))
 	if status != http.StatusOK {
 		t.Fatalf("unknown code status %d: %s", status, resp)
 	}
@@ -2077,7 +2080,7 @@ func TestStoppedTerminateDoesNotBurnBudget(t *testing.T) {
 	if failedHolds(t, live.pool, stepID) != 0 {
 		t.Fatal("failed holds were not zero")
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"terminate"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":2,"reason":"terminate"}`))
 	if status != http.StatusOK {
 		t.Fatalf("stopped status %d: %s", status, resp)
 	}
@@ -2110,7 +2113,7 @@ func TestStoppedLeaseLostAfterExpiryDoesNotBurnBudget(t *testing.T) {
 	if failedHolds(t, live.pool, stepID) != 0 {
 		t.Fatal("failed holds were not zero")
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"lease_lost"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":2,"reason":"lease_lost"}`))
 	if status != http.StatusOK {
 		t.Fatalf("stopped status %d: %s", status, resp)
 	}
@@ -2146,7 +2149,7 @@ func TestStoppedLeaseLostRejectsReleasedHold(t *testing.T) {
 	if err := live.pool.QueryRow(context.Background(), `SELECT step_id FROM jobs WHERE id = $1`, jobID).Scan(&stepID); err != nil {
 		t.Fatalf("read step: %v", err)
 	}
-	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"lease_lost"}`))
+	status, hdr, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":2,"reason":"lease_lost"}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusConflict, "attempt_not_active")
 	if jobStatusOf(t, live.pool, jobID) != "active" || holdState(t, live.pool, attemptID) != "failed" || failedHolds(t, live.pool, stepID) != 1 {
 		t.Fatal("rejected lease_lost changed the fenced hold")
@@ -2181,13 +2184,13 @@ func TestProgressRateLimit(t *testing.T) {
 	token, attemptID, jobID := insertActiveAttempt(t, live, 60, 120)
 	path := attemptPaths(live.addr, attemptID)[1]
 	for i := 1; i <= 4; i++ {
-		body := []byte(`{"protocol_version":1,"percent":` + strconv.Itoa(i) + `}`)
+		body := []byte(`{"protocol_version":2,"percent":` + strconv.Itoa(i) + `}`)
 		status, _, resp := postAttempt(t, live, path, token, body)
 		if status != http.StatusOK {
 			t.Fatalf("progress %d status %d: %s", i, status, resp)
 		}
 	}
-	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"percent":5}`))
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"percent":5}`))
 	assertRateLimited(t, status, hdr, resp)
 	if p := jobProgress(t, live.pool, jobID); p == nil || *p != 4 {
 		t.Fatalf("progress %v", p)
@@ -2360,7 +2363,7 @@ func TestCancelStoppedAckClearsHeartbeat(t *testing.T) {
 	if ids := heartbeatCancelIDs(t, live); len(ids) != 1 || ids[0] != attemptID.String() {
 		t.Fatalf("cancel list %v", ids)
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":1,"reason":"cancel"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[4], token, []byte(`{"protocol_version":2,"reason":"cancel"}`))
 	if status != http.StatusOK {
 		t.Fatalf("stopped status %d: %s", status, resp)
 	}
@@ -2429,7 +2432,7 @@ func TestManualRetryAfterFiveFailuresThenPull(t *testing.T) {
 
 func heartbeatCancelIDs(t *testing.T, live liveSession) []string {
 	t.Helper()
-	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, resp := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d: %s", status, resp)
 	}
@@ -2558,7 +2561,7 @@ func TestScenario26OwnersStayDisjoint(t *testing.T) {
 }
 
 func pullBody(id uuid.UUID, freeSlots, waitSeconds int) []byte {
-	return []byte(`{"protocol_version":1,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
+	return []byte(`{"protocol_version":2,"pull_request_id":"` + id.String() + `","free_slots":` + strconv.Itoa(freeSlots) + `,"wait_seconds":` + strconv.Itoa(waitSeconds) + `}`)
 }
 
 func insertProtocolImageJob(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
@@ -2907,7 +2910,7 @@ func assertEmptyPull(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode pull: %v", err)
 	}
-	if payload.ProtocolVersion != 1 || len(payload.Assignments) != 0 {
+	if payload.ProtocolVersion != ProtocolVersion || len(payload.Assignments) != 0 {
 		t.Fatalf("pull %s", body)
 	}
 	if payload.Control.CancelAttemptIDs == nil || len(payload.Control.CancelAttemptIDs) != 0 || payload.Control.Drain || payload.Control.Terminate {
@@ -3065,7 +3068,7 @@ func assertLeaseResponse(t *testing.T, body []byte, lease, deadline time.Time) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode lease: %v", err)
 	}
-	if len(payload) != 4 || string(payload["protocol_version"]) != "1" {
+	if len(payload) != 4 || string(payload["protocol_version"]) != "2" {
 		t.Fatalf("lease %s", body)
 	}
 	gotLease, err := jsonTime(payload["lease_expires_at"])
@@ -3095,7 +3098,7 @@ func assertControlOnly(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode control body: %v", err)
 	}
-	if _, ok := payload["lease_expires_at"]; ok || len(payload) != 2 || string(payload["protocol_version"]) != "1" {
+	if _, ok := payload["lease_expires_at"]; ok || len(payload) != 2 || string(payload["protocol_version"]) != "2" {
 		t.Fatalf("body %s", body)
 	}
 	assertEmptyCancelList(t, payload["control"])
@@ -3260,7 +3263,7 @@ func completeBody(t *testing.T, format, contentType string, payload []byte) []by
 	t.Helper()
 	sum := sha256.Sum256(payload)
 	return mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"artifacts": []any{
 			map[string]any{
 				"role":         "primary",
@@ -3486,7 +3489,7 @@ func completeDedupRows(t *testing.T, pool *pgxpool.Pool, sessionID, jobID, stepI
 func completeArtifacts(t *testing.T, arts ...map[string]any) []byte {
 	t.Helper()
 	return mustJSON(t, map[string]any{
-		"protocol_version": 1,
+		"protocol_version": 2,
 		"artifacts":        arts,
 	})
 }
@@ -3513,12 +3516,12 @@ func TestCompleteMismatchWritesNothing(t *testing.T) {
 	token, attemptID, jobID, stepID := claimLiveImage(t, live, clientID)
 	rows, usageJobs := usageSnapshot(t, live.pool, clientID)
 	path := attemptPaths(live.addr, attemptID)[3]
-	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":1}`))
+	status, hdr, resp := postAttempt(t, live, path, token, []byte(`{"protocol_version":2}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "invalid_message")
 	if bytes.Contains(resp, []byte("artifact_rejected")) {
 		t.Fatalf("body %s", resp)
 	}
-	status, hdr, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":1,"extra":1}`))
+	status, hdr, resp = postAttempt(t, live, path, token, []byte(`{"protocol_version":2,"extra":1}`))
 	assertProtocolError(t, status, hdr, resp, http.StatusBadRequest, "unknown_field")
 	outputs := outputCount(t, live.pool, jobID)
 	dedup := completeDedupRows(t, live.pool, live.sessionID, jobID, stepID, attemptID)
@@ -3730,7 +3733,7 @@ func TestRenewDuringCopyStillCompletes(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("copy did not start")
 	}
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	if status != http.StatusOK {
 		t.Fatalf("renew status %d: %s", status, resp)
 	}
@@ -3907,7 +3910,7 @@ func TestScenario10CompleteConflict(t *testing.T) {
 		t.Fatal("conflict changed the completed job")
 	}
 	copies := live.store.copyCount()
-	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, resp = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("close status %d: %s", status, resp)
 	}
@@ -4104,7 +4107,7 @@ func TestRenewDoesNotResignFileLink(t *testing.T) {
 	}
 	before := readAttemptSnap(t, live.pool, attemptID)
 	gets, puts := live.store.signerCounts()
-	status, _, renew := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":1}`))
+	status, _, renew := postAttempt(t, live, attemptPaths(live.addr, attemptID)[0], token, []byte(`{"protocol_version":2}`))
 	if status != http.StatusOK {
 		t.Fatalf("renew status %d: %s", status, renew)
 	}
@@ -4116,7 +4119,7 @@ func TestRenewDoesNotResignFileLink(t *testing.T) {
 	if status != http.StatusOK || !bytes.Equal(resp, again) {
 		t.Fatalf("stored pull changed: %s", again)
 	}
-	status, _, beat := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, beat := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d: %s", status, beat)
 	}
@@ -4284,7 +4287,7 @@ func TestFailDeletesStagingAfterRelease(t *testing.T) {
 	input := storage.InputKey(jobID, 0, "in.png")
 	live.store.put(staging, []byte("fail-staging"))
 	live.store.put(input, []byte("fail-input"))
-	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":1,"engine_code":"engine_error","message":"engine failed"}`))
+	status, _, resp := postAttempt(t, live, attemptPaths(live.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"engine_error","message":"engine failed"}`))
 	if status != http.StatusOK {
 		t.Fatalf("fail status %d: %s", status, resp)
 	}
@@ -4606,7 +4609,7 @@ func TestScenario21NoNewLinks(t *testing.T) {
 	if err := json.Unmarshal(resp, &completeFields); err != nil {
 		t.Fatal(err)
 	}
-	if string(completeFields["protocol_version"]) != "1" || bytes.Contains(resp, []byte("href")) {
+	if string(completeFields["protocol_version"]) != "2" || bytes.Contains(resp, []byte("href")) {
 		t.Fatalf("complete %s", resp)
 	}
 	if _, ok := completeFields["inputs"]; ok {

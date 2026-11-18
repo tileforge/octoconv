@@ -18,7 +18,7 @@ func TestWorkerHandoverSection(t *testing.T) {
 		}
 	}
 	needles := []string{
-		"protocol_version 1",
+		"protocol_version 2",
 		"docs/worker-protocol/v1.schema.json",
 		"docs/worker-protocol/examples/",
 		"docs/worker-protocol/conformance.md",

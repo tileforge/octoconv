@@ -57,6 +57,24 @@ type assignmentWire struct {
 	Limits            assignmentLimits `json:"limits"`
 	Inputs            []fileLinkWire   `json:"inputs"`
 	Outputs           []fileLinkWire   `json:"outputs"`
+	Parameters        json.RawMessage  `json:"parameters,omitempty"`
+}
+
+// assignmentParameters returns stored job options, or nil when the object has no keys.
+// encoding/json omitempty drops a nil RawMessage and keeps "{}".
+func assignmentParameters(raw []byte) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &obj); err != nil {
+		return nil, fmt.Errorf("decode job options: %w", err)
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	return json.RawMessage(trimmed), nil
 }
 
 type completeArtifact struct {
@@ -212,7 +230,7 @@ func (h *Handler) handleLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, leaseWire{
-		ProtocolVersion: 1,
+		ProtocolVersion: ProtocolVersion,
 		LeaseExpiresAt:  lease.UTC().Format(time.RFC3339Nano),
 		AttemptDeadline: deadline.UTC().Format(time.RFC3339Nano),
 		Control:         controlWire{CancelAttemptIDs: cancelIDs, Drain: draining, Terminate: false},
@@ -700,7 +718,7 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return err
 		}
 		encoded, err := encodeWire(heartbeatWire{
-			ProtocolVersion: 1,
+			ProtocolVersion: ProtocolVersion,
 			Control:         controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false},
 		})
 		if err != nil {
@@ -915,7 +933,7 @@ func (h *Handler) writeControl(w http.ResponseWriter, r *http.Request, sessionID
 		writeCode(w, http.StatusInternalServerError, "invalid_message")
 		return
 	}
-	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: 1, Control: controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false}})
+	writeJSON(w, http.StatusOK, heartbeatWire{ProtocolVersion: ProtocolVersion, Control: controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false}})
 }
 
 type parsedProgress struct {
@@ -1845,11 +1863,19 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if err != nil {
 		return claimDecision{}, fmt.Errorf("presign output: %w", err)
 	}
+	var optsRaw []byte
+	if err := tx.QueryRow(ctx, `SELECT options FROM jobs WHERE id = $1`, jobID).Scan(&optsRaw); err != nil {
+		return claimDecision{}, fmt.Errorf("read job options: %w", err)
+	}
+	parameters, err := assignmentParameters(optsRaw)
+	if err != nil {
+		return claimDecision{}, err
+	}
 	expiresAt := linkExpires.UTC().Format(time.RFC3339Nano)
 	return claimDecision{
 		attemptID: attemptID,
 		wire: pullWire{
-			ProtocolVersion: 1,
+			ProtocolVersion: ProtocolVersion,
 			Assignments: []assignmentWire{{
 				JobID:             jobID.String(),
 				StepID:            stepID.String(),
@@ -1860,6 +1886,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 				AttemptDeadline:   attemptDeadline.UTC().Format(time.RFC3339Nano),
 				LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
 				Limits:            assignmentLimits{MaxOutputBytes: int(protocolOutputLimit(engine, outputFormat))},
+				Parameters:        parameters,
 				Inputs: []fileLinkWire{{
 					Role: "source", Ordinal: 0, Format: inputFormat, Href: getURL, ExpiresAt: expiresAt,
 				}},
@@ -2064,7 +2091,7 @@ func (h *Handler) clientAtCap(ctx context.Context, tx pgx.Tx, clientID uuid.UUID
 
 func emptyPull(cancelIDs []string) pullWire {
 	return pullWire{
-		ProtocolVersion: 1,
+		ProtocolVersion: ProtocolVersion,
 		Assignments:     []assignmentWire{},
 		Control:         controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
 	}

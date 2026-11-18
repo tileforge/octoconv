@@ -35,7 +35,7 @@ func TestMissedHeartbeatStaysOpen(t *testing.T) {
 		RETURNING last_heartbeat_at`, live.sessionID).Scan(&beat); err != nil {
 		t.Fatalf("backdate heartbeat: %v", err)
 	}
-	status, _, _ := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", "abab", []byte(`{"protocol_version":1}`), nil)
+	status, _, _ := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", "abab", []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("bad heartbeat status %d", status)
 	}
@@ -91,7 +91,7 @@ func TestMissedHeartbeatStaysOpen(t *testing.T) {
 		t.Fatalf("capabilities %d", caps)
 	}
 
-	status, _, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, body := doJSON(t, live.client, http.MethodPost, live.sessionURL()+"/heartbeat", live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d", status)
 	}
@@ -229,7 +229,7 @@ func TestDrainReplacementSessionCanClaim(t *testing.T) {
 	if copied != nil {
 		t.Fatal("replacement session copied drain_at")
 	}
-	status, _, beatBody := doJSON(t, next.client, http.MethodPost, next.sessionURL()+"/heartbeat", next.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, beatBody := doJSON(t, next.client, http.MethodPost, next.sessionURL()+"/heartbeat", next.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("heartbeat status %d", status)
 	}
@@ -260,7 +260,7 @@ func TestDrainReplacementSessionCanClaim(t *testing.T) {
 		t.Fatal("replacement pull inserted no hold")
 	}
 
-	status, _, _ = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":1}`), nil)
+	status, _, _ = doJSON(t, live.client, http.MethodDelete, live.sessionURL(), live.token, []byte(`{"protocol_version":2}`), nil)
 	if status != http.StatusOK {
 		t.Fatalf("delete status %d", status)
 	}
