@@ -1087,7 +1087,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	htmlProtocol := engine == convert.EngineHTML
 	audioProtocol := engine == convert.EngineAudio
 	avProtocol := engine == convert.EngineAV
-	ocrProtocol := engine == convert.EngineOCR && !progressWebhook
+	ocrProtocol := engine == convert.EngineOCR
 	pandocProtocol := engine == convert.EnginePandoc && !progressWebhook
 	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol) {
 		budget := s.engineTimeouts[engine]
@@ -1142,6 +1142,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if engine == convert.EngineAV && dispatchOwner != "protocol" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+			"unsupported conversion: "+detected+" -> "+target)
+		return
+	}
+	if engine == convert.EngineOCR && dispatchOwner != "protocol" {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
@@ -1373,8 +1378,6 @@ func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UU
 		return true, s.queue.EnqueueImageConvert(ctx, id)
 	case convert.EngineDocument:
 		return true, s.queue.EnqueueDocumentConvert(ctx, id)
-	case convert.EngineOCR:
-		return true, s.queue.EnqueueOCRConvert(ctx, id)
 	case convert.EnginePandoc:
 		return true, s.queue.EnqueuePandocConvert(ctx, id)
 	case convert.EngineProbe:

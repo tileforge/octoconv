@@ -352,15 +352,6 @@ var pinEngines = []pinEngine{
 		terminalErr: errors.New("convert: libreoffice: output missing %PDF- magic bytes"),
 	},
 	{
-		name:        "ocr",
-		taskType:    queue.TypeOCRConvert,
-		engine:      convert.EngineOCR,
-		wrapper:     (*Handler).HandleOCRConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: fmt.Errorf("convert: %w", fmt.Errorf("ocr: tesseract: %w", errors.New("exit status 1: Error in pixReadStream: Unknown format: extension not recognized"))),
-	},
-	{
 		name:        "pandoc",
 		taskType:    queue.TypePandocConvert,
 		engine:      convert.EnginePandoc,
@@ -461,14 +452,6 @@ type pinFailureCodeCase struct {
 }
 
 var pinFailureCodeCases = []pinFailureCodeCase{
-	// ocr: TestOCRFailureCode.
-	{"ocr", "too many pages", fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages), "too_many_pages"},
-	{"ocr", "page box too large", convert.ErrOCRPageBoxTooLarge, "page_too_large"},
-	{"ocr", "image too large", fmt.Errorf("ocr: %w", convert.ErrOCRImageTooLarge), "image_too_large"},
-	{"ocr", "unsupported language", fmt.Errorf("ocr: %w", fmt.Errorf("unsupported language %q", "fra")), "unsupported_language"},
-	{"ocr", "unsupported target", fmt.Errorf("ocr: unsupported target format %q", "bmp"), "unsupported_target"},
-	{"ocr", "generic engine failure", fmt.Errorf("ocr: tesseract: %w", errors.New("exit status 1")), "engine_error"},
-
 	// pandoc: TestPandocFailureCode.
 	{"pandoc", "input too large", fmt.Errorf("pandoc: %w", convert.ErrPandocInputTooLarge), "input_too_large"},
 	{"pandoc", "unsupported conversion", fmt.Errorf("pandoc: unsupported conversion %s -> %s", "epub", "latex"), "unsupported_target"},
@@ -824,7 +807,6 @@ var pinInvalidOptsCases = []struct {
 	opts   map[string]any
 }{
 	{"document", map[string]any{"pdf_profile": "bogus"}},
-	{"ocr", map[string]any{"language": "fra"}},
 	{"pandoc", map[string]any{"wrap": "bogus"}},
 }
 

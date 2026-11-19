@@ -178,20 +178,6 @@ var DocumentDescriptor = EngineDescriptor{
 	IsTerminal: isDocumentTerminal,
 }
 
-// OCRDescriptor's isOCRTerminal is D-04's stage-aware split: deterministic
-// guard rejections are always terminal, but an OCR_ENGINE_TIMEOUT expiry
-// stays transient (mirroring isAVTerminal's transcode-timeout treatment,
-// the opposite of isDocumentTerminal's/isHTMLTerminal's shape).
-var OCRDescriptor = EngineDescriptor{
-	Engine: convert.EngineOCR,
-	Type:   queue.TypeOCRConvert,
-	OptsFromMap: func(m map[string]any) (any, error) {
-		return convert.OCROptsFromMap(m)
-	},
-	IsTerminal:  isOCRTerminal,
-	FailureCode: ocrFailureCode,
-}
-
 // PandocDescriptor's isPandocTerminal is D-01's timeout-is-terminal shape
 // (mirroring isDocumentTerminal/isHTMLTerminal), the OPPOSITE of
 // isOCRTerminal's transient-engine-timeout treatment — pandoc is

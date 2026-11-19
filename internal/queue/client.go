@@ -45,18 +45,6 @@ type Client struct {
 	// comment for the worst-case-lifetime derivation this TTL must always
 	// exceed.
 	documentUniqueTTL time.Duration
-	// ocrMaxRetry is the per-task MaxRetry budget for OCR conversion tasks
-	// (OCR_MAX_RETRY, default 2 — mirrors avMaxRetry's bounded-retry budget
-	// since a genuine tesseract/pdftoppm failure is deterministic on the
-	// input and unlikely to be helped by more than a couple of attempts).
-	ocrMaxRetry int
-	// ocrUniqueTTL is the per-job asynq.Unique lock TTL for OCR conversion
-	// tasks, derived once at construction from ocrMaxRetry and
-	// OCR_ENGINE_TIMEOUT via OCRUniqueTTL. Derived fresh from OCR's OWN
-	// retry/timeout budget, never reused from AVUniqueTTL/AudioUniqueTTL or
-	// any other engine class's TTL (D-04/IN-02) — a mismatch here would
-	// silently duplicate processing.
-	ocrUniqueTTL time.Duration
 	// pandocMaxRetry is the per-task MaxRetry budget for pandoc conversion
 	// tasks (PANDOC_MAX_RETRY, default 2 — mirrors ocrMaxRetry's
 	// bounded-retry budget since a genuine pandoc engine/parse failure is
@@ -87,10 +75,7 @@ type Client struct {
 // 4), ENGINE_TIMEOUT (default 120s — same env var the worker reads to bound
 // a conversion attempt), DOCUMENT_MAX_RETRY (default 3),
 // DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01),
-// OCR_MAX_RETRY (default 2), and OCR_ENGINE_TIMEOUT (default 300s — a
-// PROVISIONAL code placeholder this phase, mirroring the AV_ENGINE_TIMEOUT
-// [ASSUMED] precedent; Phase 45 supplies the measured OCR_ENGINE_TIMEOUT and
-// supersedes this value entirely), PANDOC_MAX_RETRY (default 2), and
+// PANDOC_MAX_RETRY (default 2), and
 // PANDOC_ENGINE_TIMEOUT (default 90s — a CLEARLY-MARKED PLACEHOLDER this
 // phase: pandoc is a fast, deterministic, CPU-bound markup-to-markup
 // transform, so this is a small value in the ~60-120s range, mirroring the
@@ -118,8 +103,6 @@ func NewClient() (*Client, error) {
 	engineTimeout := envDuration("ENGINE_TIMEOUT", 120*time.Second)
 	documentMaxRetry := envInt("DOCUMENT_MAX_RETRY", 3)
 	documentEngineTimeout := envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second)
-	ocrMaxRetry := envInt("OCR_MAX_RETRY", 2)
-	ocrEngineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second)
 	pandocMaxRetry := envInt("PANDOC_MAX_RETRY", 2)
 	// PANDOC_ENGINE_TIMEOUT default of 90s is a PLACEHOLDER — pandoc is
 	// fast; Phase 49 supplies the measured value and supersedes this
@@ -150,8 +133,6 @@ func NewClient() (*Client, error) {
 		webhookUniqueTTL:  WebhookUniqueTTL(webhookMaxRetry, webhookPerAttemptTimeout),
 		documentMaxRetry:  documentMaxRetry,
 		documentUniqueTTL: DocumentUniqueTTL(documentMaxRetry, documentEngineTimeout),
-		ocrMaxRetry:       ocrMaxRetry,
-		ocrUniqueTTL:      OCRUniqueTTL(ocrMaxRetry, ocrEngineTimeout),
 		pandocMaxRetry:    pandocMaxRetry,
 		pandocUniqueTTL:   PandocUniqueTTL(pandocMaxRetry, pandocEngineTimeout),
 		probeMaxRetry:     probeMaxRetry,
@@ -199,18 +180,6 @@ func (c *Client) EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) er
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue document convert %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// EnqueueOCRConvert puts an OCR conversion job onto the ocr queue.
-func (c *Client) EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error {
-	task, err := NewOCRConvertTask(jobID, c.ocrMaxRetry, c.ocrUniqueTTL)
-	if err != nil {
-		return err
-	}
-	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
-		return fmt.Errorf("enqueue ocr convert %s: %w", jobID, err)
 	}
 	return nil
 }

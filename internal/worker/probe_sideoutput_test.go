@@ -112,7 +112,6 @@ func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 	}{
 		{"image", ImageDescriptor},
 		{"document", DocumentDescriptor},
-		{"ocr", OCRDescriptor},
 		{"pandoc", PandocDescriptor},
 	} {
 		if d.desc.SideOutputs != nil {

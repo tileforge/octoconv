@@ -1266,7 +1266,7 @@ func TestApprovedOCRLanguageSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedOCRProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestApprovedOCRProgressWebhookUsesProtocol(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1281,15 +1281,15 @@ func TestApprovedOCRProgressWebhookStaysOnAsynq(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedOCR != uuid.Nil {
 		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
 	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol ocr with progress webhook", repo.created)
 	}
 }
 
-func TestApprovedOCROverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedOCROverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1302,18 +1302,11 @@ func TestApprovedOCROverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
-		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want ocr on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestUnapprovedOCRStaysOnAsynq(t *testing.T) {
+func TestUnapprovedOCRIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1339,15 +1332,8 @@ func TestUnapprovedOCRStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedOCR != repo.createdID {
-		t.Fatalf("enqueue calls=%d ocr=%s", q.enqueueCalls, q.enqueuedOCR)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
-		t.Fatalf("created = %+v, want unpinned ocr on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func ocrCatalog() *fakeCatalog {

@@ -56,19 +56,7 @@ data:
   HTML_ENGINE_TIMEOUT: "60s"
   AUDIO_ENGINE_TIMEOUT: "742s"
   AV_ENGINE_TIMEOUT: "753s"
-  # Compose-parity byte-for-byte (docker-compose.yml ocr-worker block,
-  # Phase 45 measured: worst-cell dense_eng p95=5.81 s/page, ceil(64 x 5.81
-  # x 2.0) = 744s, 17.3% under the 900s reconciler CAP). OCR_ENGINE_TIMEOUT/
-  # OCR_MAX_RETRY are the IN-02 parity values every queue.NewClient()-
-  # constructing service inherits identically via this shared ConfigMap --
-  # a mismatch would silently produce duplicate processing. 744s stays
-  # under the 15m/900s RECONCILER_ACTIVE_STALE_AFTER so the reconciler
-  # never double-processes an in-flight OCR job as abandoned.
-  OCR_WORKER_CONCURRENCY: "1"
   OCR_ENGINE_TIMEOUT: "744s"
-  OCR_MAX_RETRY: "2"
-  OCR_MAX_PAGES: "64"
-  OCR_MAX_IMAGE_PIXELS: "100000000"
   # Compose-parity byte-for-byte (docker-compose.yml pandoc-worker block,
   # Phase 49 measured: worst cell html_large->md (reader-heavy HTML
   # parsing) p95=32.318s, ceil(32.318 x 2.0)=65s, 92.8% under the 900s
@@ -78,8 +66,7 @@ data:
   # produce duplicate processing (pandocUniqueTTL is derived from the
   # timeout in each enqueuing process). PANDOC_WORKER_CONCURRENCY is
   # pandoc-worker-only (not read by queue.NewClient()) but is baked into
-  # this shared ConfigMap anyway, same posture as OCR_WORKER_CONCURRENCY/
-  # OCR_MAX_PAGES above (DEBT-05 -- every process carries the full
+  # this shared ConfigMap anyway (DEBT-05 -- every process carries the full
   # retry/timeout surface even when unused). PANDOC_MAX_INPUT_BYTES is NOT
   # worker-only (PR#2 finding-1): cmd/api also reads it, as the pandoc
   # per-engine UPLOAD ceiling (Config.MaxPandocInputBytes) -- the key needs
@@ -133,7 +120,7 @@ data:
   # was built and removed (63-CONTEXT.md D-04, reversed): a page count cannot be
   # derived reliably from untrusted bytes in that process, because a page tree
   # is a tree and a long document declares several different counts. It sits in
-  # the shared ConfigMap anyway, the same posture OCR_MAX_PAGES has (DEBT-05 --
+  # the shared ConfigMap anyway (DEBT-05 --
   # every process carries the full surface even when unused).
   PROBE_MAX_PAGES: "200"
   # probe-worker-only, not read by queue.NewClient(). 1, with the heavier

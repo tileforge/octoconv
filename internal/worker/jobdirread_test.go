@@ -151,7 +151,7 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 
 var jobDirDescriptors = []EngineDescriptor{
 	ImageDescriptor, DocumentDescriptor,
-	OCRDescriptor, PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
+	PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
 }
 
 func runUploadThroughRunner(t *testing.T, d EngineDescriptor, path string) (error, *pinRepo) {

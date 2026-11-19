@@ -70,23 +70,6 @@ worker:
       cpu: "2"
       memory: "1Gi"
 
-ocrWorker:
-  image:
-    repository: "octoconv-ocr-worker"
-  replicas: 1
-  # 774s = OCR_ENGINE_TIMEOUT (744s, ConfigMap) + 30s, the same
-  # ENGINE_TIMEOUT+30s chart convention as audioWorker (772) / avWorker
-  # (783) -- >= 744 satisfies SC4. Distinct from compose's
-  # stop_grace_period=764=744+10+10, which is the compose convention.
-  terminationGracePeriodSeconds: 774
-  resources:
-    limits:
-      # MUST match the Phase-45 scripts/ocr-timing-measure.sh /
-      # docker-compose.yml ocr-worker deploy.resources.limits exactly --
-      # the measured 744s timeout is only valid at these limits.
-      cpu: "2"
-      memory: "1Gi"
-
 pandocWorker:
   image:
     repository: "octoconv-pandoc-worker"
@@ -124,8 +107,8 @@ probeWorker:
   # than two. Raising either without the other breaks that: a higher ceiling
   # admits work the timeout will kill, a lower one refuses work the timeout was
   # sized for. Both live in the ConfigMap template, not here -- no engine bound
-  # in this chart is a values.yaml knob (OCR_MAX_PAGES and PROBE_ENGINE_TIMEOUT
-  # are not either), because these are derived numbers with their derivations
+  # in this chart is a values.yaml knob (PROBE_ENGINE_TIMEOUT is not either),
+  # because these are derived numbers with their derivations
   # written beside them, not per-install preferences.
   # 620s = 600s + 10s asynq ShutdownTimeout margin + 10s Docker/k8s SIGKILL
   # margin, matching docker-compose.yml's probe-worker. It was 610s -- exactly

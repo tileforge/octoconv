@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
+| worker, pandoc-worker, probe-worker | нативная | **возможен** |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -115,7 +115,8 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 |---|---|---|
 | `tectonic` | — (PR #21) | **да** |
 | `image` | да | **да** (эта ветка) |
-| `pandoc`, `ocr` | да | **да (фаза 68)** |
+| `pandoc` | да | **да (фаза 68)** |
+| `ocr` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-ocr`; встроенный процесс удалён |
 | `av` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-av`; встроенный процесс удалён |
 | `audio` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-audio`; встроенный процесс удалён |
 | `probe` | да | **да (фаза 69)** |
@@ -498,6 +499,8 @@ pandoc
 <!-- /conf05:pandoc:engines -->
 
 ## ocr (tesseract + pdftoppm) — замерено и доказано 2026-09-20
+
+Замер ниже — запись встроенного ocr-воркера. Этот процесс удалён. Ruleset теперь живёт в `tileforge/octoconv-worker-ocr`. Цифры ниже — историческая запись, их не пересчитывали. Внешний замер образа `octoconv-ocr:confinement-measure` (`sha256:f7db87f152b06681c8077deb2319839773a8abbf835012fc68cdb5aa86640c84`, ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`) дал текстовый слой 29 байт. Протокольный набор после этого не стартовал (выход 1).
 
 Образ `octoconv-ocr-worker:latest`. **Два** бинарника: PDF растеризуется
 постранично через `pdftoppm` (`ocrRasterizePageArgs`), и только потом идёт
