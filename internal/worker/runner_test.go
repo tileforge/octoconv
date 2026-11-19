@@ -34,7 +34,6 @@ var invalidOptsRunnerCases = []struct {
 	opts map[string]any
 }{
 	{"document", DocumentDescriptor, map[string]any{"pdf_profile": "bogus"}},
-	{"ocr", OCRDescriptor, map[string]any{"language": "fra"}},
 	{"pandoc", PandocDescriptor, map[string]any{"wrap": "bogus"}},
 }
 

@@ -4036,7 +4036,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV {
+		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -4196,6 +4196,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		}
 		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedAV != uuid.Nil {
 			t.Fatalf("refused av created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
+
+	t.Run("ocr_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "scan.pdf", "txt", pdfBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "pdf -> txt") {
+			t.Fatalf("body = %s, want pdf -> txt", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedOCR != uuid.Nil {
+			t.Fatalf("refused ocr created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
 		}
 	})
 
@@ -4653,13 +4678,9 @@ func TestCreateJob_ImageDeclaredAsPDFMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestCreateJob_OCRPDFEnqueuesToOCRQueue proves the end-to-end API happy path
-// (SC1/OCRP-01): a valid %PDF- upload targeting txt is content-validated,
-// persisted, and ENQUEUED to the ocr queue via the handleCreateJob engine
-// switch's EngineOCR case -- returning 202 with a job_id, not a 500. This is
-// the gap the phase-44 verifier caught: routing (EngineFor) resolved "ocr"
-// but the enqueue switch had no EngineOCR arm, so a valid OCR POST 500'd.
-func TestCreateJob_OCRPDFEnqueuesToOCRQueue(t *testing.T) {
+// TestCreateJob_OCRPDFWithoutACatalogIsRefused proves a valid pdf to txt
+// upload with no approved manifest is refused before upload.
+func TestCreateJob_OCRPDFWithoutACatalogIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -4672,14 +4693,15 @@ func TestCreateJob_OCRPDFEnqueuesToOCRQueue(t *testing.T) {
 
 	srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueuedOCR == uuid.Nil {
-		t.Fatalf("EnqueueOCRConvert was never called — OCR job not routed to the ocr queue (SC1 gap)")
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+	if !strings.Contains(rec.Body.String(), "pdf -> txt") {
+		t.Fatalf("body = %s, want pdf -> txt", rec.Body.String())
 	}
-	if q.enqueuedImage != uuid.Nil || q.enqueuedAV != uuid.Nil {
-		t.Errorf("OCR job wrongly enqueued to a non-ocr queue")
+	if repo.created != nil || store.uploaded || q.enqueueCalls != 0 || q.enqueuedOCR != uuid.Nil {
+		t.Fatalf("refused ocr created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, q.enqueueCalls)
 	}
 }
 

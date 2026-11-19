@@ -84,7 +84,6 @@ type enqueuer interface {
 	EnqueueImageConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
-	EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error
@@ -376,10 +375,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
-		case convert.EngineHTML, convert.EngineAudio, convert.EngineAV:
+		case convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR:
 			continue
-		case convert.EngineOCR:
-			enqueueErr = s.enq.EnqueueOCRConvert(ctx, j.ID)
 		case convert.EnginePandoc:
 			enqueueErr = s.enq.EnqueuePandocConvert(ctx, j.ID)
 		case convert.EngineProbe:

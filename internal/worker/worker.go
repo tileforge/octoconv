@@ -716,22 +716,6 @@ func avFailureCode(err error) (code, message string) {
 	}
 }
 
-// HandleOCRConvert runs one OCR extraction (image or scanned/image-only PDF
-// -> txt/hOCR/ALTO) end to end, entirely through Runner.Handle over
-// OCRDescriptor (D-09). OCRConverter.Convert already self-contains every
-// guard (page-count/page-box/born-digital/image-pixel, ocrguards.go/
-// ocrpdf.go), mirroring AVDescriptor's SIMPLE shape (no PreConvertGuard).
-// isOCRTerminal (D-04's stage-aware split, the OPPOSITE of isAVTerminal's
-// own shape) and FailureCode = ocrFailureCode live as DATA on the
-// descriptor, so a client can distinguish a born-digital/too-many-pages/
-// page-too-large/image-too-large/unsupported-language/unsupported-target
-// rejection from a generic corrupted-input failure. See
-// HandleImageConvert's doc comment for why this method still exists as a
-// thin delegator.
-func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, OCRDescriptor).Handle(ctx, t)
-}
-
 // HandlePandocConvert runs one pandoc markup-to-markup conversion end to
 // end, entirely through Runner.Handle over PandocDescriptor (D-01,
 // 48-CONTEXT.md, D-09). PandocConverter.Convert already self-contains every

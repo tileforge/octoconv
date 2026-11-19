@@ -520,12 +520,9 @@ func TestSweepRoutesAVJobsToAVQueue(t *testing.T) {
 	}
 }
 
-// TestSweepRoutesOCRJobsToOCRQueue proves a stranded engine="ocr" job routes
-// to EnqueueOCRConvert and NONE of the other five Enqueue* methods
-// (OCRP-01): sweep() must recover a stranded OCR job onto the ocr queue,
-// never fail-closed-default it. Mirrors TestSweepRoutesAVJobsToAVQueue
-// exactly.
-func TestSweepRoutesOCRJobsToOCRQueue(t *testing.T) {
+// TestSweepOCRStrandedRowStaysQueued proves a stranded ocr row is not
+// re-enqueued and is not failed. The ocr queue was not observed empty.
+func TestSweepOCRStrandedRowStaysQueued(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "ocr"}},
@@ -534,31 +531,17 @@ func TestSweepRoutesOCRJobsToOCRQueue(t *testing.T) {
 	enq := &fakeEnqueuer{}
 	s := NewSweeper(store, enq, testConfig())
 
-	s.sweep(context.Background())
-
-	if len(enq.ocrCalls) != 1 || enq.ocrCalls[0] != id {
-		t.Fatalf("EnqueueOCRConvert calls = %+v, want [%s]", enq.ocrCalls, id)
-	}
-	if len(enq.imageCalls) != 0 {
-		t.Fatalf("EnqueueImageConvert should not be called for an ocr job, got %d calls", len(enq.imageCalls))
-	}
-	if len(enq.documentCalls) != 0 {
-		t.Fatalf("EnqueueDocumentConvert should not be called for an ocr job, got %d calls", len(enq.documentCalls))
-	}
-	if len(enq.htmlCalls) != 0 {
-		t.Fatalf("EnqueueHTMLConvert should not be called for an ocr job, got %d calls", len(enq.htmlCalls))
-	}
-	if len(enq.audioCalls) != 0 {
-		t.Fatalf("EnqueueAudioConvert should not be called for an ocr job, got %d calls", len(enq.audioCalls))
-	}
-	if len(enq.avCalls) != 0 {
-		t.Fatalf("EnqueueAVConvert should not be called for an ocr job, got %d calls", len(enq.avCalls))
-	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
-	}
-	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.ocrCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueOCRConvert calls = %+v, want none", tick, enq.ocrCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
 	}
 }
 
@@ -669,7 +652,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV {
+			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}

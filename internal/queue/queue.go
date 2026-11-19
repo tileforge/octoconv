@@ -20,7 +20,6 @@ const (
 	TypeImageConvert    = "image:convert"
 	TypeWebhookDeliver  = "webhook:deliver"
 	TypeDocumentConvert = "document:convert"
-	TypeOCRConvert      = "ocr:convert"
 	TypePandocConvert   = "pandoc:convert"
 	// TypeProbeSanitize is the first task type whose operation half is not
 	// "convert". The naming convention is "<engine>:<operation>", and probe
@@ -35,16 +34,15 @@ const (
 
 // Queue names. asynq routes tasks to a queue per engine class so workers and
 // autoscaling can be scoped to a single class. QueueImage/QueueDocument/
-// QueueOCR/QueuePandoc are tied to
+// QueuePandoc are tied to
 // convert.EngineImage/EngineDocument/
-// EngineOCR/EnginePandoc (the single source of truth for engine-class
+// EnginePandoc (the single source of truth for engine-class
 // literals, DEBT-02) so queue names cannot drift from the engine-class
 // identifiers.
 const (
 	QueueImage    = convert.EngineImage
 	QueueWebhook  = "webhook"
 	QueueDocument = convert.EngineDocument
-	QueueOCR      = convert.EngineOCR
 	QueuePandoc   = convert.EnginePandoc
 	QueueProbe    = convert.EngineProbe
 	QueueTectonic = convert.EngineTectonic
@@ -111,29 +109,6 @@ func NewDocumentConvertTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Durati
 	}
 	return asynq.NewTask(TypeDocumentConvert, b,
 		asynq.Queue(QueueDocument),
-		asynq.MaxRetry(maxRetry),
-		asynq.Unique(uniqueTTL),
-	), nil
-}
-
-// NewOCRConvertTask builds an asynq task for an OCR conversion job (image/pdf
-// -> txt/hocr/alto), routed to the ocr queue, bounded to maxRetry
-// (OCR_MAX_RETRY, default 2 -- mirrors AV_MAX_RETRY's bounded-retry budget
-// since a genuine tesseract/pdftoppm failure is deterministic on the input
-// and unlikely to be helped by more than a couple of attempts), and carrying
-// a per-job asynq.Unique lock (uniqueTTL, see OCRUniqueTTL) so a second
-// enqueue for the same jobID while the first task/lock is still live
-// collides on the same uniqueness key and returns asynq.ErrDuplicateTask
-// instead of creating a second concurrent task -- mirrors NewAVConvertTask
-// exactly; reuses ConvertPayload/ParseConvertPayload (no new payload type
-// needed, all job detail is re-read from Postgres).
-func NewOCRConvertTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Duration) (*asynq.Task, error) {
-	b, err := json.Marshal(ConvertPayload{JobID: jobID})
-	if err != nil {
-		return nil, fmt.Errorf("marshal convert payload: %w", err)
-	}
-	return asynq.NewTask(TypeOCRConvert, b,
-		asynq.Queue(QueueOCR),
 		asynq.MaxRetry(maxRetry),
 		asynq.Unique(uniqueTTL),
 	), nil
@@ -290,32 +265,6 @@ func DocumentRetryDelay(n int, e error, t *asynq.Task) time.Duration {
 	return documentRetrySchedule[idx]
 }
 
-// ocrRetrySchedule is the backoff schedule for OCR conversion retries: 15s,
-// 1m -- PROVISIONAL pending Phase 45's measured OCR_ENGINE_TIMEOUT. Mirrors
-// avRetrySchedule's shape (two entries, no jitter) since OCR_MAX_RETRY
-// defaults to 2 like AV_MAX_RETRY, but a genuine tesseract/pdftoppm attempt
-// is expected to be materially cheaper per-page than an av transcode, so the
-// backoff is shorter than av's 30s/2m.
-var ocrRetrySchedule = []time.Duration{
-	15 * time.Second,
-	1 * time.Minute,
-}
-
-// OCRRetryDelay is an asynq RetryDelayFunc for the ocr queue. Mirrors
-// AVRetryDelay's/AudioRetryDelay's clamp-index-to-schedule-length shape
-// exactly -- NOT WebhookRetryDelay's jittered shape -- since ocrBackoffSum
-// must be able to call OCRRetryDelay directly and deterministically.
-func OCRRetryDelay(n int, e error, t *asynq.Task) time.Duration {
-	idx := n
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(ocrRetrySchedule) {
-		idx = len(ocrRetrySchedule) - 1
-	}
-	return ocrRetrySchedule[idx]
-}
-
 // pandocRetrySchedule is the backoff schedule for pandoc conversion retries:
 // 5s, 20s -- PROVISIONAL pending Phase 49's measured PANDOC_ENGINE_TIMEOUT.
 // Mirrors ocrRetrySchedule's shape (two entries, no jitter) since
@@ -388,8 +337,6 @@ func RetryDelayFunc(n int, e error, t *asynq.Task) time.Duration {
 		return WebhookRetryDelay(n, e, t)
 	case TypeDocumentConvert:
 		return DocumentRetryDelay(n, e, t)
-	case TypeOCRConvert:
-		return OCRRetryDelay(n, e, t)
 	case TypePandocConvert:
 		return PandocRetryDelay(n, e, t)
 	case TypeProbeSanitize:
@@ -493,50 +440,6 @@ func DocumentUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration 
 	return time.Duration(maxRetry+1)*engineTimeout + documentBackoffSum(maxRetry) + uniqueTTLSafetyMargin
 }
 
-// ocrBackoffSum sums OCRRetryDelay(i) for i in [0, maxRetry) -- the total
-// backoff time asynq spends waiting before each of maxRetry retries, clamped
-// to the last schedule entry once i reaches len(ocrRetrySchedule). Mirrors
-// avBackoffSum; safe to call OCRRetryDelay directly since it has no jitter
-// (same reasoning as documentBackoffSum's doc comment).
-func ocrBackoffSum(maxRetry int) time.Duration {
-	var sum time.Duration
-	for i := 0; i < maxRetry; i++ {
-		sum += OCRRetryDelay(i, nil, nil)
-	}
-	return sum
-}
-
-// OCRUniqueTTL derives the per-job asynq.Unique lock TTL for OCR conversion
-// tasks from the actual retry budget (maxRetry, normally OCR_MAX_RETRY) and
-// the per-attempt bound (engineTimeout, normally OCR_ENGINE_TIMEOUT),
-// mirroring AVUniqueTTL's derivation shape exactly so the lock can never
-// silently drift under asynq's true worst-case retry lifetime if either env
-// var changes later.
-//
-// DERIVED FRESH (D-04/IN-02): this is computed from OCR's OWN
-// OCR_MAX_RETRY/OCR_ENGINE_TIMEOUT budget -- it deliberately never reuses
-// AVUniqueTTL's/AudioUniqueTTL's/any other engine's values, since OCR's
-// per-attempt cost (tesseract/pdftoppm, bounded by a distinct
-// OCR_ENGINE_TIMEOUT) is not comparable to any other engine class's. A
-// mismatch here would silently duplicate processing (T-44-05): if
-// OCRUniqueTTL under-estimated the true worst-case retry lifetime, a
-// reconciler re-enqueue could race a still-legitimately-retrying task.
-//
-// SEQUENCING NOTE (mirrors AVUniqueTTL's D-03 precedent): OCR_ENGINE_TIMEOUT
-// is only a provisional code default in this phase -- Phase 45 measures it
-// for real and supersedes the input value entirely. The formula below is
-// unaffected by that; only the engineTimeout argument changes.
-//
-// Worst-case formula: (maxRetry+1) * engineTimeout + ocrBackoffSum(maxRetry) + margin.
-// Same "(maxRetry+1) executions, not maxRetry" correction as
-// ImageUniqueTTL/DocumentUniqueTTL/HTMLUniqueTTL/AudioUniqueTTL/AVUniqueTTL
-// applies here (asynq's archive condition msg.Retried >= msg.Retry is
-// checked AFTER each failed attempt). REUSES the shared uniqueTTLSafetyMargin
-// const verbatim -- no ocr-specific margin constant.
-func OCRUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
-	return time.Duration(maxRetry+1)*engineTimeout + ocrBackoffSum(maxRetry) + uniqueTTLSafetyMargin
-}
-
 // pandocBackoffSum sums PandocRetryDelay(i) for i in [0, maxRetry) -- the
 // total backoff time asynq spends waiting before each of maxRetry retries,
 // clamped to the last schedule entry once i reaches
@@ -586,8 +489,8 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 }
 
 // AllConvertQueues returns the queue name for every engine class that still
-// has an asynq queue (image/document/ocr/pandoc/probe/tectonic/cad).
-// Html, audio, and av are admitted and have no queue. QueueWebhook is excluded:
+// has an asynq queue (image/document/pandoc/probe/tectonic/cad).
+// Html, audio, av, and ocr are admitted and have no queue. QueueWebhook is excluded:
 // webhook is not an engine class and is never KEDA-scaled per conversion.
 // This is the single source of truth for cmd/api/main.go's
 // queue-depth collector arg list: metrics.NewQueueDepthCollector is
@@ -599,7 +502,7 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 // convert.go's Engine* constants (or vice versa). Plan 04 rewires
 // cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueImage, QueueDocument, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic, QueueCAD}
+	return []string{QueueImage, QueueDocument, QueuePandoc, QueueProbe, QueueTectonic, QueueCAD}
 }
 
 // probeBackoffSum sums ProbeRetryDelay(i) for i in [0, maxRetry).

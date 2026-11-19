@@ -275,118 +275,6 @@ func TestDocumentUniqueTTL(t *testing.T) {
 		t.Errorf("DocumentUniqueTTL must grow monotonically with engineTimeout")
 	}
 }
-
-// TestOCRConvertTaskRoundTrip asserts NewOCRConvertTask builds a task routed
-// to TypeOCRConvert whose payload round-trips through ParseConvertPayload
-// back to the same job id -- mirrors TestAVConvertTaskRoundTrip's shape for
-// the ocr engine class.
-func TestOCRConvertTaskRoundTrip(t *testing.T) {
-	id := uuid.New()
-	task, err := NewOCRConvertTask(id, 2, OCRUniqueTTL(2, 300*time.Second))
-	if err != nil {
-		t.Fatalf("NewOCRConvertTask: %v", err)
-	}
-	if task.Type() != TypeOCRConvert {
-		t.Errorf("task type = %q, want %q", task.Type(), TypeOCRConvert)
-	}
-	p, err := ParseConvertPayload(task.Payload())
-	if err != nil {
-		t.Fatalf("ParseConvertPayload: %v", err)
-	}
-	if p.JobID != id {
-		t.Errorf("job id = %s, want %s", p.JobID, id)
-	}
-}
-
-// TestOCRRetryDelaySchedule asserts OCRRetryDelay returns the exact
-// provisional 15s/1m schedule (no jitter, mirrors AVRetryDelay's shape) and
-// clamps on both ends.
-func TestOCRRetryDelaySchedule(t *testing.T) {
-	cases := []struct {
-		n    int
-		want time.Duration
-	}{
-		{n: -1, want: 15 * time.Second}, // clamps to first entry
-		{n: 0, want: 15 * time.Second},
-		{n: 1, want: 1 * time.Minute},
-		{n: 99, want: 1 * time.Minute}, // clamps past the end of the schedule
-	}
-	for _, tc := range cases {
-		got := OCRRetryDelay(tc.n, nil, nil)
-		if got != tc.want {
-			t.Errorf("OCRRetryDelay(%d) = %v, want %v", tc.n, got, tc.want)
-		}
-	}
-}
-
-// TestRetryDelayFuncRoutesOCRConvert is the only mechanism that catches
-// Pitfall 1's silent RetryDelayFunc default fallthrough for ocr: it fails if
-// the `case TypeOCRConvert` arm is ever removed from RetryDelayFunc, since a
-// missing case would produce no compile error, only the wrong (asynq
-// default) backoff schedule silently applied in production.
-func TestRetryDelayFuncRoutesOCRConvert(t *testing.T) {
-	ocrTask := asynq.NewTask(TypeOCRConvert, nil)
-
-	if got, want := RetryDelayFunc(0, nil, ocrTask), 15*time.Second; got != want {
-		t.Errorf("RetryDelayFunc(ocr, 0) = %v, want %v", got, want)
-	}
-	if got, want := RetryDelayFunc(1, nil, ocrTask), 1*time.Minute; got != want {
-		t.Errorf("RetryDelayFunc(ocr, 1) = %v, want %v", got, want)
-	}
-	// Index 5 clamps to the last schedule entry (1m).
-	if got, want := RetryDelayFunc(5, nil, ocrTask), 1*time.Minute; got != want {
-		t.Errorf("RetryDelayFunc(ocr, 5) = %v, want %v", got, want)
-	}
-}
-
-// TestOCRUniqueTTL asserts OCRUniqueTTL derives its result from the
-// corrected worst-case retry lifetime ((maxRetry+1) executions) exactly like
-// AVUniqueTTL, evaluates to exactly 1095s for (2, 300s) -- 3*300s + (15s+60s)
-// + 120s = 1095s -- is monotonic in both arguments, and strictly EXCEEDS the
-// zero-margin worst-case retry lifetime, demonstrating uniqueTTLSafetyMargin
-// is a load-bearing term, not accidentally zero (D-04: reuses the shared
-// margin, never a per-engine one; OCRUniqueTTL is derived FRESH from OCR's
-// own budget, never copied from AV/Audio).
-func TestOCRUniqueTTL(t *testing.T) {
-	maxRetry := 2
-	engineTimeout := 300 * time.Second           // matches the provisional OCR_ENGINE_TIMEOUT default
-	backoffSum := 15*time.Second + 1*time.Minute // i=0..1, per ocrRetrySchedule
-
-	want := time.Duration(maxRetry+1)*engineTimeout + backoffSum + uniqueTTLSafetyMargin
-	got := OCRUniqueTTL(maxRetry, engineTimeout)
-	if got != want {
-		t.Errorf("OCRUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
-	}
-	if want != 1095*time.Second {
-		t.Errorf("expected worked example want = 1095s, got %v", want)
-	}
-
-	// Monotonicity: raising either argument must never shrink the TTL.
-	if OCRUniqueTTL(maxRetry+1, engineTimeout) <= OCRUniqueTTL(maxRetry, engineTimeout) {
-		t.Errorf("OCRUniqueTTL must grow monotonically with maxRetry")
-	}
-	if OCRUniqueTTL(maxRetry, engineTimeout+time.Second) <= OCRUniqueTTL(maxRetry, engineTimeout) {
-		t.Errorf("OCRUniqueTTL must grow monotonically with engineTimeout")
-	}
-
-	// Fresh-derivation proof (acceptance criterion, D-04/IN-02): OCRUniqueTTL
-	// scales with its own engineTimeout argument rather than being a
-	// hardcoded/copied constant.
-	if OCRUniqueTTL(2, 300*time.Second) == OCRUniqueTTL(2, 600*time.Second) {
-		t.Errorf("OCRUniqueTTL(2, 300s) must differ from OCRUniqueTTL(2, 600s) -- proves it is derived, not constant")
-	}
-
-	// Strictly exceeds the zero-margin worst-case retry lifetime -- proves
-	// uniqueTTLSafetyMargin is load-bearing rather than accidentally zero.
-	worstCaseNoMargin := time.Duration(maxRetry+1)*engineTimeout + ocrBackoffSum(maxRetry)
-	if OCRUniqueTTL(maxRetry, engineTimeout) <= worstCaseNoMargin {
-		t.Errorf("OCRUniqueTTL(%d, %v) = %v must strictly exceed the zero-margin worst-case lifetime %v",
-			maxRetry, engineTimeout, OCRUniqueTTL(maxRetry, engineTimeout), worstCaseNoMargin)
-	}
-}
-
-// TestPandocConvertTaskRoundTrip mirrors TestOCRConvertTaskRoundTrip for the
-// pandoc engine class.
 func TestPandocConvertTaskRoundTrip(t *testing.T) {
 	id := uuid.New()
 	task, err := NewPandocConvertTask(id, 2, PandocUniqueTTL(2, 90*time.Second))
@@ -452,14 +340,9 @@ func TestRetryDelayFuncRoutesPandocConvert(t *testing.T) {
 }
 
 // TestPandocUniqueTTL asserts PandocUniqueTTL derives its result from the
-// corrected worst-case retry lifetime ((maxRetry+1) executions) exactly like
-// OCRUniqueTTL, is monotonic in both arguments, strictly EXCEEDS the
-// zero-margin worst-case retry lifetime (uniqueTTLSafetyMargin is
-// load-bearing), and -- the D-03 fresh-derivation proof -- scales with its
-// own engineTimeout argument (60s vs 120s) rather than being a hardcoded/
-// copied constant, and is provably distinct from OCRUniqueTTL/AVUniqueTTL/
-// AudioUniqueTTL under the SAME (maxRetry, engineTimeout) inputs (proves the
-// formula's constants -- schedule/margin -- are pandoc's own, not copied).
+// corrected worst-case retry lifetime ((maxRetry+1) executions), is monotonic
+// in both arguments, and strictly exceeds the zero-margin worst-case retry
+// lifetime.
 func TestPandocUniqueTTL(t *testing.T) {
 	maxRetry := 2
 	engineTimeout := 90 * time.Second            // matches the provisional PANDOC_ENGINE_TIMEOUT default
@@ -494,21 +377,12 @@ func TestPandocUniqueTTL(t *testing.T) {
 			maxRetry, engineTimeout, PandocUniqueTTL(maxRetry, engineTimeout), worstCaseNoMargin)
 	}
 
-	// Not-copied proof: under the SAME (maxRetry, engineTimeout) inputs,
-	// PandocUniqueTTL must differ from OCRUniqueTTL/AVUniqueTTL/
-	// AudioUniqueTTL -- if it matched, the schedule/margin constants baked
-	// into the formula would have to be an accidental or deliberate copy of
-	// another engine's, not pandoc's own.
-	if PandocUniqueTTL(maxRetry, engineTimeout) == OCRUniqueTTL(maxRetry, engineTimeout) {
-		t.Errorf("PandocUniqueTTL(%d, %v) must not equal OCRUniqueTTL(%d, %v) -- proves the schedule is pandoc's own, not OCR's",
-			maxRetry, engineTimeout, maxRetry, engineTimeout)
-	}
 }
 
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
-// one appears exactly once in AllConvertQueues(), except html, audio, and av,
+// one appears exactly once in AllConvertQueues(), except html, audio, av, and ocr,
 // which are admitted and have no queue. AllConvertQueues contains no extras
 // (e.g. QueueWebhook, which is not an engine class).
 func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
@@ -533,7 +407,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 
 	for engine := range wantEngines {
 		wantCount := 1
-		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV {
+		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR {
 			wantCount = 0
 		}
 		if seen[engine] != wantCount {
@@ -568,48 +442,6 @@ func TestProbeUniqueTTLIsItsOwn(t *testing.T) {
 	// literals, so pandoc changing its schedule cannot move this number.
 }
 
-// TestClientOCRUniqueTTLDiffersFromAVAndAudio is the D-04/IN-02
-// fresh-derivation proof at the Client level: under default env (no
-// OCR_MAX_RETRY/OCR_ENGINE_TIMEOUT/AV_MAX_RETRY/AV_ENGINE_TIMEOUT/
-// AUDIO_MAX_RETRY/AUDIO_ENGINE_TIMEOUT overrides), the client's derived
-// ocrUniqueTTL must NOT be byte-equal to avUniqueTTL or audioUniqueTTL --
-// proving OCRUniqueTTL was computed from OCR's own budget, not copied.
-// asynq.NewClient only lazily constructs a redis.UniversalClient (no network
-// I/O at construction time -- see asynq's MakeRedisClient), so this test
-// needs no live Redis; REDIS_ADDR only has to be non-empty to satisfy
-// RedisOpt's presence check.
-func TestClientOCRUniqueTTLDiffersFromAVAndAudio(t *testing.T) {
-	t.Setenv("REDIS_ADDR", "127.0.0.1:0")
-	for _, k := range []string{
-		"OCR_MAX_RETRY", "OCR_ENGINE_TIMEOUT",
-		"AV_MAX_RETRY", "AV_ENGINE_TIMEOUT",
-	} {
-		t.Setenv(k, "")
-	}
-
-	cl, err := NewClient()
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	defer cl.Close()
-
-	if cl.ocrUniqueTTL == cl.pandocUniqueTTL {
-		t.Errorf("ocrUniqueTTL (%v) must not equal pandocUniqueTTL (%v) -- fresh derivation, not a copy", cl.ocrUniqueTTL, cl.pandocUniqueTTL)
-	}
-}
-
-// TestClientPandocUniqueTTLDiffersFromOCRAndAV is the D-03 fresh-derivation
-// proof at the Client level, mirroring
-// TestClientOCRUniqueTTLDiffersFromAVAndAudio's shape exactly: under default
-// env (no PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT/OCR_MAX_RETRY/
-// OCR_ENGINE_TIMEOUT/AV_MAX_RETRY/AV_ENGINE_TIMEOUT overrides), the client's
-// derived pandocUniqueTTL must NOT be byte-equal to ocrUniqueTTL or
-// avUniqueTTL -- proving PandocUniqueTTL was computed from pandoc's own
-// budget, not copied from a neighboring engine class (the recurring
-// project anti-pattern this phase is flagged against). asynq.NewClient only
-// lazily constructs a redis.UniversalClient (no network I/O at construction
-// time), so this test needs no live Redis; REDIS_ADDR only has to be
-// non-empty to satisfy RedisOpt's presence check.
 func TestClientPandocUniqueTTLDiffersFromOCRAndAV(t *testing.T) {
 	t.Setenv("REDIS_ADDR", "127.0.0.1:0")
 	for _, k := range []string{
@@ -626,59 +458,11 @@ func TestClientPandocUniqueTTLDiffersFromOCRAndAV(t *testing.T) {
 	}
 	defer cl.Close()
 
-	if cl.pandocUniqueTTL == cl.ocrUniqueTTL {
-		t.Errorf("pandocUniqueTTL (%v) must not equal ocrUniqueTTL (%v) -- fresh derivation, not a copy", cl.pandocUniqueTTL, cl.ocrUniqueTTL)
+	if cl.pandocUniqueTTL == cl.probeUniqueTTL {
+		t.Errorf("pandocUniqueTTL (%v) must not equal probeUniqueTTL (%v) -- fresh derivation, not a copy", cl.pandocUniqueTTL, cl.probeUniqueTTL)
 	}
 }
 
-// TestEnqueueOCRConvert enqueues an OCR task and confirms it lands in the ocr
-// queue. Requires a live Redis (REDIS_ADDR); skipped otherwise. Mirrors
-// TestEnqueueImageConvert's shape for the ocr engine class.
-func TestEnqueueOCRConvert(t *testing.T) {
-	if os.Getenv("REDIS_ADDR") == "" {
-		t.Skip("REDIS_ADDR not set; skipping integration test")
-	}
-
-	cl, err := NewClient()
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	defer cl.Close()
-
-	id := uuid.New()
-	if err := cl.EnqueueOCRConvert(context.Background(), id); err != nil {
-		t.Fatalf("EnqueueOCRConvert: %v", err)
-	}
-
-	opt, _ := RedisOpt()
-	insp := asynq.NewInspector(opt)
-	defer insp.Close()
-
-	infos, err := insp.ListPendingTasks(QueueOCR)
-	if err != nil {
-		t.Fatalf("ListPendingTasks: %v", err)
-	}
-	found := false
-	for _, ti := range infos {
-		p, err := ParseConvertPayload(ti.Payload)
-		if err == nil && p.JobID == id {
-			found = true
-			if ti.Type != TypeOCRConvert {
-				t.Errorf("enqueued type = %q, want %q", ti.Type, TypeOCRConvert)
-			}
-			// cleanup
-			_ = insp.DeleteTask(QueueOCR, ti.ID)
-			break
-		}
-	}
-	if !found {
-		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueOCR)
-	}
-}
-
-// TestEnqueuePandocConvert enqueues a pandoc task and confirms it lands in
-// the pandoc queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
-// Mirrors TestEnqueueOCRConvert's shape for the pandoc engine class.
 func TestEnqueuePandocConvert(t *testing.T) {
 	if os.Getenv("REDIS_ADDR") == "" {
 		t.Skip("REDIS_ADDR not set; skipping integration test")
