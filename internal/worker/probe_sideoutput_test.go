@@ -112,7 +112,6 @@ func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 	}{
 		{"image", ImageDescriptor},
 		{"document", DocumentDescriptor},
-		{"pandoc", PandocDescriptor},
 	} {
 		if d.desc.SideOutputs != nil {
 			t.Errorf("%s declares SideOutputs; only probe should", d.name)
@@ -140,9 +139,9 @@ func TestNewRunnerInstallsSideOutputs(t *testing.T) {
 	}
 
 	other := &Handler{}
-	NewRunner(other, PandocDescriptor)
+	NewRunner(other, DocumentDescriptor)
 	if other.sideOutputs != nil {
-		t.Error("NewRunner installed a side-output hook for pandoc, which declares none")
+		t.Error("NewRunner installed a side-output hook for document, which declares none")
 	}
 }
 

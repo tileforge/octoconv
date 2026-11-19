@@ -63,7 +63,9 @@ func spillSlotsConfig(cfg Config) Config {
 }
 
 func newSpillSlotsServer(cfg Config) *Server {
-	return NewServer(&lockedRepo{fakeRepo: &fakeRepo{}}, &fakeStorage{}, &lockedQueue{fakeQueue: &fakeQueue{}}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), spillSlotsConfig(cfg))
+	srv := NewServer(&lockedRepo{fakeRepo: &fakeRepo{}}, &fakeStorage{}, &lockedQueue{fakeQueue: &fakeQueue{}}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), spillSlotsConfig(cfg))
+	srv.SetCapabilityCatalog(pandocCatalog())
+	return srv
 }
 
 func startAnswerMoments(t *testing.T, srv *Server, dir string, tokens int) (*httptest.Server, func() []answerMoment) {
@@ -448,6 +450,7 @@ func TestSpillFilesNeverOutnumberHeldSlots(t *testing.T) {
 	openGate := func() { gateOnce.Do(func() { close(repo.gate) }) }
 	t.Cleanup(openGate)
 	srv := NewServer(repo, &lockedStorage{fakeStorage: &fakeStorage{}}, &lockedQueue{fakeQueue: &fakeQueue{}}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), spillSlotsConfig(createIntakeConfig(64<<20)))
+	srv.SetCapabilityCatalog(pandocCatalog())
 	ts := startShippedServer(t, srv.Routes())
 	addr := ts.Listener.Addr().String()
 	t.Logf("intake window %v, intake min rate %d B/s", srv.intakeWindow, srv.intakeMinRate)

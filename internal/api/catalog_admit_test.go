@@ -1515,7 +1515,7 @@ func TestApprovedPandocOptionSkipsEnqueue(t *testing.T) {
 	}
 }
 
-func TestApprovedPandocProgressWebhookStaysOnAsynq(t *testing.T) {
+func TestApprovedPandocProgressWebhookUsesProtocol(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1530,15 +1530,15 @@ func TestApprovedPandocProgressWebhookStaysOnAsynq(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
+	if q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
 		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
 	}
-	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want webhook on asynq", repo.created)
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want protocol pandoc with progress webhook", repo.created)
 	}
 }
 
-func TestApprovedPandocOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedPandocOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1551,18 +1551,11 @@ func TestApprovedPandocOverLinkWindowStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
-		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" {
-		t.Fatalf("created = %+v, want pandoc on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestUnapprovedPandocStaysOnAsynq(t *testing.T) {
+func TestUnapprovedPandocIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -1588,15 +1581,8 @@ func TestUnapprovedPandocStaysOnAsynq(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if q.enqueueCalls != 1 || q.enqueuedPandoc != repo.createdID {
-		t.Fatalf("enqueue calls=%d pandoc=%s", q.enqueueCalls, q.enqueuedPandoc)
-	}
-	if repo.created == nil || repo.created.DispatchOwner != "" || repo.created.CapabilityID != "" {
-		t.Fatalf("created = %+v, want unpinned pandoc on asynq", repo.created)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestUnknownPandocWrapIs422(t *testing.T) {
@@ -1618,7 +1604,7 @@ func TestUnknownPandocWrapIs422(t *testing.T) {
 func pandocCatalog() *fakeCatalog {
 	return &fakeCatalog{
 		allow: func(operation, source, target string) (workerproto.Match, bool) {
-			if operation == convert.OperationConvert && source == "md" && target == "html" {
+			if operation == convert.OperationConvert && (source == "md" || source == "rst") && target == "html" {
 				return workerproto.Match{
 					CapabilityID:      "octoconv.convert.pandoc",
 					CapabilityVersion: 1,

@@ -34,7 +34,6 @@ var invalidOptsRunnerCases = []struct {
 	opts map[string]any
 }{
 	{"document", DocumentDescriptor, map[string]any{"pdf_profile": "bogus"}},
-	{"pandoc", PandocDescriptor, map[string]any{"wrap": "bogus"}},
 }
 
 // TestInvalidOptionsRecordsBothOutcomeCounters closes ERRC-02: for each of

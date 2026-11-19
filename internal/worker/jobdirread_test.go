@@ -151,7 +151,7 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 
 var jobDirDescriptors = []EngineDescriptor{
 	ImageDescriptor, DocumentDescriptor,
-	PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
+	ProbeDescriptor, TectonicDescriptor, CADDescriptor,
 }
 
 func runUploadThroughRunner(t *testing.T, d EngineDescriptor, path string) (error, *pinRepo) {
@@ -227,9 +227,6 @@ func TestValidatorFailureTextsKeepTheirClassification(t *testing.T) {
 		{"document missing", DocumentDescriptor, convertErr("libreoffice: stat output: %w", missing), true},
 		{"document irregular", DocumentDescriptor, convertErr("libreoffice: stat output: %w", irregular), true},
 		{"document open failure", DocumentDescriptor, convertErr("libreoffice: open output: %w", denied), false},
-		{"pandoc missing", PandocDescriptor, convertErr("pandoc: stat output: %w", missing), true},
-		{"pandoc irregular", PandocDescriptor, convertErr("pandoc: stat output: %w", irregular), true},
-		{"pandoc open failure", PandocDescriptor, convertErr("pandoc: open output: %w", denied), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.d.IsTerminal(tc.err); got != tc.terminal {

@@ -45,20 +45,6 @@ type Client struct {
 	// comment for the worst-case-lifetime derivation this TTL must always
 	// exceed.
 	documentUniqueTTL time.Duration
-	// pandocMaxRetry is the per-task MaxRetry budget for pandoc conversion
-	// tasks (PANDOC_MAX_RETRY, default 2 — mirrors ocrMaxRetry's
-	// bounded-retry budget since a genuine pandoc engine/parse failure is
-	// deterministic on the input and unlikely to be helped by more than a
-	// couple of attempts, and 48-CONTEXT.md D-01 classifies timeouts and
-	// engine/parse errors as TERMINAL anyway).
-	pandocMaxRetry int
-	// pandocUniqueTTL is the per-job asynq.Unique lock TTL for pandoc
-	// conversion tasks, derived once at construction from pandocMaxRetry and
-	// PANDOC_ENGINE_TIMEOUT via PandocUniqueTTL. Derived fresh from
-	// pandoc's OWN retry/timeout budget, never reused from ocrUniqueTTL/
-	// avUniqueTTL/audioUniqueTTL or any other engine class's TTL (D-03,
-	// 48-CONTEXT.md) — a mismatch here would silently duplicate processing.
-	pandocUniqueTTL time.Duration
 	// probeMaxRetry / probeUniqueTTL are the sanitize (probe queue)
 	// equivalents, derived at construction exactly like every pair above.
 	probeMaxRetry  int
@@ -74,15 +60,7 @@ type Client struct {
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
 // 4), ENGINE_TIMEOUT (default 120s — same env var the worker reads to bound
 // a conversion attempt), DOCUMENT_MAX_RETRY (default 3),
-// DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01),
-// PANDOC_MAX_RETRY (default 2), and
-// PANDOC_ENGINE_TIMEOUT (default 90s — a CLEARLY-MARKED PLACEHOLDER this
-// phase: pandoc is a fast, deterministic, CPU-bound markup-to-markup
-// transform, so this is a small value in the ~60-120s range, mirroring the
-// OCR_ENGINE_TIMEOUT 300s-provisional-then-744s-measured precedent (Phase
-// 44 -> Phase 45); Phase 49 supplies the measured PANDOC_ENGINE_TIMEOUT from
-// a real conversion-time matrix and supersedes this value entirely — see
-// 48-CONTEXT.md D-03).
+// DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01).
 //
 // COUPLING (Pitfall 4, RESEARCH.md): RECONCILER_ACTIVE_STALE_AFTER is a
 // single global threshold (default 900s) that must comfortably exceed every
@@ -103,11 +81,6 @@ func NewClient() (*Client, error) {
 	engineTimeout := envDuration("ENGINE_TIMEOUT", 120*time.Second)
 	documentMaxRetry := envInt("DOCUMENT_MAX_RETRY", 3)
 	documentEngineTimeout := envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second)
-	pandocMaxRetry := envInt("PANDOC_MAX_RETRY", 2)
-	// PANDOC_ENGINE_TIMEOUT default of 90s is a PLACEHOLDER — pandoc is
-	// fast; Phase 49 supplies the measured value and supersedes this
-	// entirely (D-03, mirroring the OCR 300s->744s precedent).
-	pandocEngineTimeout := envDuration("PANDOC_ENGINE_TIMEOUT", 90*time.Second)
 	probeMaxRetry := envInt("PROBE_MAX_RETRY", 2)
 	// PROBE_ENGINE_TIMEOUT's default is a PLACEHOLDER and is marked as such
 	// everywhere it appears, following the exact precedent of pandoc's own
@@ -133,8 +106,6 @@ func NewClient() (*Client, error) {
 		webhookUniqueTTL:  WebhookUniqueTTL(webhookMaxRetry, webhookPerAttemptTimeout),
 		documentMaxRetry:  documentMaxRetry,
 		documentUniqueTTL: DocumentUniqueTTL(documentMaxRetry, documentEngineTimeout),
-		pandocMaxRetry:    pandocMaxRetry,
-		pandocUniqueTTL:   PandocUniqueTTL(pandocMaxRetry, pandocEngineTimeout),
 		probeMaxRetry:     probeMaxRetry,
 		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
 		tectonicMaxRetry:  tectonicMaxRetry,
@@ -180,19 +151,6 @@ func (c *Client) EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) er
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue document convert %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// EnqueuePandocConvert puts a pandoc markup-to-markup conversion job onto
-// the pandoc queue.
-func (c *Client) EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error {
-	task, err := NewPandocConvertTask(jobID, c.pandocMaxRetry, c.pandocUniqueTTL)
-	if err != nil {
-		return err
-	}
-	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
-		return fmt.Errorf("enqueue pandoc convert %s: %w", jobID, err)
 	}
 	return nil
 }

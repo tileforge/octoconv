@@ -7,11 +7,12 @@
 #   scripts/sandbox-liveproof.sh <class>...
 #
 # Every class this script knows about is in the table below from the start
-# (image, pandoc, probe, document, cad). Html confinement is
+# (image, probe, document, cad). Html confinement is
 # measured in tileforge/octoconv-worker-html. Audio confinement is measured
 # in tileforge/octoconv-worker-audio. Av confinement is measured in
 # tileforge/octoconv-worker-av. Ocr confinement is measured in
-# tileforge/octoconv-worker-ocr. A class that lands later extends
+# tileforge/octoconv-worker-ocr. Pandoc confinement is measured in
+# tileforge/octoconv-worker-pandoc. A class that lands later extends
 # the CONVERTER, never this script.
 #
 # The document and cad classes add emulated-amd64-refuses after the four
@@ -43,7 +44,7 @@ die() { echo "error: $*" >&2; exit 1; }
 class_row() {
   case "$1" in
     image)  echo "Dockerfile.worker worker IMAGE_SANDBOX_DISABLED no -" ;;
-    pandoc) echo "Dockerfile.pandoc-worker pandoc-worker PANDOC_SANDBOX_DISABLED yes -" ;;
+    pandoc) die "pandoc confinement is measured in tileforge/octoconv-worker-pandoc" ;;
     ocr)    die "ocr confinement is measured in tileforge/octoconv-worker-ocr" ;;
     av)     die "av confinement is measured in tileforge/octoconv-worker-av" ;;
     audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
@@ -51,7 +52,7 @@ class_row() {
     probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
     document) echo "Dockerfile.document-worker document-worker DOCUMENT_SANDBOX_DISABLED yes -" ;;
     cad) echo "Dockerfile.cad-worker cad-worker CAD_SANDBOX_DISABLED yes -" ;;
-    *) die "unknown class: $1 (expected image, pandoc, probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html; audio confinement is measured in tileforge/octoconv-worker-audio; av confinement is measured in tileforge/octoconv-worker-av; ocr confinement is measured in tileforge/octoconv-worker-ocr)" ;;
+    *) die "unknown class: $1 (expected image, probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html; audio confinement is measured in tileforge/octoconv-worker-audio; av confinement is measured in tileforge/octoconv-worker-av; ocr confinement is measured in tileforge/octoconv-worker-ocr; pandoc confinement is measured in tileforge/octoconv-worker-pandoc)" ;;
   esac
 }
 

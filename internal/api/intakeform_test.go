@@ -81,6 +81,7 @@ func postBoundForm(t *testing.T, path, contentType string, body io.Reader) bound
 	t.Helper()
 	repo, store := &fakeRepo{}, &fakeStorage{}
 	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), createIntakeConfig(64<<20))
+	srv.SetCapabilityCatalog(pandocCatalog())
 	counted := &countingBody{r: body}
 	req := authed(httptest.NewRequest(http.MethodPost, path, counted))
 	req.Header.Set("Content-Type", contentType)

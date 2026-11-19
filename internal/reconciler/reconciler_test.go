@@ -545,12 +545,9 @@ func TestSweepOCRStrandedRowStaysQueued(t *testing.T) {
 	}
 }
 
-// TestSweepRoutesPandocJobsToPandocQueue proves a stranded engine="pandoc"
-// job routes to EnqueuePandocConvert and NONE of the other six Enqueue*
-// methods (T-48-11, PDCP-01): the reconciler must recover a stranded pandoc
-// job onto the pandoc queue, never fail-closed-default it. Mirrors
-// TestSweepRoutesOCRJobsToOCRQueue exactly.
-func TestSweepRoutesPandocJobsToPandocQueue(t *testing.T) {
+// TestSweepPandocStrandedRowStaysQueued proves a stranded pandoc row is not
+// re-enqueued and is not failed. The pandoc queue was not observed empty.
+func TestSweepPandocStrandedRowStaysQueued(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "pandoc"}},
@@ -559,34 +556,17 @@ func TestSweepRoutesPandocJobsToPandocQueue(t *testing.T) {
 	enq := &fakeEnqueuer{}
 	s := NewSweeper(store, enq, testConfig())
 
-	s.sweep(context.Background())
-
-	if len(enq.pandocCalls) != 1 || enq.pandocCalls[0] != id {
-		t.Fatalf("EnqueuePandocConvert calls = %+v, want [%s]", enq.pandocCalls, id)
-	}
-	if len(enq.imageCalls) != 0 {
-		t.Fatalf("EnqueueImageConvert should not be called for a pandoc job, got %d calls", len(enq.imageCalls))
-	}
-	if len(enq.documentCalls) != 0 {
-		t.Fatalf("EnqueueDocumentConvert should not be called for a pandoc job, got %d calls", len(enq.documentCalls))
-	}
-	if len(enq.htmlCalls) != 0 {
-		t.Fatalf("EnqueueHTMLConvert should not be called for a pandoc job, got %d calls", len(enq.htmlCalls))
-	}
-	if len(enq.audioCalls) != 0 {
-		t.Fatalf("EnqueueAudioConvert should not be called for a pandoc job, got %d calls", len(enq.audioCalls))
-	}
-	if len(enq.avCalls) != 0 {
-		t.Fatalf("EnqueueAVConvert should not be called for a pandoc job, got %d calls", len(enq.avCalls))
-	}
-	if len(enq.ocrCalls) != 0 {
-		t.Fatalf("EnqueueOCRConvert should not be called for a pandoc job, got %d calls", len(enq.ocrCalls))
-	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
-	}
-	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.pandocCalls) != 0 {
+			t.Fatalf("tick %d: EnqueuePandocConvert calls = %+v, want none", tick, enq.pandocCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
 	}
 }
 
@@ -652,7 +632,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR {
+			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}

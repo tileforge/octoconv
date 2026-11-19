@@ -57,39 +57,10 @@ data:
   AUDIO_ENGINE_TIMEOUT: "742s"
   AV_ENGINE_TIMEOUT: "753s"
   OCR_ENGINE_TIMEOUT: "744s"
-  # Compose-parity byte-for-byte (docker-compose.yml pandoc-worker block,
-  # Phase 49 measured: worst cell html_large->md (reader-heavy HTML
-  # parsing) p95=32.318s, ceil(32.318 x 2.0)=65s, 92.8% under the 900s
-  # reconciler CAP). PANDOC_ENGINE_TIMEOUT/PANDOC_MAX_RETRY are the IN-02
-  # parity values every queue.NewClient()-constructing service inherits
-  # identically via this shared ConfigMap -- a mismatch would silently
-  # produce duplicate processing (pandocUniqueTTL is derived from the
-  # timeout in each enqueuing process). PANDOC_WORKER_CONCURRENCY is
-  # pandoc-worker-only (not read by queue.NewClient()) but is baked into
-  # this shared ConfigMap anyway (DEBT-05 -- every process carries the full
-  # retry/timeout surface even when unused). PANDOC_MAX_INPUT_BYTES is NOT
-  # worker-only (PR#2 finding-1): cmd/api also reads it, as the pandoc
-  # per-engine UPLOAD ceiling (Config.MaxPandocInputBytes) -- the key needs
-  # no change here, the api Deployment already inherits the whole
-  # ConfigMap via `include "octoconv.commonEnv"` -> `envFrom:
-  # configMapRef: octoconv-config` (_helpers.tpl), verified not assumed.
-  # Still NOT read by queue.NewClient(), so still no IN-02 uniqueTTL parity
-  # requirement -- but the api and pandoc-worker readers must see the same
-  # value or the API accepts uploads the worker will certainly reject.
-  # PANDOC_MAX_INPUT_BYTES=3 MiB (Path-B, 49-03-SUMMARY.md 4 MiB -> 50-04
-  # live SC4 evidence 3 MiB): the memory headroom lever at the 1Gi container
-  # limit -- a ~4.09 MB html->md conversion OOMKilled the real worker
-  # container (Go worker + pandoc share the cgroup). Do NOT lower memory below
-  # 1Gi or raise this cap without re-measuring.
-  # PANDOC_WORKER_CONCURRENCY=1 (50-REVIEW BLOCKER-1, measured 2026-08-02 at
-  # cpus 2/memory 1g on a 3.04 MB dense html->md): peak ANON memory is
-  # 909 MiB/1024 at concurrency 1 but 1022 MiB/1024 at concurrency 2 -- 2
-  # parallel conversions OOMKill once the Go worker's own RSS is added. Memory
-  # is the binding constraint; throughput comes from KEDA scale-out instead.
-  PANDOC_WORKER_CONCURRENCY: "1"
+  # Protocol attempt budget for a pandoc job (cmd/api). Default 65s.
+  # PANDOC_MAX_INPUT_BYTES is the api upload ceiling.
   PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
-  PANDOC_MAX_RETRY: "2"
   # PROBE (sanitize, Phase 60). MEASURED 2026-09-02
   # (scripts/probe-timeout-measure.sh; derivation and full output at
   # .planning/phases/60-sanitize-eighth-engine-class/evidence/
