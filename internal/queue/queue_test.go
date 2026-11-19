@@ -15,12 +15,12 @@ import (
 
 func TestConvertPayloadRoundTrip(t *testing.T) {
 	id := uuid.New()
-	task, err := NewImageConvertTask(id, 4, ImageUniqueTTL(4, 120*time.Second))
+	task, err := NewDocumentConvertTask(id, 3, DocumentUniqueTTL(3, 300*time.Second))
 	if err != nil {
-		t.Fatalf("NewImageConvertTask: %v", err)
+		t.Fatalf("NewDocumentConvertTask: %v", err)
 	}
-	if task.Type() != TypeImageConvert {
-		t.Errorf("task type = %q, want %q", task.Type(), TypeImageConvert)
+	if task.Type() != TypeDocumentConvert {
+		t.Errorf("task type = %q, want %q", task.Type(), TypeDocumentConvert)
 	}
 	p, err := ParseConvertPayload(task.Payload())
 	if err != nil {
@@ -63,44 +63,13 @@ func TestWebhookRetryDelaySchedule(t *testing.T) {
 	}
 }
 
-// TestImageRetryDelaySchedule asserts ImageRetryDelay returns the exact
-// 2s/5s/15s schedule (no jitter, D-06) and clamps on both ends.
-func TestImageRetryDelaySchedule(t *testing.T) {
-	cases := []struct {
-		n    int
-		want time.Duration
-	}{
-		{n: -1, want: 2 * time.Second}, // clamps to first entry
-		{n: 0, want: 2 * time.Second},
-		{n: 1, want: 5 * time.Second},
-		{n: 2, want: 15 * time.Second},
-		{n: 3, want: 15 * time.Second}, // clamps past the end of the schedule
-		{n: 100, want: 15 * time.Second},
-	}
-	for _, tc := range cases {
-		got := ImageRetryDelay(tc.n, nil, nil)
-		if got != tc.want {
-			t.Errorf("ImageRetryDelay(%d) = %v, want %v", tc.n, got, tc.want)
-		}
-	}
-}
-
 // TestRetryDelayFuncDispatch asserts RetryDelayFunc routes each task type to
-// its own retry delay function: image tasks get the exact seconds-scale
-// schedule, webhook tasks stay within the existing ±25% jitter band, and an
-// unknown task type falls back to asynq's own default.
+// its own retry delay function: webhook tasks stay within the existing ±25%
+// jitter band, and an unknown task type falls back to asynq's own default.
 func TestRetryDelayFuncDispatch(t *testing.T) {
-	imageTask := asynq.NewTask(TypeImageConvert, nil)
 	webhookTask := asynq.NewTask(TypeWebhookDeliver, nil)
 	documentTask := asynq.NewTask(TypeDocumentConvert, nil)
 	otherTask := asynq.NewTask("some:other-type", nil)
-
-	if got, want := RetryDelayFunc(0, nil, imageTask), 2*time.Second; got != want {
-		t.Errorf("RetryDelayFunc(image, 0) = %v, want %v", got, want)
-	}
-	if got, want := RetryDelayFunc(2, nil, imageTask), 15*time.Second; got != want {
-		t.Errorf("RetryDelayFunc(image, 2) = %v, want %v", got, want)
-	}
 
 	if got, want := RetryDelayFunc(0, nil, documentTask), 5*time.Second; got != want {
 		t.Errorf("RetryDelayFunc(document, 0) = %v, want %v", got, want)
@@ -122,45 +91,6 @@ func TestRetryDelayFuncDispatch(t *testing.T) {
 	got := RetryDelayFunc(0, nil, otherTask)
 	if lo, hi := 15*time.Second, 45*time.Second; got < lo || got >= hi {
 		t.Errorf("RetryDelayFunc(other, 0) = %v, want within [%v, %v) (asynq default)", got, lo, hi)
-	}
-}
-
-// TestImageUniqueTTL asserts ImageUniqueTTL derives its result from the
-// corrected worst-case retry lifetime ((maxRetry+1) executions, since
-// asynq's archive condition msg.Retried >= msg.Retry is checked AFTER each
-// failed attempt) and that the derived TTL always strictly exceeds that
-// worst-case lifetime.
-func TestImageUniqueTTL(t *testing.T) {
-	maxRetry := 4
-	engineTimeout := 120 * time.Second
-	backoffSum := 2*time.Second + 5*time.Second + 15*time.Second + 15*time.Second // i=0..3, clamped at i>=2
-
-	want := time.Duration(maxRetry+1)*engineTimeout + backoffSum + uniqueTTLSafetyMargin
-	got := ImageUniqueTTL(maxRetry, engineTimeout)
-	if got != want {
-		t.Errorf("ImageUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
-	}
-
-	worstCaseRetryLifetime := time.Duration(maxRetry+1)*engineTimeout + backoffSum
-	if got <= worstCaseRetryLifetime {
-		t.Errorf("ImageUniqueTTL(%d, %v) = %v, want strictly greater than worst-case retry lifetime %v", maxRetry, engineTimeout, got, worstCaseRetryLifetime)
-	}
-
-	// Clamp case: maxRetry=6 sums backoff for i=0..5, clamped to the last
-	// schedule entry (15s) for i>=2.
-	maxRetry6 := 6
-	backoffSum6 := 2*time.Second + 5*time.Second + 15*time.Second + 15*time.Second + 15*time.Second + 15*time.Second
-	want6 := time.Duration(maxRetry6+1)*engineTimeout + backoffSum6 + uniqueTTLSafetyMargin
-	if got6 := ImageUniqueTTL(maxRetry6, engineTimeout); got6 != want6 {
-		t.Errorf("ImageUniqueTTL(%d, %v) = %v, want %v", maxRetry6, engineTimeout, got6, want6)
-	}
-
-	// Monotonicity: raising either argument must never shrink the TTL.
-	if ImageUniqueTTL(maxRetry+1, engineTimeout) <= ImageUniqueTTL(maxRetry, engineTimeout) {
-		t.Errorf("ImageUniqueTTL must grow monotonically with maxRetry")
-	}
-	if ImageUniqueTTL(maxRetry, engineTimeout+time.Second) <= ImageUniqueTTL(maxRetry, engineTimeout) {
-		t.Errorf("ImageUniqueTTL must grow monotonically with engineTimeout")
 	}
 }
 
@@ -279,7 +209,7 @@ func TestDocumentUniqueTTL(t *testing.T) {
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
-// one appears exactly once in AllConvertQueues(), except html, audio, av, ocr, and pandoc,
+// one appears exactly once in AllConvertQueues(), except image, html, audio, av, ocr, and pandoc,
 // which are admitted and have no queue. AllConvertQueues contains no extras
 // (e.g. QueueWebhook, which is not an engine class).
 func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
@@ -304,7 +234,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 
 	for engine := range wantEngines {
 		wantCount := 1
-		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
 			wantCount = 0
 		}
 		if seen[engine] != wantCount {
@@ -380,50 +310,6 @@ func TestEnqueueCADJob(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueCAD)
-	}
-}
-
-// TestEnqueueImageConvert enqueues a task and confirms it lands in the image
-// queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
-func TestEnqueueImageConvert(t *testing.T) {
-	if os.Getenv("REDIS_ADDR") == "" {
-		t.Skip("REDIS_ADDR not set; skipping integration test")
-	}
-
-	cl, err := NewClient()
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	defer cl.Close()
-
-	id := uuid.New()
-	if err := cl.EnqueueImageConvert(context.Background(), id); err != nil {
-		t.Fatalf("EnqueueImageConvert: %v", err)
-	}
-
-	opt, _ := RedisOpt()
-	insp := asynq.NewInspector(opt)
-	defer insp.Close()
-
-	infos, err := insp.ListPendingTasks(QueueImage)
-	if err != nil {
-		t.Fatalf("ListPendingTasks: %v", err)
-	}
-	found := false
-	for _, ti := range infos {
-		p, err := ParseConvertPayload(ti.Payload)
-		if err == nil && p.JobID == id {
-			found = true
-			if ti.Type != TypeImageConvert {
-				t.Errorf("enqueued type = %q, want %q", ti.Type, TypeImageConvert)
-			}
-			// cleanup
-			_ = insp.DeleteTask(QueueImage, ti.ID)
-			break
-		}
-	}
-	if !found {
-		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueImage)
 	}
 }
 
@@ -523,8 +409,8 @@ func TestCADUniqueTTL(t *testing.T) {
 
 func TestCADQueueIsExposed(t *testing.T) {
 	got := AllConvertQueues()
-	if len(got) != 5 {
-		t.Errorf("AllConvertQueues() has %d queues, want 5", len(got))
+	if len(got) != 4 {
+		t.Errorf("AllConvertQueues() has %d queues, want 4", len(got))
 	}
 	count := 0
 	for _, q := range got {

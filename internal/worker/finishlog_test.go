@@ -61,7 +61,7 @@ func TestFinishRecordReflectsWhetherTheCommitLanded(t *testing.T) {
 			calls := []string{}
 			repo := &pinRepo{job: job, calls: &calls, markFailedErr: tc.commitErr}
 			h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
-			r := NewRunner(h, ImageDescriptor)
+			r := NewRunner(h, DocumentDescriptor)
 
 			_ = r.finish(context.Background(), job, jobs.StatusFailed, CodeEngineError, "boom", nil, 0)
 

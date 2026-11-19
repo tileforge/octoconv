@@ -32,7 +32,6 @@ appends to an append-only event log in the same transaction.
 ```
 cmd/
   api/                — HTTP server: upload, inspect, status, presigned downloads
-  worker/             — image conversion (libvips)
   probe-worker/       — sanitize operation
   tectonic-worker/    — LaTeX → PDF, Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep
@@ -234,7 +233,7 @@ documented list — including how each measured limit was derived.
 | Infrastructure | `DATABASE_URL`, `DB_MAX_CONNS`, `REDIS_ADDR`, `S3_*`, `API_ADDR`, `HEALTH_ADDR`, `METRICS_ADDR` |
 | Auth & limits | `API_KEY_SALT`, `RATE_LIMIT_IP_RPM`, `RATE_LIMIT_CLIENT_RPM`, `OPERATOR_CLIENT_IDS`, `QUOTA_ENFORCEMENT_DISABLED` |
 | Upload guards | `MAX_UPLOAD_BYTES`, `MAX_IMAGE_PIXELS`, `MAX_DOCUMENT_UNCOMPRESSED_BYTES` |
-| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, `TECTONIC_ENGINE_CPU_SECONDS`, …). The image class predates the prefix: it is `WORKER_CONCURRENCY` and `ENGINE_TIMEOUT`, but `IMAGE_MAX_RETRY` |
+| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, `TECTONIC_ENGINE_CPU_SECONDS`, …). The image class predates the prefix: its protocol attempt budget is `ENGINE_TIMEOUT`. |
 | Inspect | `INSPECT_MAX_UPLOAD_BYTES`, `INSPECT_MAX_WORK_BYTES`, `INSPECT_MAX_WORK_DURATION`, `INSPECT_MAX_CONCURRENT`, `RATE_LIMIT_INSPECT_RPM` |
 | Webhooks | `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PRESIGN_TTL`, `WEBHOOK_ALLOW_PRIVATE_IPS`, `WEBHOOK_ALLOW_INSECURE_HTTP` |
 | Lifecycle | `RECONCILER_*`, `JOBS_RETENTION`, `USAGE_RETENTION`, `STORAGE_TTL`, `SSE_*`, `PROGRESS_*` |

@@ -110,7 +110,6 @@ func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 		name string
 		desc EngineDescriptor
 	}{
-		{"image", ImageDescriptor},
 		{"document", DocumentDescriptor},
 	} {
 		if d.desc.SideOutputs != nil {

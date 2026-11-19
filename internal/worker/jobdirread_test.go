@@ -150,7 +150,7 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 }
 
 var jobDirDescriptors = []EngineDescriptor{
-	ImageDescriptor, DocumentDescriptor,
+	DocumentDescriptor,
 	ProbeDescriptor, TectonicDescriptor, CADDescriptor,
 }
 

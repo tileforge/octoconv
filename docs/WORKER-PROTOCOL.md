@@ -195,7 +195,7 @@ Selection at admission:
 
 `legacy` is present only when `engine` is one of `image`, `document`, `av`, `cad`, `archive`, `probe`, `html`, `audio`, `ocr`, `pandoc`, or `tectonic`. It is a closed object with `operation` and `engine`.
 
-The first capability is `octoconv.convert.image`, version `1`. `legacy` is operation `convert` and engine `image`. The client operation is `convert`. It has one input role `source` with min 1 and max 1, one output role `primary` with min 1 and max 1, and `parameter_schema` `{}`. Its formats are all 20 ordered pairs among `png`, `jpg`, `webp`, `heic`, and `tiff` where `from` differs from `to`. The list is not abbreviated. The fixture is [worker-protocol/examples/positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json).
+The first capability is `octoconv.convert.image`, version `1`. `legacy` is operation `convert` and engine `image`. The client operation is `convert`. It has one input role `source` with min 1 and max 1, one output role `primary` with min 1 and max 1, and `parameter_schema` `{}`. Its formats are all 20 ordered pairs among `png`, `jpg`, `webp`, `heic`, and `tiff` where `from` differs from `to`. The list is not abbreviated. The fixture is [worker-protocol/examples/positive/manifest-image.json](worker-protocol/examples/positive/manifest-image.json). Approving this manifest moves a new image job, including a progress webhook, to the external worker when its attempt budget is at most `file_link_max_ttl`. A longer budget, or a job with no approved manifest, is refused with 422 before upload. The in-repo image process, the image queue, and reconciler re-enqueue are gone. A stranded image row stays queued. That queue was not observed empty, and this change does not fail those rows. This change does not approve the manifest.
 
 The second capability is `octoconv.convert.imagepdf`, version `1`. The client operation is `convert`. It has no `legacy` object, one pair `png` to `pdf`, one `source`, one `primary`, and `parameter_schema` `{}`. The fixture is [worker-protocol/examples/positive/manifest-imagepdf.json](worker-protocol/examples/positive/manifest-imagepdf.json).
 
@@ -365,7 +365,7 @@ Draining and wakeup are dial-out behaviors. `control.drain` stops new pulls, let
 
 ## Migration
 
-The first migrated worker is the existing image worker. The command path is `cmd/worker`. It uses libvips, queue name `image`, task name `image:convert`, and capability `octoconv.convert.image` version `1`. An external author implements that capability from this specification. This document names the command and the capability only. It does not ask that author to import a Go module or to read an internal package.
+The in-repo image command is retired. The repository is `tileforge/octoconv-worker-image`. The capability is `octoconv.convert.image` version `1`.
 
 The Python operation is `octoconv.convert.imagepdf` version `1`, one PNG in and one single-page PDF out (assumption A6). No such repository exists. The proposed name, to be confirmed before Phase 85, is `tileforge/octoconv-worker-imagepdf` (assumption A2). This phase does not create the repository and does not pin Pillow, img2pdf, or any other library. The capability id does not depend on the repo name.
 

@@ -122,7 +122,6 @@ type Storage interface {
 
 // Enqueuer dispatches conversion work to the appropriate engine-class queue.
 type Enqueuer interface {
-	EnqueueImageConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error

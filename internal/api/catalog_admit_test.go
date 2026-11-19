@@ -84,28 +84,18 @@ func assertNoUploadOrEnqueue(t *testing.T, repo *fakeRepo, store *fakeStorage, q
 	}
 }
 
-func TestCreateJobWithoutCatalogStillEnqueuesImage(t *testing.T) {
+func TestCreateJobWithoutCatalogRefusesImage(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
 
 	rec := postCreate(t, srv, "in.png", "webp")
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineImage || repo.created.CapabilityID != "" {
-		t.Fatalf("create params = %+v, want engine image and empty pin", repo.created)
-	}
-	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("dispatch = %q budget = %s, want legacy defaults", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
-		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want one image enqueue", q.enqueueCalls, q.enqueuedImage)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestCatalogMissEnqueuesImage(t *testing.T) {
+func TestCatalogMissRefusesImage(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -114,21 +104,11 @@ func TestCatalogMissEnqueuesImage(t *testing.T) {
 	srv.SetCapabilityCatalog(catalog)
 
 	rec := postCreate(t, srv, "in.png", "webp")
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
 	if catalog.calls != 1 {
 		t.Fatalf("Lookup calls = %d, want 1", catalog.calls)
 	}
-	if repo.created == nil || repo.created.Engine != convert.EngineImage || repo.created.CapabilityID != "" {
-		t.Fatalf("create params = %+v, want engine image and empty pin", repo.created)
-	}
-	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("dispatch = %q budget = %s, want legacy defaults", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedImage == uuid.Nil {
-		t.Fatalf("enqueueCalls = %d enqueuedImage = %s, want one image enqueue", q.enqueueCalls, q.enqueuedImage)
-	}
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestCatalogPinOnImageCreate(t *testing.T) {
@@ -303,41 +283,18 @@ func TestApprovedCADOverLinkWindowIsRefused(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
-func TestApprovedImageOverLinkWindowStaysOnAsynq(t *testing.T) {
+func TestApprovedImageOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
 	over := time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
 	srv.engineTimeouts = map[string]time.Duration{convert.EngineImage: over}
-	srv.SetCapabilityCatalog(&fakeCatalog{
-		found: true,
-		match: workerproto.Match{
-			CapabilityID:      "octoconv.convert.image",
-			CapabilityVersion: 1,
-			ClientOperation:   convert.OperationConvert,
-			LegacyOperation:   convert.OperationConvert,
-			LegacyEngine:      convert.EngineImage,
-			ParameterSchema:   []byte(`{}`),
-		},
-	})
+	srv.SetCapabilityCatalog(legacyImageCatalog(`{}`))
 
 	rec := postCreate(t, srv, "in.png", "webp")
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil || repo.created.Engine != convert.EngineImage {
-		t.Fatalf("engine = %+v, want image", repo.created)
-	}
-	if repo.created.CapabilityID != "octoconv.convert.image" || repo.created.CapabilityVersion != 1 {
-		t.Fatalf("pin = %s v%d, want the image pin kept", repo.created.CapabilityID, repo.created.CapabilityVersion)
-	}
-	if repo.created.DispatchOwner != "" || repo.created.ProtocolAttemptBudget != 0 {
-		t.Fatalf("dispatch = %q budget = %s, want asynq", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
-	}
-	if q.enqueueCalls != 1 || q.enqueuedImage != repo.createdID {
-		t.Fatalf("enqueueCalls = %d enqueuedImage = %s created = %s", q.enqueueCalls, q.enqueuedImage, repo.createdID)
-	}
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
 func TestApprovedCADProgressWebhookStaysOnAsynq(t *testing.T) {
@@ -1382,6 +1339,25 @@ func legacyImageCatalog(schema string) *fakeCatalog {
 			LegacyOperation:   convert.OperationConvert,
 			LegacyEngine:      convert.EngineImage,
 			ParameterSchema:   []byte(schema),
+		},
+	}
+}
+
+func imageCatalog() *fakeCatalog {
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			engine, ok := convert.Default.EngineFor(source, target)
+			if operation != convert.OperationConvert || !ok || engine != convert.EngineImage {
+				return workerproto.Match{}, false
+			}
+			return workerproto.Match{
+				CapabilityID:      "octoconv.convert.image",
+				CapabilityVersion: 1,
+				ClientOperation:   convert.OperationConvert,
+				LegacyOperation:   convert.OperationConvert,
+				LegacyEngine:      convert.EngineImage,
+				ParameterSchema:   []byte(`{}`),
+			}, true
 		},
 	}
 }

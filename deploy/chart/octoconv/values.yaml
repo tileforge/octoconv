@@ -60,16 +60,6 @@ api:
       memory: "1Gi"
       ephemeralStorage: "3972005888"
 
-worker:
-  image:
-    repository: "octoconv-worker"
-  replicas: 1
-  terminationGracePeriodSeconds: 150
-  resources:
-    limits:
-      cpu: "2"
-      memory: "1Gi"
-
 probeWorker:
   image:
     repository: "octoconv-probe-worker"

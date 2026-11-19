@@ -462,6 +462,9 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 				MaxFormatBytes:        tc.formats,
 			}, intakeReadDeadline, intakeMinBytesPerSecond)
 			admitCADCatalog(srv)
+			if tc.name == "png Dimensions" || tc.name == "jpeg Dimensions" {
+				srv.SetCapabilityCatalog(imageCatalog())
+			}
 			if tc.name == "docx container" {
 				srv.SetCapabilityCatalog(documentCatalog())
 			}

@@ -50,7 +50,7 @@ func runWithLockFor(t *testing.T, s *Sweeper, lock AdvisoryLock, d time.Duration
 func TestRunWithLockSweepsWhenAcquired(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -64,15 +64,15 @@ func TestRunWithLockSweepsWhenAcquired(t *testing.T) {
 	if lock.calls == 0 {
 		t.Fatal("TryAcquire was never called")
 	}
-	if len(enq.imageCalls) == 0 {
-		t.Fatal("EnqueueImageConvert was never called — sweep did not run despite lock acquired")
+	if len(enq.probeCalls) == 0 {
+		t.Fatal("EnqueueProbeSanitize was never called — sweep did not run despite lock acquired")
 	}
 }
 
 func TestRunWithLockSkipsWhenNotAcquired(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -86,15 +86,15 @@ func TestRunWithLockSkipsWhenNotAcquired(t *testing.T) {
 	if lock.calls == 0 {
 		t.Fatal("TryAcquire was never called")
 	}
-	if len(enq.imageCalls) != 0 {
-		t.Fatalf("EnqueueImageConvert calls = %d, want 0 — not leader, sweep must be skipped", len(enq.imageCalls))
+	if len(enq.probeCalls) != 0 {
+		t.Fatalf("EnqueueProbeSanitize calls = %d, want 0 — not leader, sweep must be skipped", len(enq.probeCalls))
 	}
 }
 
 func TestRunWithLockFailSafeSkipsOnLockError(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -111,8 +111,8 @@ func TestRunWithLockFailSafeSkipsOnLockError(t *testing.T) {
 	// Fail-safe: a lock-check error must NOT sweep, even though we cannot
 	// distinguish "definitely not leader" from "unknown" — uncertainty must
 	// always resolve to skip, never to sweep unguarded (D-01/D-02).
-	if len(enq.imageCalls) != 0 {
-		t.Fatalf("EnqueueImageConvert calls = %d, want 0 — lock-check error must fail safe (skip), not sweep", len(enq.imageCalls))
+	if len(enq.probeCalls) != 0 {
+		t.Fatalf("EnqueueProbeSanitize calls = %d, want 0 — lock-check error must fail safe (skip), not sweep", len(enq.probeCalls))
 	}
 }
 

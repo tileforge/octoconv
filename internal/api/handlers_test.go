@@ -825,6 +825,7 @@ func TestCreateJob_OK(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, resolver := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -848,8 +849,11 @@ func TestCreateJob_OK(t *testing.T) {
 	if repo.created == nil || repo.created.ClientID != resolver.client.ID {
 		t.Errorf("expected CreateParams.ClientID = %s, got %+v", resolver.client.ID, repo.created)
 	}
-	if q.enqueuedImage != repo.createdID {
-		t.Errorf("enqueuedImage = %s, want %s", q.enqueuedImage, repo.createdID)
+	if repo.created.DispatchOwner != "protocol" {
+		t.Errorf("dispatch = %q, want protocol", repo.created.DispatchOwner)
+	}
+	if q.enqueuedImage != uuid.Nil {
+		t.Errorf("enqueuedImage = %s, want none", q.enqueuedImage)
 	}
 	if q.enqueuedDocument != uuid.Nil {
 		t.Errorf("enqueuedDocument = %s, want uuid.Nil (image upload must never touch the document queue)", q.enqueuedDocument)
@@ -864,6 +868,7 @@ func TestCreateJob_OperationAbsentDefaultsToConvert(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -892,6 +897,7 @@ func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
 		store := &fakeStorage{}
 		q := &fakeQueue{}
 		srv, _ := newTestServer(repo, store, q)
+		srv.SetCapabilityCatalog(imageCatalog())
 
 		body, ct := multipartBodyWithOperation(t, "in.png", "webp", operation, pngBytesFixture())
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1210,6 +1216,7 @@ func TestCreateJob_QuotaFromCreate_429AfterUpload(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1244,6 +1251,7 @@ func TestCreateJob_PreAdmitInfraErrorDoesNotBlock(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1258,8 +1266,8 @@ func TestCreateJob_PreAdmitInfraErrorDoesNotBlock(t *testing.T) {
 	if store.uploadCalls != 1 {
 		t.Errorf("storage.Upload called %d times, want 1", store.uploadCalls)
 	}
-	if q.enqueueCalls != 1 {
-		t.Errorf("enqueue called %d times, want 1", q.enqueueCalls)
+	if q.enqueueCalls != 0 {
+		t.Errorf("enqueue called %d times, want 0", q.enqueueCalls)
 	}
 }
 
@@ -1450,6 +1458,7 @@ func TestCreateJob_ProgressWebhook(t *testing.T) {
 			repo := &fakeRepo{}
 			store := &fakeStorage{}
 			srv, _ := newTestServer(repo, store, &fakeQueue{})
+			srv.SetCapabilityCatalog(imageCatalog())
 
 			body, ct := multipartBodyWithCallback(t, "in.png", "webp", pngBytesFixture(), c.callbackURL, c.progressWebhook)
 			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2876,6 +2885,7 @@ func TestCreateJob_NoOptsResponseUnchanged(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	srv, _ := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2903,6 +2913,7 @@ func TestCreateJob_EmptyOptsObjectTreatedAsNoOpts(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	srv, _ := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBodyWithOpts(t, "in.png", "webp", pngBytesFixture(), "{}")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3204,6 +3215,7 @@ func TestCreateJob_PresetResolvedImage(t *testing.T) {
 		ID: uuid.New(), Name: "thumb", Version: 2, TargetFormat: "webp",
 	}}
 	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "", pngBytesFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3224,8 +3236,8 @@ func TestCreateJob_PresetResolvedImage(t *testing.T) {
 	if repo.created.PresetName != "thumb" || repo.created.PresetVersion != 2 {
 		t.Errorf("provenance = %+v, want PresetName=thumb PresetVersion=2", repo.created)
 	}
-	if q.enqueuedImage != repo.createdID {
-		t.Errorf("enqueuedImage = %s, want %s", q.enqueuedImage, repo.createdID)
+	if q.enqueuedImage != uuid.Nil {
+		t.Errorf("enqueuedImage = %s, want none", q.enqueuedImage)
 	}
 }
 
@@ -3385,6 +3397,7 @@ func TestCreateJob_PresetDeactivatedDuringCreate(t *testing.T) {
 	}
 	resolver := newFakeResolver()
 	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "", pngBytesFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4036,7 +4049,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -4096,7 +4109,6 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		fx     fixture
 		callID func(*fakeQueue) uuid.UUID
 	}{
-		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
 		// The ninth engine joins the SAME table rather than getting a bespoke
 		// test of its own (64-04 Task 2): the value of this test is the
 		// negative half -- every other engine's accessor must stay uuid.Nil --
@@ -4148,6 +4160,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("image_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "png -> webp") {
+			t.Fatalf("body = %s, want png -> webp", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedImage != uuid.Nil {
+			t.Fatalf("refused image created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
 
 	t.Run("audio_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}
@@ -4525,6 +4562,7 @@ func TestCreateJob_EngineAbsentFromSizeMapNotRejected(t *testing.T) {
 		// EngineImage is deliberately absent -- it must not be gated.
 		MaxEngineBytes: map[string]int64{convert.EngineDocument: 1},
 	})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", paddedPNGFixture(500))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))

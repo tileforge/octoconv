@@ -647,37 +647,13 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 	return h
 }
 
-// HandleImageConvert runs one image conversion end to end (load job -> mark
-// active -> download input -> run engine -> upload output -> record output
-// -> mark done), entirely through Runner.Handle over ImageDescriptor
-// (runner.go/descriptors.go, D-09): image is the one engine with no opts
-// re-parse guard (ImageDescriptor.OptsFromMap is nil,
-// TestPinnedImageHasNoOptsGuard) and no FailureCode override -- a terminal
-// image failure always uses isTerminal + the shared default "engine_error"
-// pair, mirroring HandleWebhookDeliver's own separate classification
-// pattern (untouched by this refactor).
-//
-// This method itself carries no conversion logic any more (D-09's "no
-// per-engine handler" truth): it exists solely so
-// internal/worker/pinning_test.go's frozen dispatch table
-// ((*Handler).HandleImageConvert, a Go method expression) keeps compiling
-// and keeps exercising the real Runner path unchanged -- every worker
-// binary's own mux registration (cmd/worker/main.go) calls
-// worker.NewRunner(h, worker.ImageDescriptor).Handle directly instead, never
-// through this method.
-func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, ImageDescriptor).Handle(ctx, t)
-}
-
 // HandleDocumentConvert runs one document conversion end to end, entirely
 // through Runner.Handle over DocumentDescriptor (D-09): DOC-07/DOC-08's two
 // divergences from ImageDescriptor now live as DATA on the descriptor --
 // OptsFromMap (the strict opts re-parse guard image lacks) and
 // isDocumentTerminal (a DOCUMENT_ENGINE_TIMEOUT expiry takes the terminal
 // path, unlike the image engine's own isTerminal, which treats the same
-// timeout as transient). See HandleImageConvert's doc comment for why this
-// method still exists as a thin delegator (frozen pinning_test.go
-// compatibility, D-10 step 2) rather than being deleted outright.
+// timeout as transient).
 func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) error {
 	return NewRunner(h, DocumentDescriptor).Handle(ctx, t)
 }

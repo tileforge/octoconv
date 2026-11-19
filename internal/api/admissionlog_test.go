@@ -42,6 +42,7 @@ func TestAdmissionRecordJoinsRequestIDToJobID(t *testing.T) {
 
 	repo := &fakeRepo{}
 	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
 
 	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -89,6 +90,7 @@ func TestAdmissionRecordIsOneLine(t *testing.T) {
 	buf := captureLog(t)
 
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
 	body, ct := multipartBody(t, "in\t\"quoted\".png", "webp", pngBytesFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 	req.Header.Set("Content-Type", ct)
