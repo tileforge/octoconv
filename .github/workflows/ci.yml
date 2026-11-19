@@ -122,8 +122,6 @@ jobs:
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-to=type=gha,mode=max,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker
-            pandoc-worker.cache-to=type=gha,mode=max,scope=pandoc-worker
-            pandoc-worker.cache-from=type=gha,scope=pandoc-worker
             probe-worker.cache-to=type=gha,mode=max,scope=probe-worker
             probe-worker.cache-from=type=gha,scope=probe-worker
             tectonic-worker.cache-to=type=gha,mode=max,scope=tectonic-worker
@@ -170,7 +168,6 @@ jobs:
             worker.cache-from=type=gha,scope=worker
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker
-            pandoc-worker.cache-from=type=gha,scope=pandoc-worker
             probe-worker.cache-from=type=gha,scope=probe-worker
             tectonic-worker.cache-from=type=gha,scope=tectonic-worker
       - name: Bring up compose stack

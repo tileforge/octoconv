@@ -4036,7 +4036,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR {
+		if engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -4221,6 +4221,31 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		}
 		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedOCR != uuid.Nil {
 			t.Fatalf("refused ocr created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
+
+	t.Run("pandoc_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if !strings.Contains(rec.Body.String(), "md -> html") {
+			t.Fatalf("body = %s, want md -> html", rec.Body.String())
+		}
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedPandoc != uuid.Nil {
+			t.Fatalf("refused pandoc created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
 		}
 	})
 
@@ -4557,7 +4582,8 @@ func TestCreateJob_PandocOversizedRejectedBeforeUpload(t *testing.T) {
 
 // TestCreateJob_PandocWithinConfiguredCapAccepted proves the gate is not a
 // blanket pandoc block: an upload comfortably under the configured
-// MaxPandocInputBytes still reaches 202 and the pandoc queue.
+// MaxPandocInputBytes, with an approved manifest, still reaches 202 and is
+// not enqueued.
 func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
@@ -4567,6 +4593,7 @@ func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
 		MaxUploadBytes:      10 << 20,
 		MaxPandocInputBytes: 10_000,
 	})
+	srv.SetCapabilityCatalog(pandocCatalog())
 
 	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4578,8 +4605,11 @@ func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueuedPandoc == uuid.Nil {
-		t.Error("must enqueue a pandoc upload within the configured MaxPandocInputBytes")
+	if !store.uploaded || repo.created == nil || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("uploaded=%v created=%+v, want a protocol pandoc job", store.uploaded, repo.created)
+	}
+	if q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
+		t.Fatalf("enqueue calls=%d pandoc=%s, want no enqueue", q.enqueueCalls, q.enqueuedPandoc)
 	}
 }
 
@@ -4755,12 +4785,9 @@ func latexFixture() []byte {
 	return []byte("\\documentclass{article}\n\\begin{document}\nhello\n\\end{document}\n")
 }
 
-// TestCreateJob_PandocMarkdownEnqueuesToPandocQueue proves the end-to-end API
-// happy path (SC1/PDCP-01): a valid markdown upload targeting html is
-// content-validated (LooksLikeText, trust-declared among the text family),
-// persisted, and ENQUEUED to the pandoc queue via the handleCreateJob engine
-// switch's EnginePandoc case -- returning 202 with a job_id, not a 500.
-func TestCreateJob_PandocMarkdownEnqueuesToPandocQueue(t *testing.T) {
+// TestCreateJob_PandocMarkdownWithoutACatalogIsRefused proves a valid
+// markdown to html upload with no approved manifest is refused before upload.
+func TestCreateJob_PandocMarkdownWithoutACatalogIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	q := &fakeQueue{}
@@ -4773,20 +4800,15 @@ func TestCreateJob_PandocMarkdownEnqueuesToPandocQueue(t *testing.T) {
 
 	srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if !store.uploaded {
-		t.Error("must upload a valid markdown upload")
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+	if !strings.Contains(rec.Body.String(), "md -> html") {
+		t.Fatalf("body = %s, want md -> html", rec.Body.String())
 	}
-	if repo.created == nil || repo.created.Engine != "pandoc" {
-		t.Fatalf("must create job with Engine=pandoc, got %+v", repo.created)
-	}
-	if q.enqueuedPandoc == uuid.Nil {
-		t.Fatalf("EnqueuePandocConvert was never called — pandoc job not routed to the pandoc queue (SC1 gap)")
-	}
-	if q.enqueuedImage != uuid.Nil || q.enqueuedDocument != uuid.Nil || q.enqueuedHTML != uuid.Nil {
-		t.Errorf("pandoc job wrongly enqueued to a non-pandoc queue")
+	if repo.created != nil || store.uploaded || q.enqueueCalls != 0 || q.enqueuedPandoc != uuid.Nil {
+		t.Fatalf("refused pandoc created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, q.enqueueCalls)
 	}
 }
 

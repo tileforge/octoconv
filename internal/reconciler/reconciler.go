@@ -84,7 +84,6 @@ type enqueuer interface {
 	EnqueueImageConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
-	EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueCADJob(ctx context.Context, id uuid.UUID) error
@@ -375,10 +374,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
-		case convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR:
+		case convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc:
 			continue
-		case convert.EnginePandoc:
-			enqueueErr = s.enq.EnqueuePandocConvert(ctx, j.ID)
 		case convert.EngineProbe:
 			// Added by Phase 60, which is the "future engine" the note below
 			// was addressed to. Without this case a queued sanitize job whose

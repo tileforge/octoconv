@@ -716,27 +716,6 @@ func avFailureCode(err error) (code, message string) {
 	}
 }
 
-// HandlePandocConvert runs one pandoc markup-to-markup conversion end to
-// end, entirely through Runner.Handle over PandocDescriptor (D-01,
-// 48-CONTEXT.md, D-09). PandocConverter.Convert already self-contains every
-// guard (unsupported-pair/opts/input-size, pandocValidateOutput's
-// target-appropriate content check, pandoc.go/markupsniff.go), mirroring
-// OCRDescriptor's strict-opts-reparse shape. isPandocTerminal (pandoc's
-// timeout+engine-error terminal classification mirrors isDocumentTerminal,
-// the OPPOSITE of isOCRTerminal's transient-timeout treatment) and
-// FailureCode = pandocFailureCode live as DATA on the descriptor.
-//
-// An empty-but-valid pandoc output (e.g. an empty-body markdown source
-// producing an empty plaintext/fragment result) completes as done, never
-// failed (SC4): pandocValidateOutput (pandoc.go) already skips its
-// content-sniff check on a zero-size output and returns nil, so process()
-// returns nil and Runner.Handle's success path runs unchanged. See
-// HandleImageConvert's doc comment for why this method still exists as a
-// thin delegator.
-func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error {
-	return NewRunner(h, PandocDescriptor).Handle(ctx, t)
-}
-
 // HandleWebhookDeliver delivers one webhook attempt for a completed job:
 // re-read the job from Postgres, regenerate a fresh presigned download_url
 // per attempt (done only, D-09), sign, deliver, record the attempt, and

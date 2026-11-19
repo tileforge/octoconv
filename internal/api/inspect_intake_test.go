@@ -27,6 +27,7 @@ func newIntakeServer(t *testing.T, cfg Config, window time.Duration, minRate int
 func newIntakeServerWith(t *testing.T, repo Repo, store Storage, cfg Config, window time.Duration, minRate int64) (*Server, *httptest.Server) {
 	t.Helper()
 	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
+	srv.SetCapabilityCatalog(pandocCatalog())
 	srv.intakeWindow = window
 	srv.intakeMinRate = minRate
 	ts := httptest.NewUnstartedServer(srv.Routes())

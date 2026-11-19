@@ -19,7 +19,7 @@ import (
 // through. Duplicate processing is the failure, and it is silent.
 //
 // Six compose services construct a client, each carrying the full set of
-// engine vars by hand. Six engine classes x two vars is twelve values
+// engine vars by hand. Five engine classes x two vars is ten values
 // replicated six times, maintained by copying: the exact shape where the
 // next engine gets added to every service but one and the miss is found in
 // production. This file is the mechanism that makes that impossible to ship,
@@ -65,9 +65,9 @@ func engineVarsReadByNewClient(t *testing.T) []string {
 	sort.Strings(vars)
 	// Vacuity guard. A regex that matched nothing would make every assertion
 	// below pass while proving nothing -- the failure mode this project has
-	// recorded more than once ("a scan of nothing is never clean"). Six
+	// recorded more than once ("a scan of nothing is never clean"). Five
 	// engine classes x 2 vars is the floor, not an estimate.
-	if len(vars) < 12 {
+	if len(vars) < 10 {
 		t.Fatalf("only %d engine vars found in %s (%v) -- the extraction regex has drifted and every "+
 			"assertion below would be vacuous", len(vars), clientPath, vars)
 	}

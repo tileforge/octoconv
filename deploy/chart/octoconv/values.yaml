@@ -70,28 +70,6 @@ worker:
       cpu: "2"
       memory: "1Gi"
 
-pandocWorker:
-  image:
-    repository: "octoconv-pandoc-worker"
-  replicas: 1
-  # 85s = PANDOC_ENGINE_TIMEOUT (65s, ConfigMap) + 10s asynq ShutdownTimeout
-  # margin + 10s Docker/k8s SIGKILL margin, mirroring compose's own
-  # stop_grace_period=85s derivation (docker-compose.yml pandoc-worker,
-  # 49-03-SUMMARY.md) -- D-04b. NOT the ENGINE_TIMEOUT+30s convention used
-  # by worker/documentWorker/audioWorker/avWorker/ocrWorker (those derive
-  # from a different asynq ShutdownTimeout margin); pandoc mirrors its own
-  # compose precedent exactly.
-  terminationGracePeriodSeconds: 85
-  resources:
-    limits:
-      # MUST match the 49-03 measurement container exactly (cpus=2.0,
-      # memory=1g) -- Path-B lowered PANDOC_MAX_INPUT_BYTES to 4 MiB
-      # (49-03), then to 3 MiB (50-04 live SC4 OOM evidence)
-      # specifically for 1g headroom (D-04a). Do NOT lower memory below 1Gi
-      # without re-measuring.
-      cpu: "2"
-      memory: "1Gi"
-
 probeWorker:
   image:
     repository: "octoconv-probe-worker"

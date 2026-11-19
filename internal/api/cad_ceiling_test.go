@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/errcode"
 )
@@ -76,6 +74,7 @@ func TestCADFormatCeilingAtLimitAndOtherFormatPass(t *testing.T) {
 
 	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 	srv := newFormatCeilingServer(t, repo, store, q, formats)
+	srv.SetCapabilityCatalog(pandocCatalog())
 	rec := postFormatCeilingCreate(t, srv, "in.md", "html", paddedMarkdown(1<<20))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("a file exactly at the limit: status = %d, want 202; body=%s", rec.Code, rec.Body.String())
@@ -83,13 +82,17 @@ func TestCADFormatCeilingAtLimitAndOtherFormatPass(t *testing.T) {
 
 	repo, store, q = &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 	srv = newFormatCeilingServer(t, repo, store, q, formats)
+	srv.SetCapabilityCatalog(pandocCatalog())
 	rst := append([]byte("Title\n=====\n\nA small rst document.\n"), bytes.Repeat([]byte(" "), 1<<20+1)...)
 	rec = postFormatCeilingCreate(t, srv, "in.rst", "html", rst)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("another pandoc format at the same size: status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
-	if q.enqueuedPandoc == uuid.Nil {
-		t.Error("the other format must still reach the pandoc queue")
+	if q.enqueueCalls != 0 {
+		t.Fatalf("enqueueCalls = %d, want 0", q.enqueueCalls)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("created = %+v, want a protocol pandoc job", repo.created)
 	}
 }
 

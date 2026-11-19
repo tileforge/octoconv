@@ -178,20 +178,6 @@ var DocumentDescriptor = EngineDescriptor{
 	IsTerminal: isDocumentTerminal,
 }
 
-// PandocDescriptor's isPandocTerminal is D-01's timeout-is-terminal shape
-// (mirroring isDocumentTerminal/isHTMLTerminal), the OPPOSITE of
-// isOCRTerminal's transient-engine-timeout treatment — pandoc is
-// deterministic and CPU-bound with no external services/network.
-var PandocDescriptor = EngineDescriptor{
-	Engine: convert.EnginePandoc,
-	Type:   queue.TypePandocConvert,
-	OptsFromMap: func(m map[string]any) (any, error) {
-		return convert.PandocOptsFromMap(m)
-	},
-	IsTerminal:  isPandocTerminal,
-	FailureCode: pandocFailureCode,
-}
-
 // ProbeDescriptor is the eighth, and the first whose task type is not a
 // convert (queue.TypeProbeSanitize).
 //

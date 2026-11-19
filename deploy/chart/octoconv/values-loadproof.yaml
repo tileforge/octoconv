@@ -97,16 +97,3 @@ worker:
       # At 200m each conversion takes ~10s, keeping queue_depth near 20 for
       # well over a minute at 1 replica. memory is inherited from values.yaml.
       cpu: "200m"
-
-pandocWorker:
-  extraEnv:
-    # One job per pod (Phase 50, mirrors documentWorker.extraEnv above). This
-    # is now PARITY with production, not an override: the ConfigMap value was
-    # lowered 2 -> 1 on 2026-08-02 after the BLOCKER-1 memory measurement, so
-    # the gate and production run the same concurrency. Kept explicit because
-    # the SC4 depth arithmetic DEPENDS on it: one job per pod makes "2 replicas,
-    # 2 active jobs, 0 pending" a deterministic state whose queue depth is
-    # exactly 2, i.e. desired = ceil(2 / threshold 2) = 1 -- the metric
-    # condition that triggers the genuine 2->1 downscale while both pods are
-    # mid-job. If production concurrency ever changes again, this must stay 1.
-    PANDOC_WORKER_CONCURRENCY: "1"

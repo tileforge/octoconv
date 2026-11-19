@@ -465,6 +465,9 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 			if tc.name == "docx container" {
 				srv.SetCapabilityCatalog(documentCatalog())
 			}
+			if tc.name == "markdown spilled above 16 MiB" {
+				srv.SetCapabilityCatalog(pandocCatalog())
+			}
 			pr, pw := io.Pipe()
 			mw := multipart.NewWriter(pw)
 			go func() {

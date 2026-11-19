@@ -33,7 +33,6 @@ appends to an append-only event log in the same transaction.
 cmd/
   api/                — HTTP server: upload, inspect, status, presigned downloads
   worker/             — image conversion (libvips)
-  pandoc-worker/      — markup-family conversion (pandoc)
   probe-worker/       — sanitize operation
   tectonic-worker/    — LaTeX → PDF, Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep

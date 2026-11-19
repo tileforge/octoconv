@@ -131,6 +131,7 @@ func TestCreateIntakeConcurrencyIsBounded(t *testing.T) {
 	})
 	t.Cleanup(open)
 	srv := NewServer(&lockedRepo{fakeRepo: &fakeRepo{}}, store, &lockedQueue{fakeQueue: &fakeQueue{}}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), createIntakeConfig(64<<20))
+	srv.SetCapabilityCatalog(pandocCatalog())
 	h := srv.Routes()
 
 	serve := func(req *http.Request) <-chan *httptest.ResponseRecorder {
@@ -537,6 +538,7 @@ func TestCreateIntakeCutMidSpillReleasesEverything(t *testing.T) {
 
 func TestCreateAndInspectIntakePoolsAreIndependent(t *testing.T) {
 	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), createIntakeConfig(64<<20))
+	srv.SetCapabilityCatalog(pandocCatalog())
 
 	t.Run("inspect while every create slot is taken", func(t *testing.T) {
 		fillIntakeSlots(t, srv.createIntakeSem)

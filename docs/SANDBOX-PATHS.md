@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| worker, pandoc-worker, probe-worker | нативная | **возможен** |
+| worker, probe-worker | нативная | **возможен** |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -401,6 +401,8 @@ chromium пере-`exec`ает себя для дочерних процессо
 был бы внутри гранта.
 
 ## pandoc — замерено и доказано 2026-09-20
+
+Замер ниже — запись встроенного pandoc-воркера. Этот процесс удалён. Ruleset теперь живёт в `tileforge/octoconv-worker-pandoc`. Цифры ниже — историческая запись, их не пересчитывали. Внешний замер образа `octoconv-pandoc:confinement-measure` (`sha256:b0f21dbad746564393fb755a93d086f41e9397c8470be6e17dae704c6bd8c892`, ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`) дал выход 3429 байт. Протокольный набор после этого не стартовал (выход 1).
 
 Образ `octoconv-pandoc-worker:latest`, argv как в `pandocConvertArgs`.
 

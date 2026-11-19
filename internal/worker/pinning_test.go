@@ -351,15 +351,6 @@ var pinEngines = []pinEngine{
 		wantMessage: "unsupported or corrupted input format",
 		terminalErr: errors.New("convert: libreoffice: output missing %PDF- magic bytes"),
 	},
-	{
-		name:        "pandoc",
-		taskType:    queue.TypePandocConvert,
-		engine:      convert.EnginePandoc,
-		wrapper:     (*Handler).HandlePandocConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: fmt.Errorf("convert: %w", errors.New("pandoc: pandoc: exit status 1: [ERROR] Could not parse markdown")),
-	},
 }
 
 // pinEngineByName looks up one pinEngines row by its display name -- used
@@ -430,60 +421,6 @@ func TestPinnedTerminalOutcomePerEngine(t *testing.T) {
 			}
 			if n := countToken(calls, "EnqueueWebhookDeliver"); n != 1 {
 				t.Fatalf("%s: EnqueueWebhookDeliver calls = %d, want 1 (CallbackURL set)", tc.name, n)
-			}
-		})
-	}
-}
-
-// --- TestPinnedFailureCodePerEngine -------------------------------------
-
-// pinFailureCodeCase pins one non-default terminal error_code branch of
-// avFailureCode / ocrFailureCode / pandocFailureCode, or audio's inline
-// errors.Is(convert.ErrAudioDurationExceeded) special-case -- exercised
-// through the real handler wrapper, not by calling the pure mapping
-// function directly. Every err value here is copied verbatim from
-// TestAVFailureCode / TestOCRFailureCode / TestPandocFailureCode /
-// TestIsAudioTerminal (worker_test.go).
-type pinFailureCodeCase struct {
-	engine   string
-	name     string
-	err      error
-	wantCode string
-}
-
-var pinFailureCodeCases = []pinFailureCodeCase{
-	// pandoc: TestPandocFailureCode.
-	{"pandoc", "input too large", fmt.Errorf("pandoc: %w", convert.ErrPandocInputTooLarge), "input_too_large"},
-	{"pandoc", "unsupported conversion", fmt.Errorf("pandoc: unsupported conversion %s -> %s", "epub", "latex"), "unsupported_target"},
-	{"pandoc", "unsupported wrap opt", fmt.Errorf("pandoc: unsupported wrap %q", "bogus"), "invalid_options"},
-	{"pandoc", "opts parse failure", fmt.Errorf("pandoc: parse opts: %w", errors.New("unexpected EOF")), "invalid_options"},
-	{"pandoc", "generic engine failure", errors.New("pandoc: pandoc: exit status 1"), "engine_error"},
-}
-
-// TestPinnedFailureCodePerEngine drives each pinFailureCodeCases row
-// through the real handler wrapper (via pinEngineByName) and asserts the
-// resulting MarkFailed code -- not by calling avFailureCode/ocrFailureCode/
-// pandocFailureCode directly, so a future refactor that stops threading
-// the mapped code into MarkFailed's argument fails loudly even if the pure
-// mapping function itself still returns the right value.
-func TestPinnedFailureCodePerEngine(t *testing.T) {
-	for _, tc := range pinFailureCodeCases {
-		t.Run(tc.engine+"/"+tc.name, func(t *testing.T) {
-			pe := pinEngineByName(t, tc.engine)
-			job, jobID := newPinJob("")
-			calls := []string{}
-			repo := &pinRepo{job: job, calls: &calls}
-			enq := &pinEnqueuer{calls: &calls}
-			h := newPinHandler(t, repo, enq)
-			h.processFn = func(context.Context, *jobs.Job) error { return tc.err }
-
-			_ = pe.wrapper(h, context.Background(), newTask(t, pe.taskType, jobID))
-
-			if len(repo.markFailed) != 1 {
-				t.Fatalf("%s/%s: MarkFailed calls = %d, want 1", tc.engine, tc.name, len(repo.markFailed))
-			}
-			if got := repo.markFailed[0].code; got != tc.wantCode {
-				t.Fatalf("%s/%s: MarkFailed code = %q, want %q", tc.engine, tc.name, got, tc.wantCode)
 			}
 		})
 	}
@@ -807,7 +744,6 @@ var pinInvalidOptsCases = []struct {
 	opts   map[string]any
 }{
 	{"document", map[string]any{"pdf_profile": "bogus"}},
-	{"pandoc", map[string]any{"wrap": "bogus"}},
 }
 
 // TestPinnedOptsGuardPrecedesMarkActive pins, for each of the six engines
