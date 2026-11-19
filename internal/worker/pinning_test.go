@@ -334,15 +334,6 @@ type pinEngine struct {
 // are pinned separately by TestPinnedFailureCodePerEngine.
 var pinEngines = []pinEngine{
 	{
-		name:        "image",
-		taskType:    queue.TypeImageConvert,
-		engine:      convert.EngineImage,
-		wrapper:     (*Handler).HandleImageConvert,
-		wantCode:    "engine_error",
-		wantMessage: "unsupported or corrupted input format",
-		terminalErr: errors.New("convert: exit status 1: vips__file_read_signature: is not a known file format"),
-	},
-	{
 		name:        "document",
 		taskType:    queue.TypeDocumentConvert,
 		engine:      convert.EngineDocument,
@@ -597,7 +588,7 @@ func TestPinnedUnparseablePayload(t *testing.T) {
 // --- TestPinnedEmissionLabelSets ------------------------------------------
 
 // TestPinnedEmissionLabelSets drives one terminal and one success case
-// (image is representative -- every engine emits through the identical
+// (document is representative -- every engine emits through the identical
 // metrics.RecordJobOutcome/metrics.RecordClientJobOutcome call sites) and
 // asserts octoconv_job_outcomes_total / octoconv_job_duration_seconds
 // carry exactly {engine,status} and octoconv_client_job_outcomes_total
@@ -605,7 +596,7 @@ func TestPinnedUnparseablePayload(t *testing.T) {
 // Pitfall 4 metric-label-drift guard, asserted from the worker's own
 // emission, not only from internal/metrics's unit tests.
 func TestPinnedEmissionLabelSets(t *testing.T) {
-	tc := pinEngineByName(t, "image")
+	tc := pinEngineByName(t, "document")
 
 	job, jobID := newPinJob("https://example.test/hook")
 	calls := []string{}
@@ -805,28 +796,6 @@ func TestPinnedOptsGuardPrecedesMarkActive(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-// TestPinnedImageHasNoOptsGuard pins the one deliberate divergence from
-// the other six engines: HandleImageConvert performs no opts re-parse at
-// all, so an arbitrary Opts map (even one that would fail every other
-// engine's own strict parse) reaches MarkActive unchanged.
-func TestPinnedImageHasNoOptsGuard(t *testing.T) {
-	job, jobID := newPinJob("")
-	job.Opts = map[string]any{"pdf_profile": "bogus"} // arbitrary; image never re-parses Opts.
-	calls := []string{}
-	repo := &pinRepo{job: job, calls: &calls}
-	enq := &pinEnqueuer{calls: &calls}
-	h := newPinHandler(t, repo, enq)
-	h.processFn = pinSuccessProcessFn(repo)
-
-	tc := pinEngineByName(t, "image")
-	if err := tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID)); err != nil {
-		t.Fatalf("image: err = %v, want nil", err)
-	}
-	if n := countToken(calls, "MarkActive"); n != 1 {
-		t.Fatalf("image: MarkActive calls = %d, want 1 (image performs no opts re-parse guard)", n)
 	}
 }
 

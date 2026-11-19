@@ -4,7 +4,6 @@ import (
 	"os"
 	"reflect"
 	"sort"
-	"strings"
 	"testing"
 
 	"go.yaml.in/yaml/v3"
@@ -51,19 +50,6 @@ func TestReleasePin(t *testing.T) {
 		if _, ok := schema.Properties[name]; ok {
 			t.Fatalf("JobCreated property %s", name)
 		}
-	}
-
-	chart, err := os.ReadFile("../../deploy/chart/octoconv/templates/scaledobject-image.yaml")
-	if err != nil {
-		t.Fatal("scaled object")
-	}
-	chartText := string(chart)
-	const query = `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`
-	if !strings.Contains(chartText, query) {
-		t.Fatal("image query")
-	}
-	if strings.Contains(chartText, "job_id") || strings.Contains(chartText, "imagepdf") {
-		t.Fatal("image scaler labels")
 	}
 
 	ceilings := map[string]int64{

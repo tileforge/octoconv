@@ -63,6 +63,7 @@ func TestCreateRefusesAnOverlongCallbackURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, store := &fakeRepo{}, &fakeStorage{}
 			srv, _ := newTestServer(repo, store, &fakeQueue{})
+			srv.SetCapabilityCatalog(imageCatalog())
 			u := callbackURLOfLength(t, tc.length)
 			body, ct := multipartBodyWithCallback(t, "in.png", "webp", pngBytesFixture(), u, "")
 			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -90,6 +91,7 @@ func TestCreateRefusesAnOverlongCallbackURL(t *testing.T) {
 	t.Run("query", func(t *testing.T) {
 		repo, store := &fakeRepo{}, &fakeStorage{}
 		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(imageCatalog())
 		body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs?"+formFieldCallbackURL+"="+url.QueryEscape(callbackURLOfLength(t, 2049)), body))
 		req.Header.Set("Content-Type", ct)
@@ -146,6 +148,7 @@ func TestCreateRefusesAnOverlongInputFilename(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, store := &fakeRepo{}, &fakeStorage{}
 			srv, _ := newTestServer(repo, store, &fakeQueue{})
+			srv.SetCapabilityCatalog(imageCatalog())
 			body, ct := multipartBodyWithRawName(t, tc.raw, "webp", pngBytesFixture())
 			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 			req.Header.Set("Content-Type", ct)

@@ -81,7 +81,6 @@ type jobStore interface {
 
 // enqueuer is the subset of *queue.Client the sweeper depends on.
 type enqueuer interface {
-	EnqueueImageConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
@@ -359,8 +358,6 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		// image queue.
 		var enqueueErr error
 		switch j.Engine {
-		case convert.EngineImage:
-			enqueueErr = s.enq.EnqueueImageConvert(ctx, j.ID)
 		case convert.EngineDocument:
 			job, _ := s.store.Get(ctx, j.ID)
 			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "engine_error", "unsupported conversion", map[string]any{"action": "document_retired"})
@@ -374,7 +371,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
-		case convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc:
+		case convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc:
 			continue
 		case convert.EngineProbe:
 			// Added by Phase 60, which is the "future engine" the note below

@@ -372,7 +372,7 @@ func TestSweepSwitchHasNoProtocolCase(t *testing.T) {
 func TestSweepRecoversUnderCap(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -380,11 +380,11 @@ func TestSweepRecoversUnderCap(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.imageCalls) != 1 {
-		t.Fatalf("EnqueueImageConvert calls = %d, want 1", len(enq.imageCalls))
+	if len(enq.probeCalls) != 1 {
+		t.Fatalf("EnqueueProbeSanitize calls = %d, want 1", len(enq.probeCalls))
 	}
 	if len(enq.documentCalls) != 0 {
-		t.Fatalf("EnqueueDocumentConvert should not be called for an image job, got %d calls", len(enq.documentCalls))
+		t.Fatalf("EnqueueDocumentConvert should not be called for a probe job, got %d calls", len(enq.documentCalls))
 	}
 	if store.requeueStaleCalls != 1 {
 		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
@@ -570,6 +570,31 @@ func TestSweepPandocStrandedRowStaysQueued(t *testing.T) {
 	}
 }
 
+// TestSweepImageStrandedRowStaysQueued proves a stranded image row is not
+// re-enqueued and is not failed. The image queue was not observed empty.
+func TestSweepImageStrandedRowStaysQueued(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.imageCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueImageConvert calls = %+v, want none", tick, enq.imageCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
+	}
+}
+
 // TestSweepRoutesEveryEngineConstant is the D-06 completeness guard for the
 // reconciler routing seam (35-CONTEXT.md): D-06 explicitly declined
 // refactoring the reconciler's (and the API's) routing switch into a shared
@@ -632,7 +657,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc {
+			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}
@@ -768,16 +793,16 @@ func TestSweepSkipsUnknownEngine(t *testing.T) {
 func TestSweepSkipsDuplicateEnqueue(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
-	enq := &fakeEnqueuer{enqueueImageErr: asynq.ErrDuplicateTask}
+	enq := &fakeEnqueuer{enqueueProbeErr: asynq.ErrDuplicateTask}
 	s := NewSweeper(store, enq, testConfig())
 
 	s.sweep(context.Background())
 
-	if len(enq.imageCalls) != 1 {
-		t.Fatalf("EnqueueImageConvert calls = %d, want 1", len(enq.imageCalls))
+	if len(enq.probeCalls) != 1 {
+		t.Fatalf("EnqueueProbeSanitize calls = %d, want 1", len(enq.probeCalls))
 	}
 	if store.requeueStaleCalls != 0 {
 		t.Fatalf("RequeueStale should NOT be called on duplicate enqueue, got %d calls", store.requeueStaleCalls)
@@ -793,7 +818,7 @@ func TestSweepSkipsDuplicateEnqueue(t *testing.T) {
 func TestSweepRequeueStaleRetriedOnce(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:            []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:            []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount:    map[uuid.UUID]int{id: 0},
 		requeueStaleErrs: []error{errors.New("transient write failure"), nil},
 	}
@@ -813,7 +838,7 @@ func TestSweepRequeueStaleRetriedOnce(t *testing.T) {
 func TestSweepRequeueStaleBoundedRetry(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "image"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 		requeueStaleErrs: []error{
 			errors.New("transient write failure"),
@@ -1175,15 +1200,15 @@ func TestSweepCountsAreNotAboutOneJob(t *testing.T) {
 	foreign := uuid.New()
 	store := &fakeStore{
 		stale: []jobs.StaleJob{
-			{ID: foreign, Status: jobs.StatusActive, Engine: "image"},
-			{ID: own, Status: jobs.StatusActive, Engine: "image"},
+			{ID: foreign, Status: jobs.StatusActive, Engine: "probe"},
+			{ID: own, Status: jobs.StatusActive, Engine: "probe"},
 		},
 		recoveryCount: map[uuid.UUID]int{own: 0, foreign: 0},
 	}
 	enq := &fakeEnqueuer{}
 	NewSweeper(store, enq, testConfig()).sweep(context.Background())
 
-	all := enq.imageCallIDs()
+	all := enq.probeCallIDs()
 	if len(all) != 2 {
 		t.Fatalf("the sweep should have touched both stale jobs; got %+v", all)
 	}

@@ -1156,6 +1156,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			"unsupported conversion: "+detected+" -> "+target)
 		return
 	}
+	if engine == convert.EngineImage && dispatchOwner != "protocol" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+			"unsupported conversion: "+detected+" -> "+target)
+		return
+	}
 
 	jobID := uuid.New()
 	key := storage.InputKey(jobID, 0, filename)
@@ -1379,8 +1384,6 @@ func (f *readFailureRecorder) ReadAt(p []byte, off int64) (int, error) {
 // and fail by NAME on the tenth engine, with no fixture to invent.
 func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UUID) (routed bool, err error) {
 	switch engine {
-	case convert.EngineImage:
-		return true, s.queue.EnqueueImageConvert(ctx, id)
 	case convert.EngineDocument:
 		return true, s.queue.EnqueueDocumentConvert(ctx, id)
 	case convert.EngineProbe:

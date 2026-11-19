@@ -16,9 +16,7 @@ var imageFormats = []string{"png", "jpg", "webp", "heic", "tiff"}
 // The output format is selected by outPath's extension (e.g. out.webp).
 type LibvipsConverter struct {
 	// Sandbox confines the engine's filesystem access. Zero value runs the
-	// engine directly, which is what every unit test wants and what a
-	// deployment gets only by saying so out loud -- cmd/worker refuses to
-	// start otherwise.
+	// engine directly, which is what every unit test wants.
 	Sandbox *engineSandbox
 }
 

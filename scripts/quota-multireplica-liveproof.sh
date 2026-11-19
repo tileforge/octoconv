@@ -498,7 +498,7 @@ NEWEST_MIGRATION_NAME=$(basename "$NEWEST_MIGRATION_PATH" .sql)
 NEWEST_MIGRATION_EPOCH=$(stat -f %m "$NEWEST_MIGRATION_PATH")
 echo "PASS: newest migration is $NEWEST_MIGRATION_NAME (mtime epoch $NEWEST_MIGRATION_EPOCH)"
 
-for IMG_KIND in api worker; do
+for IMG_KIND in api; do
 	IMG_REF="octoconv-${IMG_KIND}:${APP_IMAGE_TAG}"
 
 	docker image inspect "$IMG_REF" >/dev/null 2>&1 || {
@@ -525,7 +525,7 @@ for IMG_KIND in api worker; do
 	else
 		WORKER_VIPS=$(docker run --rm --entrypoint sh "$IMG_REF" -c 'command -v vips' 2>/dev/null || true)
 		if [ -z "$WORKER_VIPS" ]; then
-			echo "FAIL: image '$IMG_REF' has no 'vips' on PATH -- the heavy fixture's whole premise is that this binary does the work. Rebuild: docker build -f Dockerfile.worker -t ${IMG_REF} ." >&2
+			echo "FAIL: image '$IMG_REF' has no 'vips' on PATH. The in-repo image worker is retired; vips runs in tileforge/octoconv-worker-image. This script does not rebuild that image." >&2
 			exit 1
 		fi
 		echo "PASS: image $IMG_REF has vips at $WORKER_VIPS"
@@ -543,7 +543,7 @@ log "STEP 2: two-phase install (migration-race guard)"
 helm upgrade --install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -f "$VALUES_MULTIREPLICA" -n "$NAMESPACE" --create-namespace --set api.replicas=1
 echo "PASS: Phase A helm upgrade --install (api.replicas forced to 1) complete"
 
-for d in postgres redis minio api worker; do
+for d in postgres redis minio api; do
 	kubectl wait --for=condition=Available "deployment/$d" -n "$NAMESPACE" --timeout=300s
 	echo "PASS: deployment/$d Available (Phase A)"
 done

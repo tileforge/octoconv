@@ -156,17 +156,7 @@ func HistoricalFailureCodes() []string {
 // convert.*OptsFromMap wrapper's exact "parse strictly, use nothing"
 // semantics: the parsed value is discarded, only the error is kept.
 
-// ImageDescriptor is the one deliberate divergence from the other six: no
-// OptsFromMap (image never re-parses its persisted Opts,
-// TestPinnedImageHasNoOptsGuard) and no FailureCode override (every
-// terminal image failure uses the shared default "engine_error" pair).
-var ImageDescriptor = EngineDescriptor{
-	Engine:     convert.EngineImage,
-	Type:       queue.TypeImageConvert,
-	IsTerminal: isTerminal,
-}
-
-// DocumentDescriptor mirrors ImageDescriptor plus the strict opts re-parse
+// DocumentDescriptor carries the strict opts re-parse
 // guard; isDocumentTerminal is DOC-08's deliberate timeout-is-terminal
 // divergence from the image engine's isTerminal.
 var DocumentDescriptor = EngineDescriptor{

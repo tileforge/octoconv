@@ -983,12 +983,9 @@ func TestHTMLNetworkBlockE2E(t *testing.T) {
 	}
 }
 
-// TestImageConversionE2E drives the image engine (libvips) png->jpg happy
-// path through the LIVE pipeline: multipart upload -> poll to done ->
-// presigned download (convert.Sniff-verified as jpg) -> a signed webhook
-// arrives (DEBT-08) -- the last gap in the E2E format matrix, mirroring
-// TestDocumentConversionE2E's single-pair-plus-webhook shape but for the
-// image engine.
+// TestImageConversionE2E posts png to jpg. The in-repo image worker is gone
+// and this commit does not approve the manifest, so the API refuses the job
+// before upload. The image queue was not observed empty.
 func TestImageConversionE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
@@ -998,22 +995,10 @@ func TestImageConversionE2E(t *testing.T) {
 		t.Fatalf("read fixture sample.png: %v", err)
 	}
 
-	callbackURL, received := startWebhookReceiver(t, cfg.webhookHost)
-
-	jobID := postJob(t, cfg.baseURL, apiKey, "sample.png", data, "jpg", callbackURL, "")
-
-	// libvips conversion is fast; a comfortable bound well above the image
-	// queue's expected turnaround, unlike the document/html engines' 5-minute
-	// cold-start allowance.
-	body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 2*time.Minute)
-
-	downloadURL, _ := body["download_url"].(string)
-	if downloadURL == "" {
-		t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+	body := postJobExpectStatus(t, cfg.baseURL, apiKey, "sample.png", data, "jpg", "", http.StatusUnprocessableEntity)
+	if !bytes.Contains(body, []byte("unsupported_conversion")) {
+		t.Fatalf("body = %s, want unsupported_conversion", body)
 	}
-	assertDownloadIsImage(t, downloadURL, "jpg")
-
-	assertSignedWebhook(t, received, jobID)
 }
 
 // assertDownloadIsImage fetches the presigned URL (no auth header -- the URL
@@ -1358,18 +1343,7 @@ func TestPandocConversionE2E(t *testing.T) {
 // (Task 1) against a live compose stack, BEFORE any k8s work. The runtime
 // images ship no curl/wget/shell fetch tool (RESEARCH.md Pitfall 3), so
 // reachability is via docker-compose.e2e.yml's host-published, 0.0.0.0-bound
-// metrics ports (api :9190, image worker :9191) rather than docker-exec.
-//
-// Scope note (checker WARNING 2, documented per 27-01-PLAN.md): only the
-// image worker's absence of the metric is live-checked here, not all four
-// worker binaries. This is deliberate and sufficient — the collector removal
-// in Task 1 is a mechanically identical 3-line deletion applied to all four
-// worker mains, and Task 1's acceptance criteria already statically prove
-// (via `grep -rl "NewQueueDepthCollector" cmd/` returning exactly
-// cmd/api/main.go, plus a no-unused-import `go vet`) that document/chromium/
-// webhook workers no longer register the collector. Publishing three more
-// host ports to live-assert the identical deletion would add compose surface
-// and CI wiring for zero additional coverage.
+// api metrics port (:9190) rather than docker-exec.
 func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 
@@ -1383,7 +1357,7 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	// worker ever processes anything — purely so CurrentStats' pre-check finds
 	// the queue "known" and returns real (zero-valued) counts, matching what
 	// happens naturally in production the moment the first job is submitted.
-	seedQueueRegistry(t, "image", "document", "html", "webhook")
+	seedQueueRegistry(t, "document", "probe", "tectonic", "cad", "webhook")
 
 	u, err := url.Parse(cfg.baseURL)
 	if err != nil {
@@ -1395,10 +1369,8 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	}
 
 	apiMetricsURL := fmt.Sprintf("http://%s:9190/metrics", metricsHost)
-	workerMetricsURL := fmt.Sprintf("http://%s:9191/metrics", metricsHost)
 
-	// (a) api :9190 must expose octoconv_queue_depth for all four queues —
-	// the relocated single source of truth KEDA will scrape.
+	// api :9190 must expose octoconv_queue_depth for the queues that remain.
 	apiResp, err := e2eHTTP.Get(apiMetricsURL)
 	if err != nil {
 		t.Fatalf("GET %s (api metrics port unreachable — check docker-compose.e2e.yml publishes 9190:9090 with METRICS_ADDR=0.0.0.0:9090): %v", apiMetricsURL, err)
@@ -1416,31 +1388,11 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	if !strings.Contains(apiBodyStr, "octoconv_queue_depth") {
 		t.Fatalf("api :9190/metrics does not contain octoconv_queue_depth at all — collector not registered on api (Task 1 regression)")
 	}
-	for _, q := range []string{"image", "document", "html", "webhook"} {
+	for _, q := range []string{"document", "probe", "tectonic", "cad", "webhook"} {
 		label := fmt.Sprintf("queue=%q", q)
 		if !strings.Contains(apiBodyStr, label) {
 			t.Errorf("api :9190/metrics missing octoconv_queue_depth series for %s", label)
 		}
-	}
-
-	// (b) image worker :9191 must return HTTP 200 (endpoint retained) but must
-	// NOT contain octoconv_queue_depth (relocation proof — worker no longer
-	// serves it).
-	workerResp, err := e2eHTTP.Get(workerMetricsURL)
-	if err != nil {
-		t.Fatalf("GET %s (worker metrics port unreachable — check docker-compose.e2e.yml publishes 9191:9090 with METRICS_ADDR=0.0.0.0:9090): %v", workerMetricsURL, err)
-	}
-	defer workerResp.Body.Close()
-	if workerResp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(workerResp.Body, 1024))
-		t.Fatalf("GET %s status = %d, want 200 (endpoint should be retained even without the collector); body=%s", workerMetricsURL, workerResp.StatusCode, body)
-	}
-	workerBody, err := io.ReadAll(workerResp.Body)
-	if err != nil {
-		t.Fatalf("read worker metrics body: %v", err)
-	}
-	if strings.Contains(string(workerBody), "octoconv_queue_depth") {
-		t.Fatalf("image worker :9191/metrics still contains octoconv_queue_depth — collector was NOT relocated off the worker (Task 1 regression)")
 	}
 }
 

@@ -54,18 +54,6 @@ services:
       # octoconv_queue_depth for all four queues (relocation assertion).
       - "9190:9090"
 
-  # KEDA-01/D-03 (Phase 27 Plan 01): image worker's metrics port, published so
-  # TestQueueDepthMetricRelocationE2E can assert it NO LONGER serves
-  # octoconv_queue_depth (relocation proof) while still returning HTTP 200
-  # (endpoint retained). Representative spot-check for all four workers — see
-  # 27-01-PLAN.md's scope note; the other three workers' collector removal is
-  # proven statically by Task 1's `grep -rl`/`go vet` gate.
-  worker:
-    environment:
-      METRICS_ADDR: "0.0.0.0:9090"
-    ports:
-      - "9191:9090"
-
   # webhook-worker-1/-2 deliver webhooks (HandleWebhookDeliver, Phase 16) —
   # they are the processes that actually dial the E2E test's host-bound
   # receiver. Neither the image worker nor document-worker deliver webhooks

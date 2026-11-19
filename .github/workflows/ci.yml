@@ -116,8 +116,6 @@ jobs:
           set: |
             api.cache-to=type=gha,mode=max,scope=api
             api.cache-from=type=gha,scope=api
-            worker.cache-to=type=gha,mode=max,scope=worker
-            worker.cache-from=type=gha,scope=worker
             webhook-worker-1.cache-to=type=gha,mode=max,scope=webhook-worker
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-to=type=gha,mode=max,scope=webhook-worker
@@ -165,7 +163,6 @@ jobs:
           load: true
           set: |
             api.cache-from=type=gha,scope=api
-            worker.cache-from=type=gha,scope=worker
             webhook-worker-1.cache-from=type=gha,scope=webhook-worker
             webhook-worker-2.cache-from=type=gha,scope=webhook-worker
             probe-worker.cache-from=type=gha,scope=probe-worker
