@@ -856,7 +856,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 				errors.New("exit status 1"), tectonicRealFailureTail))
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want errors.Is(err, asynq.SkipRetry) -- a document that does not compile "+
@@ -901,7 +901,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 				convert.ErrTeXEngineTimeout, context.DeadlineExceeded))
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want SkipRetry -- a document that does not finish does not finish on "+
@@ -934,7 +934,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 			panic("config problem: mkdir /nonexistent: read-only file system")
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want SkipRetry -- the same input panics the same way every time", err)
@@ -970,7 +970,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 				convert.ErrTeXEngineKilled))
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want SkipRetry -- the retry allocates exactly the same way and the "+
@@ -1001,7 +1001,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 			return fmt.Errorf("upload %q: %w", "results/x/0-out.pdf", context.DeadlineExceeded)
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v was made terminal: a stalled S3 transfer is not a document that "+
@@ -1022,7 +1022,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w", context.Canceled))
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if len(repo.markFailed) != 0 {
 			t.Fatalf("MarkFailed calls = %d, want 0 -- a canceled job is not a failed document; the "+
@@ -1051,7 +1051,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 				"! ! LaTeX Error: File `pgfplots.sty' not found.."))
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want SkipRetry -- a package the bundle does not have is missing on "+
@@ -1087,7 +1087,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 			return nil
 		}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+		err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want SkipRetry -- a corrupt options column cannot fix itself on retry "+
@@ -1129,7 +1129,7 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 					convert.ValidateTectonicBundle(bundlePath)))
 			}
 
-			err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+			err := tectonicHandle(h, context.Background(), newTask(t, TectonicDescriptor.Type, jobID))
 
 			if !errors.Is(err, asynq.SkipRetry) {
 				t.Fatalf("bundle %q: err = %v, want SkipRetry -- retrying a misconfiguration re-reads "+

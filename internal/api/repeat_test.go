@@ -175,6 +175,7 @@ func TestRepeatPreservesCompleteProjectInputs(t *testing.T) {
 	repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{ID: id, Status: jobs.StatusDone, SourceFormat: "latex"}}, inputs: []jobs.Input{{Ordinal: 0, Filename: "main.tex", Format: "latex", ObjectKey: "old/main", SizeBytes: int64(len(main))}, {Ordinal: 1, Filename: "refs.bib", Format: "bib", ObjectKey: "old/refs", SizeBytes: int64(len(bib))}}}
 	store := &repeatStoreFake{available: true, dataByKey: map[string][]byte{"old/main": main, "old/refs": bib}}
 	srv, resolver := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
 	repo.getJob.ClientID = resolver.client.ID
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, authed(httptest.NewRequest("POST", "/v1/jobs/"+id.String()+"/repeat", strings.NewReader(`{"operation":"convert","target":"pdf","opts":{}}`))))

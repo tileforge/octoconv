@@ -26,7 +26,6 @@ deploy/worker-tls/*.key
 /ocr-worker
 /pandoc-worker
 /probe-worker
-/tectonic-worker
 /webhook-worker
 /worker
 # cmd-binaries-end

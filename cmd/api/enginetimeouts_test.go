@@ -38,15 +38,11 @@ func TestEngineTimeoutsFromEnvCoversEveryEngine(t *testing.T) {
 }
 
 // TestTectonicEngineTimeoutIsRead proves the tex ceiling this process
-// publishes comes from TECTONIC_ENGINE_TIMEOUT and not from a literal. IN-02
-// requires cmd/api, cmd/tectonic-worker and queue.NewClient to agree on this
-// number: the worker enforces it, and queue.NewClient derives the per-job
-// unique-lock TTL from it, so a value that reaches one process and not another
-// does not error -- it silently produces duplicate processing.
+// publishes comes from TECTONIC_ENGINE_TIMEOUT. The API reads it as the
+// protocol attempt budget.
 func TestTectonicEngineTimeoutIsRead(t *testing.T) {
 	if d := engineTimeoutsFromEnv()[convert.EngineTectonic]; d != 271*time.Second {
-		t.Fatalf("default TECTONIC_ENGINE_TIMEOUT = %v, want 271s -- the MEASURED value (64-05), and "+
-			"the same default cmd/tectonic-worker and queue.NewClient use", d)
+		t.Fatalf("default TECTONIC_ENGINE_TIMEOUT = %v, want 271s", d)
 	}
 
 	t.Setenv("TECTONIC_ENGINE_TIMEOUT", "900s")

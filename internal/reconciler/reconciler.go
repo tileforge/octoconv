@@ -84,7 +84,6 @@ type enqueuer interface {
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
-	EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueCADJob(ctx context.Context, id uuid.UUID) error
 }
 
@@ -371,7 +370,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
-		case convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc:
+		case convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc, convert.EngineTectonic:
 			continue
 		case convert.EngineProbe:
 			// Added by Phase 60, which is the "future engine" the note below
@@ -381,14 +380,6 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// the client's quota was charged, and nothing would ever run it.
 			// Caught in review (PR #12), not by a test.
 			enqueueErr = s.enq.EnqueueProbeSanitize(ctx, j.ID)
-		case convert.EngineTectonic:
-			// The ninth class, and the same lesson one engine over: without
-			// this case a queued latex job whose initial enqueue failed would
-			// take the unroutable_engine branch on every sweep and stay queued
-			// forever, with the row present and the quota charged. That is why
-			// TestSweepRoutesEveryEngineConstant exists -- it failed the moment
-			// tectonic joined AllEngines, which is the whole point of it.
-			enqueueErr = s.enq.EnqueueTectonicConvert(ctx, j.ID)
 		case convert.EngineCAD:
 			job, _ := s.store.Get(ctx, j.ID)
 			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "engine_error", "unsupported conversion", map[string]any{"action": "cad_retired"})

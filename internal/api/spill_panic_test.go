@@ -174,6 +174,9 @@ func TestPanicUnderASlotDropsTheFormBeforeTheRelease(t *testing.T) {
 				cfg = tc.cfg(cfg)
 			}
 			srv := NewServer(repo, st, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
+			if tc.at == "storage" {
+				srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
+			}
 			var h http.Handler = srv.Routes()
 			if tc.at == "trap" {
 				router := h

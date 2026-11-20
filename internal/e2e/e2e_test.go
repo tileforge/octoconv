@@ -1357,7 +1357,7 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	// worker ever processes anything — purely so CurrentStats' pre-check finds
 	// the queue "known" and returns real (zero-valued) counts, matching what
 	// happens naturally in production the moment the first job is submitted.
-	seedQueueRegistry(t, "document", "probe", "tectonic", "cad", "webhook")
+	seedQueueRegistry(t, "document", "probe", "cad", "webhook")
 
 	u, err := url.Parse(cfg.baseURL)
 	if err != nil {
@@ -1388,7 +1388,7 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	if !strings.Contains(apiBodyStr, "octoconv_queue_depth") {
 		t.Fatalf("api :9190/metrics does not contain octoconv_queue_depth at all — collector not registered on api (Task 1 regression)")
 	}
-	for _, q := range []string{"document", "probe", "tectonic", "cad", "webhook"} {
+	for _, q := range []string{"document", "probe", "cad", "webhook"} {
 		label := fmt.Sprintf("queue=%q", q)
 		if !strings.Contains(apiBodyStr, label) {
 			t.Errorf("api :9190/metrics missing octoconv_queue_depth series for %s", label)

@@ -47,7 +47,15 @@ const texMain = "\\documentclass{article}\n\\input{preamble}\n\\begin{document}x
 
 func postParts(t *testing.T, repo *fakeRepo, target string, parts ...[2]string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postPartsCatalog(t, repo, target, false, parts...)
+}
+
+func postPartsCatalog(t *testing.T, repo *fakeRepo, target string, tectonic bool, parts ...[2]string) *httptest.ResponseRecorder {
+	t.Helper()
 	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+	if tectonic {
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
+	}
 	body, ct := multipartParts(t, target, parts...)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
 	req.Header.Set("Content-Type", ct)
@@ -58,7 +66,7 @@ func postParts(t *testing.T, repo *fakeRepo, target string, parts ...[2]string) 
 
 func TestMultipleInputsAreRecordedInOrder(t *testing.T) {
 	repo := &fakeRepo{}
-	rec := postParts(t, repo, "pdf",
+	rec := postPartsCatalog(t, repo, "pdf", true,
 		[2]string{"paper.tex", texMain},
 		[2]string{"preamble.tex", "\\newcommand{\\x}{y}\n"},
 		[2]string{"refs.bib", "@book{k, title={T}}\n"},
@@ -195,7 +203,7 @@ func TestPartCountIsBounded(t *testing.T) {
 func TestQuotaChargesEveryPart(t *testing.T) {
 	repo := &fakeRepo{}
 	body := strings.Repeat("x", 5000)
-	rec := postParts(t, repo, "pdf",
+	rec := postPartsCatalog(t, repo, "pdf", true,
 		[2]string{"paper.tex", texMain},
 		[2]string{"a.tex", body},
 		[2]string{"b.tex", body},

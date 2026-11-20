@@ -93,44 +93,6 @@ probeWorker:
       cpu: "2"
       memory: "1Gi"
 
-tectonicWorker:
-  image:
-    repository: "octoconv-tectonic-worker"
-  replicas: 1
-  # 291s = TECTONIC_ENGINE_TIMEOUT (271s, ConfigMap, MEASURED) + 10s asynq
-  # ShutdownTimeout margin + 10s Docker/k8s SIGKILL margin, following pandoc's
-  # and probe's own-derivation shape rather than the ENGINE_TIMEOUT+30s
-  # convention.
-  #
-  # RE-DERIVED in the same edit that landed the measured timeout, deliberately:
-  # probe's equivalent comment described 180s for a full phase after the chart
-  # had moved to 600s. The failure mode of a derived number is not that it was
-  # wrong when written -- it is that the derivation is not re-run when its input
-  # changes.
-  #
-  # The chain closes at both ends, as probe's does: 271s comes from a run at the
-  # 2 MiB input ceiling (api.defaultMaxEngineBytes), so the ceiling and the
-  # timeout describe ONE document bound rather than two. Raising either without
-  # the other breaks it -- a higher ceiling admits work the timeout will kill, a
-  # lower one refuses work the timeout was sized for.
-  # 291s = 271s + 10s asynq ShutdownTimeout margin + 10s Docker/k8s SIGKILL
-  # margin -- the same derivation pandocWorker states and the same number
-  # docker-compose.yml's tectonic-worker uses. It was 281s, which is EXACTLY the
-  # ShutdownTimeout: Kubernetes would send SIGKILL at the instant asynq is still
-  # allowed to be finishing a job, leaving nothing for signal delivery, the
-  # final MarkDone or the metrics server, and abandoning the job to the
-  # reconciler. Found in review (PR #16, codex round 2); probeWorker had the
-  # same slip and is fixed in the same edit.
-  terminationGracePeriodSeconds: 291
-  resources:
-    limits:
-      # 2 CPU / 1Gi, the heavy-engine cgroup. Not symmetry: this worker runs a
-      # TeX interpreter over a document that is a PROGRAM, with a 128 MB bundle
-      # and a compiled format resident for the life of a job. The same reason
-      # the image runs as nobody.
-      cpu: "2"
-      memory: "1Gi"
-
 webhookWorker:
   image:
     repository: "octoconv-webhook-worker"
@@ -384,33 +346,6 @@ keda:
     # k8s 300s HPA default downscale stabilization. A pod mid-sanitize would
     # otherwise be a candidate for removal 300s in, with 300s of work left.
     scaleDownStabilizationSeconds: 900
-    minReplicaCount: 0
-  tectonic:
-    # DERIVED FROM THIS ENGINE'S OWN SHAPE, not copied from the class above it
-    # even where the numbers coincide -- copying a neighbour's knob is the same
-    # antipattern as copying its timeout (PITFALLS.md 7).
-    #
-    # threshold "2": a tex job is a seconds-scale compile on an ordinary
-    # document, so two queued jobs is the right hysteresis before paying a pod
-    # cold start -- and the cold start here is not free, since the pod's first
-    # act is to stat a 128 MB bundle. Same number pandoc and probe reached, by
-    # a different argument; recorded as its own argument so the day one of
-    # theirs changes this one does not follow it.
-    #
-    # maxReplicaCount 2: matches the memory story, not the queue -- two
-    # concurrent 1Gi TeX pods is what the current node budget carries.
-    threshold: "2"
-    maxReplicaCount: 2
-    pollingInterval: 10
-    cooldownPeriod: 90
-    # null, the FAST-engine profile, and it HELD when the timeout was measured
-    # (271s, 64-05) rather than being provisional on it. An ordinary document is
-    # a 1-3 second job on the measured corpus and even 745 pages with a
-    # bibliography is 180s, so a tex pod is not at risk of being removed
-    # mid-compile inside the k8s 300s HPA default. Probe's equivalent went the
-    # OTHER way on its own measurement (180s -> 600s, profile -> 900s), which is
-    # why this is recorded as a checked outcome and not as agreement.
-    scaleDownStabilizationSeconds: null
     minReplicaCount: 0
   cad:
     threshold: "1"

@@ -29,6 +29,7 @@ func TestProtocolOutputLimit(t *testing.T) {
 		{engine: convert.EngineAV, target: "mp4", want: 2 << 30},
 		{engine: convert.EngineAV, target: "stl", want: protocolDefaultOutputBytes},
 		{engine: convert.EnginePandoc, target: "html", want: protocolDefaultOutputBytes},
+		{engine: convert.EngineTectonic, target: "pdf", want: convert.DefaultTectonicMaxOutputBytes},
 		{engine: convert.EnginePandoc, target: "docx", want: protocolDefaultOutputBytes},
 		{engine: "", target: "stl", want: protocolDefaultOutputBytes},
 	}

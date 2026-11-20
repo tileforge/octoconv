@@ -378,7 +378,7 @@ func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOut
 // classification.
 var TectonicDescriptor = EngineDescriptor{
 	Engine: convert.EngineTectonic,
-	Type:   queue.TypeTectonicConvert,
+	Type:   "tectonic:convert",
 	// This engine takes no options, so a populated map is a corrupt column
 	// value -- D-10's terminal case, and the same strict refusal probe uses.
 	// Without it, Runner.Handle skips the read-side check and the job is marked

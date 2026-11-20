@@ -471,6 +471,9 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 			if tc.name == "markdown spilled above 16 MiB" {
 				srv.SetCapabilityCatalog(pandocCatalog())
 			}
+			if tc.name == "latex" || tc.name == "tex with an attachment" {
+				srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
+			}
 			pr, pw := io.Pipe()
 			mw := multipart.NewWriter(pw)
 			go func() {

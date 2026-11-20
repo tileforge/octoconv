@@ -14,13 +14,13 @@ import (
 // asynq.Unique lock TTL from that engine's OWN timeout and retry budget
 // (<Engine>UniqueTTL, computed in NewClient below). The derivation happens in
 // the ENQUEUING process, so two services that disagree about
-// TECTONIC_ENGINE_TIMEOUT do not produce an error anywhere -- they produce two
+// DOCUMENT_ENGINE_TIMEOUT do not produce an error anywhere -- they produce two
 // different lock TTLs for the same job, and the shorter one lets a duplicate
 // through. Duplicate processing is the failure, and it is silent.
 //
-// Five compose services construct a client, each carrying the full set of
-// engine vars by hand. Four engine classes x two vars is eight values
-// replicated five times, maintained by copying: the exact shape where the
+// Four compose services construct a client, each carrying the full set of
+// engine vars by hand. Three engine classes x two vars is six values
+// replicated four times, maintained by copying: the exact shape where the
 // next engine gets added to every service but one and the miss is found in
 // production. This file is the mechanism that makes that impossible to ship,
 // and it is deliberately DERIVED rather than listed -- the var names come from
@@ -65,9 +65,9 @@ func engineVarsReadByNewClient(t *testing.T) []string {
 	sort.Strings(vars)
 	// Vacuity guard. A regex that matched nothing would make every assertion
 	// below pass while proving nothing -- the failure mode this project has
-	// recorded more than once ("a scan of nothing is never clean"). Four
+	// recorded more than once ("a scan of nothing is never clean"). Three
 	// engine classes x 2 vars is the floor, not an estimate.
-	if len(vars) < 8 {
+	if len(vars) < 6 {
 		t.Fatalf("only %d engine vars found in %s (%v) -- the extraction regex has drifted and every "+
 			"assertion below would be vacuous", len(vars), clientPath, vars)
 	}
@@ -139,7 +139,7 @@ func TestComposeReplicatesEveryEngineVarToEveryQueueClientService(t *testing.T) 
 				"it silently produces duplicate processing", name, carries, len(vars), missing)
 		}
 	}
-	if enqueuing < 5 {
+	if enqueuing < 4 {
 		t.Fatalf("only %d compose services look like queue clients -- expected the full fleet; this test "+
 			"would be checking almost nothing", enqueuing)
 	}
@@ -148,8 +148,8 @@ func TestComposeReplicatesEveryEngineVarToEveryQueueClientService(t *testing.T) 
 // TestEveryEngineVarIsDocumentedInEnvExample pins the other half of the same
 // invariant. .env.example is where an operator learns a knob exists at all; a
 // var read by NewClient and absent there is a bound nobody knows they can set,
-// and it is how TECTONIC_ENGINE_TIMEOUT would ship with an operator unable to
-// find the number 64-05 is going to measure.
+// and it is how DOCUMENT_ENGINE_TIMEOUT would ship with an operator unable to
+// find the number.
 func TestEveryEngineVarIsDocumentedInEnvExample(t *testing.T) {
 	vars := engineVarsReadByNewClient(t)
 	b, err := os.ReadFile("../../.env.example")

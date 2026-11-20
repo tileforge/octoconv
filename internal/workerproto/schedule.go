@@ -13,7 +13,9 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"path"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -873,6 +875,8 @@ func protocolOutputLimit(engine, target string) int64 {
 		default:
 			return protocolDefaultOutputBytes
 		}
+	case convert.EngineTectonic:
+		return convert.DefaultTectonicMaxOutputBytes
 	default:
 		return protocolDefaultOutputBytes
 	}
@@ -1779,6 +1783,8 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	}
 	var inputKey, inputFormat string
 	var inputOK bool
+	var sources []storedJobInput
+	tectonicInputs := engine == convert.EngineTectonic
 	if snapshotID != nil {
 		doc, index, err := workflowStepIndex(ctx, tx, jobID, storedStep)
 		if err != nil {
@@ -1797,7 +1803,12 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			return claimDecision{skipID: jobID}, nil
 		}
 		outputFormat = step.TargetFormat
-		if index == 0 {
+		if index == 0 && tectonicInputs {
+			sources, inputOK, err = loadTectonicSources(ctx, tx, jobID)
+			if inputOK {
+				inputKey, inputFormat = sources[0].Key, sources[0].Format
+			}
+		} else if index == 0 {
 			inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
 		} else {
 			inputKey, inputFormat, inputOK, err = workflowResultInput(ctx, tx, jobID, doc.Steps[index-1].StepID)
@@ -1816,7 +1827,14 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			return claimDecision{skipID: jobID}, nil
 		}
 		var err error
-		inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
+		if tectonicInputs {
+			sources, inputOK, err = loadTectonicSources(ctx, tx, jobID)
+			if inputOK {
+				inputKey, inputFormat = sources[0].Key, sources[0].Format
+			}
+		} else {
+			inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
+		}
 		if err != nil {
 			return claimDecision{}, err
 		}
@@ -1880,9 +1898,16 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		}
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
-	getURL, err := h.store.PresignGet(ctx, inputKey, getTTL)
-	if err != nil {
-		return claimDecision{}, fmt.Errorf("presign input: %w", err)
+	if len(sources) == 0 {
+		sources = []storedJobInput{{Key: inputKey, Format: inputFormat}}
+	}
+	hrefs := make([]string, len(sources))
+	for i, src := range sources {
+		href, err := h.store.PresignGet(ctx, src.Key, getTTL)
+		if err != nil {
+			return claimDecision{}, fmt.Errorf("presign input: %w", err)
+		}
+		hrefs[i] = href
 	}
 	putTTL, ok := linkSignTTL(linkExpires)
 	if !ok {
@@ -1904,6 +1929,12 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		return claimDecision{}, err
 	}
 	expiresAt := linkExpires.UTC().Format(time.RFC3339Nano)
+	inputLinks := make([]fileLinkWire, 0, len(sources))
+	for i, src := range sources {
+		inputLinks = append(inputLinks, fileLinkWire{
+			Role: "source", Ordinal: src.Ordinal, Format: src.Format, Href: hrefs[i], ExpiresAt: expiresAt,
+		})
+	}
 	return claimDecision{
 		attemptID: attemptID,
 		wire: pullWire{
@@ -1919,9 +1950,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 				LeaseExpiresAt:    leaseExpires.UTC().Format(time.RFC3339Nano),
 				Limits:            assignmentLimits{MaxOutputBytes: int(protocolOutputLimit(engine, outputFormat))},
 				Parameters:        parameters,
-				Inputs: []fileLinkWire{{
-					Role: "source", Ordinal: 0, Format: inputFormat, Href: getURL, ExpiresAt: expiresAt,
-				}},
+				Inputs:            inputLinks,
 				Outputs: []fileLinkWire{{
 					Role: "primary", Ordinal: 0, Format: outputFormat, Href: putURL, ExpiresAt: expiresAt,
 				}},
@@ -2079,6 +2108,85 @@ func recordContinuation(ctx context.Context, tx pgx.Tx, jobID, stepID, attemptID
 		return fmt.Errorf("insert job_event: %w", err)
 	}
 	return nil
+}
+
+type storedJobInput struct {
+	Ordinal  int
+	Key      string
+	Format   string
+	Filename string
+}
+
+func loadTectonicSources(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) ([]storedJobInput, bool, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT ordinal, object_key, COALESCE(format, ''), COALESCE(filename, '')
+		FROM job_inputs
+		WHERE job_id = $1 AND object_key <> ''
+		ORDER BY ordinal`, jobID)
+	if err != nil {
+		return nil, false, fmt.Errorf("read job inputs: %w", err)
+	}
+	defer rows.Close()
+	var scanned []storedJobInput
+	for rows.Next() {
+		var row storedJobInput
+		if err := rows.Scan(&row.Ordinal, &row.Key, &row.Format, &row.Filename); err != nil {
+			return nil, false, fmt.Errorf("read job inputs: %w", err)
+		}
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("read job inputs: %w", err)
+	}
+	links, ok := tectonicSourceRows(scanned)
+	return links, ok, nil
+}
+
+func tectonicSourceRows(rows []storedJobInput) ([]storedJobInput, bool) {
+	if len(rows) == 0 || len(rows) > jobs.MaxInputParts {
+		return nil, false
+	}
+	seen := make(map[int]struct{}, len(rows))
+	extras := make([]storedJobInput, 0, len(rows))
+	var head *storedJobInput
+	for _, row := range rows {
+		if row.Ordinal < 0 || row.Key == "" {
+			return nil, false
+		}
+		if _, dup := seen[row.Ordinal]; dup {
+			return nil, false
+		}
+		seen[row.Ordinal] = struct{}{}
+		format := strings.TrimSpace(row.Format)
+		if row.Ordinal == 0 {
+			if format == "" {
+				return nil, false
+			}
+			format = convert.NormalizeFormat(format)
+			if format == "" {
+				return nil, false
+			}
+			row.Format = format
+			copied := row
+			head = &copied
+			continue
+		}
+		if format == "" {
+			format = convert.NormalizeFormat(path.Ext(row.Filename))
+		} else {
+			format = convert.NormalizeFormat(format)
+		}
+		if format == "" {
+			// File links require a format of at least one character.
+			format = "bin"
+		}
+		row.Format = format
+		extras = append(extras, row)
+	}
+	if head == nil {
+		return nil, false
+	}
+	return append([]storedJobInput{*head}, extras...), true
 }
 
 func oneJobInput(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) (string, string, bool, error) {
