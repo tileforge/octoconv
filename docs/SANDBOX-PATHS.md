@@ -100,7 +100,7 @@ argv задачи, а не только главный движок: OCR-пов�
 
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
-| probe-worker | нативная | **возможен** |
+| probe | внешний образ | compose-сервис удалён; запись ниже |
 | document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
 
 document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
@@ -119,7 +119,7 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 | `ocr` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-ocr`; встроенный процесс удалён |
 | `av` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-av`; встроенный процесс удалён |
 | `audio` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-audio`; встроенный процесс удалён |
-| `probe` | да | **да (фаза 69)** |
+| `probe` | да (внешний замер ниже) | ruleset в `tileforge/octoconv-worker-probe`; встроенный процесс удалён |
 | `html` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-html`; встроенный процесс удалён |
 | `document` | да (фаза 70, ниже) | **да (фаза 70)** |
 | `cad` (guard + mesh) | да (фаза 73, ниже) | наборы лежат в `cadsandbox.go`; класс не зарегистрирован |
@@ -1646,6 +1646,10 @@ arm64 aarch64-linux-gnu
 ## tectonic — внешний замер
 
 Встроенный процесс удалён. Ruleset живёт в `tileforge/octoconv-worker-tectonic`. Образ `octoconv-tectonic:confinement-measure` (`sha256:0dd911d59b369e24e3b9580eaa03c2e1d477b10b0d6a235babe37e072e2b3e47`), ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`, tectonic `0.17.0`. Документ внутри каталога задачи дал 3115 байт, файл снаружи каждого гранта запрещён. Протокольный набор после этого не стартовал (выход 1).
+
+## probe — внешний замер
+
+Встроенный процесс удалён. Ruleset живёт в `tileforge/octoconv-worker-probe`. Образ `octoconv-probe:confinement-measure` (`sha256:f6ed38a61441d47a40d244684cc56a301762a481547d2ea167672349490a6eed`), ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`, gs `10.00.0`, file `5.44`, UnZip `6.00`, pdfinfo `22.12.0`. `USER nobody`, `ENTRYPOINT tini`, бинарь `/usr/local/bin/probe-worker`. Отключение: `PROBE_SANDBOX_DISABLED=true`. Сбой подготовки ruleset выходит с кодом 78. Записанный прогон доказал gs, pdfinfo, unzip и file внутри каталога задачи и запрет файла вне каждого гранта. Протокольный набор после этого не стартовал: окружение dial неполное, выход 1.
 
 ## Ещё не замерено
 

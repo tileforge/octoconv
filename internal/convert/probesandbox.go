@@ -73,7 +73,7 @@ var probeEngines = []string{"gs", "pdfinfo", "unzip", "file"}
 // WithSandbox returns c with Sandbox set to a *engineSandbox built from
 // helper -- mirrors OCRConverter.WithSandbox's own shape: a method rather
 // than a ConfinedSanitize-style constructor, because SanitizeConverter also
-// carries MaxPages, and this lets cmd/probe-worker keep configuring it in
+// carries MaxPages, and this lets the external probe worker keep configuring it in
 // one place: buildSanitizeConverter(...).WithSandbox(helper).
 func (c SanitizeConverter) WithSandbox(helper []string) SanitizeConverter {
 	c.Sandbox = newEngineSandbox(helper)

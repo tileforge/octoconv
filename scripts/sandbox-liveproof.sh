@@ -50,7 +50,7 @@ class_row() {
     av)     die "av confinement is measured in tileforge/octoconv-worker-av" ;;
     audio)  die "audio confinement is measured in tileforge/octoconv-worker-audio" ;;
     html)   die "html confinement is measured in tileforge/octoconv-worker-html" ;;
-    probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
+    probe)  die "probe confinement is measured in tileforge/octoconv-worker-probe" ;;
     document) echo "Dockerfile.document-worker document-worker DOCUMENT_SANDBOX_DISABLED yes -" ;;
     cad) echo "Dockerfile.cad-worker cad-worker CAD_SANDBOX_DISABLED yes -" ;;
     *) die "unknown class: $1 (expected probe, document or cad; html confinement is measured in tileforge/octoconv-worker-html; audio confinement is measured in tileforge/octoconv-worker-audio; av confinement is measured in tileforge/octoconv-worker-av; ocr confinement is measured in tileforge/octoconv-worker-ocr; pandoc confinement is measured in tileforge/octoconv-worker-pandoc; image confinement is measured in tileforge/octoconv-worker-image)" ;;

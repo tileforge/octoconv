@@ -1149,9 +1149,8 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 
 // --- TestPinnedProbePageCeilingAndTimeoutAreOpposites -------------------
 
-// TestPinnedProbePageCeilingAndTimeoutAreOpposites pins PROBE-02 through the
-// REAL probe handler -- NewRunner(h, ProbeDescriptor).Handle, the same
-// construction cmd/probe-worker registers on its mux -- rather than by calling
+// TestPinnedProbePageCeilingAndTimeoutAreOpposites pins PROBE-02 through
+// NewRunner(h, ProbeDescriptor).Handle rather than by calling
 // isProbeTerminal/probeFailureCode directly, so a future change that stops
 // threading the mapped code into MarkFailed's argument fails here even if the
 // pure mapping functions still return the right values.
@@ -1187,7 +1186,7 @@ func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
 				convert.ErrProbeTooManyPages))
 		}
 
-		err := probeHandle(h, context.Background(), newTask(t, queue.TypeProbeSanitize, jobID))
+		err := probeHandle(h, context.Background(), newTask(t, ProbeDescriptor.Type, jobID))
 
 		if !errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want errors.Is(err, asynq.SkipRetry) -- a document that is too long is too "+
@@ -1213,7 +1212,7 @@ func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
 			return fmt.Errorf("sanitize pdf: pdfwrite pass: %w", context.DeadlineExceeded)
 		}
 
-		err := probeHandle(h, context.Background(), newTask(t, queue.TypeProbeSanitize, jobID))
+		err := probeHandle(h, context.Background(), newTask(t, ProbeDescriptor.Type, jobID))
 
 		if errors.Is(err, asynq.SkipRetry) {
 			t.Fatalf("err = %v, want NOT SkipRetry -- a ghostscript deadline depends on load, not on the "+

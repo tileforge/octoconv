@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -310,6 +312,84 @@ func TestApprovedTectonicOverLinkWindowIsRefused(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, req)
 	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
 	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func probeMatch() workerproto.Match {
+	return workerproto.Match{
+		CapabilityID:      "octoconv.sanitize.probe",
+		CapabilityVersion: 1,
+		ClientOperation:   convert.OperationSanitize,
+		LegacyOperation:   convert.OperationSanitize,
+		LegacyEngine:      convert.EngineProbe,
+		ParameterSchema:   []byte(`{}`),
+	}
+}
+
+func TestApprovedProbeOverLinkWindowIsRefused(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	over := time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.engineTimeouts[convert.EngineProbe] = over
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: probeMatch()})
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "png", "sanitize", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func TestApprovedProbeProgressWebhookUsesProtocol(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: probeMatch()})
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	fw, err := w.CreateFormFile("file", "in.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(pngBytesFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("target", "png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("operation", "sanitize"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("callback_url", "https://8.8.8.8/hook"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("progress_webhook", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &body))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 0 || q.enqueuedProbe != uuid.Nil {
+		t.Fatalf("enqueue calls=%d probe=%s", q.enqueueCalls, q.enqueuedProbe)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 600*time.Second {
+		t.Fatalf("created = %+v, want protocol probe with progress webhook", repo.created)
+	}
+	if repo.created.CapabilityID != "octoconv.sanitize.probe" || repo.created.Operation != convert.OperationSanitize || repo.created.Engine != convert.EngineProbe {
+		t.Fatalf("created = %+v", repo.created)
+	}
 }
 
 func TestApprovedTectonicProgressWebhookUsesProtocol(t *testing.T) {

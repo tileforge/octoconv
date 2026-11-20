@@ -83,7 +83,6 @@ type jobStore interface {
 type enqueuer interface {
 	EnqueueWebhookDeliver(ctx context.Context, id uuid.UUID) error
 	EnqueueDocumentConvert(ctx context.Context, id uuid.UUID) error
-	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
 	EnqueueCADJob(ctx context.Context, id uuid.UUID) error
 }
 
@@ -370,16 +369,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
-		case convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc, convert.EngineTectonic:
+		case convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc, convert.EngineTectonic, convert.EngineProbe:
 			continue
-		case convert.EngineProbe:
-			// Added by Phase 60, which is the "future engine" the note below
-			// was addressed to. Without this case a queued sanitize job whose
-			// initial enqueue failed took the unroutable_engine branch on
-			// every sweep and stayed queued forever -- the job row existed,
-			// the client's quota was charged, and nothing would ever run it.
-			// Caught in review (PR #12), not by a test.
-			enqueueErr = s.enq.EnqueueProbeSanitize(ctx, j.ID)
 		case convert.EngineCAD:
 			job, _ := s.store.Get(ctx, j.ID)
 			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "engine_error", "unsupported conversion", map[string]any{"action": "cad_retired"})

@@ -149,16 +149,10 @@ func TestProbeMaxPagesHasExactlyOneReader(t *testing.T) {
 	}
 	sort.Strings(names)
 
-	if len(names) != 1 {
-		t.Fatalf("PROBE_MAX_PAGES is read in %d place(s): %v -- want exactly one. The sanitize page "+
-			"ceiling is enforced in cmd/probe-worker alone; an admission gate that reads it was built "+
-			"and removed after six review rounds, and a second reader reappearing means that decision "+
-			"was reversed without being revisited (63-CONTEXT.md D-04)", len(names), names)
-	}
-	if !strings.Contains(readers[names[0]], "DefaultProbeMaxPages") {
-		t.Errorf("%s reads PROBE_MAX_PAGES but does not resolve its default through "+
-			"DefaultProbeMaxPages -- the constant is where the derivation lives, and a literal here "+
-			"separates the number from the reasoning that produced it", names[0])
+	if len(names) != 0 {
+		t.Fatalf("PROBE_MAX_PAGES is read in %d place(s): %v -- want zero. The sanitize page "+
+			"ceiling lives in the external probe worker. A reader in this module means the API "+
+			"gate came back (63-CONTEXT.md D-04)", len(names), names)
 	}
 }
 

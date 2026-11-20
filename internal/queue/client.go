@@ -36,19 +36,16 @@ type Client struct {
 	// comment for the worst-case-lifetime derivation this TTL must always
 	// exceed.
 	documentUniqueTTL time.Duration
-	// probeMaxRetry / probeUniqueTTL are the sanitize (probe queue)
-	// equivalents, derived at construction exactly like every pair above.
-	probeMaxRetry  int
-	probeUniqueTTL time.Duration
-	cadMaxRetry    int
-	cadUniqueTTL   time.Duration
+	cadMaxRetry       int
+	cadUniqueTTL      time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, DOCUMENT_MAX_RETRY
 // (default 3), and DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01).
 // ENGINE_TIMEOUT is the image protocol attempt budget and is read by
 // cmd/api, not here. TECTONIC_ENGINE_TIMEOUT is the tectonic protocol
-// attempt budget and is read by cmd/api, not here.
+// attempt budget and is read by cmd/api, not here. PROBE_ENGINE_TIMEOUT
+// is the probe protocol attempt budget and is read by cmd/api, not here.
 //
 // COUPLING (Pitfall 4, RESEARCH.md): RECONCILER_ACTIVE_STALE_AFTER is a
 // single global threshold (default 900s) that must comfortably exceed every
@@ -67,14 +64,6 @@ func NewClient() (*Client, error) {
 	}
 	documentMaxRetry := envInt("DOCUMENT_MAX_RETRY", 3)
 	documentEngineTimeout := envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second)
-	probeMaxRetry := envInt("PROBE_MAX_RETRY", 2)
-	// PROBE_ENGINE_TIMEOUT's default is a PLACEHOLDER and is marked as such
-	// everywhere it appears, following the exact precedent of pandoc's own
-	// 90s placeholder above (superseded by Phase 49's measurement) and OCR's
-	// 300s->744s before it. Phase 60's operator checkpoint supplies the
-	// measured value; until it does, nothing in this build may describe this
-	// number as measured.
-	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
 	cadMaxRetry := envInt("CAD_MAX_RETRY", 2)
 	cadEngineTimeout := envDuration("CAD_ENGINE_TIMEOUT", convert.CADDefaultEngineTimeout)
 	return &Client{
@@ -82,8 +71,6 @@ func NewClient() (*Client, error) {
 		webhookUniqueTTL:  WebhookUniqueTTL(webhookMaxRetry, webhookPerAttemptTimeout),
 		documentMaxRetry:  documentMaxRetry,
 		documentUniqueTTL: DocumentUniqueTTL(documentMaxRetry, documentEngineTimeout),
-		probeMaxRetry:     probeMaxRetry,
-		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
 		cadMaxRetry:       cadMaxRetry,
 		cadUniqueTTL:      CADUniqueTTL(cadMaxRetry, cadEngineTimeout),
 	}, nil
@@ -124,18 +111,6 @@ func (c *Client) EnqueueCADJob(ctx context.Context, jobID uuid.UUID) error {
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue cad job %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// EnqueueProbeSanitize puts a sanitize job onto the probe queue.
-func (c *Client) EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error {
-	task, err := NewProbeSanitizeTask(jobID, c.probeMaxRetry, c.probeUniqueTTL)
-	if err != nil {
-		return err
-	}
-	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
-		return fmt.Errorf("enqueue probe sanitize %s: %w", jobID, err)
 	}
 	return nil
 }

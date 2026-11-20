@@ -1352,12 +1352,12 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	// never at asynq.NewServer(Queues: ...) startup. GetQueueInfo/CurrentStats
 	// returns errors.NotFound (silently skipped by queueDepthCollector.Collect)
 	// for any queue that has never had a task, which a freshly-created compose
-	// stack has for all four queues. seedQueueRegistry primes just the
+	// stack has for document, cad, and webhook. seedQueueRegistry primes just the
 	// registry membership directly against Redis — zero tasks are created, no
 	// worker ever processes anything — purely so CurrentStats' pre-check finds
 	// the queue "known" and returns real (zero-valued) counts, matching what
 	// happens naturally in production the moment the first job is submitted.
-	seedQueueRegistry(t, "document", "probe", "cad", "webhook")
+	seedQueueRegistry(t, "document", "cad", "webhook")
 
 	u, err := url.Parse(cfg.baseURL)
 	if err != nil {
@@ -1388,7 +1388,7 @@ func TestQueueDepthMetricRelocationE2E(t *testing.T) {
 	if !strings.Contains(apiBodyStr, "octoconv_queue_depth") {
 		t.Fatalf("api :9190/metrics does not contain octoconv_queue_depth at all — collector not registered on api (Task 1 regression)")
 	}
-	for _, q := range []string{"document", "probe", "cad", "webhook"} {
+	for _, q := range []string{"document", "cad", "webhook"} {
 		label := fmt.Sprintf("queue=%q", q)
 		if !strings.Contains(apiBodyStr, label) {
 			t.Errorf("api :9190/metrics missing octoconv_queue_depth series for %s", label)

@@ -999,35 +999,63 @@ func TestCreateJob_SanitizePassesTheOperationGateAndFailsThePairGate(t *testing.
 	}
 }
 
-// TestCreateJob_SanitizeIdentityPairIsAccepted is the positive half: the
-// exact request the 422 used to block now reaches the probe queue.
 func TestCreateJob_SanitizeIdentityPairIsAccepted(t *testing.T) {
-	repo := &fakeRepo{}
-	store := &fakeStorage{}
-	q := &fakeQueue{}
-	srv, _ := newTestServer(repo, store, q)
+	t.Run("without a catalog", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
 
-	body, ct := multipartBodyWithOperation(t, "in.png", "png", "sanitize", pngBytesFixture())
-	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
-	req.Header.Set("Content-Type", ct)
-	rec := httptest.NewRecorder()
-	srv.Routes().ServeHTTP(rec, req)
+		body, ct := multipartBodyWithOperation(t, "in.png", "png", "sanitize", pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
-	}
-	if repo.created == nil {
-		t.Fatal("repo.Create was never called")
-	}
-	if repo.created.Operation != "sanitize" {
-		t.Errorf("created.Operation = %q, want \"sanitize\"", repo.created.Operation)
-	}
-	if repo.created.Engine != convert.EngineProbe {
-		t.Errorf("created.Engine = %q, want %q", repo.created.Engine, convert.EngineProbe)
-	}
-	if q.enqueuedProbe == uuid.Nil {
-		t.Error("EnqueueProbeSanitize was never called -- the sanitize job did not reach the probe queue")
-	}
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if repo.created != nil || store.uploadCalls != 0 || q.enqueueCalls != 0 || q.enqueuedProbe != uuid.Nil {
+			t.Fatalf("refused sanitize created=%v uploads=%d enqueueCalls=%d", repo.created != nil, store.uploadCalls, q.enqueueCalls)
+		}
+	})
+
+	t.Run("with a catalog", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: probeMatch()})
+
+		body, ct := multipartBodyWithOperation(t, "in.png", "png", "sanitize", pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil {
+			t.Fatal("repo.Create was never called")
+		}
+		if repo.created.Operation != convert.OperationSanitize {
+			t.Errorf("created.Operation = %q, want %q", repo.created.Operation, convert.OperationSanitize)
+		}
+		if repo.created.Engine != convert.EngineProbe {
+			t.Errorf("created.Engine = %q, want %q", repo.created.Engine, convert.EngineProbe)
+		}
+		if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 600*time.Second {
+			t.Fatalf("created = %+v, want protocol probe at 600s", repo.created)
+		}
+		if repo.created.CapabilityID != "octoconv.sanitize.probe" || repo.created.CapabilityVersion != 1 {
+			t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+		}
+		if q.enqueueCalls != 0 || q.enqueuedProbe != uuid.Nil {
+			t.Fatalf("enqueueCalls = %d enqueuedProbe = %s", q.enqueueCalls, q.enqueuedProbe)
+		}
+	})
 }
 
 // TestCreateJob_KnownOperationUnsupportedPairRejected proves the split
@@ -4057,7 +4085,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -5111,6 +5139,7 @@ func TestCreateJob_MacroPackageReachesSanitizeButNothingElse(t *testing.T) {
 		store := &fakeStorage{}
 		q := &fakeQueue{}
 		srv, _ := newTestServer(repo, store, q)
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: probeMatch()})
 
 		body, ct := multipartBodyWithOperation(t, "in.docm", "docx", "sanitize", macroDocxFixture(t))
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -5136,8 +5165,11 @@ func TestCreateJob_MacroPackageReachesSanitizeButNothingElse(t *testing.T) {
 		if repo.created.Engine != convert.EngineProbe {
 			t.Errorf("created.Engine = %q, want %q", repo.created.Engine, convert.EngineProbe)
 		}
-		if q.enqueuedProbe == uuid.Nil {
-			t.Error("EnqueueProbeSanitize was never called")
+		if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 600*time.Second {
+			t.Fatalf("created = %+v, want protocol probe at 600s", repo.created)
+		}
+		if q.enqueueCalls != 0 || q.enqueuedProbe != uuid.Nil {
+			t.Fatalf("enqueueCalls = %d enqueuedProbe = %s", q.enqueueCalls, q.enqueuedProbe)
 		}
 	})
 

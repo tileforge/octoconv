@@ -57,7 +57,7 @@ import (
 
 // DefaultProbeMaxPages is the code-level default for PROBE_MAX_PAGES.
 //
-// ONE process reads it: cmd/probe-worker. It began as a shared constant for
+// The external probe worker reads it. It began as a shared constant for
 // two -- cmd/api enforced the same ceiling at admission -- and that gate was
 // removed after six review rounds (63-CONTEXT.md D-04, reversed), because a
 // page count cannot be derived reliably from untrusted bytes in that process.
