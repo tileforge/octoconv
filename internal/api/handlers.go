@@ -647,7 +647,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// it is logged quoted and reaches the response inside a fixed
 			// sentence rather than being formatted as one.
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=unsupported_package package=%q", client.ID, filename, unsupported)
-			// The sentence is built in convert, not here: cmd/tectonic-worker
+			// The sentence is built in convert, not here: the external worker
 			// says the same thing for the same package when this scan does not
 			// see it, and two formatters for one condition is how the wordings
 			// drift apart while the code stays equal.
@@ -1089,7 +1089,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	avProtocol := engine == convert.EngineAV
 	ocrProtocol := engine == convert.EngineOCR
 	pandocProtocol := engine == convert.EnginePandoc
-	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol) {
+	tectonicProtocol := engine == convert.EngineTectonic
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol || tectonicProtocol) {
 		budget := s.engineTimeouts[engine]
 		if budget <= 0 {
 			budget = 120 * time.Second
@@ -1157,6 +1158,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if engine == convert.EngineImage && dispatchOwner != "protocol" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+			"unsupported conversion: "+detected+" -> "+target)
+		return
+	}
+	if engine == convert.EngineTectonic && dispatchOwner != "protocol" {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
@@ -1388,8 +1394,6 @@ func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UU
 		return true, s.queue.EnqueueDocumentConvert(ctx, id)
 	case convert.EngineProbe:
 		return true, s.queue.EnqueueProbeSanitize(ctx, id)
-	case convert.EngineTectonic:
-		return true, s.queue.EnqueueTectonicConvert(ctx, id)
 	case convert.EngineCAD:
 		return true, s.queue.EnqueueCADJob(ctx, id)
 	}

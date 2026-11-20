@@ -30,8 +30,7 @@ func TestChartGraceOutlivesAsynqShutdown(t *testing.T) {
 	// stem (worker/ENGINE_TIMEOUT), but the LIST is checked for completeness
 	// against values.yaml below.
 	workers := map[string]string{
-		"probeWorker":    "PROBE_ENGINE_TIMEOUT",
-		"tectonicWorker": "TECTONIC_ENGINE_TIMEOUT",
+		"probeWorker": "PROBE_ENGINE_TIMEOUT",
 	}
 	// Not engine workers: they run no conversion and derive no ShutdownTimeout
 	// from an engine timeout.
@@ -101,7 +100,7 @@ func parseGracePeriods(t *testing.T) map[string]int {
 			out[current] = n
 		}
 	}
-	if len(out) < 3 {
+	if len(out) < 2 {
 		t.Fatalf("parsed only %d grace periods from values.yaml -- the parser is wrong", len(out))
 	}
 	return out

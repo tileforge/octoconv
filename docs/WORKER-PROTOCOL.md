@@ -367,6 +367,8 @@ Draining and wakeup are dial-out behaviors. `control.drain` stops new pulls, let
 
 The in-repo image command is retired. The repository is `tileforge/octoconv-worker-image`. The capability is `octoconv.convert.image` version `1`.
 
+The in-repo tectonic command is retired. The repository is `tileforge/octoconv-worker-tectonic`. The capability is `octoconv.convert.tectonic` version `1`. A claim presigns every stored input. The assignment output limit is 32 MiB. This change does not approve the manifest.
+
 The Python operation is `octoconv.convert.imagepdf` version `1`, one PNG in and one single-page PDF out (assumption A6). No such repository exists. The proposed name, to be confirmed before Phase 85, is `tileforge/octoconv-worker-imagepdf` (assumption A2). This phase does not create the repository and does not pin Pillow, img2pdf, or any other library. The capability id does not depend on the repo name.
 
 The Phase 88 chain that does not need an archiver, a CAD feature, or a DAG is JPEG to PNG on the Go capability, then PNG to PDF on the Python capability. The Go input is `internal/convert/testdata/sanitize/exif_gps.jpg`. The Python single-step input is `internal/e2e/testdata/sample.png`. `png` to `png` is not a pair, so the chain cannot start from `sample.png`. The core binary stays unchanged when the new capability is attached: a catalog row, operator approval, and a separate deployment.

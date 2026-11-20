@@ -283,6 +283,58 @@ func TestApprovedCADOverLinkWindowIsRefused(t *testing.T) {
 	assertNoUploadOrEnqueue(t, repo, store, q)
 }
 
+func tectonicMatch() workerproto.Match {
+	return workerproto.Match{
+		CapabilityID:      "octoconv.convert.tectonic",
+		CapabilityVersion: 1,
+		ClientOperation:   convert.OperationConvert,
+		LegacyOperation:   convert.OperationConvert,
+		LegacyEngine:      convert.EngineTectonic,
+		ParameterSchema:   []byte(`{}`),
+	}
+}
+
+func TestApprovedTectonicOverLinkWindowIsRefused(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	over := time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second + time.Second
+	srv.engineTimeouts[convert.EngineTectonic] = over
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	assertClientError(t, rec, http.StatusUnprocessableEntity, errcode.UnsupportedConversion)
+	assertNoUploadOrEnqueue(t, repo, store, q)
+}
+
+func TestApprovedTectonicProgressWebhookUsesProtocol(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
+
+	body, ct := multipartBodyWithCallback(t, "paper.tex", "pdf", texDoc(), "https://8.8.8.8/hook", "true")
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueueCalls != 0 || q.enqueuedTectonic != uuid.Nil {
+		t.Fatalf("enqueue calls=%d tectonic=%s", q.enqueueCalls, q.enqueuedTectonic)
+	}
+	if repo.created == nil || !repo.created.ProgressWebhook || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 271*time.Second {
+		t.Fatalf("created = %+v, want protocol tectonic with progress webhook", repo.created)
+	}
+}
+
 func TestApprovedImageOverLinkWindowIsRefused(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}

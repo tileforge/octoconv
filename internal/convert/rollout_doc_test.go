@@ -26,7 +26,7 @@ func TestProtocolRolloutSection(t *testing.T) {
 		"Call DrainWorker only after the queued protocol image jobs and the active protocol image jobs are both gone.",
 		"Do not change jobs.dispatch_owner.",
 		"A done job keeps its job_outputs row.",
-		"document, html, audio, av, ocr, pandoc, probe, tectonic, and cad stay on asynq.",
+		"document, html, audio, av, ocr, pandoc, probe, and cad stay on asynq.",
 		"png to pdf stays 422.",
 		"imagepdf does not get a ScaledObject.",
 		`sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`,

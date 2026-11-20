@@ -113,7 +113,7 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 
 | Класс | Замерен | Внедрён |
 |---|---|---|
-| `tectonic` | — (PR #21) | **да** |
+| `tectonic` | да (внешний замер ниже) | ruleset в `tileforge/octoconv-worker-tectonic`; встроенный процесс удалён |
 | `image` | да | **да** (эта ветка) |
 | `pandoc` | да | **да (фаза 68)** |
 | `ocr` | да (историческая запись ниже) | ruleset в `tileforge/octoconv-worker-ocr`; встроенный процесс удалён |
@@ -1642,6 +1642,10 @@ rsvg-convert
 amd64 x86_64-linux-gnu
 arm64 aarch64-linux-gnu
 <!-- /conf05:cad:multiarch -->
+
+## tectonic — внешний замер
+
+Встроенный процесс удалён. Ruleset живёт в `tileforge/octoconv-worker-tectonic`. Образ `octoconv-tectonic:confinement-measure` (`sha256:0dd911d59b369e24e3b9580eaa03c2e1d477b10b0d6a235babe37e072e2b3e47`), ядро `Linux version 7.2.12-orbstack-00394-gbecdd6130068`, tectonic `0.17.0`. Документ внутри каталога задачи дал 3115 байт, файл снаружи каждого гранта запрещён. Протокольный набор после этого не стартовал (выход 1).
 
 ## Ещё не замерено
 

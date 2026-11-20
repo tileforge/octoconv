@@ -570,6 +570,31 @@ func TestSweepPandocStrandedRowStaysQueued(t *testing.T) {
 	}
 }
 
+// TestSweepTectonicStrandedRowStaysQueued proves a stranded tectonic row is not
+// re-enqueued and is not failed. The tectonic queue was not observed empty.
+func TestSweepTectonicStrandedRowStaysQueued(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "tectonic"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.tectonicCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueTectonicConvert calls = %+v, want none", tick, enq.tectonicCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
+	}
+}
+
 // TestSweepImageStrandedRowStaysQueued proves a stranded image row is not
 // re-enqueued and is not failed. The image queue was not observed empty.
 func TestSweepImageStrandedRowStaysQueued(t *testing.T) {
@@ -657,7 +682,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc {
+			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc || want.engine == convert.EngineTectonic {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}

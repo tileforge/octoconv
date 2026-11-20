@@ -40,18 +40,15 @@ type Client struct {
 	// equivalents, derived at construction exactly like every pair above.
 	probeMaxRetry  int
 	probeUniqueTTL time.Duration
-	// tectonicMaxRetry / tectonicUniqueTTL are the typesetting (tectonic
-	// queue) equivalents.
-	tectonicMaxRetry  int
-	tectonicUniqueTTL time.Duration
-	cadMaxRetry       int
-	cadUniqueTTL      time.Duration
+	cadMaxRetry    int
+	cadUniqueTTL   time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, DOCUMENT_MAX_RETRY
 // (default 3), and DOCUMENT_ENGINE_TIMEOUT (default 300s — Phase 9 D-01).
 // ENGINE_TIMEOUT is the image protocol attempt budget and is read by
-// cmd/api, not here.
+// cmd/api, not here. TECTONIC_ENGINE_TIMEOUT is the tectonic protocol
+// attempt budget and is read by cmd/api, not here.
 //
 // COUPLING (Pitfall 4, RESEARCH.md): RECONCILER_ACTIVE_STALE_AFTER is a
 // single global threshold (default 900s) that must comfortably exceed every
@@ -78,14 +75,6 @@ func NewClient() (*Client, error) {
 	// measured value; until it does, nothing in this build may describe this
 	// number as measured.
 	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
-	tectonicMaxRetry := envInt("TECTONIC_MAX_RETRY", 2)
-	// TECTONIC_ENGINE_TIMEOUT is MEASURED as of Phase 64 (2026-09-04):
-	// ceil(25.76 s/pass x 7 passes x 1.5) = 271s, with 7 the engine's own rerun
-	// maximum and the per-pass cost taken just above the 2 MiB input ceiling. It is read HERE for
-	// TectonicUniqueTTL's derivation, which happens in every enqueuing process
-	// (IN-02) -- a value that reaches one process and not another does not
-	// error, it silently produces duplicate processing.
-	tectonicEngineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second)
 	cadMaxRetry := envInt("CAD_MAX_RETRY", 2)
 	cadEngineTimeout := envDuration("CAD_ENGINE_TIMEOUT", convert.CADDefaultEngineTimeout)
 	return &Client{
@@ -95,8 +84,6 @@ func NewClient() (*Client, error) {
 		documentUniqueTTL: DocumentUniqueTTL(documentMaxRetry, documentEngineTimeout),
 		probeMaxRetry:     probeMaxRetry,
 		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
-		tectonicMaxRetry:  tectonicMaxRetry,
-		tectonicUniqueTTL: TectonicUniqueTTL(tectonicMaxRetry, tectonicEngineTimeout),
 		cadMaxRetry:       cadMaxRetry,
 		cadUniqueTTL:      CADUniqueTTL(cadMaxRetry, cadEngineTimeout),
 	}, nil
@@ -126,18 +113,6 @@ func (c *Client) EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) er
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue document convert %s: %w", jobID, err)
-	}
-	return nil
-}
-
-// EnqueueTectonicConvert puts a latex->pdf job onto the tectonic queue.
-func (c *Client) EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error {
-	task, err := NewTectonicConvertTask(jobID, c.tectonicMaxRetry, c.tectonicUniqueTTL)
-	if err != nil {
-		return err
-	}
-	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
-		return fmt.Errorf("enqueue tectonic convert %s: %w", jobID, err)
 	}
 	return nil
 }

@@ -33,7 +33,6 @@ appends to an append-only event log in the same transaction.
 cmd/
   api/                — HTTP server: upload, inspect, status, presigned downloads
   probe-worker/       — sanitize operation
-  tectonic-worker/    — LaTeX → PDF, Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep
   mcp-server/         — stdio MCP server
   mcp-http/           — streamable-HTTP MCP server for in-cluster use
@@ -139,7 +138,7 @@ transaction-start time — a known, accepted narrow window, not a refund path.
 
 ## Protocol image rollout
 
-There is no down migration. Do not drop a column and do not edit a migration that schema_migrations has recorded. The first protocol worker is the image worker. The legacy image worker stays up. document, html, audio, av, ocr, pandoc, probe, tectonic, and cad stay on asynq. png to pdf stays 422. imagepdf does not get a ScaledObject. The image scaler query stays `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`.
+There is no down migration. Do not drop a column and do not edit a migration that schema_migrations has recorded. The first protocol worker is the image worker. The legacy image worker stays up. document, html, audio, av, ocr, pandoc, probe, and cad stay on asynq. png to pdf stays 422. imagepdf does not get a ScaledObject. The image scaler query stays `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`.
 
 Forward order:
 
@@ -205,23 +204,7 @@ retried, because the deadline said the attempt took too long, not that the docum
 The budget is carried by the same helper that establishes the ruleset, so it applies even
 where the filesystem confinement is deliberately off.
 
-<details>
-<summary>Building the tex worker needs one extra step</summary>
-
-`Dockerfile.tectonic-worker` copies a 122 MiB TeX bundle out of the build context, and that
-file is a release asset rather than a committed one — so a fresh clone does not have it and
-the build fails with `"/deploy/tectonic-bundle/octoconv-bundle.ttb": not found`. Fetch it
-once, with `gh` authenticated against this repository:
-
-```bash
-scripts/tectonic-bundle-fetch.sh          # download and verify the digest
-scripts/tectonic-bundle-fetch.sh --check  # verify only
-```
-
-The digest is checked twice on purpose: by that script before the build starts, and again
-inside the image against the bytes that actually land there.
-
-</details>
+The in-repo tex image is retired. The bundle is built in `tileforge/octoconv-worker-tectonic`. `scripts/tectonic-bundle-fetch.sh` still downloads the release asset this repository publishes.
 
 ## Configuration
 
@@ -233,7 +216,7 @@ documented list — including how each measured limit was derived.
 | Infrastructure | `DATABASE_URL`, `DB_MAX_CONNS`, `REDIS_ADDR`, `S3_*`, `API_ADDR`, `HEALTH_ADDR`, `METRICS_ADDR` |
 | Auth & limits | `API_KEY_SALT`, `RATE_LIMIT_IP_RPM`, `RATE_LIMIT_CLIENT_RPM`, `OPERATOR_CLIENT_IDS`, `QUOTA_ENFORCEMENT_DISABLED` |
 | Upload guards | `MAX_UPLOAD_BYTES`, `MAX_IMAGE_PIXELS`, `MAX_DOCUMENT_UNCOMPRESSED_BYTES` |
-| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, `TECTONIC_ENGINE_CPU_SECONDS`, …). The image class predates the prefix: its protocol attempt budget is `ENGINE_TIMEOUT`. |
+| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, …). The image class predates the prefix: its protocol attempt budget is `ENGINE_TIMEOUT`. The tectonic protocol attempt budget is `TECTONIC_ENGINE_TIMEOUT`. The produced-PDF ceiling and the CPU budget live with the external worker. |
 | Inspect | `INSPECT_MAX_UPLOAD_BYTES`, `INSPECT_MAX_WORK_BYTES`, `INSPECT_MAX_WORK_DURATION`, `INSPECT_MAX_CONCURRENT`, `RATE_LIMIT_INSPECT_RPM` |
 | Webhooks | `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PRESIGN_TTL`, `WEBHOOK_ALLOW_PRIVATE_IPS`, `WEBHOOK_ALLOW_INSECURE_HTTP` |
 | Lifecycle | `RECONCILER_*`, `JOBS_RETENTION`, `USAGE_RETENTION`, `STORAGE_TTL`, `SSE_*`, `PROGRESS_*` |

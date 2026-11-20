@@ -117,47 +117,9 @@ data:
   # bound in this chart is), but changing it without re-measuring this value
   # breaks the pair.
   #
-  # tectonicWorker.terminationGracePeriodSeconds (291s) is derived from this and
-  # was re-derived in the same edit. IN-02: read by every
-  # queue.NewClient()-constructing service for tectonicUniqueTTL's derivation --
-  # a value that reaches one process and not another does not error, it silently
-  # produces duplicate processing.
+  # TECTONIC_ENGINE_TIMEOUT is the protocol attempt budget the API reads.
+  # It is not an input to queue.NewClient.
   TECTONIC_ENGINE_TIMEOUT: "271s"
-  # Bounds the PRODUCED PDF, which the 2 MiB input ceiling does not: TeX ships
-  # pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF
-  # in 16 seconds against 1 914 057 for the largest legitimate document (2 MiB,
-  # 745 pages). tectonic-worker-only; not an IN-02 var.
-  # What one document may COST, as opposed to how long it may occupy the clock.
-  # Measured at this chart's 2-CPU quota: idle the engine's cpu/wall ratio is
-  # 1.00, and under 4x oversubscription the same document took 3.67s wall for
-  # 1.08s of CPU. A wall-clock bound alone therefore refuses documents for the
-  # sins of their neighbours; this one refuses them for what they consumed.
-  # At least 1s: RLIMIT_CPU is whole seconds, so anything below truncates to a
-  # budget of zero and applies no limit at all. The worker refuses to start
-  # rather than run with a bound it has logged and does not enforce.
-  TECTONIC_ENGINE_CPU_SECONDS: "271s"
-  TECTONIC_MAX_OUTPUT_BYTES: "33554432"
-  # TECTONIC_SANDBOX_DISABLED is deliberately ABSENT, not set to "false".
-  # Absent means the engine is confined by Landlock and the worker refuses to
-  # start if it cannot be -- so a node pool that loses Landlock produces a pod
-  # that will not become ready, which is visible, rather than a pod that
-  # typesets client documents with read access to every mounted secret, which
-  # is not. Landlock needs no capability and no privileged securityContext.
-  TECTONIC_MAX_RETRY: "2"
-  # tectonic-worker-only, not read by queue.NewClient(). 1, with the heavy
-  # engines: a TeX interpreter plus a 128 MB bundle and its compiled format
-  # inside a 1Gi cgroup. Reasoned, not measured -- and the reasoning is memory,
-  # so throughput comes from KEDA scale-out (keda.tectonic) rather than from
-  # raising this.
-  TECTONIC_WORKER_CONCURRENCY: "1"
-  # TECTONIC_BUNDLE_PATH is deliberately ABSENT from this ConfigMap. It is
-  # baked into the image (Dockerfile.tectonic-worker) beside the bundle it
-  # names, and envFrom would override that image value for every pod -- with a
-  # path only the tex image's filesystem has. cmd/tectonic-worker stats it and
-  # exits fatally at startup, so the failure would be immediate and total
-  # rather than subtle; that is not a reason to arrange for it. DEBT-05's
-  # "every process carries the full surface" applies to knobs, not to paths
-  # into one image's filesystem.
   CAD_ENGINE_TIMEOUT: "886s"
   CAD_MAX_RETRY: "2"
   CAD_WORKER_CONCURRENCY: "1"

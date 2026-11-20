@@ -44,6 +44,7 @@ func apiVerdict(t *testing.T, pkg string) (refused bool, code, message string) {
 	t.Helper()
 	repo := &fakeRepo{}
 	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
 
 	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc(pkg))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))

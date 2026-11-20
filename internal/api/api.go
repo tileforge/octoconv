@@ -124,7 +124,6 @@ type Storage interface {
 type Enqueuer interface {
 	EnqueueDocumentConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
-	EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueCADJob(ctx context.Context, jobID uuid.UUID) error
 }
 

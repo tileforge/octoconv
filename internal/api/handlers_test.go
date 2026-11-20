@@ -3968,6 +3968,7 @@ func TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted(t *testing
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	srv, _ := newTestServer(repo, store, queue)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
 
 	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc(pandocTemplatePackages...))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3980,8 +3981,11 @@ func TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted(t *testing
 		t.Fatalf("status = %d, want 202 -- these five packages compile against the shipped bundle; "+
 			"body=%s", rec.Code, rec.Body.String())
 	}
-	if queue.enqueuedTectonic == uuid.Nil {
-		t.Error("the job was accepted but never reached the tex queue")
+	if queue.enqueueCalls != 0 || queue.enqueuedTectonic != uuid.Nil {
+		t.Errorf("enqueueCalls = %d enqueuedTectonic = %s, want no enqueue", queue.enqueueCalls, queue.enqueuedTectonic)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("dispatch = %+v, want protocol", repo.created)
 	}
 }
 
@@ -4012,6 +4016,7 @@ func TestCreateJob_PreambleBeyondTheWindowIsAdmitted(t *testing.T) {
 	srv := NewServer(repo, store, queue, defaultFakePresetRepo(), defaultFakePresetAdmin(),
 		&fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(),
 		Config{MaxUploadBytes: 8 << 20})
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
 
 	body, ct := multipartBody(t, "paper.tex", "pdf", []byte(b.String()))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -4024,8 +4029,11 @@ func TestCreateJob_PreambleBeyondTheWindowIsAdmitted(t *testing.T) {
 		t.Fatalf("status = %d, want 202: the gate must ABSTAIN when the preamble runs past its window, "+
 			"not refuse on a partial read; body=%s", rec.Code, rec.Body.String())
 	}
-	if queue.enqueuedTectonic == uuid.Nil {
-		t.Error("the abstained job never reached the tex queue, so nothing would ever refuse it")
+	if queue.enqueueCalls != 0 || queue.enqueuedTectonic != uuid.Nil {
+		t.Errorf("enqueueCalls = %d enqueuedTectonic = %s, want no enqueue", queue.enqueueCalls, queue.enqueuedTectonic)
+	}
+	if repo.created == nil || repo.created.DispatchOwner != "protocol" {
+		t.Errorf("dispatch = %+v, want protocol", repo.created)
 	}
 }
 
@@ -4049,7 +4057,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic {
 			if routed {
 				t.Errorf("engine %s is still routed to an asynq queue", engine)
 			}
@@ -4099,67 +4107,53 @@ func TestCreateJobCADRejectsOtherEnginesOptions(t *testing.T) {
 }
 
 func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
-	type fixture struct {
-		filename string
-		target   string
-		data     func(t *testing.T) []byte
-	}
-	cases := []struct {
-		engine string
-		fx     fixture
-		callID func(*fakeQueue) uuid.UUID
-	}{
-		// The ninth engine joins the SAME table rather than getting a bespoke
-		// test of its own (64-04 Task 2): the value of this test is the
-		// negative half -- every other engine's accessor must stay uuid.Nil --
-		// and a separate test would assert only the positive half.
-		{convert.EngineTectonic, fixture{"in.tex", "pdf", func(*testing.T) []byte { return latexFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedTectonic }},
-	}
+	t.Run("tectonic_without_a_catalog_is_refused", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
 
-	allAccessors := make(map[string]func(*fakeQueue) uuid.UUID, len(cases))
-	for _, c := range cases {
-		allAccessors[c.engine] = c.callID
-	}
+		body, ct := multipartBody(t, "in.tex", "pdf", latexFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
 
-	for _, tc := range cases {
-		t.Run(tc.engine, func(t *testing.T) {
-			repo := &fakeRepo{}
-			store := &fakeStorage{}
-			queue := &fakeQueue{}
-			srv, _ := newTestServer(repo, store, queue)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+		if repo.created != nil || store.uploaded || queue.enqueueCalls != 0 || queue.enqueuedTectonic != uuid.Nil {
+			t.Fatalf("refused tectonic created=%v uploaded=%v enqueueCalls=%d", repo.created != nil, store.uploaded, queue.enqueueCalls)
+		}
+	})
 
-			body, ct := multipartBody(t, tc.fx.filename, tc.fx.target, tc.fx.data(t))
-			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
-			req.Header.Set("Content-Type", ct)
-			rec := httptest.NewRecorder()
+	t.Run("tectonic_with_a_catalog_is_protocol", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: tectonicMatch()})
 
-			srv.Routes().ServeHTTP(rec, req)
+		body, ct := multipartBody(t, "in.tex", "pdf", latexFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusAccepted {
-				t.Fatalf("engine %q: status = %d, want 202; body=%s", tc.engine, rec.Code, rec.Body.String())
-			}
-			if repo.created == nil || repo.created.Engine != tc.engine {
-				t.Fatalf("engine %q: job Engine = %+v, want %q", tc.engine, repo.created, tc.engine)
-			}
-			if got := tc.callID(queue); got != repo.createdID {
-				t.Fatalf("engine %q: matching Enqueue call id = %s, want %s (repo.createdID)", tc.engine, got, repo.createdID)
-			}
-			if queue.enqueuedDocument != uuid.Nil {
-				t.Fatalf("engine %q: enqueuedDocument = %s, want uuid.Nil", tc.engine, queue.enqueuedDocument)
-			}
-			if queue.enqueuedHTML != uuid.Nil {
-				t.Fatalf("engine %q: enqueuedHTML = %s, want uuid.Nil", tc.engine, queue.enqueuedHTML)
-			}
-			for otherEngine, accessor := range allAccessors {
-				if otherEngine == tc.engine {
-					continue
-				}
-				if got := accessor(queue); got != uuid.Nil {
-					t.Fatalf("engine %q: unexpected enqueue call recorded on %q's accessor: %s, want uuid.Nil", tc.engine, otherEngine, got)
-				}
-			}
-		})
-	}
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil || repo.created.Engine != convert.EngineTectonic || repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 271*time.Second {
+			t.Fatalf("created = %+v, want protocol tectonic at 271s", repo.created)
+		}
+		if repo.created.CapabilityID != "octoconv.convert.tectonic" || repo.created.CapabilityVersion != 1 {
+			t.Fatalf("pin = %s v%d", repo.created.CapabilityID, repo.created.CapabilityVersion)
+		}
+		if queue.enqueueCalls != 0 || queue.enqueuedTectonic != uuid.Nil {
+			t.Fatalf("enqueueCalls = %d enqueuedTectonic = %s, want no enqueue", queue.enqueueCalls, queue.enqueuedTectonic)
+		}
+	})
 
 	t.Run("image_without_a_catalog_is_refused", func(t *testing.T) {
 		repo := &fakeRepo{}
