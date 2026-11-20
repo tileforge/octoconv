@@ -511,6 +511,7 @@ func (h *Handler) deleteStaging(ctx context.Context, attemptID uuid.UUID) {
 		return
 	}
 	_ = h.store.Remove(ctx, storage.AttemptOutputKey(attemptID, 0))
+	_ = h.store.Remove(ctx, storage.AttemptOutputKey(attemptID, 1))
 }
 
 type completeFailure struct {
@@ -581,11 +582,6 @@ func readStoredComplete(ctx context.Context, q queryRower, sessionID uuid.UUID, 
 }
 
 func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemptID uuid.UUID, bodyHash string, arts []completeArtifact) ([]byte, error) {
-	listed := len(arts) == 1 && artifactListed(arts[0])
-	var art completeArtifact
-	if listed {
-		art = arts[0]
-	}
 	var body []byte
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := lockAttemptIO(ctx, tx, attemptID); err != nil {
@@ -642,28 +638,44 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			}
 		}
 		maxOut := protocolOutputLimit(limitEngine, wantFormat)
-		if !listed || art.Format != wantFormat || art.ContentType != convert.MIMEType(art.Format) {
+		primary, report, matched := matchCompleteArtifacts(limitEngine, arts, wantFormat, maxOut)
+		if !matched {
 			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
 		}
-		size, kind := integerToken(art.ByteSize)
-		if kind != numOK || size > maxOut {
-			return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+		pieces := []completeArtifact{primary}
+		ordinals := []int{0}
+		if report != nil {
+			pieces = append(pieces, *report)
+			ordinals = append(ordinals, 1)
 		}
-		src := storage.AttemptOutputKey(attemptID, 0)
-		dst := storage.AcceptedOutputKey(jobID, attemptID, 0, art.SHA256)
-		gotSize, err := h.copyMatched(ctx, tx, src, dst, art.SHA256, size, maxOut)
-		if err != nil {
-			return err
+		dsts := make([]string, 0, len(pieces))
+		gotSizes := make([]int64, 0, len(pieces))
+		for i, piece := range pieces {
+			size, kind := integerToken(piece.ByteSize)
+			if kind != numOK {
+				return &completeFailure{status: http.StatusConflict, code: "artifact_rejected"}
+			}
+			src := storage.AttemptOutputKey(attemptID, ordinals[i])
+			dst := storage.AcceptedOutputKey(jobID, attemptID, ordinals[i], piece.SHA256)
+			gotSize, err := h.copyMatched(ctx, tx, src, dst, piece.SHA256, size, maxOut)
+			if err != nil {
+				if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+					return rmErr
+				}
+				return err
+			}
+			dsts = append(dsts, dst)
+			gotSizes = append(gotSizes, gotSize)
 		}
 		if _, err := lockReportingJob(ctx, tx, attemptID, sess.ID); err != nil {
-			if rmErr := h.removeUnnamedCopy(ctx, tx, dst); rmErr != nil {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
 				return rmErr
 			}
 			return err
 		}
 		handled, err = takeStoredComplete(ctx, tx, sess.ID, key, bodyHash, &body)
 		if err != nil {
-			if rmErr := h.removeUnnamedCopy(ctx, tx, dst); rmErr != nil {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
 				return rmErr
 			}
 			return err
@@ -678,12 +690,12 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			return fmt.Errorf("read job: %w", err)
 		}
 		if status != jobs.StatusActive {
-			if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+			if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
 				return err
 			}
 			return &completeFailure{status: http.StatusConflict, code: "attempt_not_active"}
 		}
-		if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dst); err != nil {
+		if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dsts...); err != nil {
 			return err
 		}
 		if snapshotID != nil && stepIndex+1 < len(snap.Steps) {
@@ -694,22 +706,25 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 				return quotaErr
 			}
 			if reason != "" {
-				if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+				if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
 					return err
 				}
 				if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, reason, quotaErr.Error()); err != nil {
 					return err
 				}
-			} else if err := recordContinuation(ctx, tx, jobID, stepID, attemptID, dst, art, gotSize, next); err != nil {
+			} else if err := recordContinuation(ctx, tx, jobID, stepID, attemptID, dsts[0], pieces[0], gotSizes[0], next); err != nil {
+				if len(dsts) > 1 {
+					if rmErr := h.removeUnnamedCopies(ctx, tx, dsts[1:]...); rmErr != nil {
+						return rmErr
+					}
+				}
 				return err
+			} else if len(dsts) > 1 {
+				if err := h.removeUnnamedCopies(ctx, tx, dsts[1:]...); err != nil {
+					return err
+				}
 			}
-		} else if err := h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, jobs.Output{
-			Ordinal:     0,
-			ObjectKey:   dst,
-			Format:      art.Format,
-			SizeBytes:   gotSize,
-			ContentType: art.ContentType,
-		}); err != nil {
+		} else if err := h.acceptCopied(ctx, tx, jobID, attemptID, pieces, dsts, gotSizes); err != nil {
 			return err
 		}
 		ids, err := canceledAttempts(ctx, tx, sess.ID)
@@ -813,7 +828,7 @@ func (h *Handler) copyMatched(ctx context.Context, tx pgx.Tx, src, dst, sha stri
 	return gotSize, nil
 }
 
-func (h *Handler) attemptLiveNow(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID, dst string) error {
+func (h *Handler) attemptLiveNow(ctx context.Context, tx pgx.Tx, attemptID, sessionID uuid.UUID, dsts ...string) error {
 	var live bool
 	err := tx.QueryRow(ctx, `
 		SELECT state = 'active'
@@ -828,10 +843,99 @@ func (h *Handler) attemptLiveNow(ctx context.Context, tx pgx.Tx, attemptID, sess
 	if err == nil && live {
 		return nil
 	}
-	if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+	if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
 		return err
 	}
 	return errAttemptInactive
+}
+
+func (h *Handler) removeUnnamedCopies(ctx context.Context, tx pgx.Tx, dsts ...string) error {
+	for _, dst := range dsts {
+		if err := h.removeUnnamedCopy(ctx, tx, dst); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) acceptCopied(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, pieces []completeArtifact, dsts []string, gotSizes []int64) error {
+	out := jobs.Output{
+		Ordinal:     0,
+		ObjectKey:   dsts[0],
+		Format:      pieces[0].Format,
+		SizeBytes:   gotSizes[0],
+		ContentType: pieces[0].ContentType,
+	}
+	if len(pieces) == 1 {
+		return h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, out)
+	}
+	report := jobs.Output{
+		Ordinal:     1,
+		ObjectKey:   dsts[1],
+		Filename:    "report.json",
+		Format:      pieces[1].Format,
+		SizeBytes:   gotSizes[1],
+		ContentType: pieces[1].ContentType,
+		Role:        jobs.OutputRoleReport,
+	}
+	return h.jobsRepo.AcceptProtocol(ctx, tx, jobID, attemptID, out, report)
+}
+
+func matchCompleteArtifacts(engine string, arts []completeArtifact, wantFormat string, maxOut int64) (completeArtifact, *completeArtifact, bool) {
+	if engine != convert.EngineProbe {
+		if len(arts) != 1 || !primaryArtifactMatches(arts[0], wantFormat, maxOut) {
+			return completeArtifact{}, nil, false
+		}
+		return arts[0], nil, true
+	}
+	if len(arts) != 2 {
+		return completeArtifact{}, nil, false
+	}
+	var primary completeArtifact
+	var report completeArtifact
+	var havePrimary, haveReport bool
+	for _, art := range arts {
+		switch art.Role {
+		case "primary":
+			if havePrimary || !primaryArtifactMatches(art, wantFormat, maxOut) {
+				return completeArtifact{}, nil, false
+			}
+			primary = art
+			havePrimary = true
+		case "report":
+			if haveReport || !reportArtifactListed(art, maxOut) {
+				return completeArtifact{}, nil, false
+			}
+			report = art
+			haveReport = true
+		default:
+			return completeArtifact{}, nil, false
+		}
+	}
+	if !havePrimary || !haveReport {
+		return completeArtifact{}, nil, false
+	}
+	return primary, &report, true
+}
+
+func primaryArtifactMatches(art completeArtifact, wantFormat string, maxOut int64) bool {
+	if !artifactListed(art) || art.Format != wantFormat || art.ContentType != convert.MIMEType(art.Format) {
+		return false
+	}
+	size, kind := integerToken(art.ByteSize)
+	return kind == numOK && size <= maxOut
+}
+
+func reportArtifactListed(art completeArtifact, maxOut int64) bool {
+	if art.Format != "json" || art.ContentType != convert.MIMEType("json") {
+		return false
+	}
+	ordinal, kind := integerToken(art.Ordinal)
+	if kind != numOK || ordinal != 1 || !hex64.MatchString(art.SHA256) {
+		return false
+	}
+	size, kind := integerToken(art.ByteSize)
+	return kind == numOK && size >= 0 && size <= maxOut
 }
 
 func (h *Handler) rejectCopied(ctx context.Context, tx pgx.Tx, dst string) error {
@@ -1920,6 +2024,18 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if err != nil {
 		return claimDecision{}, fmt.Errorf("presign output: %w", err)
 	}
+	outputs := []fileLinkWire{{
+		Role: "primary", Ordinal: 0, Format: outputFormat, Href: putURL, ExpiresAt: "",
+	}}
+	if engine == convert.EngineProbe {
+		reportURL, err := h.store.PresignPut(ctx, storage.AttemptOutputKey(attemptID, 1), putTTL)
+		if err != nil {
+			return claimDecision{}, fmt.Errorf("presign report: %w", err)
+		}
+		outputs = append(outputs, fileLinkWire{
+			Role: "report", Ordinal: 1, Format: "json", Href: reportURL,
+		})
+	}
 	var optsRaw []byte
 	if err := tx.QueryRow(ctx, `SELECT options FROM jobs WHERE id = $1`, jobID).Scan(&optsRaw); err != nil {
 		return claimDecision{}, fmt.Errorf("read job options: %w", err)
@@ -1929,6 +2045,9 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		return claimDecision{}, err
 	}
 	expiresAt := linkExpires.UTC().Format(time.RFC3339Nano)
+	for i := range outputs {
+		outputs[i].ExpiresAt = expiresAt
+	}
 	inputLinks := make([]fileLinkWire, 0, len(sources))
 	for i, src := range sources {
 		inputLinks = append(inputLinks, fileLinkWire{
@@ -1951,9 +2070,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 				Limits:            assignmentLimits{MaxOutputBytes: int(protocolOutputLimit(engine, outputFormat))},
 				Parameters:        parameters,
 				Inputs:            inputLinks,
-				Outputs: []fileLinkWire{{
-					Role: "primary", Ordinal: 0, Format: outputFormat, Href: putURL, ExpiresAt: expiresAt,
-				}},
+				Outputs:           outputs,
 			}},
 			Control: controlWire{CancelAttemptIDs: cancelIDs, Drain: false, Terminate: false},
 		},

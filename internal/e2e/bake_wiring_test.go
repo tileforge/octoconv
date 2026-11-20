@@ -59,7 +59,7 @@ func buildableComposeServices(t *testing.T) []string {
 		}
 	}
 	sort.Strings(out)
-	if len(out) < 4 {
+	if len(out) < 3 {
 		t.Fatalf("found only %d buildable services in %s -- the parser is wrong and every "+
 			"assertion below would be vacuous", len(out), bakeComposePath)
 	}

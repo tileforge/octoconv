@@ -182,6 +182,9 @@ func sweepReleasedStaging(ctx context.Context, pool *pgxpool.Pool, store objectS
 	now := time.Now()
 	for _, item := range due {
 		removeErr := store.Remove(ctx, storage.AttemptOutputKey(item.id, 0))
+		if removeErr == nil {
+			removeErr = store.Remove(ctx, storage.AttemptOutputKey(item.id, 1))
+		}
 		if removeErr != nil {
 			if _, err := pool.Exec(ctx, `
 				UPDATE worker_slot_holds

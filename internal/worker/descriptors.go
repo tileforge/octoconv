@@ -169,7 +169,7 @@ var DocumentDescriptor = EngineDescriptor{
 }
 
 // ProbeDescriptor is the eighth, and the first whose task type is not a
-// convert (queue.TypeProbeSanitize).
+// convert ("probe:sanitize").
 //
 // TERMINAL/TRANSIENT, DERIVED FOR SANITIZE RATHER THAN COPIED
 //
@@ -210,7 +210,7 @@ var DocumentDescriptor = EngineDescriptor{
 // classification.
 var ProbeDescriptor = EngineDescriptor{
 	Engine: convert.EngineProbe,
-	Type:   queue.TypeProbeSanitize,
+	Type:   "probe:sanitize",
 	OptsFromMap: func(m map[string]any) (any, error) {
 		return convert.SanitizeOptsFromMap(m)
 	},

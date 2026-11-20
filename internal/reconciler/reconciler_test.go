@@ -380,14 +380,11 @@ func TestSweepRecoversUnderCap(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if len(enq.probeCalls) != 1 {
-		t.Fatalf("EnqueueProbeSanitize calls = %d, want 1", len(enq.probeCalls))
+	if len(enq.probeCalls) != 0 || len(enq.documentCalls) != 0 || len(enq.cadCalls) != 0 {
+		t.Fatalf("enqueue probe=%d document=%d cad=%d, want none", len(enq.probeCalls), len(enq.documentCalls), len(enq.cadCalls))
 	}
-	if len(enq.documentCalls) != 0 {
-		t.Fatalf("EnqueueDocumentConvert should not be called for a probe job, got %d calls", len(enq.documentCalls))
-	}
-	if store.requeueStaleCalls != 1 {
-		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
 	if len(store.markFailedCalls) != 0 {
 		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
@@ -682,7 +679,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc || want.engine == convert.EngineTectonic {
+			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc || want.engine == convert.EngineTectonic || want.engine == convert.EngineProbe {
 				if len(got) != 0 {
 					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 				}
@@ -821,22 +818,22 @@ func TestSweepSkipsDuplicateEnqueue(t *testing.T) {
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "probe"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
-	enq := &fakeEnqueuer{enqueueProbeErr: asynq.ErrDuplicateTask}
+	enq := &fakeEnqueuer{}
 	s := NewSweeper(store, enq, testConfig())
 
 	s.sweep(context.Background())
 
-	if len(enq.probeCalls) != 1 {
-		t.Fatalf("EnqueueProbeSanitize calls = %d, want 1", len(enq.probeCalls))
+	if len(enq.probeCalls) != 0 {
+		t.Fatalf("EnqueueProbeSanitize calls = %d, want 0", len(enq.probeCalls))
 	}
 	if store.requeueStaleCalls != 0 {
-		t.Fatalf("RequeueStale should NOT be called on duplicate enqueue, got %d calls", store.requeueStaleCalls)
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
 	if len(store.markFailedCalls) != 0 {
 		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
 	}
 	if store.recoveryCount[id] != 0 {
-		t.Fatalf("recovery count = %d, want 0 (no spurious recovery recorded)", store.recoveryCount[id])
+		t.Fatalf("recovery count = %d, want 0", store.recoveryCount[id])
 	}
 }
 
@@ -852,11 +849,11 @@ func TestSweepRequeueStaleRetriedOnce(t *testing.T) {
 
 	s.sweep(context.Background())
 
-	if store.requeueStaleCalls != 2 {
-		t.Fatalf("RequeueStale calls = %d, want 2", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
-	if store.recoveryCount[id] != 1 {
-		t.Fatalf("recovery count = %d, want 1 (ultimately recorded)", store.recoveryCount[id])
+	if len(enq.probeCalls) != 0 || len(store.markFailedCalls) != 0 {
+		t.Fatalf("probe calls %d markFailed %d, want none", len(enq.probeCalls), len(store.markFailedCalls))
 	}
 }
 
@@ -884,11 +881,11 @@ func TestSweepRequeueStaleBoundedRetry(t *testing.T) {
 		t.Fatal("sweep did not return — possible unbounded retry loop")
 	}
 
-	if store.requeueStaleCalls != 2 {
-		t.Fatalf("RequeueStale calls = %d, want exactly 2 (bounded)", store.requeueStaleCalls)
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
 	}
-	if len(store.markFailedCalls) != 0 {
-		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	if len(enq.probeCalls) != 0 || len(store.markFailedCalls) != 0 {
+		t.Fatalf("probe calls %d markFailed %d, want none", len(enq.probeCalls), len(store.markFailedCalls))
 	}
 }
 
@@ -1225,15 +1222,15 @@ func TestSweepCountsAreNotAboutOneJob(t *testing.T) {
 	foreign := uuid.New()
 	store := &fakeStore{
 		stale: []jobs.StaleJob{
-			{ID: foreign, Status: jobs.StatusActive, Engine: "probe"},
-			{ID: own, Status: jobs.StatusActive, Engine: "probe"},
+			{ID: foreign, Status: jobs.StatusActive, Engine: "document"},
+			{ID: own, Status: jobs.StatusActive, Engine: "document"},
 		},
 		recoveryCount: map[uuid.UUID]int{own: 0, foreign: 0},
 	}
 	enq := &fakeEnqueuer{}
 	NewSweeper(store, enq, testConfig()).sweep(context.Background())
 
-	all := enq.probeCallIDs()
+	all := store.markFailedCalls
 	if len(all) != 2 {
 		t.Fatalf("the sweep should have touched both stale jobs; got %+v", all)
 	}
@@ -1245,7 +1242,7 @@ func TestSweepCountsAreNotAboutOneJob(t *testing.T) {
 		}
 	}
 	if mine != 1 {
-		t.Errorf("own job enqueued %d times, want exactly 1", mine)
+		t.Errorf("own job failed %d times, want exactly 1", mine)
 	}
 
 	// And the shape that used to be asserted is shown to be wrong here: a

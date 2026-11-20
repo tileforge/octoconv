@@ -230,7 +230,7 @@ func main() {
 		MaxUploadBytes: envInt64("MAX_UPLOAD_BYTES", 2<<30),
 		MaxImagePixels: uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)), // D-05: 100 megapixels default
 		// PROBE_MAX_PAGES is deliberately NOT read here. The sanitize page
-		// ceiling is enforced only in cmd/probe-worker (PROBE-02); the
+		// ceiling is enforced only in the external probe worker (PROBE-02); the
 		// admission gate that once read it was removed after six review
 		// rounds -- see internal/api/handlers.go's own note where it stood,
 		// and 63-CONTEXT.md D-04.

@@ -335,9 +335,10 @@ func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.
 }
 
 // AcceptProtocol marks an active protocol job done on the caller's transaction.
-// The caller already holds the job lock. It inserts one primary output, records
-// usage once, and releases the attempt hold without changing its state.
-func (r *Repo) AcceptProtocol(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, out Output) error {
+// The caller already holds the job lock. It inserts the primary output, then
+// each extra output, records usage once, and releases the attempt hold
+// without changing its state.
+func (r *Repo) AcceptProtocol(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, out Output, extra ...Output) error {
 	var status string
 	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, jobID).Scan(&status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -354,6 +355,22 @@ func (r *Repo) AcceptProtocol(ctx context.Context, tx pgx.Tx, jobID, attemptID u
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		jobID, out.Ordinal, out.ObjectKey, filename, out.Format, out.SizeBytes, out.ContentType, OutputRolePrimary); err != nil {
 		return fmt.Errorf("insert job output: %w", err)
+	}
+	for _, item := range extra {
+		name := item.Filename
+		if name == "" {
+			name = "out." + item.Format
+		}
+		role := item.Role
+		if role == "" {
+			role = OutputRolePrimary
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			jobID, item.Ordinal, item.ObjectKey, name, item.Format, item.SizeBytes, item.ContentType, role); err != nil {
+			return fmt.Errorf("insert job output: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE jobs

@@ -32,7 +32,6 @@ appends to an append-only event log in the same transaction.
 ```
 cmd/
   api/                — HTTP server: upload, inspect, status, presigned downloads
-  probe-worker/       — sanitize operation
   webhook-worker/     — signed webhook delivery + reconciler sweep
   mcp-server/         — stdio MCP server
   mcp-http/           — streamable-HTTP MCP server for in-cluster use
@@ -138,7 +137,7 @@ transaction-start time — a known, accepted narrow window, not a refund path.
 
 ## Protocol image rollout
 
-There is no down migration. Do not drop a column and do not edit a migration that schema_migrations has recorded. The first protocol worker is the image worker. The legacy image worker stays up. document, html, audio, av, ocr, pandoc, probe, and cad stay on asynq. png to pdf stays 422. imagepdf does not get a ScaledObject. The image scaler query stays `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`.
+There is no down migration. Do not drop a column and do not edit a migration that schema_migrations has recorded. The first protocol worker is the image worker. The legacy image worker stays up. document, html, audio, av, ocr, pandoc, and cad stay on asynq. png to pdf stays 422. imagepdf does not get a ScaledObject. The image scaler query stays `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})`.
 
 Forward order:
 

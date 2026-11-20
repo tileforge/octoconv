@@ -827,7 +827,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// which is what phase 58 D-02a refused.
 	//
 	// The bound is enforced where an accurate count is affordable: in
-	// cmd/probe-worker, with pdfinfo, terminally (PROBE-02). What was lost is
+	// the external probe worker, with pdfinfo, terminally (PROBE-02). What was lost is
 	// one S3 write and one queue slot per over-long document; what was gained
 	// is that a valid document is never refused by a heuristic. See
 	// 63-CONTEXT.md D-04 for the reversal and the evidence.
@@ -1090,7 +1090,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ocrProtocol := engine == convert.EngineOCR
 	pandocProtocol := engine == convert.EnginePandoc
 	tectonicProtocol := engine == convert.EngineTectonic
-	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol || tectonicProtocol) {
+	probeProtocol := engine == convert.EngineProbe
+	if legacyMatch && pinID != "" && (imageProtocol || cadProtocol || documentProtocol || htmlProtocol || audioProtocol || avProtocol || ocrProtocol || pandocProtocol || tectonicProtocol || probeProtocol) {
 		budget := s.engineTimeouts[engine]
 		if budget <= 0 {
 			budget = 120 * time.Second
@@ -1163,6 +1164,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if engine == convert.EngineTectonic && dispatchOwner != "protocol" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
+			"unsupported conversion: "+detected+" -> "+target)
+		return
+	}
+	if engine == convert.EngineProbe && dispatchOwner != "protocol" {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
@@ -1392,8 +1398,6 @@ func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UU
 	switch engine {
 	case convert.EngineDocument:
 		return true, s.queue.EnqueueDocumentConvert(ctx, id)
-	case convert.EngineProbe:
-		return true, s.queue.EnqueueProbeSanitize(ctx, id)
 	case convert.EngineCAD:
 		return true, s.queue.EnqueueCADJob(ctx, id)
 	}

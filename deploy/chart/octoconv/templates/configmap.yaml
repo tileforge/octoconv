@@ -59,43 +59,11 @@ data:
   # PANDOC_MAX_INPUT_BYTES is the api upload ceiling.
   PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
-  # PROBE (sanitize, Phase 60). MEASURED 2026-09-02
-  # (scripts/probe-timeout-measure.sh; derivation and full output at
-  # .planning/phases/60-sanitize-eighth-engine-class/evidence/
-  # probe-timeout-20260902-measured.txt). Cost is per PAGE, not per byte:
-  # 1.99-2.01 s/page across three points, in the container at 2 CPU / 1 GiB
-  # against gs 10.00.0. ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33% under
-  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (620s)
-  # is derived from it. IN-02: read by every queue.NewClient()-constructing
-  # service for probeUniqueTTL's derivation.
+  # PROBE (sanitize). MEASURED 2026-09-02
+  # (scripts/probe-timeout-measure.sh). ceil(2.0 s/page x 200 pages x 1.5) = 600s.
+  # PROBE_ENGINE_TIMEOUT is the protocol attempt budget the API reads.
+  # It is not an input to queue.NewClient.
   PROBE_ENGINE_TIMEOUT: "600s"
-  PROBE_MAX_RETRY: "2"
-  # PROBE_MAX_PAGES (Phase 63, PROBE-01/PROBE-02) is the ceiling the timeout
-  # above was already derived FROM -- the 200 in ceil(2.0 s/page x 200 pages
-  # x 1.5). Until this phase the engine did not have it, so the timeout was
-  # the only bound on the input and an over-long document failed LATE (ten
-  # minutes of CPU), RETRIED (a probe timeout is TRANSIENT, correctly) and
-  # OPAQUE (engine_error). Setting it to anything other than the number the
-  # timeout assumes makes the two disagree about what this service sanitizes.
-  #
-  # PROVISIONAL, in the narrow sense the value's own doc comment states
-  # (internal/convert/probebounds.go): 2.0 s/page is measured, but "200 pages
-  # is a generous document bound" is reasoned from a hand-chosen corpus. The
-  # hard ceiling nothing may exceed is the reconciler's: 900s at 2.0 s/page
-  # is 450 pages.
-  #
-  # Read by cmd/probe-worker ONLY -- pdfinfo counts the pages before the first
-  # ghostscript pass and the refusal is terminal. An admission gate in cmd/api
-  # was built and removed (63-CONTEXT.md D-04, reversed): a page count cannot be
-  # derived reliably from untrusted bytes in that process, because a page tree
-  # is a tree and a long document declares several different counts. It sits in
-  # the shared ConfigMap anyway (DEBT-05 --
-  # every process carries the full surface even when unused).
-  PROBE_MAX_PAGES: "200"
-  # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
-  # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
-  # document inside a 1Gi cgroup. Reasoned, not measured.
-  PROBE_WORKER_CONCURRENCY: "1"
   # TECTONIC (tex, latex -> pdf, Phase 64). MEASURED 2026-09-04
   # (scripts/tectonic-timeout-measure.sh; derivation in .env.example, full
   # output and corpus provenance committed under the phase's evidence/).

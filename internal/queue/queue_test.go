@@ -234,7 +234,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 
 	for engine := range wantEngines {
 		wantCount := 1
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe {
 			wantCount = 0
 		}
 		if seen[engine] != wantCount {
@@ -246,27 +246,6 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 			t.Errorf("AllConvertQueues() contains unexpected extra entry %q (count %d) -- not a registered engine class", q, count)
 		}
 	}
-}
-
-// TestProbeUniqueTTLIsItsOwn mirrors the pandoc/OCR distinctness proofs: the
-// probe lock TTL must be derived from probe's own retry budget rather than
-// copied from a neighbour. Equal values under the same inputs would mean the
-// derivation was shared, and a shared derivation drifts silently the moment
-// one engine's budget changes.
-func TestProbeUniqueTTLIsItsOwn(t *testing.T) {
-	const maxRetry = 2
-	engineTimeout := 180 * time.Second
-
-	got := ProbeUniqueTTL(maxRetry, engineTimeout)
-	want := time.Duration(maxRetry+1)*engineTimeout + (5*time.Second + 20*time.Second) + uniqueTTLSafetyMargin
-	if got != want {
-		t.Errorf("ProbeUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
-	}
-	// Probe and pandoc happen to share a schedule shape today, so a
-	// "must differ from pandoc" assertion would be false rather than
-	// strong. What the recomputation above proves instead is the property
-	// that actually matters: the TTL comes from probeRetrySchedule's own
-	// literals, so pandoc changing its schedule cannot move this number.
 }
 
 func TestEnqueueCADJob(t *testing.T) {
@@ -409,8 +388,8 @@ func TestCADUniqueTTL(t *testing.T) {
 
 func TestCADQueueIsExposed(t *testing.T) {
 	got := AllConvertQueues()
-	if len(got) != 3 {
-		t.Errorf("AllConvertQueues() has %d queues, want 3", len(got))
+	if len(got) != 2 {
+		t.Errorf("AllConvertQueues() has %d queues, want 2", len(got))
 	}
 	count := 0
 	for _, q := range got {

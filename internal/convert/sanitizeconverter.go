@@ -49,7 +49,7 @@ import (
 // MaxPages is the PROBE_MAX_PAGES ceiling (probebounds.go), zero meaning "no
 // cap configured" -- the same zero-value convention OCRConverter.MaxPages and
 // ocrguards.go's enforceMaxPages already use. converters.go registers the
-// zero value at init; cmd/probe-worker replaces it with the configured one at
+// zero value at init; the external probe worker replaces it with the configured one at
 // startup, exactly as cmd/ocr-worker does for OCRConverter.
 //
 // Sandbox mirrors every other confined class (OCRConverter, PandocConverter,
@@ -131,7 +131,7 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// PROBE-02: the page ceiling, enforced BEFORE sanitizeFile and therefore
 	// before the first ghostscript pass. It lives HERE rather than inside
 	// sanitizeFile for one reason: the bound is CONFIGURATION, held by this
-	// converter (the registry entry cmd/probe-worker replaces with the
+	// converter (the registry entry the external probe worker replaces with the
 	// env-resolved value), and sanitizeFile takes no configuration at all.
 	// Threading it through changed that function's signature at every one of
 	// its own test call sites -- x engineExec is one of them, added in the
