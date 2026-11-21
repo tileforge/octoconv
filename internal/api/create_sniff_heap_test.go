@@ -406,6 +406,8 @@ func createZipVerdict(t *testing.T, res rawResult, repo *fakeRepo) string {
 	switch {
 	case res.status == http.StatusAccepted && repo.created != nil:
 		return "format " + repo.created.SourceFormat
+	case res.status == http.StatusUnprocessableEntity && res.payload["code"] == "unsupported_conversion" && res.payload["error"] == "unsupported conversion: docx -> pdf":
+		return "pair refused"
 	case res.status != http.StatusUnprocessableEntity || res.payload["code"] != "invalid_request":
 	case res.payload["error"] == createZipDirectoryTooLargeMessage:
 		return "directory too large"
@@ -456,10 +458,19 @@ func TestCreateAndInspectAgreeOnZipDirectories(t *testing.T) {
 	inspectSrv, _ := newIntakeServer(t, createIntakeConfig(64<<20), 30*time.Second, 32<<10)
 	for _, in := range zipVerdictCorpus(t) {
 		t.Run(in.name, func(t *testing.T) {
-			res, repo, _ := postCreateZip(t, in.data)
+			res, repo, store := postCreateZip(t, in.data)
 			created := createZipVerdict(t, res, repo)
 			inspected := inspectZipVerdict(t, inspectSrv, in.data)
 			t.Logf("%d B: create %q (status %d), inspect %q", len(in.data), created, res.status, inspected)
+			if created == "pair refused" {
+				if inspected != "format docx" {
+					t.Errorf("create refused docx -> pdf, inspect says %q, want format docx", inspected)
+				}
+				if store.uploaded || repo.created != nil {
+					t.Errorf("refused docx reached storage or created a job")
+				}
+				return
+			}
 			if created != inspected {
 				t.Errorf("create says %q, inspect says %q: one file, two verdicts", created, inspected)
 			}

@@ -1610,6 +1610,22 @@ func TestIntakeHeapModelCoversTheRequestLine(t *testing.T) {
 }
 
 func TestPostParseHeapFitsTheModel(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	body, ct := multipartBody(t, "paper.tex", "pdf", latexFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "unsupported conversion: latex -> pdf") {
+		t.Fatalf("latex create status %d body %s, want 422 unsupported conversion: latex -> pdf", rec.Code, rec.Body.String())
+	}
+	if store.uploaded || repo.created != nil || q.enqueueCalls != 0 {
+		t.Fatalf("latex create uploaded=%v created=%v enqueueCalls=%d", store.uploaded, repo.created != nil, q.enqueueCalls)
+	}
+
 	b := int64(multipartInMemoryBudget)
 	junk := worstSplit(b, lastDoubling(b)-(bytes.MinRead-1))
 	m := intakeHeapModel(b, createPostParseHeapBytes())
@@ -1620,7 +1636,6 @@ func TestPostParseHeapFitsTheModel(t *testing.T) {
 		doc  uploadDoc
 	}{
 		{"worst split under junk + STL 100 MiB + header block", stlDoc(100 << 20)},
-		{"worst split under junk + LaTeX + header block", latexDoc()},
 	} {
 		var worst uploadProbe
 		for run := 1; run <= 3; run++ {

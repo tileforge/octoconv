@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/storage"
 )
 
@@ -141,23 +143,6 @@ func stlDoc(stl int64) uploadDoc {
 	return uploadDoc{size: size, parts: 5, write: func(mw *multipart.Writer) error {
 		file, _ := stlOfSize(stl)
 		return writeTransportCapForm(mw, convert.EngineCAD, convert.OperationRender, "png", "model.stl", file, -1)
-	}}
-}
-
-func latexDoc() uploadDoc {
-	data := latexFixture()
-	return uploadDoc{size: int64(len(data)), parts: 2, write: func(mw *multipart.Writer) error {
-		fw, err := mw.CreateFormFile(formFieldFile, "paper.tex")
-		if err != nil {
-			return err
-		}
-		if _, err := fw.Write(data); err != nil {
-			return err
-		}
-		if err := mw.WriteField(formFieldTarget, "pdf"); err != nil {
-			return err
-		}
-		return mw.Close()
 	}}
 }
 
@@ -433,25 +418,26 @@ func jfifJPEG(t *testing.T) []byte {
 func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 	stl := func() io.Reader { r, _ := largestAdmissibleSTL(); return r }
 	cases := []struct {
-		name    string
-		target  string
-		op      string
-		parts   []validatedPart
-		formats map[string]map[string]int64
+		name      string
+		target    string
+		op        string
+		parts     []validatedPart
+		formats   map[string]map[string]int64
+		wantError string
 	}{
-		{"png Dimensions", "webp", "", []validatedPart{bytesPart("in.png", pngBytesFixture())}, nil},
-		{"jpeg Dimensions", "webp", "", []validatedPart{bytesPart("in.jpg", jfifJPEG(t))}, nil},
-		{"mp4 Sniff", "mp3", "", []validatedPart{bytesPart("in.mp4", mp4BytesFixture())}, nil},
-		{"mkv SniffVideo", "mp4", "", []validatedPart{bytesPart("in.mkv", mkvBytesFixture())}, nil},
-		{"webm SniffVideo", "mp4", "", []validatedPart{bytesPart("in.webm", webmBytesFixture())}, nil},
-		{"mp3 SniffAudio", "txt", "", []validatedPart{bytesPart("in.mp3", audioMP3Fixture(t))}, nil},
-		{"docx container", "pdf", "", []validatedPart{bytesPart("in.docx", docxFixture(t))}, nil},
-		{"html", "pdf", "", []validatedPart{bytesPart("in.html", htmlFixture())}, nil},
-		{"latex", "pdf", "", []validatedPart{bytesPart("in.tex", latexFixture())}, nil},
-		{"pdf", "txt", "", []validatedPart{bytesPart("scan.pdf", pdfBytesFixture())}, nil},
-		{"markdown spilled above 16 MiB", "html", "", []validatedPart{bytesPart("in.md", paddedMarkdown(uploadPartBytes+1<<20))}, map[string]map[string]int64{convert.EnginePandoc: {"md": 64 << 20}}},
-		{"stl at the CAD cap", "png", convert.OperationRender, []validatedPart{{name: "model.stl", data: stl}}, nil},
-		{"tex with an attachment", "pdf", "", []validatedPart{bytesPart("paper.tex", []byte(texMain)), bytesPart("preamble.tex", []byte("\\newcommand{\\x}{y}\n"))}, nil},
+		{"png Dimensions", "webp", "", []validatedPart{bytesPart("in.png", pngBytesFixture())}, nil, ""},
+		{"jpeg Dimensions", "webp", "", []validatedPart{bytesPart("in.jpg", jfifJPEG(t))}, nil, ""},
+		{"mp4 Sniff", "mp3", "", []validatedPart{bytesPart("in.mp4", mp4BytesFixture())}, nil, "unsupported conversion: mp4 -> mp3"},
+		{"mkv SniffVideo", "mp4", "", []validatedPart{bytesPart("in.mkv", mkvBytesFixture())}, nil, "unsupported conversion: mkv -> mp4"},
+		{"webm SniffVideo", "mp4", "", []validatedPart{bytesPart("in.webm", webmBytesFixture())}, nil, "unsupported conversion: webm -> mp4"},
+		{"mp3 SniffAudio", "txt", "", []validatedPart{bytesPart("in.mp3", audioMP3Fixture(t))}, nil, "unsupported conversion: mp3 -> txt"},
+		{"docx container", "pdf", "", []validatedPart{bytesPart("in.docx", docxFixture(t))}, nil, ""},
+		{"html", "pdf", "", []validatedPart{bytesPart("in.html", htmlFixture())}, nil, "unsupported conversion: html -> pdf"},
+		{"latex", "pdf", "", []validatedPart{bytesPart("in.tex", latexFixture())}, nil, ""},
+		{"pdf", "txt", "", []validatedPart{bytesPart("scan.pdf", pdfBytesFixture())}, nil, "unsupported conversion: pdf -> txt"},
+		{"markdown spilled above 16 MiB", "html", "", []validatedPart{bytesPart("in.md", paddedMarkdown(uploadPartBytes+1<<20))}, map[string]map[string]int64{convert.EnginePandoc: {"md": 64 << 20}}, ""},
+		{"stl at the CAD cap", "png", convert.OperationRender, []validatedPart{{name: "model.stl", data: stl}}, nil, ""},
+		{"tex with an attachment", "pdf", "", []validatedPart{bytesPart("paper.tex", []byte(texMain)), bytesPart("preamble.tex", []byte("\\newcommand{\\x}{y}\n"))}, nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -511,6 +497,19 @@ func TestCreateUploadsTheValidatedBytes(t *testing.T) {
 			}
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			if tc.wantError != "" {
+				var payload map[string]string
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				if resp.StatusCode != http.StatusUnprocessableEntity || payload["code"] != errcode.UnsupportedConversion || payload["error"] != tc.wantError {
+					t.Fatalf("status %d payload %v, want 422 %s %q", resp.StatusCode, payload, errcode.UnsupportedConversion, tc.wantError)
+				}
+				if got := store.uploaded(); len(got) != 0 {
+					t.Fatalf("%d objects uploaded, want 0", len(got))
+				}
+				return
+			}
 			if resp.StatusCode != http.StatusAccepted {
 				t.Fatalf("status %d, want 202: %.300s", resp.StatusCode, body)
 			}
