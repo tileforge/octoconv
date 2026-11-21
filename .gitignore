@@ -15,16 +15,10 @@ deploy/worker-tls/*.key
 # this list must follow; the test says so before git does.
 # cmd-binaries-begin
 /api
-/audio-worker
-/av-worker
-/chromium-worker
 /manage-clients
 /manage-presets
 /mcp-http
 /mcp-server
 /migrate
-/ocr-worker
-/pandoc-worker
 /webhook-worker
-/worker
 # cmd-binaries-end
