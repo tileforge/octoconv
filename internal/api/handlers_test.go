@@ -4065,18 +4065,9 @@ func TestCreateJob_PreambleBeyondTheWindowIsAdmitted(t *testing.T) {
 	}
 }
 
-// TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() -- the one list
-// that grows with every engine class -- and asserts each value is KNOWN to
-// handleCreateJob's routing table. It exists because the table below can only
-// cover an engine someone wrote a multipart fixture for: tectonic was
-// registered in 64-02, advertised on GET /formats, and missing from the
-// enqueue switch, so every real .tex upload got a fail-closed 500 with no
-// test able to see it. This one needs no fixture, so the tenth engine cannot
-// repeat it silently.
-//
-// It asserts ROUTING only (routed == true), never the enqueue error: the
-// table below is what proves each engine reaches its OWN queue rather than
-// merely some queue.
+// TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() and asserts
+// none is routed to an asynq queue. A new class that grows the list is
+// covered without a fixture.
 func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	engines := convert.AllEngines()
 	if len(engines) == 0 {
@@ -4085,27 +4076,15 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	for _, engine := range engines {
 		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe {
-			if routed {
-				t.Errorf("engine %s is still routed to an asynq queue", engine)
-			}
-			if err != nil {
-				t.Errorf("engine %s: %v", engine, err)
-			}
-			continue
-		}
-		if !routed {
-			t.Errorf("engine %q has no case in handleCreateJob's enqueue switch: every job for it would 500 with \"failed to enqueue job\"", engine)
+		if routed {
+			t.Errorf("engine %s is still routed to an asynq queue", engine)
 		}
 		if err != nil {
-			t.Errorf("engine %q: unexpected enqueue error from the fake queue: %v", engine, err)
+			t.Errorf("engine %s: %v", engine, err)
 		}
 	}
-
-	// The fail-closed branch still fails closed -- otherwise the assertion
-	// above would hold for a switch that routed everything.
 	if routed, _ := srv.enqueueForEngine(context.Background(), "nonsense", uuid.New()); routed {
-		t.Error("engine \"nonsense\" was routed -- the default branch no longer fails closed")
+		t.Error("engine \"nonsense\" was routed")
 	}
 }
 

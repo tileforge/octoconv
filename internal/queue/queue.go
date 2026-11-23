@@ -236,20 +236,20 @@ func DocumentUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration 
 }
 
 // AllConvertQueues returns the queue name for every engine class that still
-// has an asynq queue (document and cad).
-// Image, html, audio, av, ocr, pandoc, tectonic, and probe are admitted and have no queue. QueueWebhook is excluded:
-// webhook is not an engine class and is never KEDA-scaled per conversion.
-// This is the single source of truth for cmd/api/main.go's
-// queue-depth collector arg list: metrics.NewQueueDepthCollector is
-// VARIADIC, so a hand-maintained call-site list can silently omit a queue
-// with no compile error, dropping the Prometheus series KEDA scales the
-// worker on (D-06, RESEARCH.md Pitfall 2). See
-// TestAllConvertQueuesCoversEveryEngine for the completeness guard against a
-// future engine class being added here without also being added to
-// convert.go's Engine* constants (or vice versa). Plan 04 rewires
-// cmd/api/main.go to spread this helper.
+// has an asynq queue. None do. Image, html, audio, av, ocr, pandoc,
+// tectonic, probe, document, and cad are admitted and have no queue.
+// QueueWebhook is excluded: webhook is not an engine class and is never
+// KEDA-scaled per conversion. This is the single source of truth for
+// cmd/api/main.go's queue-depth collector arg list:
+// metrics.NewQueueDepthCollector is VARIADIC, so a hand-maintained
+// call-site list can silently omit a queue with no compile error, dropping
+// the Prometheus series KEDA scales the worker on (D-06, RESEARCH.md
+// Pitfall 2). See TestAllConvertQueuesCoversEveryEngine for the
+// completeness guard against a future engine class being added here
+// without also being added to convert.go's Engine* constants (or vice
+// versa). Plan 04 rewires cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueDocument, QueueCAD}
+	return nil
 }
 
 // webhookJitterCeiling is WebhookRetryDelay's documented maximum +25% jitter

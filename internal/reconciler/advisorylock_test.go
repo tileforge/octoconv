@@ -51,7 +51,7 @@ func TestRunWithLockSweepsWhenAcquired(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "document"}},
-		recoveryCount: map[uuid.UUID]int{id: 0},
+		recoveryCount: map[uuid.UUID]int{id: 3},
 	}
 	enq := &fakeEnqueuer{}
 	cfg := testConfig()

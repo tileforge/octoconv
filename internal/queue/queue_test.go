@@ -209,7 +209,7 @@ func TestDocumentUniqueTTL(t *testing.T) {
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
-// one appears exactly once in AllConvertQueues(), except image, html, audio, av, ocr, pandoc, and tectonic,
+// one appears exactly once in AllConvertQueues(), except image, html, audio, av, ocr, pandoc, tectonic, probe, document, and cad,
 // which are admitted and have no queue. AllConvertQueues contains no extras
 // (e.g. QueueWebhook, which is not an engine class).
 func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
@@ -234,7 +234,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 
 	for engine := range wantEngines {
 		wantCount := 1
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe || engine == convert.EngineDocument || engine == convert.EngineCAD {
 			wantCount = 0
 		}
 		if seen[engine] != wantCount {
@@ -388,8 +388,8 @@ func TestCADUniqueTTL(t *testing.T) {
 
 func TestCADQueueIsExposed(t *testing.T) {
 	got := AllConvertQueues()
-	if len(got) != 2 {
-		t.Errorf("AllConvertQueues() has %d queues, want 2", len(got))
+	if len(got) != 0 {
+		t.Errorf("AllConvertQueues() has %d queues, want 0", len(got))
 	}
 	count := 0
 	for _, q := range got {
@@ -397,7 +397,7 @@ func TestCADQueueIsExposed(t *testing.T) {
 			count++
 		}
 	}
-	if count != 1 {
-		t.Errorf("AllConvertQueues() contains %q %d times, want exactly 1", QueueCAD, count)
+	if count != 0 {
+		t.Errorf("AllConvertQueues() contains %q %d times, want 0", QueueCAD, count)
 	}
 }
