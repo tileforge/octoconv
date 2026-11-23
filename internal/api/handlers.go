@@ -1382,25 +1382,12 @@ func (f *readFailureRecorder) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// enqueueForEngine routes one created job to its engine-class queue. The
-// FIRST return value is false for an engine this switch does not know --
-// which the caller turns into a fail-closed 500.
-//
-// It is a METHOD rather than the inline switch it replaced for one reason:
-// a switch inside a handler can only be exercised through a full multipart
-// request, so an engine class that reached the registry but never reached
-// this routing table stayed invisible until someone happened to write a
-// fixture for it. Tectonic did exactly that -- registered in 64-02, missing
-// here, and every real .tex upload 500'd. Extracted so
-// TestEveryEngineHasAnEnqueueRoute can walk convert.AllEngines() directly
-// and fail by NAME on the tenth engine, with no fixture to invent.
-func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UUID) (routed bool, err error) {
-	switch engine {
-	case convert.EngineDocument:
-		return true, s.queue.EnqueueDocumentConvert(ctx, id)
-	case convert.EngineCAD:
-		return true, s.queue.EnqueueCADJob(ctx, id)
-	}
+// enqueueForEngine routes one created job to its engine-class queue. No
+// current engine has an asynq queue, so it returns false. The caller turns
+// that into a fail-closed 500 when dispatch_owner is not protocol.
+// TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() and fails if
+// any engine is routed.
+func (s *Server) enqueueForEngine(context.Context, string, uuid.UUID) (routed bool, err error) {
 	return false, nil
 }
 

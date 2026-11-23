@@ -391,7 +391,9 @@ func TestSweepRecoversUnderCap(t *testing.T) {
 	}
 }
 
-func TestSweepFailsStrandedDocumentJobs(t *testing.T) {
+// TestSweepDocumentStrandedRowStaysQueued proves a stranded document row is not
+// re-enqueued and is not failed. FindStale only returns dispatch_owner legacy.
+func TestSweepDocumentStrandedRowStaysQueued(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
 		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "document"}},
@@ -400,22 +402,42 @@ func TestSweepFailsStrandedDocumentJobs(t *testing.T) {
 	enq := &fakeEnqueuer{}
 	s := NewSweeper(store, enq, testConfig())
 
-	s.sweep(context.Background())
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.documentCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueDocumentConvert calls = %+v, want none", tick, enq.documentCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
+	}
+}
 
-	if len(enq.documentCalls) != 0 {
-		t.Fatalf("EnqueueDocumentConvert calls = %+v, want none", enq.documentCalls)
+// TestSweepCADStrandedRowStaysQueued proves a stranded cad row is not
+// re-enqueued and is not failed. FindStale only returns dispatch_owner legacy.
+func TestSweepCADStrandedRowStaysQueued(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "cad"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
-	if len(enq.imageCalls) != 0 {
-		t.Fatalf("EnqueueImageConvert should not be called for a document job, got %d calls", len(enq.imageCalls))
-	}
-	if store.requeueStaleCalls != 0 {
-		t.Fatalf("RequeueStale calls = %d, want 0", store.requeueStaleCalls)
-	}
-	if len(store.markFailedCalls) != 1 || store.markFailedCalls[0] != id {
-		t.Fatalf("MarkFailed calls = %+v, want [%s]", store.markFailedCalls, id)
-	}
-	if len(store.markFailedDetails) != 1 || store.markFailedDetails[0]["action"] != "document_retired" {
-		t.Fatalf("MarkFailed detail = %+v, want action document_retired", store.markFailedDetails)
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	for tick := 0; tick < 5; tick++ {
+		s.sweep(context.Background())
+		if len(enq.cadCalls) != 0 {
+			t.Fatalf("tick %d: EnqueueCADJob calls = %+v, want none", tick, enq.cadCalls)
+		}
+		if store.requeueStaleCalls != 0 {
+			t.Fatalf("tick %d: RequeueStale calls = %d, want 0", tick, store.requeueStaleCalls)
+		}
+		if len(store.markFailedCalls) != 0 {
+			t.Fatalf("tick %d: MarkFailed calls = %+v, want none", tick, store.markFailedCalls)
+		}
 	}
 }
 
@@ -623,12 +645,9 @@ func TestSweepImageStrandedRowStaysQueued(t *testing.T) {
 // queueForEngine helper for this phase, so the risk of a future engine
 // constant silently missing a routing case is closed by this test instead of
 // by a structural refactor. The table below is driven directly off the
-// convert.Engine* constants -- if a sixth engine class is ever added to
-// convert.go without a matching case in sweep()'s switch, adding its
-// constant/accessor here (the only change required to extend coverage) makes
-// this test fail with "RequeueStale calls = 0, want 1" instead of the
-// omission staying invisible except for a metrics-only unroutable_engine
-// bump in production.
+// convert.Engine* constants. A class added to convert.go without an accessor
+// here fails this test. Every current class stays queued: no enqueue, no
+// RequeueStale, no MarkFailed.
 func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 	// The accessor per engine must stay explicit -- there is no way to derive
 	// "which fake counter belongs to this engine" -- but WHICH ENGINES ARE
@@ -679,50 +698,14 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 			s.sweep(context.Background())
 
 			got := want.callIDs(enq)
-			if want.engine == convert.EngineImage || want.engine == convert.EngineHTML || want.engine == convert.EngineAudio || want.engine == convert.EngineAV || want.engine == convert.EngineOCR || want.engine == convert.EnginePandoc || want.engine == convert.EngineTectonic || want.engine == convert.EngineProbe {
-				if len(got) != 0 {
-					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
-				}
-				if store.requeueStaleCalls != 0 {
-					t.Fatalf("engine %s: RequeueStale calls = %d, want 0", want.engine, store.requeueStaleCalls)
-				}
-				if len(store.markFailedCalls) != 0 {
-					t.Fatalf("engine %s: MarkFailed calls = %+v, want none", want.engine, store.markFailedCalls)
-				}
-				return
+			if len(got) != 0 {
+				t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
 			}
-			if want.engine == convert.EngineCAD || want.engine == convert.EngineDocument {
-				if len(got) != 0 {
-					t.Fatalf("engine %s: enqueue calls = %+v, want none", want.engine, got)
-				}
-				if store.requeueStaleCalls != 0 {
-					t.Fatalf("engine %s: RequeueStale calls = %d, want 0", want.engine, store.requeueStaleCalls)
-				}
-				if len(store.markFailedCalls) != 1 || store.markFailedCalls[0] != id {
-					t.Fatalf("engine %s: MarkFailed calls = %+v, want [%s]", want.engine, store.markFailedCalls, id)
-				}
-				return
+			if store.requeueStaleCalls != 0 {
+				t.Fatalf("engine %s: RequeueStale calls = %d, want 0", want.engine, store.requeueStaleCalls)
 			}
-			if len(got) != 1 || got[0] != id {
-				t.Fatalf("engine %q: matching Enqueue* calls = %+v, want [%s]", want.engine, got, id)
-			}
-			// RequeueStale only runs after a successful, non-duplicate
-			// enqueue (sweep()'s enqueue-first ordering) -- a job whose
-			// engine fell through to the fail-closed default never reaches
-			// RequeueStale, so this is the indirect proof that the switch
-			// routed rather than defaulted (equivalent to asserting zero
-			// unroutable_engine outcomes without needing a metrics reader).
-			if store.requeueStaleCalls != 1 {
-				t.Fatalf("engine %q: RequeueStale calls = %d, want 1 (proves the switch did not fall through to the fail-closed default)", want.engine, store.requeueStaleCalls)
-			}
-
-			for _, other := range cases {
-				if other.engine == want.engine {
-					continue
-				}
-				if got := other.callIDs(enq); len(got) != 0 {
-					t.Fatalf("engine %q: unexpected Enqueue* call recorded on %q's accessor: %+v", want.engine, other.engine, got)
-				}
+			if len(store.markFailedCalls) != 0 {
+				t.Fatalf("engine %s: MarkFailed calls = %+v, want none", want.engine, store.markFailedCalls)
 			}
 		})
 	}
@@ -1225,7 +1208,7 @@ func TestSweepCountsAreNotAboutOneJob(t *testing.T) {
 			{ID: foreign, Status: jobs.StatusActive, Engine: "document"},
 			{ID: own, Status: jobs.StatusActive, Engine: "document"},
 		},
-		recoveryCount: map[uuid.UUID]int{own: 0, foreign: 0},
+		recoveryCount: map[uuid.UUID]int{own: 3, foreign: 3},
 	}
 	enq := &fakeEnqueuer{}
 	NewSweeper(store, enq, testConfig()).sweep(context.Background())
