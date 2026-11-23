@@ -125,10 +125,24 @@ func TestPreviewDocMatchesTheCode(t *testing.T) {
 		cadDocSameSet(t, "non-previewable outcomes", outcomes, previewDocSet("cad_empty_result", "cad_unreadable", "cad_too_complex", "unsupported_conversion"))
 	})
 
+	t.Run("later_classes", func(t *testing.T) {
+		sec := strings.ToLower(strings.Join(strings.Fields(cadDocSection(t, doc, "## Later classes")), " "))
+		for _, item := range []string{
+			"no separate preview engine",
+			"own worker",
+			"document", "html", "image", "av", "ocr", "pandoc", "tectonic",
+			"audio", "probe",
+			"none of those classes produces a preview today",
+		} {
+			if !strings.Contains(sec, item) {
+				t.Errorf("the Later classes section of docs/PREVIEW.md does not list %q", item)
+			}
+		}
+	})
+
 	t.Run("not_fixed", func(t *testing.T) {
 		sec := strings.ToLower(cadDocSection(t, doc, "## Not fixed"))
 		for _, item := range []string{
-			"a separate preview engine",
 			"non-square sizes",
 			"jpeg or webp",
 			"page or frame selection",

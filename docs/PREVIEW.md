@@ -1,9 +1,10 @@
 # Preview contract
 
 A preview is a picture of a file that a client can show in a listing or a UI. The contract is meant to hold for
-every class that will produce previews, but only the `cad` class produces them today, so this document fixes
-only what CAD forced a decision on. Everything CAD did not decide is listed under Not fixed and stays open for
-the next class. `TestPreviewDocMatchesTheCode` in `internal/convert` holds the fixed values equal to the code.
+every class that will produce previews, but only the `cad` class produces them today. A later class uses the
+`render` operation of its own worker, with its own capability and its own worker identity. There is no separate
+preview engine. What CAD did not decide, apart from that shape, stays under Not fixed.
+`TestPreviewDocMatchesTheCode` in `internal/convert` holds the fixed values equal to the code.
 
 ## Fixed by CAD
 
@@ -43,12 +44,24 @@ or is refused at create, and the job has no output.
 | a model or drawing too complex to render within the limits | the job fails with `cad_too_complex` |
 | a format with no preview, or a pair the class does not serve | refused at create with 422 `unsupported_conversion`; the job is not created |
 
+## Later classes
+
+A class that produces a preview uses `render` on its own worker. The capability and the worker identity belong
+to that class. There is no separate preview engine.
+
+The classes that can produce a picture of the file are `document`, `html`, `image`, `av`, `ocr`, `pandoc`, and
+`tectonic`. `audio` has no page or frame. `probe` sanitizes a file and does not produce a picture. None of
+those classes produces a preview today.
+
+A later class takes these rules from CAD: the `render` operation, a primary PNG, a square size, and a refusal
+with no placeholder image. 3D views, measurements, and layout stay with CAD. Page or frame selection, JPEG or
+WebP, and the other items under Not fixed are decided by the class that needs them.
+
 ## Not fixed
 
 These are open questions for the next class that produces previews. CAD did not have to answer them, so this
 contract does not:
 
-- Whether other classes use the `render` operation of their own engine or a separate preview engine.
 - Non-square sizes.
 - JPEG or WebP output.
 - Page or frame selection for multi-page or time-based input.
