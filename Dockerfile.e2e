@@ -2,7 +2,7 @@
 # binary (`go test -c`), mirroring Dockerfile.api's base-image pattern. No
 # libvips/LibreOffice/chromium: the e2e binary is an HTTP + Postgres client
 # that drives the already-deployed stack, it never runs conversions itself.
-FROM golang:1.27.3-bookworm AS build
+FROM golang:1.27.4-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
