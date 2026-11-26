@@ -215,14 +215,15 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 		EngineProbe:    true,
 		EngineTectonic: true,
 		EngineCAD:      true,
+		EngineArchive:  true,
 	}
 
 	got := AllEngines()
 	// Spelled out rather than derived from want: deriving it would make the
 	// assertion vacuous, and the point is that adding an engine class is a
-	// decision taken in two places at once. Ten as of Phase 73 (cad).
-	if len(got) != 10 {
-		t.Fatalf("len(AllEngines()) = %d, want exactly 10", len(got))
+	// decision taken in two places at once. Eleven as of Phase 129 (archive).
+	if len(got) != 11 {
+		t.Fatalf("len(AllEngines()) = %d, want exactly 11", len(got))
 	}
 
 	seen := make(map[string]int, len(got))
@@ -287,6 +288,22 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 	if !routed[EngineProbe] {
 		t.Errorf("AllEngines() lists %q but no registered converter routes it -- "+
 			"an operator can set a quota against a queue nothing reaches", EngineProbe)
+	}
+}
+
+func TestEngineTakesMultipleInputsStaysTectonicOnly(t *testing.T) {
+	if !EngineTakesMultipleInputs(EngineTectonic) {
+		t.Fatal("EngineTakesMultipleInputs(tectonic) = false, want true")
+	}
+	if EngineTakesMultipleInputs(EngineArchive) {
+		t.Fatal("EngineTakesMultipleInputs(archive) = true, want false")
+	}
+	for _, engine := range AllEngines() {
+		got := EngineTakesMultipleInputs(engine)
+		want := engine == EngineTectonic
+		if got != want {
+			t.Errorf("EngineTakesMultipleInputs(%q) = %v, want %v", engine, got, want)
+		}
 	}
 }
 

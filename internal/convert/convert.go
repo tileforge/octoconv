@@ -44,6 +44,7 @@ const (
 	// caught it in minutes.
 	EngineTectonic = "tectonic"
 	EngineCAD      = "cad"
+	EngineArchive  = "archive"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one
@@ -76,12 +77,16 @@ const OperationSanitize = "sanitize"
 
 const OperationRender = "render"
 
-// AllEngines returns the ten engine classes in a fixed, documented order --
+// OperationArchive packs uploaded files into one zip. Compared exactly, like
+// OperationConvert.
+const OperationArchive = "archive"
+
+// AllEngines returns the eleven engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
-// EnginePandoc, EngineProbe, EngineTectonic, EngineCAD. The order is stable because callers (cmd/manage-clients) use
+// EnginePandoc, EngineProbe, EngineTectonic, EngineCAD, EngineArchive. The order is stable because callers (cmd/manage-clients) use
 // it to render operator-facing error text; a fresh slice is constructed on
 // every call so a caller can never mutate the source of truth through the
-// returned slice. Adding an eleventh engine class means adding it here as well
+// returned slice. Adding another engine class means adding it here as well
 // as to the const block above -- TestAllEnginesCoversEveryEngineClass fails
 // if the two ever diverge from the registry.
 func AllEngines() []string {
@@ -96,6 +101,7 @@ func AllEngines() []string {
 		EngineProbe,
 		EngineTectonic,
 		EngineCAD,
+		EngineArchive,
 	}
 }
 
@@ -341,7 +347,7 @@ func (r *Registry) EngineFor(from, to string) (string, bool) {
 // accepted" (Phase 57, D-02): an operation is valid if and only if at least
 // one triple is registered under it -- NOT a hardcoded Go slice, and NOT the
 // jobs.operation DB CHECK constraint (which reserves-but-leaves-empty
-// values like "extract"/"archive"/"inspect"/"render", and, before Phase 60
+// values like "extract"/"inspect", and, before Phase 60
 // lands, "sanitize" too). Operations reports none of those reserved-but-
 // unregistered values; IsKnownOperation rejects them exactly like it would
 // reject any other garbage string. Same principle GET /v1/formats already
