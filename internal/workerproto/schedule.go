@@ -1888,6 +1888,7 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	var inputKey, inputFormat string
 	var inputOK bool
 	var sources []storedJobInput
+	archiveInputs := engine == convert.EngineArchive
 	tectonicInputs := engine == convert.EngineTectonic
 	if snapshotID != nil {
 		doc, index, err := workflowStepIndex(ctx, tx, jobID, storedStep)
@@ -1907,14 +1908,20 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			return claimDecision{skipID: jobID}, nil
 		}
 		outputFormat = step.TargetFormat
-		if index == 0 && tectonicInputs {
+		switch {
+		case index == 0 && archiveInputs:
+			sources, inputOK, err = loadArchiveSources(ctx, tx, jobID)
+			if inputOK {
+				inputKey, inputFormat = sources[0].Key, sources[0].Format
+			}
+		case index == 0 && tectonicInputs:
 			sources, inputOK, err = loadTectonicSources(ctx, tx, jobID)
 			if inputOK {
 				inputKey, inputFormat = sources[0].Key, sources[0].Format
 			}
-		} else if index == 0 {
+		case index == 0:
 			inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
-		} else {
+		default:
 			inputKey, inputFormat, inputOK, err = workflowResultInput(ctx, tx, jobID, doc.Steps[index-1].StepID)
 		}
 		if err != nil {
@@ -1931,12 +1938,18 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			return claimDecision{skipID: jobID}, nil
 		}
 		var err error
-		if tectonicInputs {
+		switch {
+		case archiveInputs:
+			sources, inputOK, err = loadArchiveSources(ctx, tx, jobID)
+			if inputOK {
+				inputKey, inputFormat = sources[0].Key, sources[0].Format
+			}
+		case tectonicInputs:
 			sources, inputOK, err = loadTectonicSources(ctx, tx, jobID)
 			if inputOK {
 				inputKey, inputFormat = sources[0].Key, sources[0].Format
 			}
-		} else {
+		default:
 			inputKey, inputFormat, inputOK, err = oneJobInput(ctx, tx, jobID)
 		}
 		if err != nil {
@@ -2232,6 +2245,44 @@ type storedJobInput struct {
 	Key      string
 	Format   string
 	Filename string
+}
+
+func loadArchiveSources(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) ([]storedJobInput, bool, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT ordinal, object_key, COALESCE(format, ''), COALESCE(filename, '')
+		FROM job_inputs
+		WHERE job_id = $1 AND object_key <> ''
+		ORDER BY ordinal`, jobID)
+	if err != nil {
+		return nil, false, fmt.Errorf("read job inputs: %w", err)
+	}
+	defer rows.Close()
+	var scanned []storedJobInput
+	seen := map[int]struct{}{}
+	for rows.Next() {
+		var row storedJobInput
+		if err := rows.Scan(&row.Ordinal, &row.Key, &row.Format, &row.Filename); err != nil {
+			return nil, false, fmt.Errorf("read job inputs: %w", err)
+		}
+		if row.Ordinal < 0 || row.Key == "" {
+			return nil, false, nil
+		}
+		if _, dup := seen[row.Ordinal]; dup {
+			return nil, false, nil
+		}
+		seen[row.Ordinal] = struct{}{}
+		if strings.TrimSpace(row.Format) == "" {
+			row.Format = "bin"
+		}
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("read job inputs: %w", err)
+	}
+	if len(scanned) == 0 {
+		return nil, false, nil
+	}
+	return scanned, true, nil
 }
 
 func loadTectonicSources(ctx context.Context, tx pgx.Tx, jobID uuid.UUID) ([]storedJobInput, bool, error) {
