@@ -209,7 +209,7 @@ func TestDocumentUniqueTTL(t *testing.T) {
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
-// one appears exactly once in AllConvertQueues(), except image, html, audio, av, ocr, pandoc, tectonic, probe, document, and cad,
+// one appears exactly once in AllConvertQueues(), except image, html, audio, av, ocr, pandoc, tectonic, probe, document, cad, and archive,
 // which are admitted and have no queue. AllConvertQueues contains no extras
 // (e.g. QueueWebhook, which is not an engine class).
 func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
@@ -234,7 +234,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 
 	for engine := range wantEngines {
 		wantCount := 1
-		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe || engine == convert.EngineDocument || engine == convert.EngineCAD {
+		if engine == convert.EngineImage || engine == convert.EngineHTML || engine == convert.EngineAudio || engine == convert.EngineAV || engine == convert.EngineOCR || engine == convert.EnginePandoc || engine == convert.EngineTectonic || engine == convert.EngineProbe || engine == convert.EngineDocument || engine == convert.EngineCAD || engine == convert.EngineArchive {
 			wantCount = 0
 		}
 		if seen[engine] != wantCount {

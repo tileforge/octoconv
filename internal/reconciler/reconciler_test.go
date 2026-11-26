@@ -174,6 +174,7 @@ type fakeEnqueuer struct {
 	tectonicCalls      []uuid.UUID
 	enqueueCADErr      error
 	cadCalls           []uuid.UUID
+	archiveCalls       []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -337,6 +338,12 @@ func (f *fakeEnqueuer) cadCallIDs() []uuid.UUID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]uuid.UUID(nil), f.cadCalls...)
+}
+
+func (f *fakeEnqueuer) archiveCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uuid.UUID(nil), f.archiveCalls...)
 }
 
 // pandocCallIDs returns a locked snapshot copy of pandocCalls.
@@ -666,6 +673,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 		convert.EngineProbe:    (*fakeEnqueuer).probeCallIDs,
 		convert.EngineTectonic: (*fakeEnqueuer).tectonicCallIDs,
 		convert.EngineCAD:      (*fakeEnqueuer).cadCallIDs,
+		convert.EngineArchive:  (*fakeEnqueuer).archiveCallIDs,
 	}
 
 	var cases []struct {
@@ -761,16 +769,13 @@ func TestSweepAVStrandedRowStaysQueued(t *testing.T) {
 	}
 }
 
-// TestSweepSkipsUnknownEngine uses "archive" as its unrecognized-engine fixture
-// (not "av" -- av gained its own routing case in this plan, per D-06/T-35-17,
-// and is now covered separately by TestSweepRoutesAVJobsToAVQueue). archive
-// remains genuinely out of scope (see the fail-closed default's comment in
-// reconciler.go), so it is still a valid fixture for the "never guess"
-// behavior this test guards.
+// TestSweepSkipsUnknownEngine uses a token that is not an engine. archive is
+// a real class on the continue path, so it no longer exercises the default
+// branch.
 func TestSweepSkipsUnknownEngine(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "archive"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "not-an-engine"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -1143,7 +1148,7 @@ func TestSweepExhaustedActionGuardedOnMarkFailed(t *testing.T) {
 func TestSweepUnroutableEngineActionStillUnguarded(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "archive"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "not-an-engine"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
