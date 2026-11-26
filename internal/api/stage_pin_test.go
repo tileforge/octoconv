@@ -21,8 +21,8 @@ func nonCADEngines(t *testing.T) []string {
 			out = append(out, e)
 		}
 	}
-	if len(out) != 9 {
-		t.Fatalf("non-CAD engines = %q (%d), want 9", out, len(out))
+	if len(out) != 10 {
+		t.Fatalf("non-CAD engines = %q (%d), want 10", out, len(out))
 	}
 	return out
 }

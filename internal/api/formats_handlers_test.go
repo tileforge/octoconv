@@ -152,12 +152,23 @@ func TestListFormats_OperationsTreeDerivedFromRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	// Three keys as of Phase 74: convert, render under the cad engine, and
-	// sanitize under the probe engine. Asserted by NAME rather than by count
-	// alone -- a bare length check stops being able to say which operation
-	// appeared.
-	if len(resp.Operations) != 3 {
-		t.Fatalf("operations has %d keys, want exactly 3; operations=%+v", len(resp.Operations), resp.Operations)
+	// Four keys as of Phase 129: convert, render under the cad engine,
+	// sanitize under the probe engine, and archive under the archive engine.
+	// Asserted by NAME rather than by count alone -- a bare length check
+	// stops being able to say which operation appeared.
+	if len(resp.Operations) != 4 {
+		t.Fatalf("operations has %d keys, want exactly 4; operations=%+v", len(resp.Operations), resp.Operations)
+	}
+	archiveTree, ok := resp.Operations[convert.OperationArchive]
+	if !ok {
+		t.Fatalf("operations missing %q; operations=%+v", convert.OperationArchive, resp.Operations)
+	}
+	archiveEngine, ok := archiveTree[convert.EngineArchive]
+	if !ok || len(archiveTree) != 1 {
+		t.Fatalf("operations.archive must hold only the archive engine; archive=%+v", archiveTree)
+	}
+	if len(archiveEngine.Pairs) != 1 || len(archiveEngine.Pairs[0]) != 2 || archiveEngine.Pairs[0][0] != "files" || archiveEngine.Pairs[0][1] != "zip" {
+		t.Fatalf("operations.archive pairs = %+v, want [[files zip]]", archiveEngine.Pairs)
 	}
 	renderTree, ok := resp.Operations["render"]
 	if !ok {
@@ -266,12 +277,12 @@ func TestListFormats_NoOperationOutsideRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	// "sanitize" left this list in Phase 60 and "render" in Phase 74, when
-	// each stopped being a reserved-but-unregistered DB CHECK value and
-	// gained a converter. The remaining three are still reserved and still
-	// unregistered, and they are what keeps this test meaningful: without
-	// them it would assert nothing.
-	for _, unregistered := range []string{"extract", "archive", "inspect"} {
+	// "sanitize" left this list in Phase 60, "render" in Phase 74, and
+	// "archive" in Phase 129, when each stopped being a reserved-but-
+	// unregistered DB CHECK value and gained a converter. extract and
+	// inspect are still reserved and still unregistered, and they are what
+	// keeps this test meaningful: without them it would assert nothing.
+	for _, unregistered := range []string{"extract", "inspect"} {
 		if _, ok := resp.Operations[unregistered]; ok {
 			t.Errorf("operations unexpectedly contains %q, want it absent (not yet registered under any engine)", unregistered)
 		}

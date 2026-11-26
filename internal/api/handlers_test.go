@@ -927,14 +927,15 @@ func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
 // all must be rejected 422 unsupported_operation strictly before
 // s.storage.Upload and s.repo.Create, with the queue untouched.
 //
-// "sanitize" left this list in Phase 60 and "render" in Phase 74: both now
-// have registered triples, so using them here would test the pair gate rather
-// than the operation gate. The three replacements are the values still reserved in the jobs.operation
-// CHECK constraint with no converter behind them, plus "bogus", which no
-// build will ever register -- keeping both kinds means the test still
-// distinguishes "reserved but unimplemented" from "not a value at all".
+// "sanitize" left this list in Phase 60, "render" in Phase 74, and
+// "archive" in Phase 129: each now has a registered triple, so using it
+// here would test the pair gate rather than the operation gate. extract
+// and inspect are still reserved in the jobs.operation CHECK constraint
+// with no converter behind them, plus "bogus", which no build will ever
+// register -- keeping both kinds means the test still distinguishes
+// "reserved but unimplemented" from "not a value at all".
 func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
-	for _, operation := range []string{"extract", "archive", "inspect", "bogus"} {
+	for _, operation := range []string{"extract", "inspect", "bogus"} {
 		t.Run(operation, func(t *testing.T) {
 			repo := &fakeRepo{}
 			store := &fakeStorage{}
