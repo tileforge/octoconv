@@ -36,6 +36,7 @@ const (
 	formFieldOpts            = "opts"
 	formFieldPreset          = "preset"
 	formFieldOperation       = "operation"
+	formFieldPath            = "path"
 	formFieldWorkflow        = "workflow"
 	formFieldDeadline        = "deadline"
 	// operationConv is kept as a local alias of convert.OperationConvert so
@@ -226,6 +227,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	if r.FormValue(formFieldWorkflow) != "" {
 		s.admitWorkflow(w, r, operation, correlationID)
+		return
+	}
+
+	if operation == convert.OperationArchive {
+		s.createArchiveJob(w, r, correlationID)
 		return
 	}
 
@@ -1348,6 +1354,219 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		resp["opts"] = normalizedOpts
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+const archiveSourceFormat = "files"
+
+func (s *Server) createArchiveJob(w http.ResponseWriter, r *http.Request, correlationID string) {
+	ctx := r.Context()
+	client, _ := auth.ClientFromContext(ctx)
+	presetName := r.FormValue(formFieldPreset)
+	rawOpts := r.FormValue(formFieldOpts)
+	if presetName != "" || (rawOpts != "" && rawOpts != "{}") {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "archive jobs do not accept preset or opts")
+		return
+	}
+	target := convert.NormalizeFormat(r.FormValue(formFieldTarget))
+	if target != "zip" {
+		writeError(
+			w,
+			http.StatusUnprocessableEntity,
+			errcode.UnsupportedConversion,
+			"unsupported conversion: files -> "+target,
+		)
+		return
+	}
+	var files []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		files = r.MultipartForm.File[formFieldFile]
+	}
+	if len(files) == 0 {
+		writeError(w, http.StatusBadRequest, errcode.MissingFile, "missing file")
+		return
+	}
+	var pathValues []string
+	pathsPresent := false
+	if r.MultipartForm != nil {
+		if values, ok := r.MultipartForm.Value[formFieldPath]; ok {
+			pathsPresent = true
+			pathValues = values
+		}
+	}
+	members, err := validateArchiveMembers(files, pathValues, pathsPresent)
+	if err != nil {
+		log.Printf("content validation rejected: client_id=%s reason=archive_path", client.ID)
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid archive path")
+		return
+	}
+	engine, ok := convert.Default.EngineForOp(convert.OperationArchive, archiveSourceFormat, target)
+	if !ok || engine != convert.EngineArchive {
+		writeError(
+			w,
+			http.StatusUnprocessableEntity,
+			errcode.UnsupportedConversion,
+			"unsupported conversion: files -> "+target,
+		)
+		return
+	}
+
+	var pinID string
+	var pinVersion int
+	legacyMatch := false
+	if s.catalog != nil {
+		match, found, lookupErr := s.catalog.Lookup(ctx, convert.OperationArchive, archiveSourceFormat, target)
+		if lookupErr != nil {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		if found && match.LegacyEngine == "" {
+			writeError(
+				w,
+				http.StatusUnprocessableEntity,
+				errcode.UnsupportedConversion,
+				"unsupported conversion: files -> "+target,
+			)
+			return
+		}
+		if found && match.LegacyEngine != engine {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		if found && match.LegacyOperation == convert.OperationArchive {
+			pinID = match.CapabilityID
+			pinVersion = match.CapabilityVersion
+			legacyMatch = true
+		}
+	}
+	dispatchOwner := ""
+	var attemptBudget time.Duration
+	if legacyMatch && pinID != "" {
+		budget := s.engineTimeouts[engine]
+		if budget <= 0 {
+			budget = 120 * time.Second
+		}
+		linkCap := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
+		if budget <= linkCap {
+			dispatchOwner = "protocol"
+			attemptBudget = budget
+		}
+	}
+	if dispatchOwner != "protocol" {
+		writeError(
+			w,
+			http.StatusUnprocessableEntity,
+			errcode.UnsupportedConversion,
+			"unsupported conversion: files -> "+target,
+		)
+		return
+	}
+
+	callbackURL := r.FormValue(formFieldCallbackURL)
+	if callbackURL != "" {
+		if err := validateCallbackURL(callbackURL); err != nil {
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid callback_url")
+			return
+		}
+	}
+	progressWebhook := r.FormValue(formFieldProgressWebhook) == "true"
+	if progressWebhook && callbackURL == "" {
+		progressWebhook = false
+	}
+
+	paths := make([]string, 0, len(members))
+	var totalBytes int64
+	for i, member := range members {
+		paths = append(paths, member.Name)
+		totalBytes += files[i].Size
+	}
+	if err := s.repo.PreAdmit(ctx, client.ID, engine, totalBytes); err != nil {
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			log.Printf(
+				"quota rejected: client_id=%s engine=%s reason=%s stage=preupload",
+				client.ID,
+				engine,
+				jobs.QuotaReason(err),
+			)
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
+		log.Printf(
+			"quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s",
+			client.ID,
+			engine,
+		)
+	}
+
+	jobID := uuid.New()
+	inputs := make([]jobs.Input, 0, len(members))
+	for i, member := range members {
+		src, openErr := files[i].Open()
+		if openErr != nil {
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "could not read an attached file")
+			return
+		}
+		key := storage.InputKey(jobID, i, member.Base)
+		uploadErr := func() error {
+			defer src.Close()
+			return s.storage.Upload(ctx, key, src, files[i].Size, "application/octet-stream")
+		}()
+		if uploadErr != nil {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
+			return
+		}
+		inputs = append(inputs, jobs.Input{
+			Ordinal:     i,
+			ObjectKey:   key,
+			Filename:    member.Base,
+			Format:      member.Format,
+			SizeBytes:   files[i].Size,
+			ContentType: "application/octet-stream",
+		})
+	}
+
+	opts := map[string]any{"paths": paths}
+	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
+		CorrelationID:         correlationID,
+		ID:                    jobID,
+		ClientID:              client.ID,
+		Operation:             convert.OperationArchive,
+		Engine:                engine,
+		SourceFormat:          archiveSourceFormat,
+		TargetFormat:          target,
+		CallbackURL:           callbackURL,
+		ProgressWebhook:       progressWebhook,
+		Opts:                  opts,
+		Inputs:                inputs,
+		CapabilityID:          pinID,
+		CapabilityVersion:     pinVersion,
+		DispatchOwner:         dispatchOwner,
+		ProtocolAttemptBudget: attemptBudget,
+	})
+	if err != nil {
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			log.Printf("quota rejected: client_id=%s engine=%s reason=%s stage=create", client.ID, engine, jobs.QuotaReason(err))
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	log.Println(logfmt.KV("job accepted",
+		"request_id", middleware.GetReqID(ctx),
+		"job_id", createdID.String(),
+		"client_id", client.ID.String(),
+		"engine", engine,
+		"source", archiveSourceFormat,
+		"target", target,
+		"filename", members[0].Base,
+		"bytes", strconv.FormatInt(totalBytes, 10),
+		"correlation_id", correlationID,
+	))
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"job_id": createdID,
+		"status": jobs.StatusQueued,
+		"opts":   opts,
+	})
 }
 
 func sniffCreateContainer(file multipart.File, size int64) (cr convert.ContainerResult, outcome zipBoundOutcome, err error) {
