@@ -1600,6 +1600,99 @@ func (s *Server) createArchiveJob(w http.ResponseWriter, r *http.Request, correl
 	})
 }
 
+type pairOptsRefusal struct {
+	status int
+	code   string
+	msg    string
+}
+
+func normalizePairOpts(engine, operation, source, target, rawOpts string) (map[string]any, *pairOptsRefusal) {
+	if rawOpts == "" || rawOpts == "{}" {
+		return map[string]any{}, nil
+	}
+	if len(rawOpts) > maxOptsBytes {
+		return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.PayloadTooLarge, msg: "opts field too large"}
+	}
+	var normalizedRaw []byte
+	var err error
+	switch engine {
+	case convert.EngineAudio:
+		parsed, parseErr := convert.ParseAudioOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateAudioApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineAV:
+		parsed, parseErr := convert.ParseAVOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateAVApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineHTML:
+		parsed, parseErr := convert.ParseHTMLOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateHTMLApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineOCR:
+		parsed, parseErr := convert.ParseOCROpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateOCRApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EnginePandoc:
+		parsed, parseErr := convert.ParsePandocOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidatePandocApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineCAD:
+		parsed, parseErr := convert.ParseCADOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateCADApplicability(engine, operation, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	default:
+		parsed, parseErr := convert.ParseDocOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	}
+	if err != nil {
+		return nil, &pairOptsRefusal{status: http.StatusInternalServerError, code: errcode.InternalError, msg: "failed to normalize opts"}
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(normalizedRaw, &normalized); err != nil {
+		return nil, &pairOptsRefusal{status: http.StatusInternalServerError, code: errcode.InternalError, msg: "failed to normalize opts"}
+	}
+	if normalized == nil {
+		normalized = map[string]any{}
+	}
+	return normalized, nil
+}
+
 func (s *Server) createExtractionJob(w http.ResponseWriter, r *http.Request, operation, correlationID string) {
 	ctx := r.Context()
 	client, _ := auth.ClientFromContext(ctx)
@@ -1715,6 +1808,19 @@ func (s *Server) createExtractionJob(w http.ResponseWriter, r *http.Request, ope
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
 		return
 	}
+	if r.FormValue(formFieldPreset) != "" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "extraction jobs do not accept preset")
+		return
+	}
+	normalizedOpts, optsRefusal := normalizePairOpts(pairEngine, operation, source, target, r.FormValue(formFieldOpts))
+	if optsRefusal != nil {
+		writeError(w, optsRefusal.status, optsRefusal.code, optsRefusal.msg)
+		return
+	}
+	if err := workerproto.ValidateParameters(pairMatch.ParameterSchema, normalizedOpts); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
+		return
+	}
 	if err := s.repo.PreAdmit(ctx, client.ID, convert.EngineArchive, fh.Size); err != nil {
 		if msg, retryAfter, ok := quotaRejection(err); ok {
 			writeQuotaError(w, msg, retryAfter)
@@ -1740,7 +1846,7 @@ func (s *Server) createExtractionJob(w http.ResponseWriter, r *http.Request, ope
 			"source":                  source,
 			"target":                  target,
 			"operation":               operation,
-			"opts":                    map[string]any{},
+			"opts":                    normalizedOpts,
 			"entries":                 []any{},
 			"next":                    0,
 		},
