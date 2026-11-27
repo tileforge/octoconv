@@ -58,7 +58,7 @@ func archiveBaseName(file *multipart.FileHeader) (string, error) {
 	if err != nil {
 		return "", errInvalidArchiveMember
 	}
-	if jobs.WorkerOwnedName(base) {
+	if jobs.WorkerOwnedName(base) || hasDrivePrefix(base) {
 		return "", errInvalidArchiveMember
 	}
 	return base, nil

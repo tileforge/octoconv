@@ -129,6 +129,13 @@ func TestValidateArchiveMembersRefuses(t *testing.T) {
 		},
 		{name: "leading dash", files: []*multipart.FileHeader{archivePart("-a.txt")}, present: false},
 		{name: "leading dot base", files: []*multipart.FileHeader{archivePart(".gitignore")}, present: false},
+		{name: "drive base", files: []*multipart.FileHeader{archivePart("C:a.txt")}, present: false},
+		{
+			name:    "empty path drive base",
+			files:   []*multipart.FileHeader{archivePart("C:a.txt")},
+			paths:   []string{""},
+			present: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
