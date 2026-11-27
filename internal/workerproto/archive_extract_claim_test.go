@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
 	"github.com/tileforge/octoconv/internal/storage"
 )
 
@@ -862,4 +863,108 @@ func rawZip(t *testing.T, h *zip.FileHeader, body []byte) []byte {
 func officeDocx(t *testing.T) []byte {
 	t.Helper()
 	return storedZip(t, "word/document.xml", []byte(`<?xml version="1.0"?><document/>`))
+}
+
+func TestExtract_FailDoesNotStore100(t *testing.T) {
+	t.Run("fail", func(t *testing.T) {
+		ln, archiveLive, jobID, attemptID, token := claimUnpackAttempt(t)
+		if _, err := ln.pool.Exec(context.Background(), `UPDATE jobs SET progress_pct = 40 WHERE id = $1 AND status = 'active'`, jobID); err != nil {
+			t.Fatal(err)
+		}
+		status, _, resp := postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[2], token, []byte(`{"protocol_version":2,"engine_code":"engine_error","message":"engine failed"}`))
+		if status != http.StatusOK {
+			t.Fatalf("fail %d: %s", status, resp)
+		}
+		assertControlOnly(t, resp)
+		if bytes.HasPrefix(resp, []byte("PK")) {
+			t.Fatal("fail returned an archive")
+		}
+		assertTerminalUnpublished(t, ln.pool, jobID, "failed")
+		if jobErrorCode(t, ln.pool, jobID) != "engine_error" {
+			t.Fatalf("code %s", jobErrorCode(t, ln.pool, jobID))
+		}
+		progress := jobProgress(t, ln.pool, jobID)
+		if progress == nil || *progress != 40 {
+			t.Fatalf("progress %v", progress)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		ln, archiveLive, jobID, attemptID, token := claimUnpackAttempt(t)
+		if _, err := ln.pool.Exec(context.Background(), `UPDATE jobs SET progress_pct = 40 WHERE id = $1 AND status = 'active'`, jobID); err != nil {
+			t.Fatal(err)
+		}
+		if err := jobs.NewRepo(ln.pool).Cancel(context.Background(), jobID); err != nil {
+			t.Fatal(err)
+		}
+		assertTerminalUnpublished(t, ln.pool, jobID, "canceled")
+		if holdState(t, ln.pool, attemptID) != "canceled" {
+			t.Fatalf("hold %s", holdState(t, ln.pool, attemptID))
+		}
+		status, _, resp := postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[4], token, []byte(`{"protocol_version":2,"reason":"cancel"}`))
+		if status != http.StatusOK {
+			t.Fatalf("stopped %d: %s", status, resp)
+		}
+		assertControlOnly(t, resp)
+		if bytes.HasPrefix(resp, []byte("PK")) {
+			t.Fatal("cancel returned an archive")
+		}
+		assertTerminalUnpublished(t, ln.pool, jobID, "canceled")
+		progress := jobProgress(t, ln.pool, jobID)
+		if progress == nil || *progress != 40 {
+			t.Fatalf("progress %v", progress)
+		}
+		if holdState(t, ln.pool, attemptID) != "stopped" {
+			t.Fatalf("hold after ack %s", holdState(t, ln.pool, attemptID))
+		}
+	})
+}
+
+func claimUnpackAttempt(t *testing.T) (workerListener, liveSession, uuid.UUID, uuid.UUID, string) {
+	t.Helper()
+	ln := startWorkerListener(t)
+	clearArchiveClaimJobs(t, ln.pool)
+	archiveLive := ln.hello(t, archiveClaimManifest(t))
+	png := extractPNG()
+	zipBytes := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+	clientID := insertClient(t, ln.pool)
+	jobID := insertExtractionJob(t, ln.pool, archiveLive.store, clientID, zipBytes)
+	status, resp := pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("unpack pull %d: %s", status, resp)
+	}
+	unpack := decodeOneAssignment(t, resp)
+	if got, err := jsonUUID(unpack["job_id"]); err != nil || got != jobID {
+		t.Fatalf("unpack job %v %v", got, err)
+	}
+	attemptID, err := jsonUUID(unpack["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(unpack["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jobStatusOf(t, ln.pool, jobID) != "active" {
+		t.Fatalf("claimed status %s", jobStatusOf(t, ln.pool, jobID))
+	}
+	return ln, archiveLive, jobID, attemptID, token
+}
+
+func assertTerminalUnpublished(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID, want string) {
+	t.Helper()
+	if jobStatusOf(t, pool, jobID) != want {
+		t.Fatalf("status %s want %s", jobStatusOf(t, pool, jobID), want)
+	}
+	progress := jobProgress(t, pool, jobID)
+	if progress != nil && *progress == 100 {
+		t.Fatalf("progress %d", *progress)
+	}
+	var primary int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*) FROM job_outputs WHERE job_id = $1 AND role = 'primary'`, jobID).Scan(&primary); err != nil {
+		t.Fatal(err)
+	}
+	if primary != 0 || outputCount(t, pool, jobID) != 0 {
+		t.Fatalf("primary %d outputs %d", primary, outputCount(t, pool, jobID))
+	}
 }
