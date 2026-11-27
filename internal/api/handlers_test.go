@@ -5707,3 +5707,300 @@ func multipartExtraction(t *testing.T, filename, source, target string, data []b
 	}
 	return &b, w.FormDataContentType()
 }
+
+func extractionPairCatalog() *fakeCatalog {
+	return &fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			switch {
+			case operation == convert.OperationArchive && source == "files" && target == "zip":
+				return archiveMatch(), true
+			case operation == convert.OperationConvert && source == "png" && target == "webp":
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{"type":"object","additionalProperties":false}`),
+				}, true
+			case operation == convert.OperationConvert && source == "docx" && target == "pdf":
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.document",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineDocument,
+					ParameterSchema:   []byte(`{"type":"object","additionalProperties":false}`),
+				}, true
+			case operation == convert.OperationConvert && source == "step" && target == "stl":
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.cad",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineCAD,
+					ParameterSchema:   []byte(`{"type":"object","additionalProperties":false}`),
+				}, true
+			default:
+				return workerproto.Match{}, false
+			}
+		},
+	}
+}
+
+func postExtraction(t *testing.T, srv *Server, filename, source, target string, data []byte, fields map[string]string, files int) *httptest.ResponseRecorder {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	for i := 0; i < files; i++ {
+		name := filename
+		if i > 0 {
+			name = "extra-" + strconv.Itoa(i) + ".bin"
+		}
+		fw, err := w.CreateFormFile("file", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.WriteField("operation", "convert"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("source", source); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("target", target); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range fields {
+		if err := w.WriteField(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &b))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func assertNoExtractionUpload(t *testing.T, rec *httptest.ResponseRecorder, repo *fakeRepo, store *fakeStorage, code string) {
+	t.Helper()
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), code)
+	if store.uploadCalls != 0 || repo.created != nil {
+		t.Fatalf("uploads=%d created=%v", store.uploadCalls, repo.created != nil)
+	}
+}
+
+func TestCreateJob_ExtractionRefusesPresetOptsExtraFileAndNonZip(t *testing.T) {
+	zipBody := bareZipFixture(t)
+
+	t.Run("preset", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", zipBody, map[string]string{"preset": "web"}, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.InvalidRequest)
+	})
+
+	t.Run("image opts", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", zipBody, map[string]string{"opts": `{"pdf_profile":"pdf/a-2b"}`}, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.OptsNotApplicable)
+		if !bytes.Contains(rec.Body.Bytes(), []byte("opts not applicable to this conversion")) {
+			t.Fatalf("body %s", rec.Body.String())
+		}
+		if bytes.Contains(rec.Body.Bytes(), []byte("pdf_profile")) {
+			t.Fatalf("echoed parser error: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("pair schema", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "docx", "pdf", zipBody, map[string]string{"opts": `{"pdf_profile":"pdf/a-2b"}`}, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.InvalidOptions)
+		if !bytes.Contains(rec.Body.Bytes(), []byte("invalid opts")) {
+			t.Fatalf("body %s", rec.Body.String())
+		}
+	})
+
+	t.Run("empty opts", func(t *testing.T) {
+		for _, opts := range []string{"", "{}"} {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			srv, _ := newTestServer(repo, store, &fakeQueue{})
+			srv.SetCapabilityCatalog(extractionPairCatalog())
+			fields := map[string]string{}
+			if opts != "" {
+				fields["opts"] = opts
+			}
+			rec := postExtraction(t, srv, "in.zip", "png", "webp", zipBody, fields, 1)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("opts %q status %d body %s", opts, rec.Code, rec.Body.String())
+			}
+			if store.uploadCalls != 1 || repo.created == nil {
+				t.Fatalf("opts %q uploads %d created %v", opts, store.uploadCalls, repo.created != nil)
+			}
+			ex, ok := repo.created.Opts["archive_extraction"].(map[string]any)
+			if !ok {
+				t.Fatalf("opts %q options %#v", opts, repo.created.Opts)
+			}
+			stored, ok := ex["opts"].(map[string]any)
+			if !ok || len(stored) != 0 {
+				t.Fatalf("opts %q stored %#v", opts, ex["opts"])
+			}
+		}
+	})
+
+	t.Run("two files", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", zipBody, nil, 2)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.InvalidRequest)
+	})
+
+	t.Run("not a zip", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.png", "png", "webp", pngBytesFixture(), nil, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.InvalidRequest)
+	})
+}
+
+func TestCreateJob_ArchiveRefusesSource(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	if err := w.WriteField("operation", "archive"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("target", "zip"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("source", "png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("path", "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	fw, err := w.CreateFormFile("file", "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &b))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	assertNoExtractionUpload(t, rec, repo, store, errcode.InvalidRequest)
+	if bytes.Contains(rec.Body.Bytes(), []byte("archive_extraction")) {
+		t.Fatalf("body %s", rec.Body.String())
+	}
+}
+
+func TestCreateJob_ExtractionDeadlineSumRefusesOverLinkCap(t *testing.T) {
+	t.Run("two image members", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for _, name := range []string{"a.png", "b.png"} {
+			entry, err := zw.Create(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := entry.Write(pngBytesFixture()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", buf.Bytes(), nil, 1)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil || repo.created.ProtocolAttemptBudget != 240*time.Second {
+			t.Fatalf("budget %v", repo.created)
+		}
+	})
+
+	t.Run("sum over the link cap", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		srv.engineTimeouts[convert.EngineImage] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second - 119*time.Second
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", bareZipFixture(t), nil, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.UnsupportedConversion)
+	})
+
+	t.Run("sum equal to the link cap", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		srv.engineTimeouts[convert.EngineImage] = time.Duration(workerproto.FileLinkMaxTTLSeconds)*time.Second - 120*time.Second
+		rec := postExtraction(t, srv, "in.zip", "png", "webp", bareZipFixture(t), nil, 1)
+		if rec.Code != http.StatusAccepted || repo.created == nil {
+			t.Fatalf("status %d created %v body %s", rec.Code, repo.created != nil, rec.Body.String())
+		}
+		want := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
+		if repo.created.ProtocolAttemptBudget != want {
+			t.Fatalf("budget %s want %s", repo.created.ProtocolAttemptBudget, want)
+		}
+	})
+
+	t.Run("cad pair over the cap", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		rec := postExtraction(t, srv, "in.zip", "step", "stl", bareZipFixture(t), nil, 1)
+		assertNoExtractionUpload(t, rec, repo, store, errcode.UnsupportedConversion)
+	})
+
+	t.Run("cad pair under the cap", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+		srv.SetCapabilityCatalog(extractionPairCatalog())
+		srv.engineTimeouts[convert.EngineCAD] = 100 * time.Second
+		rec := postExtraction(t, srv, "in.zip", "step", "stl", bareZipFixture(t), nil, 1)
+		if rec.Code != http.StatusAccepted || repo.created == nil {
+			t.Fatalf("status %d created %v body %s", rec.Code, repo.created != nil, rec.Body.String())
+		}
+		if repo.created.ProtocolAttemptBudget != 220*time.Second || repo.created.Engine != convert.EngineArchive {
+			t.Fatalf("created %+v", repo.created)
+		}
+	})
+}
