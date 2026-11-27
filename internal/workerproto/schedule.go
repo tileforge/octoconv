@@ -981,6 +981,11 @@ func protocolOutputLimit(engine, target string) int64 {
 		}
 	case convert.EngineTectonic:
 		return convert.DefaultTectonicMaxOutputBytes
+	case convert.EngineArchive:
+		if convert.NormalizeFormat(target) == "zip" {
+			return protocolDefaultOutputBytes + (1 << 20)
+		}
+		return protocolDefaultOutputBytes
 	default:
 		return protocolDefaultOutputBytes
 	}

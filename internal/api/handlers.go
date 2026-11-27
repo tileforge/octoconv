@@ -1460,6 +1460,28 @@ func (s *Server) createArchiveJob(w http.ResponseWriter, r *http.Request, correl
 		)
 		return
 	}
+	if len(files) > jobs.MaxInputParts {
+		log.Printf("content validation rejected: client_id=%s reason=too_many_parts parts=%d limit=%d", client.ID, len(files), jobs.MaxInputParts)
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "too many files in one job")
+		return
+	}
+	limit, _, gated := s.sizeLimit(engine, archiveSourceFormat)
+	if !gated {
+		limit = defaultMaxEngineBytes[convert.EngineArchive]
+	}
+	var admitted int64
+	for _, fh := range files {
+		var size int64
+		if fh != nil {
+			size = fh.Size
+		}
+		if fh == nil || size < 0 || size > limit || admitted > limit-size {
+			log.Printf("content validation rejected: client_id=%s reason=engine_size_limit engine=%s size=%d parts=%d limit=%d", client.ID, engine, size, len(files), limit)
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit for this conversion type")
+			return
+		}
+		admitted += size
+	}
 
 	callbackURL := r.FormValue(formFieldCallbackURL)
 	if callbackURL != "" {
