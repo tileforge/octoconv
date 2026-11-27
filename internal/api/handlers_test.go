@@ -1171,6 +1171,64 @@ func TestCreateJob_ArchivePacksRelativePaths(t *testing.T) {
 	})
 }
 
+func TestCreateJob_ArchiveZipDoesNotEnterExtraction(t *testing.T) {
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "secret.txt", "hidden")
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zipBody := buf.Bytes()
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec := postArchive(t, srv, "zip", "", "", []string{"docs/bundle.zip"}, true, []archiveUpload{
+		{name: "bundle.zip", body: zipBody},
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil {
+		t.Fatal("repo.Create was never called")
+	}
+	if repo.created.Operation != convert.OperationArchive || repo.created.Engine != convert.EngineArchive {
+		t.Fatalf("operation/engine = %s/%s", repo.created.Operation, repo.created.Engine)
+	}
+	if repo.created.SourceFormat != "files" || repo.created.TargetFormat != "zip" {
+		t.Fatalf("formats = %s -> %s", repo.created.SourceFormat, repo.created.TargetFormat)
+	}
+	if _, ok := repo.created.Opts["archive_extraction"]; ok {
+		t.Fatalf("opts %#v", repo.created.Opts)
+	}
+	got := storedPaths(t, repo.created.Opts)
+	if len(got) != 1 || got[0] != "docs/bundle.zip" {
+		t.Fatalf("paths %#v", got)
+	}
+	if len(repo.created.Inputs) != 1 || store.uploadCalls != 1 {
+		t.Fatalf("inputs %d uploads %d", len(repo.created.Inputs), store.uploadCalls)
+	}
+	in := repo.created.Inputs[0]
+	if in.Ordinal != 0 || in.Filename != "bundle.zip" || in.Format != "zip" || in.SizeBytes != int64(len(zipBody)) {
+		t.Fatalf("input %+v", in)
+	}
+	if in.Filename == "secret.txt" || strings.Contains(got[0], "secret.txt") {
+		t.Fatal("inner name stored as a member")
+	}
+	if !bytes.Equal(store.uploadedBytes, zipBody) {
+		t.Fatal("stored bytes are not the uploaded zip")
+	}
+	reader, err := zip.NewReader(bytes.NewReader(store.uploadedBytes), int64(len(store.uploadedBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.File) != 1 || reader.File[0].Name != "secret.txt" {
+		t.Fatalf("inner members %d", len(reader.File))
+	}
+}
+
 func TestCreateJob_ArchiveZeroPathsStoresRootNames(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
