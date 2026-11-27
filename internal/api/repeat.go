@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type repeatSource struct {
 	job    *jobs.Job
 	inputs []jobs.Input
 	store  repeatStorage
+	paths  []string
 }
 
 func (s *Server) loadRepeatSource(w http.ResponseWriter, r *http.Request) (repeatSource, bool) {
@@ -68,7 +70,7 @@ func (s *Server) loadRepeatSource(w http.ResponseWriter, r *http.Request) (repea
 		writeError(w, 409, errcode.InvalidRequest, "original input set is unavailable")
 		return repeatSource{}, false
 	}
-	return repeatSource{job, inputs, store}, true
+	return repeatSource{job: job, inputs: inputs, store: store}, true
 }
 func acquireRepeat(w http.ResponseWriter) bool {
 	select {
@@ -151,7 +153,20 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 422, errcode.UnsupportedConversion, "unsupported conversion")
 		return
 	}
-	if len(source.inputs) > 1 && !convert.EngineTakesMultipleInputs(engine) {
+	forwardOpts := request.Opts
+	if engine == convert.EngineArchive {
+		paths, ok := archiveStoredPaths(source.job.Opts, len(source.inputs))
+		if !ok {
+			writeError(w, 422, errcode.InvalidRequest, "invalid archive path")
+			return
+		}
+		if message := archiveRepeatOptsRejection(request.Opts, paths); message != "" {
+			writeError(w, 422, errcode.InvalidRequest, message)
+			return
+		}
+		source.paths = paths
+		forwardOpts = nil
+	} else if len(source.inputs) > 1 && !convert.EngineTakesMultipleInputs(engine) {
 		writeError(w, 422, errcode.InvalidRequest, "conversion cannot consume original attachments")
 		return
 	}
@@ -221,7 +236,7 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	body, contentType, err := repeatMultipart(source, files, request.Operation, target, request.Opts)
+	body, contentType, err := repeatMultipart(source, files, request.Operation, target, forwardOpts)
 	if err != nil {
 		writeError(w, 500, errcode.InternalError, "failed to prepare request")
 		return
@@ -273,6 +288,11 @@ func repeatMultipart(source repeatSource, files []*os.File, operation, target st
 	}
 	var parts []io.Reader
 	for index, file := range files {
+		if index < len(source.paths) {
+			if err := writer.WriteField(formFieldPath, source.paths[index]); err != nil {
+				return nil, "", err
+			}
+		}
 		if _, err := writer.CreateFormFile("file", source.inputs[index].Filename); err != nil {
 			return nil, "", err
 		}
@@ -284,4 +304,59 @@ func repeatMultipart(source repeatSource, files []*os.File, operation, target st
 	}
 	parts = append(parts, bytes.NewReader(bytes.Clone(buffer.Bytes())))
 	return io.MultiReader(parts...), writer.FormDataContentType(), nil
+}
+
+func archiveStoredPaths(opts map[string]any, count int) ([]string, bool) {
+	if opts == nil {
+		return nil, true
+	}
+	raw, exists := opts["paths"]
+	if !exists {
+		return nil, true
+	}
+	switch values := raw.(type) {
+	case []string:
+		if len(values) != count {
+			return nil, false
+		}
+		return values, true
+	case []any:
+		if len(values) != count {
+			return nil, false
+		}
+		paths := make([]string, count)
+		for i, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				return nil, false
+			}
+			paths[i] = text
+		}
+		return paths, true
+	default:
+		return nil, false
+	}
+}
+
+func archiveRepeatOptsRejection(raw json.RawMessage, stored []string) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) {
+		return ""
+	}
+	var opts map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &opts); err != nil || opts == nil {
+		return "archive jobs do not accept preset or opts"
+	}
+	if len(opts) == 0 {
+		return ""
+	}
+	pathsRaw, onlyPaths := opts["paths"]
+	if !onlyPaths || len(opts) != 1 {
+		return "archive jobs do not accept preset or opts"
+	}
+	var got []string
+	if err := json.Unmarshal(pathsRaw, &got); err != nil || !slices.Equal(got, stored) {
+		return "invalid archive path"
+	}
+	return ""
 }

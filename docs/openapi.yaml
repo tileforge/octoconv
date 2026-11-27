@@ -1914,6 +1914,8 @@ paths:
         Source staging is bounded to100inputs, the lower of100MiB and the configured upload
         limit, two concurrent preparations per process and two minutes. Temporary files are
         removed on all paths. Uses current content, option, attachment and quota validation.
+        An archive repeat writes each stored member path as a path field, in order, and leaves opts empty.
+        A different path list or any other opts key is refused before the inputs are downloaded.
         Missing inputs return409 for replacement upload through POST /v1/jobs.
         Failed or uncertain creation must not be retried automatically.
       requestBody:

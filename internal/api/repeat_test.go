@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
 )
 
@@ -242,5 +243,110 @@ func TestRepeatRechecksAvailabilityAfterStreamFailure(t *testing.T) {
 				t.Fatalf("status %d probes %d body %s", rec.Code, store.probes, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestRepeatArchivePreservesMemberPaths(t *testing.T) {
+	a := []byte("alpha")
+	b := []byte("beta")
+	inputs := []jobs.Input{
+		{Ordinal: 0, Filename: "a.txt", Format: "txt", ObjectKey: "old/a", SizeBytes: int64(len(a))},
+		{Ordinal: 1, Filename: "b.txt", Format: "txt", ObjectKey: "old/b", SizeBytes: int64(len(b))},
+	}
+	storeData := map[string][]byte{"old/a": a, "old/b": b}
+
+	t.Run("empty opts keeps stored paths", func(t *testing.T) {
+		repo, store := repeatArchive(t, inputs, map[string]any{"paths": []any{"docs/a.txt", "b.txt"}}, storeData)
+		rec := postRepeat(t, repo, store, `{"operation":"archive","target":"zip","opts":{}}`)
+		assertArchiveRepeat(t, rec, repo, store, []string{"docs/a.txt", "b.txt"})
+	})
+
+	t.Run("replayed opts keeps stored paths", func(t *testing.T) {
+		repo, store := repeatArchive(t, inputs, map[string]any{"paths": []string{"docs/a.txt", "b.txt"}}, storeData)
+		body := `{"operation":"archive","target":"zip","opts":{"paths":["docs/a.txt","b.txt"]}}`
+		rec := postRepeat(t, repo, store, body)
+		assertArchiveRepeat(t, rec, repo, store, []string{"docs/a.txt", "b.txt"})
+	})
+
+	t.Run("one nested file keeps its directory", func(t *testing.T) {
+		one := []jobs.Input{{Ordinal: 0, Filename: "a.txt", Format: "txt", ObjectKey: "old/a", SizeBytes: int64(len(a))}}
+		repo, store := repeatArchive(t, one, map[string]any{"paths": []any{"docs/a.txt"}}, map[string][]byte{"old/a": a})
+		rec := postRepeat(t, repo, store, `{"operation":"archive","target":"zip","opts":{}}`)
+		assertArchiveRepeat(t, rec, repo, store, []string{"docs/a.txt"})
+	})
+
+	t.Run("other opts are refused before download", func(t *testing.T) {
+		repo, store := repeatArchive(t, inputs, map[string]any{"paths": []any{"docs/a.txt", "b.txt"}}, storeData)
+		rec := postRepeat(t, repo, store, `{"operation":"archive","target":"zip","opts":{"quality":1}}`)
+		if rec.Code != http.StatusUnprocessableEntity || repo.created != nil || store.uploaded || store.reads != 0 {
+			t.Fatalf("status %d reads %d body %s", rec.Code, store.reads, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.InvalidRequest)
+	})
+
+	t.Run("a different path list is refused before download", func(t *testing.T) {
+		repo, store := repeatArchive(t, inputs, map[string]any{"paths": []any{"docs/a.txt", "b.txt"}}, storeData)
+		body := `{"operation":"archive","target":"zip","opts":{"paths":["other/a.txt","b.txt"]}}`
+		rec := postRepeat(t, repo, store, body)
+		if rec.Code != http.StatusUnprocessableEntity || repo.created != nil || store.uploaded || store.reads != 0 {
+			t.Fatalf("status %d reads %d body %s", rec.Code, store.reads, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.Bytes(), errcode.InvalidRequest)
+	})
+}
+
+func repeatArchive(t *testing.T, inputs []jobs.Input, opts map[string]any, data map[string][]byte) (*repeatRepoFake, *repeatStoreFake) {
+	t.Helper()
+	id := uuid.New()
+	repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{
+		ID:           id,
+		Status:       jobs.StatusDone,
+		Operation:    "archive",
+		SourceFormat: "files",
+		TargetFormat: "zip",
+		Opts:         opts,
+	}}, inputs: inputs}
+	store := &repeatStoreFake{available: true, dataByKey: data}
+	return repo, store
+}
+
+func postRepeat(t *testing.T, repo *repeatRepoFake, store *repeatStoreFake, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	srv, resolver := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	repo.getJob.ClientID = resolver.client.ID
+	rec := httptest.NewRecorder()
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+repo.getJob.ID.String()+"/repeat", strings.NewReader(body)))
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func assertArchiveRepeat(t *testing.T, rec *httptest.ResponseRecorder, repo *repeatRepoFake, store *repeatStoreFake, want []string) {
+	t.Helper()
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Operation != "archive" || repo.created.Engine != "archive" {
+		t.Fatalf("created %+v", repo.created)
+	}
+	got := storedPaths(t, repo.created.Opts)
+	if len(got) != len(want) || len(repo.created.Inputs) != len(want) {
+		t.Fatalf("paths %#v inputs %+v", got, repo.created.Inputs)
+	}
+	for i, path := range want {
+		base := path
+		if slash := strings.LastIndex(path, "/"); slash >= 0 {
+			base = path[slash+1:]
+		}
+		in := repo.created.Inputs[i]
+		if got[i] != path || in.Filename != base || in.Ordinal != i {
+			t.Fatalf("member %d path %q input %+v", i, got[i], in)
+		}
+		if strings.Contains(in.ObjectKey, "docs") || strings.Contains(in.ObjectKey, "other") {
+			t.Fatalf("key uses a directory: %s", in.ObjectKey)
+		}
+	}
+	if store.uploadCalls != len(want) {
+		t.Fatalf("uploads %d", store.uploadCalls)
 	}
 }
