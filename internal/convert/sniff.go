@@ -251,6 +251,8 @@ func MIMEType(format string) string {
 		return "video/x-matroska"
 	case "webm":
 		return "video/webm"
+	case "zip":
+		return "application/zip"
 	default:
 		return "application/octet-stream"
 	}

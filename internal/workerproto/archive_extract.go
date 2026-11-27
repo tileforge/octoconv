@@ -1,0 +1,433 @@
+package workerproto
+
+import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"path"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/tileforge/octoconv/internal/convert"
+	"github.com/tileforge/octoconv/internal/jobs"
+	"github.com/tileforge/octoconv/internal/storage"
+)
+
+const extractionByteCeiling int64 = 100 << 20
+
+const archiveCapabilityID = "octoconv.archive.zip"
+
+type extractionEntry struct {
+	Name      string `json:"name"`
+	Key       string `json:"key,omitempty"`
+	Result    string `json:"result,omitempty"`
+	ResultKey string `json:"result_key,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+}
+
+type archiveExtraction struct {
+	Phase                 string            `json:"phase"`
+	PairCapabilityID      string            `json:"pair_capability_id"`
+	PairCapabilityVersion int               `json:"pair_capability_version"`
+	PairEngine            string            `json:"pair_engine"`
+	Source                string            `json:"source"`
+	Target                string            `json:"target"`
+	Operation             string            `json:"operation"`
+	Opts                  map[string]any    `json:"opts"`
+	Entries               []extractionEntry `json:"entries"`
+	Next                  int               `json:"next"`
+}
+
+type jobInputRow struct {
+	Ordinal     int
+	Key         string
+	Filename    string
+	Format      string
+	Size        int64
+	ContentType string
+}
+
+func extractionResultName(name, target string) string {
+	target = convert.NormalizeFormat(target)
+	dir, base := path.Split(name)
+	stem := strings.TrimSuffix(base, path.Ext(base))
+	return dir + stem + "." + target
+}
+
+func parseExtraction(raw []byte) (archiveExtraction, bool, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) {
+		return archiveExtraction{}, false, nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return archiveExtraction{}, false, fmt.Errorf("decode job options: %w", err)
+	}
+	body, ok := doc["archive_extraction"]
+	if !ok {
+		return archiveExtraction{}, false, nil
+	}
+	var ex archiveExtraction
+	if err := json.Unmarshal(body, &ex); err != nil {
+		return archiveExtraction{}, false, fmt.Errorf("decode archive extraction: %w", err)
+	}
+	if ex.Opts == nil {
+		ex.Opts = map[string]any{}
+	}
+	if ex.Entries == nil {
+		ex.Entries = []extractionEntry{}
+	}
+	return ex, true, nil
+}
+
+func optionsHavePaths(raw []byte) bool {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	_, ok := doc["paths"]
+	return ok
+}
+
+func packOutputsAreZip(jobEngine string, snapshotID *uuid.UUID, optsRaw []byte) bool {
+	if snapshotID != nil || jobEngine != convert.EngineArchive {
+		return false
+	}
+	_, extracting, err := parseExtraction(optsRaw)
+	if err != nil || extracting {
+		return false
+	}
+	return optionsHavePaths(optsRaw)
+}
+
+func pairParameters(ex archiveExtraction) []byte {
+	if ex.Opts == nil {
+		ex.Opts = map[string]any{}
+	}
+	raw, err := json.Marshal(ex.Opts)
+	if err != nil || len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return []byte("{}")
+	}
+	return raw
+}
+
+func marshalExtraction(ex archiveExtraction) ([]byte, error) {
+	if ex.Opts == nil {
+		ex.Opts = map[string]any{}
+	}
+	if ex.Entries == nil {
+		ex.Entries = []extractionEntry{}
+	}
+	raw, err := json.Marshal(map[string]archiveExtraction{"archive_extraction": ex})
+	if err != nil {
+		return nil, fmt.Errorf("encode archive extraction: %w", err)
+	}
+	return raw, nil
+}
+
+func zipFileMemberNames(r io.ReaderAt, size int64) ([]string, error) {
+	zr, err := zip.NewReader(r, size)
+	if err != nil {
+		return nil, fmt.Errorf("read zip: %w", err)
+	}
+	names := make([]string, 0, len(zr.File))
+	for _, file := range zr.File {
+		if strings.HasSuffix(file.Name, "/") || file.Mode()&fs.ModeDir != 0 {
+			continue
+		}
+		names = append(names, file.Name)
+	}
+	if len(names) == 0 || len(names) > jobs.MaxInputParts {
+		return nil, fmt.Errorf("read zip: member count")
+	}
+	return names, nil
+}
+
+func (h *Handler) archiveMemberNames(ctx context.Context, sources []storedJobInput) ([]string, error) {
+	if len(sources) == 0 || sources[0].Key == "" {
+		return nil, fmt.Errorf("read zip: missing input")
+	}
+	rc, err := h.store.Download(ctx, sources[0].Key)
+	if err != nil {
+		return nil, fmt.Errorf("read zip: %w", err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("read zip: %w", err)
+	}
+	return zipFileMemberNames(bytes.NewReader(body), int64(len(body)))
+}
+
+func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSession, jobID, attemptID uuid.UUID, key, bodyHash string, body *[]byte, ex archiveExtraction, arts []completeArtifact) (bool, error) {
+	dsts, gotSizes, ok, err := h.copyUnpackArtifacts(ctx, tx, jobID, attemptID, ex, arts)
+	if err != nil || !ok {
+		return false, err
+	}
+	if _, err := lockReportingJob(ctx, tx, attemptID, sess.ID); err != nil {
+		if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+			return false, rmErr
+		}
+		return false, err
+	}
+	handled, err := takeStoredComplete(ctx, tx, sess.ID, key, bodyHash, body)
+	if err != nil {
+		if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+			return false, rmErr
+		}
+		return false, err
+	}
+	if handled {
+		return true, nil
+	}
+	var status string
+	var clientID *uuid.UUID
+	var admitted *int64
+	var engine string
+	if err := tx.QueryRow(ctx, `
+		SELECT status, client_id, engine, admitted_input_bytes FROM jobs WHERE id = $1`, jobID).Scan(&status, &clientID, &engine, &admitted); err != nil {
+		return false, fmt.Errorf("read job: %w", err)
+	}
+	if status != jobs.StatusActive {
+		if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
+			return false, err
+		}
+		return false, &completeFailure{status: 409, code: "attempt_not_active"}
+	}
+	if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dsts...); err != nil {
+		return false, err
+	}
+	for i, dst := range dsts {
+		detected, sniffErr := h.sniffCopied(ctx, dst, ex.Source)
+		if sniffErr != nil {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+				return false, rmErr
+			}
+			return false, sniffErr
+		}
+		if detected != ex.Source {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+				return false, rmErr
+			}
+			return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "content does not match source")
+		}
+		ex.Entries[i].Key = dst
+		ex.Entries[i].Size = gotSizes[i]
+		ex.Entries[i].Result = extractionResultName(ex.Entries[i].Name, ex.Target)
+	}
+	ex.Phase = "convert"
+	ex.Next = 0
+	raw, err := marshalExtraction(ex)
+	if err != nil {
+		return false, err
+	}
+	filename := path.Base(ex.Entries[0].Name)
+	if err := replaceJobInputs(ctx, tx, jobID, []jobInputRow{{
+		Ordinal:     0,
+		Key:         dsts[0],
+		Filename:    filename,
+		Format:      ex.Source,
+		Size:        gotSizes[0],
+		ContentType: convert.MIMEType(ex.Source),
+	}}); err != nil {
+		return false, err
+	}
+	if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, ex.PairEngine, admitted, dsts); err != nil {
+		return false, err
+	}
+	return false, requeueExtraction(ctx, tx, jobID, attemptID, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, raw)
+}
+
+func (h *Handler) copyUnpackArtifacts(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, arts []completeArtifact) ([]string, []int64, bool, error) {
+	n := len(ex.Entries)
+	if n == 0 || len(arts) != n {
+		return nil, nil, false, &completeFailure{status: 409, code: "artifact_rejected"}
+	}
+	ordered := make([]completeArtifact, n)
+	seen := make([]bool, n)
+	var sum int64
+	for _, art := range arts {
+		if art.Role != "primary" || art.Format != ex.Source || art.ContentType != convert.MIMEType(art.Format) || !hex64.MatchString(art.SHA256) {
+			return nil, nil, false, &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+		ordinal, kind := integerToken(art.Ordinal)
+		if kind != numOK || ordinal < 0 || int(ordinal) >= n || seen[ordinal] {
+			return nil, nil, false, &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+		size, kind := integerToken(art.ByteSize)
+		if kind != numOK || size < 0 || sum > extractionByteCeiling-size {
+			return nil, nil, false, &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+		sum += size
+		seen[ordinal] = true
+		ordered[ordinal] = art
+	}
+	dsts := make([]string, n)
+	gotSizes := make([]int64, n)
+	for i, art := range ordered {
+		size, _ := integerToken(art.ByteSize)
+		src := storage.AttemptOutputKey(attemptID, i)
+		dst := storage.AcceptedOutputKey(jobID, attemptID, i, art.SHA256)
+		got, err := h.copyMatched(ctx, tx, src, dst, art.SHA256, size, extractionByteCeiling)
+		if err != nil {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts[:i]...); rmErr != nil {
+				return nil, nil, false, rmErr
+			}
+			return nil, nil, false, err
+		}
+		dsts[i] = dst
+		gotSizes[i] = got
+	}
+	return dsts, gotSizes, true, nil
+}
+
+func (h *Handler) sniffCopied(ctx context.Context, key, declared string) (string, error) {
+	rc, err := h.store.Download(ctx, key)
+	if err != nil {
+		return "", fmt.Errorf("read copied object: %w", err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return "", fmt.Errorf("read copied object: %w", err)
+	}
+	detected, err := convert.SniffDeclared(bytes.NewReader(body), int64(len(body)), declared)
+	if err != nil {
+		return "", fmt.Errorf("sniff copied object: %w", err)
+	}
+	return detected, nil
+}
+
+func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, dsts []string, gotSizes []int64, clientID *uuid.UUID, engine string, admitted *int64) error {
+	if len(dsts) != 1 || len(gotSizes) != 1 {
+		return &completeFailure{status: 409, code: "artifact_rejected"}
+	}
+	idx := ex.Next
+	if idx < 0 || idx >= len(ex.Entries) {
+		return &completeFailure{status: 409, code: "artifact_rejected"}
+	}
+	ex.Entries[idx].ResultKey = dsts[0]
+	ex.Entries[idx].Size = gotSizes[0]
+	if ex.Entries[idx].Result == "" {
+		ex.Entries[idx].Result = extractionResultName(ex.Entries[idx].Name, ex.Target)
+	}
+	paths := make([]string, len(ex.Entries))
+	rows := make([]jobInputRow, len(ex.Entries))
+	for i, entry := range ex.Entries {
+		name := entry.Result
+		if name == "" {
+			name = extractionResultName(entry.Name, ex.Target)
+		}
+		paths[i] = name
+		key := entry.ResultKey
+		size := entry.Size
+		if i == idx {
+			key = dsts[0]
+			size = gotSizes[0]
+		}
+		if key == "" {
+			return &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+		rows[i] = jobInputRow{
+			Ordinal:     i,
+			Key:         key,
+			Filename:    path.Base(name),
+			Format:      ex.Target,
+			Size:        size,
+			ContentType: convert.MIMEType(ex.Target),
+		}
+	}
+	raw, err := json.Marshal(map[string]any{"paths": paths})
+	if err != nil {
+		return fmt.Errorf("encode paths: %w", err)
+	}
+	if err := replaceJobInputs(ctx, tx, jobID, rows); err != nil {
+		return err
+	}
+	if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, convert.EngineArchive, admitted, dsts); err != nil {
+		return err
+	}
+	return requeueExtraction(ctx, tx, jobID, attemptID, convert.EngineArchive, archiveCapabilityID, 1, raw)
+}
+
+func (h *Handler) admitOrFail(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, clientID *uuid.UUID, engine, next string, admitted *int64, dsts []string) error {
+	quotaErr := h.admitChangedEngine(ctx, tx, clientID, engine, next, admitted)
+	reason := jobs.QuotaReason(quotaErr)
+	if quotaErr != nil && reason == "" {
+		return quotaErr
+	}
+	if reason == "" {
+		return nil
+	}
+	if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
+		return err
+	}
+	return h.jobsRepo.FailProtocolIn(ctx, tx, jobID, reason, "quota")
+}
+
+func (h *Handler) removeExtraAttemptOutputs(ctx context.Context, attemptID uuid.UUID, n int) {
+	if h.store == nil {
+		return
+	}
+	for i := 2; i < n; i++ {
+		_ = h.store.Remove(ctx, storage.AttemptOutputKey(attemptID, i))
+	}
+}
+
+func replaceJobInputs(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, rows []jobInputRow) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM job_inputs WHERE job_id = $1`, jobID); err != nil {
+		return fmt.Errorf("delete job inputs: %w", err)
+	}
+	for _, row := range rows {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			jobID, row.Ordinal, row.Key, row.Filename, row.Format, row.Size, row.ContentType); err != nil {
+			return fmt.Errorf("insert job input: %w", err)
+		}
+	}
+	return nil
+}
+
+func requeueExtraction(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, engine, capabilityID string, capabilityVersion int, options []byte) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE worker_slot_holds
+		SET released_at = now()
+		WHERE id = $1 AND job_id = $2 AND state = 'active' AND released_at IS NULL`,
+		attemptID, jobID)
+	if err != nil {
+		return fmt.Errorf("release hold: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("release attempt %s: no active hold", attemptID)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'queued',
+		    step_id = NULL,
+		    engine = $2,
+		    capability_id = $3,
+		    capability_version = $4,
+		    options = $5::jsonb,
+		    not_before = NULL,
+		    eta_seconds = NULL,
+		    stage = NULL,
+		    stage_index = NULL,
+		    stage_count = NULL
+		WHERE id = $1`,
+		jobID, engine, capabilityID, capabilityVersion, string(options)); err != nil {
+		return fmt.Errorf("requeue extraction: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, jobID, jobs.StatusActive, jobs.StatusQueued); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}

@@ -619,6 +619,25 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		if err := reportingAttemptLive(ctx, tx, attemptID, sess.ID); err != nil {
 			return err
 		}
+		var optsRaw []byte
+		if err := tx.QueryRow(ctx, `SELECT options FROM jobs WHERE id = $1`, jobID).Scan(&optsRaw); err != nil {
+			return fmt.Errorf("read job options: %w", err)
+		}
+		ex, extracting, err := parseExtraction(optsRaw)
+		if err != nil {
+			return err
+		}
+		if extracting && ex.Phase == "unpack" {
+			handled, err := h.acceptUnpack(ctx, tx, sess, jobID, attemptID, key, bodyHash, &body, ex, arts)
+			if err != nil {
+				return err
+			}
+			if handled {
+				return nil
+			}
+			h.removeExtraAttemptOutputs(ctx, attemptID, len(ex.Entries))
+			return storeControlResponse(ctx, tx, sess, key, bodyHash, &body)
+		}
 		wantFormat := target
 		limitEngine := engine
 		var snap workflowSnapDoc
@@ -636,6 +655,9 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			if snap.Steps[stepIndex].LegacyEngine != "" {
 				limitEngine = snap.Steps[stepIndex].LegacyEngine
 			}
+		}
+		if packOutputsAreZip(engine, snapshotID, optsRaw) {
+			wantFormat = "zip"
 		}
 		maxOut := protocolOutputLimit(limitEngine, wantFormat)
 		primary, report, matched := matchCompleteArtifacts(limitEngine, arts, wantFormat, maxOut)
@@ -724,34 +746,42 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 					return err
 				}
 			}
+		} else if extracting && ex.Phase == "convert" {
+			if err := h.acceptConvertEntry(ctx, tx, jobID, attemptID, ex, dsts, gotSizes, clientID, engine, admitted); err != nil {
+				return err
+			}
 		} else if err := h.acceptCopied(ctx, tx, jobID, attemptID, pieces, dsts, gotSizes); err != nil {
 			return err
 		}
-		ids, err := canceledAttempts(ctx, tx, sess.ID)
-		if err != nil {
-			return err
-		}
-		draining, err := sessionDraining(ctx, tx, sess.ID)
-		if err != nil {
-			return err
-		}
-		encoded, err := encodeWire(heartbeatWire{
-			ProtocolVersion: ProtocolVersion,
-			Control:         controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false},
-		})
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256, response_body)
-			VALUES ($1, $2, $3, $4)`,
-			sess.ID, key, bodyHash, encoded); err != nil {
-			return fmt.Errorf("store complete: %w", err)
-		}
-		body = encoded
-		return nil
+		return storeControlResponse(ctx, tx, sess, key, bodyHash, &body)
 	})
 	return body, err
+}
+
+func storeControlResponse(ctx context.Context, tx pgx.Tx, sess storedSession, key, bodyHash string, body *[]byte) error {
+	ids, err := canceledAttempts(ctx, tx, sess.ID)
+	if err != nil {
+		return err
+	}
+	draining, err := sessionDraining(ctx, tx, sess.ID)
+	if err != nil {
+		return err
+	}
+	encoded, err := encodeWire(heartbeatWire{
+		ProtocolVersion: ProtocolVersion,
+		Control:         controlWire{CancelAttemptIDs: ids, Drain: draining, Terminate: false},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO worker_request_dedup (session_id, dedup_key, body_sha256, response_body)
+		VALUES ($1, $2, $3, $4)`,
+		sess.ID, key, bodyHash, encoded); err != nil {
+		return fmt.Errorf("store complete: %w", err)
+	}
+	*body = encoded
+	return nil
 }
 
 func lockAttemptIO(ctx context.Context, tx pgx.Tx, attemptID uuid.UUID) error {
@@ -2010,7 +2040,20 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		}
 		return claimDecision{}, fmt.Errorf("insert slot hold: %w", err)
 	}
-	if err := h.jobsRepo.ActivateProtocol(ctx, tx, jobID, stepID); err != nil {
+	var optsRaw []byte
+	var jobEngine string
+	if err := tx.QueryRow(ctx, `SELECT options, engine FROM jobs WHERE id = $1`, jobID).Scan(&optsRaw, &jobEngine); err != nil {
+		return claimDecision{}, fmt.Errorf("read job options: %w", err)
+	}
+	ex, extracting, err := parseExtraction(optsRaw)
+	if err != nil {
+		return claimDecision{}, err
+	}
+	if extracting && (ex.Phase == "unpack" || ex.Phase == "convert") {
+		if err := h.jobsRepo.ActivateProtocolPreserveProgress(ctx, tx, jobID, stepID); err != nil {
+			return claimDecision{}, err
+		}
+	} else if err := h.jobsRepo.ActivateProtocol(ctx, tx, jobID, stepID); err != nil {
 		return claimDecision{}, err
 	}
 	getTTL, ok := linkSignTTL(linkExpires)
@@ -2054,13 +2097,48 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 			Role: "report", Ordinal: 1, Format: "json", Href: reportURL,
 		})
 	}
-	var optsRaw []byte
-	if err := tx.QueryRow(ctx, `SELECT options FROM jobs WHERE id = $1`, jobID).Scan(&optsRaw); err != nil {
-		return claimDecision{}, fmt.Errorf("read job options: %w", err)
+	if packOutputsAreZip(jobEngine, snapshotID, optsRaw) {
+		outputFormat = "zip"
+		if len(outputs) > 0 {
+			outputs[0].Format = "zip"
+		}
+	}
+	if extracting && ex.Phase == "unpack" && jobEngine == convert.EngineArchive {
+		names, err := h.archiveMemberNames(ctx, sources)
+		if err != nil {
+			return claimDecision{}, err
+		}
+		outputs = make([]fileLinkWire, len(names))
+		for i := range names {
+			putURL, err := h.store.PresignPut(ctx, storage.AttemptOutputKey(attemptID, i), putTTL)
+			if err != nil {
+				return claimDecision{}, fmt.Errorf("presign output: %w", err)
+			}
+			outputs[i] = fileLinkWire{Role: "primary", Ordinal: i, Format: ex.Source, Href: putURL}
+		}
+		entries := make([]extractionEntry, len(names))
+		for i, name := range names {
+			entries[i] = extractionEntry{Name: name}
+		}
+		ex.Entries = entries
+		raw, err := marshalExtraction(ex)
+		if err != nil {
+			return claimDecision{}, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE jobs SET options = $2::jsonb WHERE id = $1`, jobID, string(raw)); err != nil {
+			return claimDecision{}, fmt.Errorf("write archive extraction: %w", err)
+		}
+		optsRaw = raw
 	}
 	parameters, err := assignmentParameters(optsRaw)
 	if err != nil {
 		return claimDecision{}, err
+	}
+	if extracting && ex.Phase == "convert" {
+		parameters, err = assignmentParameters(pairParameters(ex))
+		if err != nil {
+			return claimDecision{}, err
+		}
 	}
 	expiresAt := linkExpires.UTC().Format(time.RFC3339Nano)
 	for i := range outputs {
