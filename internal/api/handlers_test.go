@@ -5617,3 +5617,93 @@ func TestCreateJob_MacroPackageReachesSanitizeButNothingElse(t *testing.T) {
 		}
 	})
 }
+
+func TestCreateJob_ExtractionStoresPairUnderArchiveCapability(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationArchive && source == "files" && target == "zip" {
+				return archiveMatch(), true
+			}
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+	body, ct := multipartExtraction(t, "docs/photo.zip", "png", "webp", bareZipFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploadCalls != 1 {
+		t.Fatalf("uploadCalls = %d", store.uploadCalls)
+	}
+	if repo.created == nil {
+		t.Fatal("repo.Create was never called")
+	}
+	if repo.created.Operation != convert.OperationConvert || repo.created.Engine != convert.EngineArchive {
+		t.Fatalf("operation/engine = %s/%s", repo.created.Operation, repo.created.Engine)
+	}
+	if repo.created.SourceFormat != "png" || repo.created.TargetFormat != "webp" {
+		t.Fatalf("formats = %s -> %s", repo.created.SourceFormat, repo.created.TargetFormat)
+	}
+	if repo.created.CapabilityID != "octoconv.archive.zip" || repo.created.DispatchOwner != "protocol" {
+		t.Fatalf("capability %q dispatch %q", repo.created.CapabilityID, repo.created.DispatchOwner)
+	}
+	if repo.created.ProtocolAttemptBudget != 240*time.Second {
+		t.Fatalf("budget = %s", repo.created.ProtocolAttemptBudget)
+	}
+	if _, ok := repo.created.Opts["paths"]; ok {
+		t.Fatalf("paths stored: %#v", repo.created.Opts)
+	}
+	ex, ok := repo.created.Opts["archive_extraction"].(map[string]any)
+	if !ok {
+		t.Fatalf("options %#v", repo.created.Opts)
+	}
+	if ex["phase"] != "unpack" || ex["source"] != "png" || ex["target"] != "webp" || ex["operation"] != convert.OperationConvert {
+		t.Fatalf("extraction %#v", ex)
+	}
+	if ex["pair_capability_id"] != "octoconv.convert.image" || ex["pair_engine"] != convert.EngineImage {
+		t.Fatalf("pair %#v", ex)
+	}
+}
+
+func multipartExtraction(t *testing.T, filename, source, target string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("operation", "convert"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("source", source); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("target", target); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &b, w.FormDataContentType()
+}
