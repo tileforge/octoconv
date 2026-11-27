@@ -12,6 +12,7 @@ func TestAssignmentParameters(t *testing.T) {
 		{name: "null", raw: "null", want: ""},
 		{name: "object", raw: "{}", want: ""},
 		{name: "whitespace", raw: "  {}  ", want: ""},
+		{name: "CAD surface", raw: `{"material":"copper","color":"blue","finish":"polished","dimensions":false}`, want: `{"material":"copper","color":"blue","finish":"polished","dimensions":false}`},
 		{name: "page", raw: `{"page_size":"a4"}`, want: `{"page_size":"a4"}`},
 		{name: "zero timecode", raw: `{"timecode":0}`, want: `{"timecode":0}`},
 	}
@@ -40,6 +41,11 @@ func TestPublishedParameterSchemas(t *testing.T) {
 		ok   map[string]any
 		bad  map[string]any
 	}{
+		{
+			file: "manifest-cad-render.json",
+			ok:   map[string]any{"material": "steel", "color": "black", "finish": "matte_powder_coat", "size": float64(512), "dimensions": false},
+			bad:  map[string]any{"finish": "glossy"},
+		},
 		{
 			file: "manifest-html-convert.json",
 			ok:   map[string]any{"page_size": "a4", "margin_mm": float64(10), "landscape": true},

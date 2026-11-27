@@ -38,7 +38,7 @@ A DWG whose header is `AC10` plus two digits is format `dwg`. A pre-R2.5 signatu
 | `render` | `dwg` | `png` |
 
 A 3D `convert` writes a binary STL in millimetres. A DXF `convert` draws the drawing to SVG or PDF. A DWG `convert` draws it to SVG, PDF or a square PNG and writes no measurements document. A `render`
-draws a square PNG preview and writes the measurements document beside it (see Outputs). Any other pair is
+draws a square PNG preview and computes its measurements (see Outputs). Any other pair is
 `unsupported_conversion`.
 
 ## Render options
@@ -53,27 +53,35 @@ draws a square PNG preview and writes the measurements document beside it (see O
 | `background` | `opaque`, `transparent` | `opaque` |
 | `assume_unit` | `mm`, `cm`, `m`, `inch`, `foot`, `micrometre` | `none` |
 | `dimensions` | `true`, `false` | `true` |
+| `material` | `steel`, `copper`, `aluminum` | `steel` |
+| `color` | `natural`, `blue`, `black` | `natural` |
+| `finish` | `bare`, `polished`, `anodized`, `matte_powder_coat` | `bare` |
 | `layout` | `1..255` characters | `none` |
 
 `size` is the edge of the square PNG in pixels, an integer. `quality` is the tessellation density of a STEP or
 IGES model. An IGES model with no solid is sewn at tolerance 1e-6 before meshing. Sewing runs for IGES only,
 and a volume is reported only when every face joins a closed valid solid (docs/MEASUREMENTS.md).
 `background` `opaque` is white #FFFFFF; `transparent` leaves the background at alpha 0.
-The shaded picture draws crease, boundary and non-manifold edges, and the view silhouette where a
-front face meets a face turned away from the camera. Triangle edges of a smooth surface stay hidden.
+Studio lighting and reflections reveal the curvature and creases of a 3D surface. If a sheet projects to less
+than one pixel in the selected view, the preview shows a thin profile in the surface color.
 `assume_unit` names the unit of a file that declares none; its default `none` assumes nothing, and it never
 overrides a declared unit (docs/MEASUREMENTS.md, Unit sources). An unknown option, a value outside its set or
 a `size` outside the range is `invalid_options`.
 
+For a STEP, IGES, or STL preview, `material`, `color`, and `finish` set the appearance of the whole model.
+`natural` shows the selected metal's color for bare, polished, and anodized surfaces. A natural matte
+powder coat is neutral gray. Any combination is valid. For example, submit
+`operation=render`, `target=png`, and `opts={"material":"aluminum","color":"blue","finish":"anodized"}`.
+The surface settings affect only the PNG. Model geometry and measurements come from the input file.
+
 `dimensions` adds overall bounding-box dimension lines and a `Size: X × Y × Z unit` heading to a 3D
-preview. It is a boolean, not a string. Dimensions are enabled by default; use `{"dimensions":false}`
-for the original unannotated PNG. This changes the default appearance of 3D render jobs, including
-jobs whose stored options omit `dimensions`; existing stored images are unchanged.
+preview. Dimensions are enabled by default. Set the boolean `dimensions` to `false` to render the
+selected surface without dimension lines or a heading.
 When the measurements document includes `bodies`, the same kind of line is drawn for each solid box,
 at most 12 boxes, largest diagonal first. A box that matches the overall box is omitted. The heading
 stays the overall size. An STL has no per-solid boxes, so its preview stays overall-only.
 
-Values and units come from the same measurements document returned with the PNG, in X, Y, Z order.
+Values and units come from the worker's measurements document, in X, Y, Z order.
 They describe the axis-aligned bounding box in the file's coordinates, not hole diameters or tolerances.
 Labels use two decimal places with a redundant trailing zero removed; very small or large values use
 four significant digits, with scientific notation when needed. Unknown units are labeled `units unspecified`; units
@@ -91,11 +99,15 @@ The annotation font is the embedded Go Regular font. DXF drawings retain their o
 | `convert` | `iges` | `quality` |
 | `convert` | `dxf` | `layout` |
 | `convert` | `dwg` | `layout` |
-| `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
-| `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions` |
-| `render` | `stl` | `view`, `size`, `background`, `assume_unit`, `dimensions` |
+| `render` | `step` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions`, `material`, `color`, `finish` |
+| `render` | `iges` | `view`, `size`, `quality`, `background`, `assume_unit`, `dimensions`, `material`, `color`, `finish` |
+| `render` | `stl` | `view`, `size`, `background`, `assume_unit`, `dimensions`, `material`, `color`, `finish` |
 | `render` | `dxf` | `size`, `background`, `assume_unit`, `layout` |
 | `render` | `dwg` | `size`, `background`, `assume_unit`, `layout` |
+
+Submitting options requires an approved version 2 model render worker. Deployments with the version 1
+render manifest accept previews with omitted or empty `opts`. Drawing and conversion workers currently
+accept jobs with omitted or empty `opts` only.
 
 A well-formed option outside this table for its operation and format is refused at create with 422
 `opts_not_applicable`, before the upload is stored. A DXF or DWG is drawn top-down, so `view` does not apply to it.
@@ -109,12 +121,11 @@ name that is not in the file fail the drawing. `layout` does not apply to a STEP
 | role | format | when |
 |---|---|---|
 | `primary` | the requested target: `stl` for a 3D `convert`, `svg` or `pdf` for a DXF `convert`, `svg`, `pdf` or `png` for a DWG `convert`, `png` for every `render` | every successful job |
-| `measurements` | `json`, the document of docs/MEASUREMENTS.md | every successful `render`, never a `convert` |
+| `measurements` | `json`, the document of docs/MEASUREMENTS.md | optional on a successful `render` |
 
-The two outputs of a `render` are written together or not at all. The worker validates the measurements
-document before it uploads anything, uploads the PNG and the JSON, and only then records both outputs in one
-transaction and marks the job `done`. A render that fails at any step records neither, so a client never sees
-a PNG without its measurements or the other way round.
+The render worker computes and validates the measurements before uploading the PNG. The API publishes
+the optional measurements JSON only when the worker assignment includes an output link for it. The current
+scheduler supplies the primary PNG link only. On a successful job, `download_url` points to that PNG.
 
 ## Stages
 

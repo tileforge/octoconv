@@ -2,9 +2,12 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -44,6 +47,12 @@ func TestCreateJobCADOptsRejections(t *testing.T) {
 		{"unit on convert", `{"assume_unit":"inch"}`, errcode.OptsNotApplicable},
 		{"dimensions on convert", `{"dimensions":true}`, errcode.OptsNotApplicable},
 		{"dimensions false on convert", `{"dimensions":false}`, errcode.OptsNotApplicable},
+		{"material on convert", `{"material":"steel"}`, errcode.OptsNotApplicable},
+		{"color on convert", `{"color":"black"}`, errcode.OptsNotApplicable},
+		{"finish on convert", `{"finish":"anodized"}`, errcode.OptsNotApplicable},
+		{"unknown material", `{"material":"gold"}`, errcode.InvalidOptions},
+		{"non-string color", `{"color":123}`, errcode.InvalidOptions},
+		{"null finish", `{"finish":null}`, errcode.InvalidOptions},
 		{"dimensions string", `{"dimensions":"true"}`, errcode.InvalidOptions},
 		{"dimensions null", `{"dimensions":null}`, errcode.InvalidOptions},
 	}
@@ -70,7 +79,7 @@ func TestCreateJobCADOptsRejections(t *testing.T) {
 	}
 }
 
-func TestCreateJobCADDimensionsAreRefused(t *testing.T) {
+func TestCreateJobCADDimensionsRequireUpdatedManifest(t *testing.T) {
 	for _, raw := range []string{`{"dimensions":false}`, `{"dimensions":true}`} {
 		repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 		rec := postCADRender(t, repo, store, q, "in.step", readCADFixture(t, "public/LM8UU.step"), raw)
@@ -88,6 +97,11 @@ func postCADRender(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueu
 	t.Helper()
 	srv, _ := newTestServer(repo, store, q)
 	admitCADCatalog(srv)
+	return postCADRenderOnServer(t, srv, filename, data, opts)
+}
+
+func postCADRenderOnServer(t *testing.T, srv *Server, filename string, data []byte, opts string) *httptest.ResponseRecorder {
+	t.Helper()
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 	fw, err := w.CreateFormFile("file", filename)
@@ -159,7 +173,7 @@ func TestCreateJobRenderIsAcceptedForEachCADSource(t *testing.T) {
 	}
 }
 
-func TestCreateJobRenderOptionsAreRefused(t *testing.T) {
+func TestCreateJobRenderOptionsRequireUpdatedManifest(t *testing.T) {
 	cases := []struct {
 		name     string
 		filename string
@@ -167,6 +181,7 @@ func TestCreateJobRenderOptionsAreRefused(t *testing.T) {
 		opts     string
 	}{
 		{"step", "in.step", "public/LM8UU.step", ` { "size" : 512, "view":"top" }`},
+		{"surface", "in.step", "public/LM8UU.step", `{"material":"copper","color":"black","finish":"polished"}`},
 		{"iges", "in.iges", "synthetic/surfaces_only.iges", `{"quality":"draft"}`},
 		{"stl", "in.stl", "public/nasa-hubble-all-pieces.stl", `{"background":"transparent"}`},
 	}
@@ -213,6 +228,9 @@ func TestCreateJobDXFRenderViewOrQualityIsOptsNotApplicable(t *testing.T) {
 		`{"background":"transparent","quality":"draft"}`,
 		`{"dimensions":true}`,
 		`{"dimensions":false}`,
+		`{"material":"copper"}`,
+		`{"color":"blue"}`,
+		`{"finish":"matte_powder_coat"}`,
 	} {
 		t.Run(opts, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
@@ -367,6 +385,9 @@ func TestCreateJobDWGRenderViewOrQualityIsOptsNotApplicable(t *testing.T) {
 		`{"background":"transparent","quality":"draft"}`,
 		`{"dimensions":true}`,
 		`{"dimensions":false}`,
+		`{"material":"copper"}`,
+		`{"color":"blue"}`,
+		`{"finish":"matte_powder_coat"}`,
 	} {
 		t.Run(opts, func(t *testing.T) {
 			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
@@ -380,4 +401,76 @@ func TestCreateJobDWGRenderWithSizeBackgroundAndUnitIsRefused(t *testing.T) {
 	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
 	rec := postDWGJob(t, repo, store, q, "png", "render", " {\n \"assume_unit\" : \"mm\", \"background\":\"transparent\",  \"size\": 2048 } ")
 	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+}
+
+func TestCreateJobCADRenderOptionsRejectUnknownCapabilityVersion(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	match := cadMatch("octoconv.render.cad", convert.OperationRender)
+	match.CapabilityVersion = 3
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: match})
+	rec := postCADRenderOnServer(t, srv, "in.step", readCADFixture(t, "synthetic/units_inch.step"), `{"material":"steel"}`)
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+}
+
+func TestCreateJobCADRenderWithPublishedManifest(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/worker-protocol/examples/positive/manifest-cad-render.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Capabilities []struct {
+			ID      string          `json:"id"`
+			Version int             `json:"version"`
+			Schema  json.RawMessage `json:"parameter_schema"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Capabilities) != 1 {
+		t.Fatalf("expected one capability, got %d", len(manifest.Capabilities))
+	}
+	capability := manifest.Capabilities[0]
+	match := cadMatch(capability.ID, convert.OperationRender)
+	match.CapabilityVersion = capability.Version
+	match.ParameterSchema = capability.Schema
+	for _, tc := range []struct {
+		name, source, fixture, opts string
+	}{
+		{"all STEP options", "step", "synthetic/units_inch.step", `{"view":"top","size":512,"quality":"fine","background":"transparent","assume_unit":"cm","dimensions":false,"material":"copper","color":"blue","finish":"polished"}`},
+		{"IGES material", "iges", "synthetic/surfaces_only.iges", `{"material":"aluminum"}`},
+		{"STL color and finish", "stl", "public/nasa-hubble-all-pieces.stl", `{"color":"black","finish":"anodized"}`},
+		{"no options", "step", "synthetic/units_inch.step", `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: match})
+			rec := postCADRenderOnServer(t, srv, "in."+tc.source, readCADFixture(t, tc.fixture), tc.opts)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			if repo.created == nil || repo.created.CapabilityID != "octoconv.render.cad" || repo.created.CapabilityVersion != 2 ||
+				repo.created.DispatchOwner != "protocol" || q.enqueueCalls != 0 {
+				t.Fatalf("expected a job pinned to the v2 model render worker, got %+v", repo.created)
+			}
+			var want map[string]any
+			if err := json.Unmarshal([]byte(tc.opts), &want); err != nil {
+				t.Fatal(err)
+			}
+			var echo struct {
+				Opts map[string]any `json:"opts"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &echo); err != nil {
+				t.Fatal(err)
+			}
+			if !maps.Equal(repo.created.Opts, want) || !maps.Equal(echo.Opts, want) {
+				t.Fatalf("stored %+v, echoed %+v, want %+v", repo.created.Opts, echo.Opts, want)
+			}
+			if len(want) == 0 && echo.Opts != nil {
+				t.Fatal("empty opts must be omitted from the response")
+			}
+		})
+	}
 }

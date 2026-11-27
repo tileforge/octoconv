@@ -283,6 +283,12 @@ func cadDocClosed(tag string) (map[string]bool, bool) {
 		return cadBackgrounds, true
 	case "assume_unit":
 		return cadUnits, true
+	case "material":
+		return cadMaterials, true
+	case "color":
+		return cadColors, true
+	case "finish":
+		return cadFinishes, true
 	case "dimensions":
 		return map[string]bool{"true": true, "false": true}, true
 	}

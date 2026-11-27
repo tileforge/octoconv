@@ -12,7 +12,8 @@ change (renaming or removing a field, changing a vocabulary code, changing what 
 identifier to `v2`. Adding an optional field does not bump it, but the validator is strict: unknown fields
 are rejected, so an additive field lands with a code change and a change to this document together.
 
-Render jobs emit this document as the output with role `measurements`. Every length, area and volume in it is
+This document accompanies a rendered PNG when the worker receives an upload link for the optional
+`measurements` output. Every length, area and volume in it is
 expressed in `unit`: the engine measures in millimetres, and the producer divides lengths by the factor the
 engine applied, areas by its square and volumes by its cube, so a file declared in inches reports inches. A
 declared unit is reported only when the factor the engine applied equals the table value for that unit;
@@ -70,19 +71,17 @@ An STL's volume is computed per shell, where a shell is the set of triangles joi
 
 An IGES file the reader loads with no solid is sewn at tolerance 1e-6 in model units. Volume and area are reported only when every face joins a closed valid solid. An open sheet, a gap wider than 1e-6, and a model with more than 20000 faces stay `no_solids`. Sewing runs for IGES only.
 
-**PNG check.** Before a PNG is returned, the worker checks that it shows the model, on the white page the DXF
-route judges emptiness on (see Empty): a pixel is part of the picture when, laid over white, one of its
-channels is below 250. That holds whatever `background` was asked for, so an opaque and a transparent PNG of
-the same model get the same verdict, however little of the frame the model covers: a sparse assembly or a thin
-part seen edge on passes on both. A 3D preview needs at least one such pixel, a long side of at least half the
-frame, a margin of at least 3% of the frame on every side, and either a filled silhouette or a thin part with
-dark edges along its length. A DXF preview needs ink that spans at least half its letterbox and stays inside
-it. The only checks that look at the background are checks of the alpha channel: an opaque PNG may hold no
-fully transparent pixel, and a transparent PNG must carry an alpha channel and leave its outer edge fully
-transparent. The 3D renderer's anti-aliasing tints the background pixels next to the model's edges. An opaque
-PNG shows them; a transparent PNG keeps them at alpha 0, so it has slightly fewer part pixels with the same
-extent (in the corpus measured for this, up to 4% fewer for a filled model and 14% for a thin part at 256 px).
-A PNG that fails the check is `cad_empty_result`.
+**PNG check.** The worker checks model and DXF previews on a white page. A pixel counts toward the picture's
+extent when at least one color channel is below 250 after compositing over white. This accounts for the
+opacity of anti-aliasing pixels and gives the same verdict for a visible surface with either `background`.
+An opaque PNG must contain zero fully transparent pixels. A transparent PNG must carry an alpha channel
+and leave its outer edge fully transparent. A PNG that fails the check is `cad_empty_result`.
+
+A 3D model must span at least half the frame, with a margin of at least 3% on every side. A shaded part must
+occupy 2% to 90% of the frame, with visible surface contrast across at least 0.1% of the frame. A surface
+pixel counts toward that contrast when its brightness is at least 20 levels below white on an 8-bit scale.
+For a thin part, the check looks for a visible profile along its projected length. A DXF preview needs ink that spans at least half its
+letterbox and stays inside it.
 
 For a 3D render with dimensions enabled (the default), this check runs on the model PNG before any
 annotations. The validated image is then inset and annotated with the document's bounding-box lengths,
