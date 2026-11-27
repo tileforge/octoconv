@@ -1295,6 +1295,11 @@ paths:
                     archive root under that base name. A present path is the full relative path and its
                     last segment must equal the base name. An empty string stores that file at the archive
                     root under its base name. Any other count refuses the request before a partial result.
+                source:
+                  type: string
+                  description: >-
+                    The entry format when operation is convert, render, or
+                    sanitize and the one file is a ZIP container.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
