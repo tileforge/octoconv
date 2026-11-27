@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -1208,6 +1210,89 @@ func TestCreateJob_ArchiveZeroPathsStoresRootNames(t *testing.T) {
 			t.Fatalf("paths %#v uploads %d created %v", got, store.uploadCalls, repo.created != nil)
 		}
 	})
+}
+
+func TestCreateJob_ArchiveTooManyFilesRefusesBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec := postArchive(t, srv, "zip", "", "", nil, false, archiveNamedUploads(jobs.MaxInputParts+1))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.InvalidRequest)
+	if store.uploadCalls != 0 || repo.created != nil {
+		t.Fatalf("uploads=%d created=%v", store.uploadCalls, repo.created != nil)
+	}
+
+	repo = &fakeRepo{}
+	store = &fakeStorage{}
+	q = &fakeQueue{}
+	srv, _ = newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec = postArchive(t, srv, "zip", "", "", nil, false, archiveNamedUploads(jobs.MaxInputParts))
+	if rec.Code != http.StatusAccepted || store.uploadCalls != jobs.MaxInputParts || repo.created == nil {
+		t.Fatalf("status=%d uploads=%d created=%v body=%s", rec.Code, store.uploadCalls, repo.created != nil, rec.Body.String())
+	}
+}
+
+func TestCreateJob_ArchiveByteCeilingRefusesBeforeUpload(t *testing.T) {
+	cases := []struct {
+		name  string
+		sizes []int64
+	}{
+		{name: "sum", sizes: []int64{60 << 20, (40 << 20) + 1}},
+		{name: "negative", sizes: []int64{-1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+			headers := make([]*multipart.FileHeader, len(tc.sizes))
+			for i, size := range tc.sizes {
+				headers[i] = &multipart.FileHeader{
+					Filename: "f" + strconv.Itoa(i) + ".txt",
+					Header:   textproto.MIMEHeader{},
+					Size:     size,
+				}
+			}
+			rec := callArchiveCreate(t, srv, headers)
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+			}
+			assertErrorCode(t, rec.Body.Bytes(), errcode.PayloadTooLarge)
+			if store.uploadCalls != 0 || repo.created != nil {
+				t.Fatalf("uploads=%d created=%v", store.uploadCalls, repo.created != nil)
+			}
+		})
+	}
+}
+
+func archiveNamedUploads(n int) []archiveUpload {
+	files := make([]archiveUpload, n)
+	for i := range files {
+		files[i] = archiveUpload{name: "f" + strconv.Itoa(i) + ".txt", body: []byte("x")}
+	}
+	return files
+}
+
+func callArchiveCreate(t *testing.T, srv *Server, headers []*multipart.FileHeader) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", nil)
+	req = req.WithContext(auth.WithClient(req.Context(), &clients.Client{ID: uuid.New(), Name: "archive"}))
+	req.Form = url.Values{formFieldTarget: {"zip"}}
+	req.MultipartForm = &multipart.Form{
+		Value: map[string][]string{},
+		File:  map[string][]*multipart.FileHeader{formFieldFile: headers},
+	}
+	rec := httptest.NewRecorder()
+	srv.createArchiveJob(rec, req, "corr-archive-ceiling")
+	return rec
 }
 
 func TestCreateJob_ArchiveRefusesPathRulesBeforeUpload(t *testing.T) {
