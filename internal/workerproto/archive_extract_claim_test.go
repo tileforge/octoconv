@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,32 +220,50 @@ func extractMemberZip(t *testing.T, members []namedMember) []byte {
 	return buf.Bytes()
 }
 
+type extractionPair struct {
+	source     string
+	target     string
+	pairID     string
+	pairEngine string
+}
+
 func insertExtractionJob(t *testing.T, pool *pgxpool.Pool, store *memStore, clientID uuid.UUID, zipBytes []byte) uuid.UUID {
 	t.Helper()
+	return insertExtractionJobFor(t, pool, store, clientID, zipBytes, extractionPair{
+		source: "png", target: "webp", pairID: "octoconv.convert.image", pairEngine: "image",
+	})
+}
+
+func insertExtractionJobFor(t *testing.T, pool *pgxpool.Pool, store *memStore, clientID uuid.UUID, zipBytes []byte, pair extractionPair) uuid.UUID {
+	t.Helper()
 	id := uuid.New()
-	_, err := pool.Exec(context.Background(), `
+	opts, err := json.Marshal(map[string]any{
+		"archive_extraction": map[string]any{
+			"phase":                   "unpack",
+			"pair_capability_id":      pair.pairID,
+			"pair_capability_version": 1,
+			"pair_engine":             pair.pairEngine,
+			"source":                  pair.source,
+			"target":                  pair.target,
+			"operation":               "convert",
+			"opts":                    map[string]any{},
+			"entries":                 []any{},
+			"next":                    0,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(context.Background(), `
 		INSERT INTO jobs (
 			id, client_id, operation, engine, status, source_format, target_format,
 			dispatch_owner, capability_id, capability_version, protocol_deadline,
 			options, created_at
 		) VALUES (
-			$1, $2, 'convert', 'archive', 'queued', 'png', 'webp',
+			$1, $2, 'convert', 'archive', 'queued', $3, $4,
 			'protocol', 'octoconv.archive.zip', 1, now() + interval '1 hour',
-			$3::jsonb, $4
-		)`, id, clientID, `{
-			"archive_extraction": {
-				"phase": "unpack",
-				"pair_capability_id": "octoconv.convert.image",
-				"pair_capability_version": 1,
-				"pair_engine": "image",
-				"source": "png",
-				"target": "webp",
-				"operation": "convert",
-				"opts": {},
-				"entries": [],
-				"next": 0
-			}
-		}`, time.Now())
+			$5::jsonb, $6
+		)`, id, clientID, pair.source, pair.target, opts, time.Now())
 	if err != nil {
 		t.Fatalf("insert job: %s", redactDB(err))
 	}
@@ -501,4 +520,346 @@ func completeMembers(t *testing.T, format, contentType string, payloads [][]byte
 		"protocol_version": 2,
 		"artifacts":        arts,
 	})
+}
+
+func TestExtract_SniffMismatchFailsWholeJob(t *testing.T) {
+	png := extractPNG()
+	t.Run("text member", func(t *testing.T) {
+		raw := extractMemberZip(t, []namedMember{
+			{name: "docs/photo.png", body: png},
+			{name: "docs/note.txt", body: []byte("hello")},
+		})
+		expectUnpackFailed(t, raw, pngPair, [][]byte{png, []byte("hello")})
+	})
+	t.Run("plain zip member", func(t *testing.T) {
+		inner := bareStoredZip(t, "inside.txt", []byte("in"))
+		raw := extractMemberZip(t, []namedMember{{name: "docs/nested.zip", body: inner}})
+		expectUnpackFailed(t, raw, pngPair, [][]byte{inner})
+	})
+	t.Run("docx source", func(t *testing.T) {
+		docx := officeDocx(t)
+		raw := extractMemberZip(t, []namedMember{{name: "docs/file.docx", body: docx}})
+		jobID := expectUnpackSettled(t, raw, extractionPair{
+			source: "docx", target: "pdf", pairID: "octoconv.convert.document", pairEngine: "document",
+		}, [][]byte{docx}, "queued")
+		if jobStatusOf(t, jobID.pool, jobID.id) == "failed" {
+			t.Fatal("docx member failed")
+		}
+	})
+}
+
+func TestExtract_DSStoreIsNotSkipped(t *testing.T) {
+	png := extractPNG()
+	raw := extractMemberZip(t, []namedMember{
+		{name: "docs/photo.png", body: png},
+		{name: ".DS_Store", body: []byte("junk")},
+	})
+	expectUnpackFailed(t, raw, pngPair, [][]byte{png, []byte("junk")})
+}
+
+func TestExtract_ResultPathCollisionFailsBeforePack(t *testing.T) {
+	png := extractPNG()
+	other := append([]byte(nil), png...)
+	other[len(other)-1] = 0x65
+	t.Run("same result name", func(t *testing.T) {
+		raw := extractMemberZip(t, []namedMember{
+			{name: "docs/a.png", body: png},
+			{name: "docs/a.jpg", body: other},
+		})
+		settled := expectUnpackSettled(t, raw, pngPair, [][]byte{png, other}, "failed")
+		var opts string
+		if err := settled.pool.QueryRow(context.Background(), `SELECT options::text FROM jobs WHERE id = $1`, settled.id).Scan(&opts); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(opts, `"paths"`) {
+			t.Fatalf("options %s", opts)
+		}
+		status, resp := pullOnce(t, settled.image, 1)
+		if status != http.StatusOK {
+			t.Fatalf("pair pull %d: %s", status, resp)
+		}
+		assertEmptyPull(t, resp)
+	})
+	t.Run("case distinct", func(t *testing.T) {
+		raw := extractMemberZip(t, []namedMember{
+			{name: "docs/A.png", body: png},
+			{name: "docs/a.jpg", body: other},
+		})
+		expectUnpackSettled(t, raw, pngPair, [][]byte{png, other}, "queued")
+	})
+}
+
+func TestExtract_NoFileMembersFails(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		expectClaimRefusal(t, emptyZip(t))
+	})
+	t.Run("directory only", func(t *testing.T) {
+		expectClaimRefusal(t, directoryZip(t, "docs/"))
+		expectClaimRefusal(t, directoryZip(t, "photo.png/"))
+	})
+	t.Run("too many", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for i := 0; i < 33; i++ {
+			w, err := zw.Create("f" + strings.Repeat("x", 0) + string(rune('a'+i%26)) + ".txt")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.Write([]byte("x")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		expectClaimRefusal(t, buf.Bytes())
+	})
+	t.Run("declared sum", func(t *testing.T) {
+		expectClaimRefusal(t, rawZip(t, &zip.FileHeader{
+			Name:               "a.bin",
+			Method:             zip.Store,
+			CompressedSize64:   1,
+			UncompressedSize64: (100 << 20) + 1,
+		}, []byte{0}))
+	})
+	t.Run("hostile name", func(t *testing.T) {
+		expectClaimRefusal(t, storedZip(t, "../x", []byte("x")))
+		expectClaimRefusal(t, dirPlusFile(t, "//", "a.txt", []byte("a")))
+	})
+	t.Run("symlink", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		h := &zip.FileHeader{Name: "link", Method: zip.Store}
+		h.SetMode(fs.ModeSymlink | 0o777)
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("target")); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		expectClaimRefusal(t, buf.Bytes())
+	})
+	t.Run("encrypted", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		h := &zip.FileHeader{Name: "a.txt", Method: zip.Store, Flags: 1}
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("secret")); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		expectClaimRefusal(t, buf.Bytes())
+	})
+	t.Run("ratio", func(t *testing.T) {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("zeros.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(bytes.Repeat([]byte{0}, 64<<10)); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		expectClaimRefusal(t, buf.Bytes())
+	})
+	t.Run("zero compressed", func(t *testing.T) {
+		expectClaimRefusal(t, rawZip(t, &zip.FileHeader{
+			Name:               "a.txt",
+			Method:             zip.Store,
+			CRC32:              1,
+			CompressedSize64:   0,
+			UncompressedSize64: 10,
+		}, nil))
+	})
+}
+
+var pngPair = extractionPair{source: "png", target: "webp", pairID: "octoconv.convert.image", pairEngine: "image"}
+
+type settledJob struct {
+	id    uuid.UUID
+	pool  *pgxpool.Pool
+	image liveSession
+}
+
+func expectClaimRefusal(t *testing.T, zipBytes []byte) {
+	t.Helper()
+	ln := startWorkerListener(t)
+	clearArchiveClaimJobs(t, ln.pool)
+	archiveLive := ln.hello(t, archiveClaimManifest(t))
+	clientID := insertClient(t, ln.pool)
+	jobID := insertExtractionJob(t, ln.pool, archiveLive.store, clientID, zipBytes)
+	beforeGet, beforePut := archiveLive.store.signerCounts()
+	status, resp := pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pull %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+	if jobStatusOf(t, ln.pool, jobID) != "failed" || jobErrorCode(t, ln.pool, jobID) != "engine_error" {
+		t.Fatalf("status %s code %s", jobStatusOf(t, ln.pool, jobID), jobErrorCode(t, ln.pool, jobID))
+	}
+	if outputCount(t, ln.pool, jobID) != 0 {
+		t.Fatal("outputs")
+	}
+	progress := jobProgress(t, ln.pool, jobID)
+	if progress != nil && *progress == 100 {
+		t.Fatalf("progress %d", *progress)
+	}
+	gets, puts := archiveLive.store.signerCounts()
+	if gets != beforeGet || puts != beforePut {
+		t.Fatalf("signer %d/%d -> %d/%d", beforeGet, beforePut, gets, puts)
+	}
+}
+
+func expectUnpackFailed(t *testing.T, zipBytes []byte, pair extractionPair, bodies [][]byte) {
+	t.Helper()
+	expectUnpackSettled(t, zipBytes, pair, bodies, "failed")
+}
+
+func expectUnpackSettled(t *testing.T, zipBytes []byte, pair extractionPair, bodies [][]byte, want string) settledJob {
+	t.Helper()
+	ln := startWorkerListener(t)
+	clearArchiveClaimJobs(t, ln.pool)
+	archiveLive := ln.hello(t, archiveClaimManifest(t))
+	var image liveSession
+	if pair.pairEngine == "image" {
+		image = ln.hello(t, imageLegacyManifest(t, pair.pairID, pair.source, pair.target))
+	}
+	clientID := insertClient(t, ln.pool)
+	jobID := insertExtractionJobFor(t, ln.pool, archiveLive.store, clientID, zipBytes, pair)
+	status, resp := pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("unpack pull %d: %s", status, resp)
+	}
+	unpack := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(unpack["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(unpack["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, body := range bodies {
+		archiveLive.store.put(storage.AttemptOutputKey(attemptID, i), body)
+	}
+	status, _, resp = postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[3], token, completeMembers(t, pair.source, convert.MIMEType(pair.source), bodies))
+	if status != http.StatusOK {
+		t.Fatalf("unpack complete %d: %s", status, resp)
+	}
+	if jobStatusOf(t, ln.pool, jobID) != want {
+		t.Fatalf("status %s want %s", jobStatusOf(t, ln.pool, jobID), want)
+	}
+	if outputCount(t, ln.pool, jobID) != 0 {
+		t.Fatal("outputs")
+	}
+	progress := jobProgress(t, ln.pool, jobID)
+	if progress != nil && *progress == 100 {
+		t.Fatalf("progress %d", *progress)
+	}
+	return settledJob{id: jobID, pool: ln.pool, image: image}
+}
+
+func emptyZip(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func directoryZip(t *testing.T, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	h := &zip.FileHeader{Name: name}
+	h.SetMode(fs.ModeDir | 0o755)
+	if _, err := zw.CreateHeader(h); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func storedZip(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func bareStoredZip(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	return storedZip(t, name, body)
+}
+
+func dirPlusFile(t *testing.T, dirName, fileName string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	h := &zip.FileHeader{Name: dirName}
+	h.SetMode(fs.ModeDir | 0o755)
+	if _, err := zw.CreateHeader(h); err != nil {
+		t.Fatal(err)
+	}
+	w, err := zw.Create(fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func rawZip(t *testing.T, h *zip.FileHeader, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > 0 {
+		if _, err := w.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func officeDocx(t *testing.T) []byte {
+	t.Helper()
+	return storedZip(t, "word/document.xml", []byte(`<?xml version="1.0"?><document/>`))
 }
