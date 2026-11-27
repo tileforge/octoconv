@@ -317,6 +317,32 @@ func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, atte
 	if ex.Entries[idx].Result == "" {
 		ex.Entries[idx].Result = extractionResultName(ex.Entries[idx].Name, ex.Target)
 	}
+	if ex.Next+1 < len(ex.Entries) {
+		ex.Next++
+		ex.Phase = "convert"
+		next := ex.Entries[ex.Next]
+		if next.Key == "" {
+			return &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+		raw, err := marshalExtraction(ex)
+		if err != nil {
+			return err
+		}
+		if err := replaceJobInputs(ctx, tx, jobID, []jobInputRow{{
+			Ordinal:     0,
+			Key:         next.Key,
+			Filename:    path.Base(next.Name),
+			Format:      ex.Source,
+			Size:        next.Size,
+			ContentType: convert.MIMEType(ex.Source),
+		}}); err != nil {
+			return err
+		}
+		if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, ex.PairEngine, admitted, dsts); err != nil {
+			return err
+		}
+		return requeueExtraction(ctx, tx, jobID, attemptID, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, raw)
+	}
 	paths := make([]string, len(ex.Entries))
 	rows := make([]jobInputRow, len(ex.Entries))
 	for i, entry := range ex.Entries {
