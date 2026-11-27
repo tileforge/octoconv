@@ -168,12 +168,12 @@ func TestReplaceOverwritesWithoutPanic(t *testing.T) {
 //
 // Phase 60 is the moment this returned a second value, exactly as the note
 // here predicted: converters.go now registers SanitizeConverter. The
-// assertion below moved from "one operation" to "these three, in this order"
+// assertion below moved from "one operation" to "these four, in this order"
 // rather than to "at least one" -- a length check that stops naming its
 // expected contents stops being able to fail.
 func TestOperationsDerivedFromRegistry(t *testing.T) {
 	ops := Default.Operations()
-	want := []string{OperationConvert, OperationRender, OperationSanitize} // Operations() sorts
+	want := []string{OperationArchive, OperationConvert, OperationRender, OperationSanitize} // Operations() sorts
 	if len(ops) != len(want) {
 		t.Fatalf("Default.Operations() = %v, want %v", ops, want)
 	}
@@ -194,7 +194,7 @@ func TestOperationsDerivedFromRegistry(t *testing.T) {
 	// (OperationConvert's own doc comment) now that sanitize is real: a
 	// registered operation is the case where a normalization slip would
 	// actually reach jobs.operation.
-	for _, bad := range []string{"extract", "archive", "inspect", "", "Convert", "Sanitize", "Render"} {
+	for _, bad := range []string{"extract", "inspect", "", "Convert", "Sanitize", "Render", "Archive"} {
 		if Default.IsKnownOperation(bad) {
 			t.Errorf("Default.IsKnownOperation(%q) = true, want false", bad)
 		}

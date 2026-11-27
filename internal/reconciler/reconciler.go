@@ -356,12 +356,11 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		// image queue.
 		var enqueueErr error
 		switch j.Engine {
-		case convert.EngineDocument, convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc, convert.EngineTectonic, convert.EngineProbe, convert.EngineCAD:
+		case convert.EngineDocument, convert.EngineImage, convert.EngineHTML, convert.EngineAudio, convert.EngineAV, convert.EngineOCR, convert.EnginePandoc, convert.EngineTectonic, convert.EngineProbe, convert.EngineCAD, convert.EngineArchive:
 			continue
 		default:
-			// Fail closed (T-10-03): archive is out of scope this
-			// milestone and a corrupted/unrecognized engine value must never
-			// be guessed at. Do NOT enqueue and do NOT RequeueStale — either
+			// Fail closed (T-10-03): a corrupted or unrecognized engine value
+			// must never be guessed at. Do NOT enqueue and do NOT RequeueStale — either
 			// would risk running the job through the wrong engine's worker
 			// or silently losing it from the recovery cap accounting. A
 			// future engine must add its own case here rather than fall

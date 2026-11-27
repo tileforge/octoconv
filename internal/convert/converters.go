@@ -98,4 +98,5 @@ func init() {
 	Default.Register(CADRenderConverter{})
 	Default.Register(CADDXFConverter{})
 	Default.Register(CADDXFRenderConverter{})
+	Default.Register(ArchiveConverter{})
 }

@@ -528,6 +528,7 @@ func engineTimeoutsFromEnv() map[string]time.Duration {
 		// MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5).
 		convert.EngineTectonic: envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second),
 		convert.EngineCAD:      envDuration("CAD_ENGINE_TIMEOUT", convert.CADDefaultEngineTimeout),
+		convert.EngineArchive:  envDuration("ARCHIVE_ENGINE_TIMEOUT", 120*time.Second),
 	}
 }
 

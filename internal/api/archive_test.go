@@ -80,6 +80,42 @@ func TestArchiveSuccessAndOwnership(t *testing.T) {
 	}
 }
 
+func TestArchiveRouteDoesNotCreateAJob(t *testing.T) {
+	id := uuid.New()
+	repo := &fakeRepo{
+		getJob: &jobs.Job{ID: id, Status: jobs.StatusDone},
+		outputs: []jobs.Output{{
+			ObjectKey: "private/key",
+			SizeBytes: 3,
+			Role:      "primary",
+			Format:    "png",
+		}},
+	}
+	storage := &archiveStorageFake{}
+	srv, resolver := newTestServer(repo, storage, &fakeQueue{})
+	repo.getJob.ClientID = resolver.client.ID
+	rec := httptest.NewRecorder()
+	body := `{"job_ids":["` + id.String() + `"]}`
+	req := authed(httptest.NewRequest("POST", "/v1/jobs/archive", strings.NewReader(body)))
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.created != nil {
+		t.Fatalf("created %+v", repo.created)
+	}
+	if storage.uploadCalls != 0 {
+		t.Fatalf("uploads %d", storage.uploadCalls)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/zip" {
+		t.Fatalf("content type %q", got)
+	}
+	disp := rec.Header().Get("Content-Disposition")
+	if !strings.Contains(disp, `filename="results.zip"`) {
+		t.Fatalf("disposition %q", disp)
+	}
+}
+
 func TestArchiveRejectsUnavailableAndLimits(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

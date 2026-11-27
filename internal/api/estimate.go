@@ -133,6 +133,7 @@ var engineEstimateSource = map[string]EstimateSource{
 	// flipped in the same commit as the number, never before.
 	convert.EngineTectonic: EstimateSourceMeasured,
 	convert.EngineCAD:      EstimateSourceMeasured,
+	convert.EngineArchive:  EstimateSourceUnmeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each

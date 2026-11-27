@@ -140,8 +140,8 @@ func TestOperationsDocDoesNotHardcodeTheEngineCount(t *testing.T) {
 	// "engine". Extend deliberately if a new phrasing appears; do not widen
 	// this into a general number matcher.
 	for _, form := range []string{
-		"five engine", "six engine", "seven engine", "eight engine", "nine engine", "ten engine",
-		"5 engine", "6 engine", "7 engine", "8 engine", "9 engine", "10 engine",
+		"five engine", "six engine", "seven engine", "eight engine", "nine engine", "ten engine", "eleven engine",
+		"5 engine", "6 engine", "7 engine", "8 engine", "9 engine", "10 engine", "11 engine",
 		"five known engine", "six known engine", "seven known engine", "eight known engine",
 	} {
 		if strings.Contains(lower, form) {

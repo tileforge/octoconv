@@ -10,6 +10,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -192,17 +194,20 @@ type fakeStorage struct {
 	// tests can assert byte-for-byte integrity (T-31-02: the SniffAudio
 	// truncation trap must never drop the leading bytes of an audio upload).
 	uploadedBytes []byte
+	// uploadKeys records object keys in call order.
+	uploadKeys []string
 	// uploadCalls counts Upload invocations so a quota test can assert "never
 	// called" with an exact integer rather than inferring it from the boolean
 	// (52-04).
 	uploadCalls int
 }
 
-func (f *fakeStorage) Upload(_ context.Context, _ string, r io.Reader, _ int64, contentType string) error {
+func (f *fakeStorage) Upload(_ context.Context, key string, r io.Reader, _ int64, contentType string) error {
 	b, _ := io.ReadAll(r)
 	f.uploadedBytes = b
 	f.uploaded = true
 	f.uploadCalls++
+	f.uploadKeys = append(f.uploadKeys, key)
 	f.contentType = contentType
 	return nil
 }
@@ -927,14 +932,15 @@ func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
 // all must be rejected 422 unsupported_operation strictly before
 // s.storage.Upload and s.repo.Create, with the queue untouched.
 //
-// "sanitize" left this list in Phase 60 and "render" in Phase 74: both now
-// have registered triples, so using them here would test the pair gate rather
-// than the operation gate. The three replacements are the values still reserved in the jobs.operation
-// CHECK constraint with no converter behind them, plus "bogus", which no
-// build will ever register -- keeping both kinds means the test still
-// distinguishes "reserved but unimplemented" from "not a value at all".
+// "sanitize" left this list in Phase 60, "render" in Phase 74, and
+// "archive" in Phase 129: each now has a registered triple, so using it
+// here would test the pair gate rather than the operation gate. extract
+// and inspect are still reserved in the jobs.operation CHECK constraint
+// with no converter behind them, plus "bogus", which no build will ever
+// register -- keeping both kinds means the test still distinguishes
+// "reserved but unimplemented" from "not a value at all".
 func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
-	for _, operation := range []string{"extract", "archive", "inspect", "bogus"} {
+	for _, operation := range []string{"extract", "inspect", "bogus"} {
 		t.Run(operation, func(t *testing.T) {
 			repo := &fakeRepo{}
 			store := &fakeStorage{}
@@ -964,6 +970,421 @@ func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) 
 			if q.enqueueCalls != 0 {
 				t.Errorf("queue enqueue called %d times, want 0", q.enqueueCalls)
 			}
+		})
+	}
+}
+
+type archiveUpload struct {
+	name string
+	body []byte
+}
+
+func archiveMultipart(
+	t *testing.T,
+	target, opts, preset string,
+	paths []string,
+	sendPaths bool,
+	files []archiveUpload,
+) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("operation", convert.OperationArchive); err != nil {
+		t.Fatal(err)
+	}
+	if target != "" {
+		if err := writer.WriteField("target", target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opts != "" {
+		if err := writer.WriteField("opts", opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if preset != "" {
+		if err := writer.WriteField("preset", preset); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sendPaths {
+		for _, pathValue := range paths {
+			if err := writer.WriteField("path", pathValue); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, file := range files {
+		part, err := writer.CreateFormFile("file", file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf, writer.FormDataContentType()
+}
+
+func archiveMatch() workerproto.Match {
+	return workerproto.Match{
+		CapabilityID:      "octoconv.archive.zip",
+		CapabilityVersion: 1,
+		ClientOperation:   convert.OperationArchive,
+		LegacyOperation:   convert.OperationArchive,
+		LegacyEngine:      convert.EngineArchive,
+		ParameterSchema: []byte(`{"type":"object","required":["paths"],` +
+			`"properties":{"paths":{"type":"array","items":{"type":"string"}}},` +
+			`"additionalProperties":false}`),
+	}
+}
+
+func postArchive(
+	t *testing.T,
+	srv *Server,
+	target, opts, preset string,
+	paths []string,
+	sendPaths bool,
+	files []archiveUpload,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body, contentType := archiveMultipart(t, target, opts, preset, paths, sendPaths, files)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	return rec
+}
+
+func assertArchiveRefused(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+	repo *fakeRepo,
+	store *fakeStorage,
+	q *fakeQueue,
+	code string,
+) {
+	t.Helper()
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), code)
+	if store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+		t.Fatalf("uploads=%d created=%v enqueue=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+	}
+}
+
+func storedPaths(t *testing.T, opts map[string]any) []string {
+	t.Helper()
+	raw, ok := opts["paths"].([]string)
+	if !ok {
+		t.Fatalf("paths = %#v", opts["paths"])
+	}
+	return raw
+}
+
+func TestCreateJob_ArchivePacksRelativePaths(t *testing.T) {
+	zipBody := bareZipFixture(t)
+	files := []archiveUpload{{name: "other/a.txt", body: zipBody}, {name: "b.txt", body: []byte("beta")}}
+	paths := []string{"docs/a.txt", ""}
+
+	t.Run("without a catalog", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+		rec := postArchive(t, srv, "zip", "", "", paths, true, files)
+		assertArchiveRefused(t, rec, repo, store, q, errcode.UnsupportedConversion)
+	})
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec := postArchive(t, srv, "zip", "", "", paths, true, files)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil {
+		t.Fatal("repo.Create was never called")
+	}
+	if repo.created.Operation != convert.OperationArchive || repo.created.Engine != convert.EngineArchive {
+		t.Fatalf("operation/engine = %s/%s", repo.created.Operation, repo.created.Engine)
+	}
+	if repo.created.SourceFormat != "files" || repo.created.TargetFormat != "zip" {
+		t.Fatalf("formats = %s -> %s", repo.created.SourceFormat, repo.created.TargetFormat)
+	}
+	if repo.created.DispatchOwner != "protocol" || repo.created.ProtocolAttemptBudget != 120*time.Second {
+		t.Fatalf("dispatch = %q budget = %s", repo.created.DispatchOwner, repo.created.ProtocolAttemptBudget)
+	}
+	if q.enqueueCalls != 0 {
+		t.Fatalf("enqueueCalls = %d, want 0", q.enqueueCalls)
+	}
+	gotPaths := storedPaths(t, repo.created.Opts)
+	if len(gotPaths) != 2 || gotPaths[0] != "docs/a.txt" || gotPaths[1] != "b.txt" {
+		t.Fatalf("paths = %#v", gotPaths)
+	}
+	if len(repo.created.Inputs) != 2 || len(store.uploadKeys) != 2 {
+		t.Fatalf("inputs %d uploads %d", len(repo.created.Inputs), len(store.uploadKeys))
+	}
+	for i, want := range []struct{ base, format string }{{"a.txt", "txt"}, {"b.txt", "txt"}} {
+		in := repo.created.Inputs[i]
+		if in.Ordinal != i || in.Filename != want.base || in.Format != want.format {
+			t.Fatalf("input %d = %+v", i, in)
+		}
+		if in.ObjectKey != store.uploadKeys[i] || !strings.HasSuffix(in.ObjectKey, "/"+strconv.Itoa(i)+"-"+want.base) {
+			t.Fatalf("key %q", in.ObjectKey)
+		}
+		if strings.Contains(in.ObjectKey, "docs") || strings.Contains(in.ObjectKey, "other") {
+			t.Fatalf("key uses a directory: %s", in.ObjectKey)
+		}
+	}
+
+	t.Run("leading dot segment", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+		rec := postArchive(
+			t,
+			srv,
+			"zip",
+			"",
+			"",
+			[]string{".github/workflows/a.txt"},
+			true,
+			[]archiveUpload{{name: "a.txt", body: []byte("a")}},
+		)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		}
+		got := storedPaths(t, repo.created.Opts)
+		if len(got) != 1 || got[0] != ".github/workflows/a.txt" ||
+			repo.created.Inputs[0].Filename != "a.txt" {
+			t.Fatalf("paths %#v input %+v", got, repo.created.Inputs[0])
+		}
+	})
+}
+
+func TestCreateJob_ArchiveZeroPathsStoresRootNames(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec := postArchive(t, srv, "zip", "", "", nil, false, []archiveUpload{
+		{name: "nested/a.txt", body: []byte("alpha")},
+		{name: "b.txt", body: []byte("beta")},
+	})
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || store.uploadCalls != 2 {
+		t.Fatalf("created=%v uploads=%d", repo.created != nil, store.uploadCalls)
+	}
+	got := storedPaths(t, repo.created.Opts)
+	if len(got) != 2 || got[0] != "a.txt" || got[1] != "b.txt" {
+		t.Fatalf("paths = %#v", got)
+	}
+	if repo.created.Inputs[0].Filename != "a.txt" || repo.created.Inputs[1].Filename != "b.txt" {
+		t.Fatalf("filenames = %s %s", repo.created.Inputs[0].Filename, repo.created.Inputs[1].Filename)
+	}
+
+	t.Run("one file", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+		srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+		rec := postArchive(t, srv, "zip", "", "", nil, false, []archiveUpload{{name: "notes.txt", body: []byte("n")}})
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		}
+		got := storedPaths(t, repo.created.Opts)
+		if len(got) != 1 || got[0] != "notes.txt" || store.uploadCalls != 1 || repo.created == nil {
+			t.Fatalf("paths %#v uploads %d created %v", got, store.uploadCalls, repo.created != nil)
+		}
+	})
+}
+
+func TestCreateJob_ArchiveTooManyFilesRefusesBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec := postArchive(t, srv, "zip", "", "", nil, false, archiveNamedUploads(jobs.MaxInputParts+1))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.InvalidRequest)
+	if store.uploadCalls != 0 || repo.created != nil {
+		t.Fatalf("uploads=%d created=%v", store.uploadCalls, repo.created != nil)
+	}
+
+	repo = &fakeRepo{}
+	store = &fakeStorage{}
+	q = &fakeQueue{}
+	srv, _ = newTestServer(repo, store, q)
+	srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+	rec = postArchive(t, srv, "zip", "", "", nil, false, archiveNamedUploads(jobs.MaxInputParts))
+	if rec.Code != http.StatusAccepted || store.uploadCalls != jobs.MaxInputParts || repo.created == nil {
+		t.Fatalf("status=%d uploads=%d created=%v body=%s", rec.Code, store.uploadCalls, repo.created != nil, rec.Body.String())
+	}
+}
+
+func TestCreateJob_ArchiveByteCeilingRefusesBeforeUpload(t *testing.T) {
+	cases := []struct {
+		name  string
+		sizes []int64
+	}{
+		{name: "sum", sizes: []int64{60 << 20, (40 << 20) + 1}},
+		{name: "negative", sizes: []int64{-1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+			headers := make([]*multipart.FileHeader, len(tc.sizes))
+			for i, size := range tc.sizes {
+				headers[i] = &multipart.FileHeader{
+					Filename: "f" + strconv.Itoa(i) + ".txt",
+					Header:   textproto.MIMEHeader{},
+					Size:     size,
+				}
+			}
+			rec := callArchiveCreate(t, srv, headers)
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+			}
+			assertErrorCode(t, rec.Body.Bytes(), errcode.PayloadTooLarge)
+			if store.uploadCalls != 0 || repo.created != nil {
+				t.Fatalf("uploads=%d created=%v", store.uploadCalls, repo.created != nil)
+			}
+		})
+	}
+}
+
+func archiveNamedUploads(n int) []archiveUpload {
+	files := make([]archiveUpload, n)
+	for i := range files {
+		files[i] = archiveUpload{name: "f" + strconv.Itoa(i) + ".txt", body: []byte("x")}
+	}
+	return files
+}
+
+func callArchiveCreate(t *testing.T, srv *Server, headers []*multipart.FileHeader) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", nil)
+	req = req.WithContext(auth.WithClient(req.Context(), &clients.Client{ID: uuid.New(), Name: "archive"}))
+	req.Form = url.Values{formFieldTarget: {"zip"}}
+	req.MultipartForm = &multipart.Form{
+		Value: map[string][]string{},
+		File:  map[string][]*multipart.FileHeader{formFieldFile: headers},
+	}
+	rec := httptest.NewRecorder()
+	srv.createArchiveJob(rec, req, "corr-archive-ceiling")
+	return rec
+}
+
+func TestCreateJob_ArchiveRefusesPathRulesBeforeUpload(t *testing.T) {
+	two := []archiveUpload{{name: "a.txt", body: []byte("a")}, {name: "b.txt", body: []byte("b")}}
+	cases := []struct {
+		name      string
+		files     []archiveUpload
+		paths     []string
+		sendPaths bool
+		target    string
+		opts      string
+		preset    string
+		catalog   bool
+		code      string
+	}{
+		{
+			name: "last segment mismatch", files: two, paths: []string{"docs/b.txt", "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "short path list", files: two, paths: []string{"docs/a.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "long path list", files: two, paths: []string{"docs/a.txt", "", "extra/c.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "duplicate member",
+			files: []archiveUpload{
+				{name: "a.txt", body: []byte("a")},
+				{name: "a.txt", body: []byte("b")},
+			},
+			paths:     []string{"docs/a.txt", "docs/a.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "dotdot", files: two, paths: []string{"docs/../a.txt", "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "absolute", files: two, paths: []string{"/a.txt", "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "backslash", files: two, paths: []string{`docs\a.txt`, "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "empty segment", files: two, paths: []string{"docs//a.txt", "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "drive prefix", files: two, paths: []string{"C:/a.txt", "b.txt"},
+			sendPaths: true, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "reserved name", files: []archiveUpload{{name: "in.txt", body: []byte("a")}},
+			sendPaths: false, target: "zip", catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "target tar.gz", files: two, sendPaths: false, target: "tar.gz",
+			catalog: true, code: errcode.UnsupportedConversion,
+		},
+		{
+			name: "target 7z", files: two, sendPaths: false, target: "7z",
+			catalog: true, code: errcode.UnsupportedConversion,
+		},
+		{
+			name: "missing catalog", files: two, paths: []string{"docs/a.txt", ""},
+			sendPaths: true, target: "zip", catalog: false, code: errcode.UnsupportedConversion,
+		},
+		{
+			name: "preset", files: two, sendPaths: false, target: "zip", preset: "pack",
+			catalog: true, code: errcode.InvalidRequest,
+		},
+		{
+			name: "client opts", files: two, sendPaths: false, target: "zip",
+			opts: `{"paths":["a.txt","b.txt"]}`, catalog: true, code: errcode.InvalidRequest,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+			if tc.catalog {
+				srv.SetCapabilityCatalog(&fakeCatalog{found: true, match: archiveMatch()})
+			}
+			rec := postArchive(t, srv, tc.target, tc.opts, tc.preset, tc.paths, tc.sendPaths, tc.files)
+			assertArchiveRefused(t, rec, repo, store, q, tc.code)
 		})
 	}
 }

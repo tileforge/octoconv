@@ -366,6 +366,7 @@ var envExampleEngineVar = map[string]string{
 	// shape of "a scan of nothing is clean".
 	convert.EngineTectonic: "TECTONIC_ENGINE_TIMEOUT",
 	convert.EngineCAD:      "CAD_ENGINE_TIMEOUT",
+	convert.EngineArchive:  "ARCHIVE_ENGINE_TIMEOUT",
 }
 
 // envExampleClaimsMeasured decides what .env.example's own prose says about
@@ -629,6 +630,22 @@ func TestEveryEngineHasADefaultCeilingAndTimeout(t *testing.T) {
 	if len(defaultEngineTimeouts) != len(convert.AllEngines()) {
 		t.Errorf("defaultEngineTimeouts has %d entries, convert.AllEngines() has %d",
 			len(defaultEngineTimeouts), len(convert.AllEngines()))
+	}
+}
+
+func TestArchiveDefaultCeilingTimeoutAndSource(t *testing.T) {
+	if got := defaultEngineTimeouts[convert.EngineArchive]; got != 120*time.Second {
+		t.Errorf("archive timeout = %v, want 120s", got)
+	}
+	const wantCeiling int64 = 100 << 20
+	if got := defaultMaxEngineBytes[convert.EngineArchive]; got != wantCeiling {
+		t.Errorf("archive input ceiling = %d, want %d", got, wantCeiling)
+	}
+	if got, ok := engineEstimateSource[convert.EngineArchive]; !ok || got != EstimateSourceUnmeasured {
+		t.Errorf("archive estimate source = %q present=%v, want %q", got, ok, EstimateSourceUnmeasured)
+	}
+	if _, ok := engineMeasuredDefaultSeconds[convert.EngineArchive]; ok {
+		t.Error("archive must stay out of engineMeasuredDefaultSeconds")
 	}
 }
 

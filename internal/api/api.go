@@ -501,6 +501,7 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	// PROBE_MAX_PAGES=200 and PROBE_ENGINE_TIMEOUT=600s are to each other.
 	convert.EngineTectonic: 271 * time.Second,
 	convert.EngineCAD:      convert.CADDefaultEngineTimeout,
+	convert.EngineArchive:  120 * time.Second,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into
@@ -554,6 +555,7 @@ var defaultMaxEngineBytes = map[string]int64{
 	// the 1 GiB cgroup. This is a bound on TIME.
 	convert.EngineTectonic: 2 << 20,
 	convert.EngineCAD:      convert.CADMaxIGESBytes,
+	convert.EngineArchive:  100 << 20,
 }
 
 var defaultMaxFormatBytes = map[string]map[string]int64{

@@ -85,7 +85,7 @@ loudly instead of writing a limit no job can ever match:
      internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
      the count is deliberately not written out, so a new engine cannot make this
      paragraph false from a commit that never touches the README. -->
-`image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`, `cad`
+`image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`, `cad`, `archive`
 
 `clear-limit` and `show-limits` deliberately do not validate the engine — a row written
 before that check existed must still be listable and removable through the CLI.
