@@ -1997,6 +1997,29 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 	if _, ok := linkSignTTL(linkExpires); !ok {
 		return claimDecision{wire: emptyPull(cancelIDs)}, nil
 	}
+	var earlyOpts []byte
+	var earlyEngine string
+	if err := tx.QueryRow(ctx, `SELECT options, engine FROM jobs WHERE id = $1`, jobID).Scan(&earlyOpts, &earlyEngine); err != nil {
+		return claimDecision{}, fmt.Errorf("read job options: %w", err)
+	}
+	earlyEx, earlyExtracting, err := parseExtraction(earlyOpts)
+	if err != nil {
+		return claimDecision{}, err
+	}
+	var unpackNames []string
+	if snapshotID == nil && earlyExtracting && earlyEx.Phase == "unpack" && earlyEngine == convert.EngineArchive {
+		names, nameErr := h.archiveMemberNames(ctx, sources)
+		if nameErr != nil {
+			if errors.Is(nameErr, errBadArchive) {
+				if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "invalid archive member"); err != nil {
+					return claimDecision{}, err
+				}
+				return claimDecision{skipID: jobID}, nil
+			}
+			return claimDecision{}, nameErr
+		}
+		unpackNames = names
+	}
 	if _, err := tx.Exec(ctx, `SAVEPOINT claim_attempt`); err != nil {
 		return claimDecision{}, fmt.Errorf("claim savepoint: %w", err)
 	}
@@ -2104,9 +2127,19 @@ func (h *Handler) claimOnce(ctx context.Context, tx pgx.Tx, sess storedSession, 
 		}
 	}
 	if extracting && ex.Phase == "unpack" && jobEngine == convert.EngineArchive {
-		names, err := h.archiveMemberNames(ctx, sources)
-		if err != nil {
-			return claimDecision{}, err
+		names := unpackNames
+		if len(names) == 0 {
+			var nameErr error
+			names, nameErr = h.archiveMemberNames(ctx, sources)
+			if nameErr != nil {
+				if errors.Is(nameErr, errBadArchive) {
+					if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "invalid archive member"); err != nil {
+						return claimDecision{}, err
+					}
+					return claimDecision{skipID: jobID}, nil
+				}
+				return claimDecision{}, nameErr
+			}
 		}
 		outputs = make([]fileLinkWire, len(names))
 		for i := range names {

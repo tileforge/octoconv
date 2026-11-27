@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"path"
 	"strings"
 
@@ -20,6 +22,8 @@ import (
 )
 
 const extractionByteCeiling int64 = 100 << 20
+
+var errBadArchive = errors.New("invalid archive member")
 
 const archiveCapabilityID = "octoconv.archive.zip"
 
@@ -134,19 +138,75 @@ func marshalExtraction(ex archiveExtraction) ([]byte, error) {
 func zipFileMemberNames(r io.ReaderAt, size int64) ([]string, error) {
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
-		return nil, fmt.Errorf("read zip: %w", err)
+		return nil, fmt.Errorf("read zip: %w", errBadArchive)
 	}
 	names := make([]string, 0, len(zr.File))
+	var declared uint64
 	for _, file := range zr.File {
+		if file.Mode()&fs.ModeSymlink != 0 {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
+		}
 		if strings.HasSuffix(file.Name, "/") || file.Mode()&fs.ModeDir != 0 {
+			if err := validateExtractionName(strings.TrimSuffix(file.Name, "/")); err != nil {
+				return nil, fmt.Errorf("read zip: %w", errBadArchive)
+			}
 			continue
+		}
+		if err := validateExtractionName(file.Name); err != nil {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
+		}
+		if file.Flags&1 != 0 || (file.Method != zip.Store && file.Method != zip.Deflate) {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
+		}
+		if file.CompressedSize64 == 0 && file.UncompressedSize64 > 0 {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
+		}
+		if file.CompressedSize64 > 0 && file.CompressedSize64 <= math.MaxUint64/100 && file.UncompressedSize64 > 100*file.CompressedSize64 {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
+		}
+		if declared > math.MaxUint64-file.UncompressedSize64 {
+			declared = math.MaxUint64
+		} else {
+			declared += file.UncompressedSize64
+		}
+		if declared > uint64(extractionByteCeiling) {
+			return nil, fmt.Errorf("read zip: %w", errBadArchive)
 		}
 		names = append(names, file.Name)
 	}
 	if len(names) == 0 || len(names) > jobs.MaxInputParts {
-		return nil, fmt.Errorf("read zip: member count")
+		return nil, fmt.Errorf("read zip: %w", errBadArchive)
 	}
 	return names, nil
+}
+
+func validateExtractionName(name string) error {
+	if name == "" || strings.Contains(name, `\`) || strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") {
+		return errBadArchive
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return errBadArchive
+		}
+	}
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." || len(part) > 255 {
+			return errBadArchive
+		}
+		if i == 0 && extractionDrivePrefix(part) {
+			return errBadArchive
+		}
+	}
+	return nil
+}
+
+func extractionDrivePrefix(part string) bool {
+	if len(part) < 2 || part[1] != ':' {
+		return false
+	}
+	c := part[0]
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
 func (h *Handler) archiveMemberNames(ctx context.Context, sources []storedJobInput) ([]string, error) {
@@ -203,6 +263,7 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 	if err := h.attemptLiveNow(ctx, tx, attemptID, sess.ID, dsts...); err != nil {
 		return false, err
 	}
+	seenResult := map[string]struct{}{}
 	for i, dst := range dsts {
 		detected, sniffErr := h.sniffCopied(ctx, dst, ex.Source)
 		if sniffErr != nil {
@@ -217,9 +278,17 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 			}
 			return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "content does not match source")
 		}
+		result := extractionResultName(ex.Entries[i].Name, ex.Target)
+		if _, exists := seenResult[result]; exists {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+				return false, rmErr
+			}
+			return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "result path collision")
+		}
+		seenResult[result] = struct{}{}
 		ex.Entries[i].Key = dst
 		ex.Entries[i].Size = gotSizes[i]
-		ex.Entries[i].Result = extractionResultName(ex.Entries[i].Name, ex.Target)
+		ex.Entries[i].Result = result
 	}
 	ex.Phase = "convert"
 	ex.Next = 0
