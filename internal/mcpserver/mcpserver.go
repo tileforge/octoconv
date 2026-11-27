@@ -16,7 +16,7 @@ const (
 	// alive instead of silently going idle (PITFALLS P1).
 	serverKeepAlive = 30 * time.Second
 
-	cadRenderSentence = "Set operation to render to draw a CAD file (step, iges, stl, dxf or dwg) as a png with a measurements json beside it; see docs/CAD.md."
+	cadRenderSentence = "Set operation to render to draw a CAD file (step, iges, stl, dxf or dwg) as a png. The measurements JSON is optional. See docs/CAD.md."
 )
 
 // NewServer builds the OctoConv MCP server and registers exactly five tools

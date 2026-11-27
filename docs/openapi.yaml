@@ -372,7 +372,7 @@ components:
             The roles a job writes today: "primary" is the result itself
             and the one presigned into download_url; "report" is the second
             output of a sanitize job, whose body is SanitizeReport;
-            "measurements" is the second output of a cad render job, whose
+            "measurements" is an optional output of a cad render job, whose
             body is the measurements document of docs/MEASUREMENTS.md.
             preview and thumbnail are reserved role names and are never
             produced. The role is not a closed enum here on purpose -- later
@@ -521,7 +521,8 @@ components:
         its set or a size outside its range is 422 invalid_options; a
         well-formed option that does not apply to the operation and source
         format is 422 opts_not_applicable. Which options each operation and
-        format accepts is in docs/CAD.md.
+        format accepts is in docs/CAD.md. Submitting options requires a 3D
+        render worker with render capability version 2.
       properties:
         view:
           type: string
@@ -557,8 +558,23 @@ components:
             Overall bounding-box dimension lines and a Size heading on a 3D
             render (step, iges, stl). Values and units match the measurements
             output; unknown and client-assumed units are labeled explicitly.
-            False returns the original unannotated PNG. Applies only to 3D
+            False returns the unannotated PNG. Applies only to 3D
             render jobs; dxf and convert reject this option even when false.
+        material:
+          type: string
+          enum: [steel, copper, aluminum]
+          default: steel
+          description: Base metal appearance for the whole model in a STEP, IGES, or STL preview.
+        color:
+          type: string
+          enum: [natural, blue, black]
+          default: natural
+          description: Surface color for a 3D preview. Natural shows the metal's color or a neutral gray matte powder coat.
+        finish:
+          type: string
+          enum: [bare, polished, anodized, matte_powder_coat]
+          default: bare
+          description: Surface finish for a 3D preview. Every combination of material, color, and finish is valid.
         layout:
           type: string
           minLength: 1
@@ -1361,15 +1377,15 @@ paths:
                     statement and the per-class wording.
 
                     "render" draws a CAD file (step, iges, stl, dxf or dwg) as a
-                    png preview and adds a second output with
-                    role=measurements. The cad pairs are render step->png,
+                    png preview and computes its measurements. A role=measurements
+                    output is optional. The cad pairs are render step->png,
                     iges->png, stl->png, dxf->png and dwg->png; and convert
                     step->stl, iges->stl, dxf->svg, dxf->pdf, dwg->svg,
                     dwg->pdf and dwg->png. The options
                     are CADOpts; the options each format accepts, the size
                     ceilings and the error codes are in docs/CAD.md.
 
-                    The exact value archive with target zip packs the uploads
+                    The exact value "archive" with target zip packs the uploads
                     into one ZIP and does not convert bytes. The published list
                     is ZIP only, and tar.gz and 7z are refused. An uploaded
                     archive is stored as bytes and is not unpacked. The ceilings

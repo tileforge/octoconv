@@ -54,7 +54,7 @@ func TestValidateOptsJSON(t *testing.T) {
 }
 
 func TestValidateCurrentEngineOptions(t *testing.T) {
-	for _, options := range []map[string]any{{"language": "en"}, {"language": "eng"}, {"resolution_height": 720}, {"wrap": "none"}, {"size": 512}} {
+	for _, options := range []map[string]any{{"language": "en"}, {"language": "eng"}, {"resolution_height": 720}, {"wrap": "none"}, {"size": 512, "material": "aluminum", "color": "black", "finish": "anodized"}} {
 		if err := ValidateOptsJSON(options); err != nil {
 			t.Errorf("%v: %v", options, err)
 		}

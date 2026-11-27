@@ -14,15 +14,15 @@ preview engine. What CAD did not decide, apart from that shape, stays under Not 
 | output | `png`, role `primary` | the PNG is the job's primary output |
 | size | `256..2048`, default `1280` | `size` is the edge of a square frame in pixels |
 | background | `opaque` (white #FFFFFF, the default) or `transparent` (alpha 0) | `background` |
-| 3D framing | orthographic, the model's bounding box fitted with a margin of `0.06` of the frame on every side, centred. Crease, boundary and non-manifold edges are drawn, plus the view silhouette | the 3D renderer |
+| 3D framing | orthographic, the model's bounding box fitted with a margin of `0.06` of the frame on every side, centred. Studio lighting shows surface curvature. A sheet seen edge-on gets a thin profile in the surface color when it projects to less than one pixel | the 3D renderer |
 | DXF framing | top-down, letterboxed with a margin of at least `0.03` of the frame, centred, never cropped or stretched | the DXF letterbox |
 | 3D views | `iso` (the default), `front`, `back`, `left`, `right`, `top`, `bottom` | `view` |
 | DXF views | `top` only; any `view` on a DXF render is refused with 422 `opts_not_applicable` | `view` |
-| measurements | a second output with role `measurements`, written together with the PNG or not at all | docs/MEASUREMENTS.md |
-| dimensions | enabled by default for 3D renders; `dimensions: false` returns the original unannotated PNG | `dimensions` |
+| measurements | the worker computes the measurements together with the PNG. The optional `measurements` output requires its own upload link | docs/MEASUREMENTS.md |
+| dimensions | enabled by default for 3D renders; `dimensions: false` returns the unannotated PNG | `dimensions` |
 | pixel judge | the PNG is checked to show the model on a white page before anything is uploaded | docs/MEASUREMENTS.md, PNG check |
 
-The full option table and where each option applies are in docs/CAD.md.
+One material, color, and finish apply to the whole 3D model. See [CAD options](CAD.md#render-options) for values and defaults.
 
 The 3D framing and pixel judge above describe the model image before annotation. With dimensions enabled,
 the validated model image is uniformly reduced into an inset square occupying 70% of the output width,

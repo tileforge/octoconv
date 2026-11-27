@@ -136,11 +136,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, result)
 }
 
-func cadProtocolJob(engine, operation string, opts map[string]any) bool {
-	if engine != convert.EngineCAD || len(opts) != 0 {
+func cadProtocolJob(engine, operation, capabilityID string, capabilityVersion int, opts map[string]any) bool {
+	if engine != convert.EngineCAD {
 		return false
 	}
-	return operation == convert.OperationConvert || operation == convert.OperationRender
+	if len(opts) == 0 {
+		return operation == convert.OperationConvert || operation == convert.OperationRender
+	}
+	// The v1 model renderer advertised an empty schema and ignored parameters.
+	return operation == convert.OperationRender && capabilityID == "octoconv.render.cad" && capabilityVersion == 2
 }
 
 // handleCreateJob accepts a multipart upload (fields: file, target), validates
@@ -1088,7 +1092,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	dispatchOwner := ""
 	var attemptBudget time.Duration
 	imageProtocol := engine == convert.EngineImage
-	cadProtocol := cadProtocolJob(engine, operation, normalizedOpts) && !progressWebhook
+	cadProtocol := cadProtocolJob(engine, operation, pinID, pinVersion, normalizedOpts) && !progressWebhook
 	documentProtocol := engine == convert.EngineDocument && len(normalizedOpts) == 0 && !progressWebhook
 	htmlProtocol := engine == convert.EngineHTML
 	audioProtocol := engine == convert.EngineAudio
