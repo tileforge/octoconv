@@ -303,17 +303,19 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 		return false, err
 	}
 	filename := path.Base(ex.Entries[0].Name)
-	if err := replaceJobInputs(ctx, tx, jobID, []jobInputRow{{
+	pinned, err := pinExtractionAdmittedBytes(ctx, tx, jobID, admitted)
+	if err != nil {
+		return false, err
+	}
+	rows := []jobInputRow{{
 		Ordinal:     0,
 		Key:         dsts[0],
 		Filename:    filename,
 		Format:      ex.Source,
 		Size:        gotSizes[0],
 		ContentType: convert.MIMEType(ex.Source),
-	}}); err != nil {
-		return false, err
-	}
-	return false, h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, admitted, dsts, raw)
+	}}
+	return false, h.admitThenReplace(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, pinned, dsts, raw, rows)
 }
 
 func (h *Handler) copyUnpackArtifacts(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, arts []completeArtifact) ([]string, []int64, bool, error) {
@@ -404,17 +406,15 @@ func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, atte
 		if err != nil {
 			return err
 		}
-		if err := replaceJobInputs(ctx, tx, jobID, []jobInputRow{{
+		rows := []jobInputRow{{
 			Ordinal:     0,
 			Key:         next.Key,
 			Filename:    path.Base(next.Name),
 			Format:      ex.Source,
 			Size:        next.Size,
 			ContentType: convert.MIMEType(ex.Source),
-		}}); err != nil {
-			return err
-		}
-		return h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, admitted, dsts, raw)
+		}}
+		return h.admitThenReplace(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, admitted, dsts, raw, rows)
 	}
 	paths := make([]string, len(ex.Entries))
 	rows := make([]jobInputRow, len(ex.Entries))
@@ -446,15 +446,15 @@ func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, atte
 	if err != nil {
 		return fmt.Errorf("encode paths: %w", err)
 	}
-	if err := replaceJobInputs(ctx, tx, jobID, rows); err != nil {
-		return err
-	}
-	return h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, convert.EngineArchive, archiveCapabilityID, 1, admitted, dsts, raw)
+	return h.admitThenReplace(ctx, tx, jobID, attemptID, clientID, engine, convert.EngineArchive, archiveCapabilityID, 1, admitted, dsts, raw, rows)
 }
 
-func (h *Handler) requeueAdmitted(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, clientID *uuid.UUID, engine, next, capabilityID string, capabilityVersion int, admitted *int64, dsts []string, options []byte) error {
+func (h *Handler) admitThenReplace(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, clientID *uuid.UUID, engine, next, capabilityID string, capabilityVersion int, admitted *int64, dsts []string, options []byte, rows []jobInputRow) error {
 	stopped, err := h.admitOrFail(ctx, tx, jobID, clientID, engine, next, admitted, dsts)
 	if err != nil || stopped {
+		return err
+	}
+	if err := replaceJobInputs(ctx, tx, jobID, rows); err != nil {
 		return err
 	}
 	if engine == convert.EngineProbe && len(dsts) > 1 {
@@ -490,6 +490,26 @@ func (h *Handler) removeExtraAttemptOutputs(ctx context.Context, attemptID uuid.
 	for i := 2; i < n; i++ {
 		_ = h.store.Remove(ctx, storage.AttemptOutputKey(attemptID, i))
 	}
+}
+
+func pinExtractionAdmittedBytes(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, admitted *int64) (*int64, error) {
+	if admitted != nil {
+		return admitted, nil
+	}
+	var n int64
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(sum(size_bytes), 0) FROM job_inputs WHERE job_id = $1`, jobID).Scan(&n); err != nil {
+		return nil, fmt.Errorf("sum extraction inputs: %w", err)
+	}
+	var stored int64
+	if err := tx.QueryRow(ctx, `
+		UPDATE jobs
+		SET admitted_input_bytes = COALESCE(admitted_input_bytes, $2)
+		WHERE id = $1
+		RETURNING admitted_input_bytes`, jobID, n).Scan(&stored); err != nil {
+		return nil, fmt.Errorf("pin admitted bytes: %w", err)
+	}
+	return &stored, nil
 }
 
 func replaceJobInputs(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, rows []jobInputRow) error {

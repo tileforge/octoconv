@@ -66,6 +66,7 @@ func TestExtract_OnePngZipPacksWebpAndAcceptsOnlyOnPack(t *testing.T) {
 	if jobStatusOf(t, ln.pool, jobID) != "queued" {
 		t.Fatalf("after unpack %s", jobStatusOf(t, ln.pool, jobID))
 	}
+	assertAdmittedZip(t, ln.pool, jobID, int64(len(zipBytes)))
 	if outputCount(t, ln.pool, jobID) != 0 {
 		t.Fatal("unpack inserted job_outputs")
 	}
@@ -179,6 +180,16 @@ func TestExtract_OnePngZipPacksWebpAndAcceptsOnlyOnPack(t *testing.T) {
 	}
 	if target != "webp" || outFormat != "zip" || filename != "out.zip" {
 		t.Fatalf("target %s output %s filename %s", target, outFormat, filename)
+	}
+	assertAdmittedZip(t, ln.pool, jobID, int64(len(zipBytes)))
+	var usageEngine string
+	var bytesIn int64
+	if err := ln.pool.QueryRow(context.Background(), `
+		SELECT engine, bytes_in FROM client_usage_daily WHERE client_id = $1`, clientID).Scan(&usageEngine, &bytesIn); err != nil {
+		t.Fatal(err)
+	}
+	if usageEngine != "archive" || bytesIn != int64(len(zipBytes)) {
+		t.Fatalf("usage engine %s bytes_in %d zip %d", usageEngine, bytesIn, len(zipBytes))
 	}
 }
 
@@ -1104,6 +1115,9 @@ func TestExtract_QuotaFailureCommits(t *testing.T) {
 			t.Fatalf("hold %s", holdState(t, ln.pool, attemptID))
 		}
 		assertQuotaFailed(t, ln.pool, jobID, clientID, "archive")
+		assertJobInput(t, ln.pool, archiveLive.store, jobID, storage.InputKey(jobID, 0, "photo.zip"), zipBytes)
+		assertCopyAbsent(t, archiveLive.store, storage.AcceptedOutputKey(jobID, attemptID, 0, sha256Hex(png)))
+		assertAdmittedZip(t, ln.pool, jobID, int64(len(zipBytes)))
 	})
 	t.Run("pack", func(t *testing.T) {
 		ln := startWorkerListener(t)
@@ -1146,7 +1160,116 @@ func TestExtract_QuotaFailureCommits(t *testing.T) {
 			t.Fatalf("hold %s", holdState(t, ln.pool, pair.attemptID))
 		}
 		assertQuotaFailed(t, ln.pool, jobID, clientID, "image")
+		memberKey := storage.AcceptedOutputKey(jobID, attemptID, 0, sha256Hex(png))
+		assertJobInput(t, ln.pool, archiveLive.store, jobID, memberKey, png)
+		assertCopyAbsent(t, imageLive.store, storage.AcceptedOutputKey(jobID, pair.attemptID, 0, sha256Hex(webp)))
+		assertAdmittedZip(t, ln.pool, jobID, int64(len(zipBytes)))
 	})
+}
+
+func TestExtract_UnpackQuotaChargesZipNotZero(t *testing.T) {
+	ln := startWorkerListener(t)
+	clearArchiveClaimJobs(t, ln.pool)
+	archiveLive := ln.hello(t, archiveClaimManifest(t))
+	png := extractPNG()
+	zipBytes := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+	if len(png) >= len(zipBytes)-1 {
+		t.Fatalf("png %d zip %d", len(png), len(zipBytes))
+	}
+	clientID := insertClient(t, ln.pool)
+	jobID := insertExtractionJob(t, ln.pool, archiveLive.store, clientID, zipBytes)
+	limitDailyBytes(t, ln.pool, clientID, "image", int64(len(zipBytes)-1))
+
+	status, resp := pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("unpack pull %d: %s", status, resp)
+	}
+	unpack := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(unpack["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(unpack["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveLive.store.put(storage.AttemptOutputKey(attemptID, 0), png)
+	status, _, resp = postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[3], token, completeBody(t, "png", convert.MIMEType("png"), png))
+	if status != http.StatusOK {
+		t.Fatalf("unpack complete %d: %s", status, resp)
+	}
+	var gotEngine, code, message string
+	if err := ln.pool.QueryRow(context.Background(), `
+		SELECT engine, error_code, error_message FROM jobs WHERE id = $1`, jobID).Scan(&gotEngine, &code, &message); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatusOf(t, ln.pool, jobID) != "failed" || gotEngine != "archive" || code != jobs.QuotaReasonDailyBytes || message != "quota" {
+		t.Fatalf("status %s engine %s code %s message %s", jobStatusOf(t, ln.pool, jobID), gotEngine, code, message)
+	}
+	var bytesIn int64
+	if err := ln.pool.QueryRow(context.Background(), `
+		SELECT bytes_in FROM client_usage_daily WHERE client_id = $1 AND engine = 'archive' AND status = 'failed'`, clientID).Scan(&bytesIn); err != nil {
+		t.Fatal(err)
+	}
+	if bytesIn != int64(len(zipBytes)) {
+		t.Fatalf("bytes_in %d zip %d", bytesIn, len(zipBytes))
+	}
+	assertJobInput(t, ln.pool, archiveLive.store, jobID, storage.InputKey(jobID, 0, "photo.zip"), zipBytes)
+	assertCopyAbsent(t, archiveLive.store, storage.AcceptedOutputKey(jobID, attemptID, 0, sha256Hex(png)))
+	assertAdmittedZip(t, ln.pool, jobID, int64(len(zipBytes)))
+}
+
+func sha256Hex(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func assertAdmittedZip(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID, zipSize int64) {
+	t.Helper()
+	var admitted int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT admitted_input_bytes FROM jobs WHERE id = $1`, jobID).Scan(&admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted != zipSize {
+		t.Fatalf("admitted %d zip %d", admitted, zipSize)
+	}
+}
+
+func assertJobInput(t *testing.T, pool *pgxpool.Pool, store *memStore, jobID uuid.UUID, key string, payload []byte) {
+	t.Helper()
+	var stored string
+	var size int64
+	if err := pool.QueryRow(context.Background(), `
+		SELECT object_key, size_bytes FROM job_inputs WHERE job_id = $1 AND ordinal = 0`, jobID).Scan(&stored, &size); err != nil {
+		t.Fatal(err)
+	}
+	if stored != key || size != int64(len(payload)) {
+		t.Fatalf("input %s size %d", stored, size)
+	}
+	got, ok := store.get(key)
+	if !ok || !bytes.Equal(got, payload) {
+		t.Fatal("input object missing")
+	}
+}
+
+func assertCopyAbsent(t *testing.T, store *memStore, key string) {
+	t.Helper()
+	if _, ok := store.get(key); ok {
+		t.Fatalf("copy %s stayed", key)
+	}
+}
+
+func limitDailyBytes(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID, engine string, n int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO client_limits (client_id, engine, max_daily_bytes)
+		VALUES ($1, $2, $3)`, clientID, engine, n); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func limitDailyJobs(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID, engine string, n int) {
