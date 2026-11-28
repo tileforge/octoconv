@@ -24,7 +24,18 @@ func SniffDeclared(r io.ReaderAt, size int64, declared, operation string, uncomp
 		if n, _ := r.ReadAt(prefix[:], 0); n == 4 && bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
 			cr, cerr := SniffContainer(r, size)
 			if cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
+				if cr.TotalUncompressed > uncompressedCeiling {
+					return "", ErrDeclaredUncompressedLimit
+				}
+				if cr.HasMacro && operation != OperationSanitize {
+					return "", ErrMacroCarryingDocument
+				}
 				detected = cr.Format
+				if cr.HasMacro && operation == OperationSanitize {
+					if macroFmt, ok := MacroEnabledExtension(cr.Format); ok {
+						detected = macroFmt
+					}
+				}
 			}
 		}
 	}

@@ -265,10 +265,16 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 	}
 	seenResult := map[string]struct{}{}
 	for i, dst := range dsts {
-		detected, sniffErr := h.sniffCopied(ctx, dst, ex.Source)
+		detected, sniffErr := h.sniffCopied(ctx, dst, ex.Source, ex.Operation)
 		if sniffErr != nil {
 			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
 				return false, rmErr
+			}
+			if errors.Is(sniffErr, convert.ErrMacroCarryingDocument) {
+				return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "macro-carrying documents are not accepted")
+			}
+			if errors.Is(sniffErr, convert.ErrDeclaredUncompressedLimit) {
+				return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "declared uncompressed size exceeds configured limit")
 			}
 			return false, sniffErr
 		}
@@ -356,7 +362,7 @@ func (h *Handler) copyUnpackArtifacts(ctx context.Context, tx pgx.Tx, jobID, att
 	return dsts, gotSizes, true, nil
 }
 
-func (h *Handler) sniffCopied(ctx context.Context, key, declared string) (string, error) {
+func (h *Handler) sniffCopied(ctx context.Context, key, declared, operation string) (string, error) {
 	rc, err := h.store.Download(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("read copied object: %w", err)
@@ -366,7 +372,7 @@ func (h *Handler) sniffCopied(ctx context.Context, key, declared string) (string
 	if err != nil {
 		return "", fmt.Errorf("read copied object: %w", err)
 	}
-	detected, err := convert.SniffDeclared(bytes.NewReader(body), int64(len(body)), declared, "", 0)
+	detected, err := convert.SniffDeclared(bytes.NewReader(body), int64(len(body)), declared, operation, h.documentCeiling())
 	if err != nil {
 		return "", fmt.Errorf("sniff copied object: %w", err)
 	}

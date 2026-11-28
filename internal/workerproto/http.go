@@ -35,14 +35,15 @@ const (
 
 // Handler serves worker session routes.
 type Handler struct {
-	repo               *Repo
-	jobsRepo           *jobs.Repo
-	store              objectStore
-	imageAttemptBudget time.Duration
-	engineBudgets      map[string]time.Duration
-	progressDeliverer  progressDeliverer
-	progressSecret     []byte
-	progressTimeout    time.Duration
+	repo                        *Repo
+	jobsRepo                    *jobs.Repo
+	store                       objectStore
+	imageAttemptBudget          time.Duration
+	engineBudgets               map[string]time.Duration
+	progressDeliverer           progressDeliverer
+	progressSecret              []byte
+	progressTimeout             time.Duration
+	documentUncompressedCeiling uint64
 }
 
 type objectStore interface {
@@ -65,6 +66,17 @@ func (h *Handler) SetProgressWebhook(d progressDeliverer, secret []byte, timeout
 	h.progressDeliverer = d
 	h.progressSecret = append([]byte(nil), secret...)
 	h.progressTimeout = timeout
+}
+
+func (h *Handler) SetDocumentUncompressedCeiling(n uint64) {
+	h.documentUncompressedCeiling = n
+}
+
+func (h *Handler) documentCeiling() uint64 {
+	if h.documentUncompressedCeiling == 0 {
+		return 500 << 20
+	}
+	return h.documentUncompressedCeiling
 }
 
 // SetEngineBudgets sets the attempt budget used for each engine class.
