@@ -583,6 +583,7 @@ func readStoredComplete(ctx context.Context, q queryRower, sessionID uuid.UUID, 
 
 func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemptID uuid.UUID, bodyHash string, arts []completeArtifact) ([]byte, error) {
 	var body []byte
+	var dropExtra int
 	err := pgx.BeginTxFunc(ctx, h.repo.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := lockAttemptIO(ctx, tx, attemptID); err != nil {
 			return err
@@ -635,8 +636,11 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 			if handled {
 				return nil
 			}
-			h.removeExtraAttemptOutputs(ctx, attemptID, len(ex.Entries))
-			return storeControlResponse(ctx, tx, sess, key, bodyHash, &body)
+			if err := storeControlResponse(ctx, tx, sess, key, bodyHash, &body); err != nil {
+				return err
+			}
+			dropExtra = len(ex.Entries)
+			return nil
 		}
 		wantFormat := target
 		limitEngine := engine
@@ -755,7 +759,13 @@ func (h *Handler) acceptComplete(ctx context.Context, sess storedSession, attemp
 		}
 		return storeControlResponse(ctx, tx, sess, key, bodyHash, &body)
 	})
-	return body, err
+	if err != nil {
+		return nil, err
+	}
+	if dropExtra > 0 {
+		h.removeExtraAttemptOutputs(ctx, attemptID, dropExtra)
+	}
+	return body, nil
 }
 
 func storeControlResponse(ctx context.Context, tx pgx.Tx, sess storedSession, key, bodyHash string, body *[]byte) error {

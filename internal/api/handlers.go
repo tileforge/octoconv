@@ -1821,6 +1821,15 @@ func (s *Server) createExtractionJob(w http.ResponseWriter, r *http.Request, ope
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 		return
 	}
+	limit, _, gated := s.sizeLimit(convert.EngineArchive, archiveSourceFormat)
+	if !gated {
+		limit = defaultMaxEngineBytes[convert.EngineArchive]
+	}
+	if fh.Size < 0 || fh.Size > limit {
+		log.Printf("content validation rejected: client_id=%s reason=engine_size_limit engine=%s size=%d parts=%d limit=%d", client.ID, convert.EngineArchive, fh.Size, 1, limit)
+		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit for this conversion type")
+		return
+	}
 	if err := s.repo.PreAdmit(ctx, client.ID, convert.EngineArchive, fh.Size); err != nil {
 		if msg, retryAfter, ok := quotaRejection(err); ok {
 			writeQuotaError(w, msg, retryAfter)

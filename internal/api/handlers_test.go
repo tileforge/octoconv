@@ -5840,6 +5840,44 @@ func TestCreateJob_ExtractionStoresPairUnderArchiveCapability(t *testing.T) {
 	}
 }
 
+func TestCreateJob_ExtractionRejectsArchiveEngineCeiling(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
+		MaxUploadBytes: 1 << 20,
+		MaxEngineBytes: map[string]int64{convert.EngineArchive: 8},
+	})
+	srv.SetCapabilityCatalog(&fakeCatalog{
+		allow: func(operation, source, target string) (workerproto.Match, bool) {
+			if operation == convert.OperationArchive && source == "files" && target == "zip" {
+				return archiveMatch(), true
+			}
+			if operation == convert.OperationConvert && source == "png" && target == "webp" {
+				return workerproto.Match{
+					CapabilityID:      "octoconv.convert.image",
+					CapabilityVersion: 1,
+					ClientOperation:   convert.OperationConvert,
+					LegacyOperation:   convert.OperationConvert,
+					LegacyEngine:      convert.EngineImage,
+					ParameterSchema:   []byte(`{}`),
+				}, true
+			}
+			return workerproto.Match{}, false
+		},
+	})
+	body, ct := multipartExtraction(t, "docs/photo.zip", "png", "webp", bareZipFixture(t))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploadCalls != 0 || repo.created != nil {
+		t.Fatalf("uploadCalls %d created %#v", store.uploadCalls, repo.created)
+	}
+}
+
 func multipartExtraction(t *testing.T, filename, source, target string, data []byte) (*bytes.Buffer, string) {
 	t.Helper()
 	var b bytes.Buffer
