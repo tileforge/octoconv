@@ -83,8 +83,28 @@ func TestRepeatCreatesFreshTaskThroughCurrentIntake(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 	p := repo.created
-	if p == nil || p.ID == id || p.TargetFormat != "webp" || p.CallbackURL != "" || p.ProgressWebhook || p.CorrelationID != "" || len(p.Inputs) != 1 || p.Inputs[0].ObjectKey == "uploads/old" {
+	if p == nil || p.ID == id || p.Operation != "convert" || p.Engine != "image" || p.TargetFormat != "webp" || p.CallbackURL != "" || p.ProgressWebhook || p.CorrelationID != "" || len(p.Inputs) != 1 || p.Inputs[0].ObjectKey == "uploads/old" {
 		t.Fatalf("created %+v", p)
+	}
+	if _, ok := p.Opts["archive_extraction"]; ok {
+		t.Fatalf("extraction opts %+v", p.Opts)
+	}
+}
+
+func TestRepeatExtractionForwardsSource(t *testing.T) {
+	id := uuid.New()
+	repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{
+		ID: id, Status: jobs.StatusDone, Operation: "convert", SourceFormat: "png", TargetFormat: "webp",
+		Opts: map[string]any{"archive_extraction": map[string]any{"phase": "unpack"}},
+	}}, inputs: []jobs.Input{{Filename: "source.png", Format: "png", ObjectKey: "uploads/old", SizeBytes: 24}}}
+	store := &repeatStoreFake{available: true}
+	srv, resolver := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
+	repo.getJob.ClientID = resolver.client.ID
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, authed(httptest.NewRequest("POST", "/v1/jobs/"+id.String()+"/repeat", strings.NewReader(`{"operation":"convert","target":"webp","opts":{}}`))))
+	if rec.Code != http.StatusUnprocessableEntity || repo.created != nil {
+		t.Fatalf("status %d created %+v body %s", rec.Code, repo.created, rec.Body.String())
 	}
 }
 

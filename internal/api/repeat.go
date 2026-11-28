@@ -275,11 +275,21 @@ func (r repeatContextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
+func repeatForwardedSource(job *jobs.Job) string {
+	if job == nil || job.Opts == nil {
+		return ""
+	}
+	if _, ok := job.Opts["archive_extraction"]; !ok {
+		return ""
+	}
+	return job.SourceFormat
+}
+
 // repeatMultipart streams staged source files through ordinary create validation.
 func repeatMultipart(source repeatSource, files []*os.File, operation, target string, opts json.RawMessage) (io.Reader, string, error) {
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
-	for _, field := range [][2]string{{"operation", operation}, {"source", source.job.SourceFormat}, {"target", target}, {"opts", string(opts)}} {
+	for _, field := range [][2]string{{"operation", operation}, {"source", repeatForwardedSource(source.job)}, {"target", target}, {"opts", string(opts)}} {
 		if field[1] != "" {
 			if err := writer.WriteField(field[0], field[1]); err != nil {
 				return nil, "", err
