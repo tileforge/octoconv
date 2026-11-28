@@ -633,6 +633,45 @@ func TestEveryEngineHasADefaultCeilingAndTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultByteCeilingsMatchConvert(t *testing.T) {
+	for _, engine := range convert.AllEngines() {
+		got, perFormat, gated := convert.InputByteCeiling(engine, "")
+		want, ok := defaultMaxEngineBytes[engine]
+		if !ok || !gated || perFormat || got != want {
+			t.Errorf("engine %s: ceiling %d perFormat %v gated %v map %d present %v", engine, got, perFormat, gated, want, ok)
+		}
+	}
+	formats := 0
+	for engine, byFormat := range defaultMaxFormatBytes {
+		for format, want := range byFormat {
+			formats++
+			got, perFormat, gated := convert.InputByteCeiling(engine, format)
+			if !perFormat || !gated || got != want {
+				t.Errorf("%s %s: ceiling %d perFormat %v gated %v want %d", engine, format, got, perFormat, gated, want)
+			}
+		}
+	}
+	if formats != 4 {
+		t.Errorf("format ceilings %d, want 4", formats)
+	}
+	if _, perFormat, gated := convert.InputByteCeiling(convert.EngineCAD, "dwg"); gated || perFormat {
+		t.Errorf("dwg perFormat %v gated %v", perFormat, gated)
+	}
+	got, perFormat, gated := convert.InputByteCeiling(convert.EngineImage, "png")
+	if perFormat || !gated || got != defaultMaxEngineBytes[convert.EngineImage] {
+		t.Errorf("png ceiling %d perFormat %v gated %v", got, perFormat, gated)
+	}
+	if convert.ByteCeilingMessage("step", convert.CADMaxSTEPBytes, true) != "step file exceeds the 63 MiB limit for this conversion" {
+		t.Fatalf("format message %q", convert.ByteCeilingMessage("step", convert.CADMaxSTEPBytes, true))
+	}
+	if convert.ByteCeilingMessage("latex", 2<<20, false) != "file exceeds size limit for this conversion type" {
+		t.Fatalf("engine message %q", convert.ByteCeilingMessage("latex", 2<<20, false))
+	}
+	if formatLimitMessage("step", convert.CADMaxSTEPBytes) != convert.ByteCeilingMessage("step", convert.CADMaxSTEPBytes, true) {
+		t.Fatal("formatLimitMessage drifted from convert.ByteCeilingMessage")
+	}
+}
+
 func TestArchiveDefaultCeilingTimeoutAndSource(t *testing.T) {
 	if got := defaultEngineTimeouts[convert.EngineArchive]; got != 120*time.Second {
 		t.Errorf("archive timeout = %v, want 120s", got)

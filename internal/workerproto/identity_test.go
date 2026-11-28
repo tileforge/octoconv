@@ -412,6 +412,11 @@ func mintServerCert(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey)
 
 func listenWorker(t *testing.T, repo *Repo, ca *x509.Certificate, caKey *ecdsa.PrivateKey) string {
 	t.Helper()
+	return listenConfiguredWorker(t, repo, ca, caKey, nil)
+}
+
+func listenConfiguredWorker(t *testing.T, repo *Repo, ca *x509.Certificate, caKey *ecdsa.PrivateKey, configure func(*Handler)) string {
+	t.Helper()
 	cfg, err := ServerTLSConfig(repo)
 	if err != nil {
 		t.Fatalf("server tls: %v", err)
@@ -426,8 +431,12 @@ func listenWorker(t *testing.T, repo *Repo, ca *x509.Certificate, caKey *ecdsa.P
 	}
 	store := newMemStore()
 	rememberListenerStore(ln.Addr().String(), store)
+	handler := NewHandler(repo, jobs.NewRepo(repo.pool), store, 120*time.Second)
+	if configure != nil {
+		configure(handler)
+	}
 	srv := &http.Server{
-		Handler:           NewHandler(repo, jobs.NewRepo(repo.pool), store, 120*time.Second).Routes(),
+		Handler:           handler.Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() { _ = srv.Serve(ln) }()

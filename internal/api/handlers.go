@@ -39,6 +39,7 @@ const (
 	formFieldPath            = "path"
 	formFieldWorkflow        = "workflow"
 	formFieldDeadline        = "deadline"
+	formFieldSource          = "source"
 	// operationConv is kept as a local alias of convert.OperationConvert so
 	// existing call sites in this file (the operation-omitted default and
 	// the Create call below) do not need touching beyond this one line
@@ -232,6 +233,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	if operation == convert.OperationArchive {
 		s.createArchiveJob(w, r, correlationID)
+		return
+	}
+	if r.FormValue(formFieldSource) != "" {
+		s.createExtractionJob(w, r, operation, correlationID)
 		return
 	}
 
@@ -1367,6 +1372,10 @@ func (s *Server) createArchiveJob(w http.ResponseWriter, r *http.Request, correl
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "archive jobs do not accept preset or opts")
 		return
 	}
+	if r.FormValue(formFieldSource) != "" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "archive jobs do not accept source")
+		return
+	}
 	target := convert.NormalizeFormat(r.FormValue(formFieldTarget))
 	if target != "zip" {
 		writeError(
@@ -1582,6 +1591,316 @@ func (s *Server) createArchiveJob(w http.ResponseWriter, r *http.Request, correl
 		"target", target,
 		"filename", members[0].Base,
 		"bytes", strconv.FormatInt(totalBytes, 10),
+		"correlation_id", correlationID,
+	))
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"job_id": createdID,
+		"status": jobs.StatusQueued,
+		"opts":   opts,
+	})
+}
+
+type pairOptsRefusal struct {
+	status int
+	code   string
+	msg    string
+}
+
+func normalizePairOpts(engine, operation, source, target, rawOpts string) (map[string]any, *pairOptsRefusal) {
+	if rawOpts == "" || rawOpts == "{}" {
+		return map[string]any{}, nil
+	}
+	if len(rawOpts) > maxOptsBytes {
+		return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.PayloadTooLarge, msg: "opts field too large"}
+	}
+	var normalizedRaw []byte
+	var err error
+	switch engine {
+	case convert.EngineAudio:
+		parsed, parseErr := convert.ParseAudioOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateAudioApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineAV:
+		parsed, parseErr := convert.ParseAVOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateAVApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineHTML:
+		parsed, parseErr := convert.ParseHTMLOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateHTMLApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineOCR:
+		parsed, parseErr := convert.ParseOCROpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateOCRApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EnginePandoc:
+		parsed, parseErr := convert.ParsePandocOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidatePandocApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	case convert.EngineCAD:
+		parsed, parseErr := convert.ParseCADOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateCADApplicability(engine, operation, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	default:
+		parsed, parseErr := convert.ParseDocOpts([]byte(rawOpts))
+		if parseErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.InvalidOptions, msg: "invalid opts"}
+		}
+		if applyErr := convert.ValidateApplicability(engine, source, target, parsed); applyErr != nil {
+			return nil, &pairOptsRefusal{status: http.StatusUnprocessableEntity, code: errcode.OptsNotApplicable, msg: "opts not applicable to this conversion"}
+		}
+		normalizedRaw, err = json.Marshal(parsed)
+	}
+	if err != nil {
+		return nil, &pairOptsRefusal{status: http.StatusInternalServerError, code: errcode.InternalError, msg: "failed to normalize opts"}
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(normalizedRaw, &normalized); err != nil {
+		return nil, &pairOptsRefusal{status: http.StatusInternalServerError, code: errcode.InternalError, msg: "failed to normalize opts"}
+	}
+	if normalized == nil {
+		normalized = map[string]any{}
+	}
+	return normalized, nil
+}
+
+func (s *Server) createExtractionJob(w http.ResponseWriter, r *http.Request, operation, correlationID string) {
+	ctx := r.Context()
+	client, _ := auth.ClientFromContext(ctx)
+	source := convert.NormalizeFormat(r.FormValue(formFieldSource))
+	target := convert.NormalizeFormat(r.FormValue(formFieldTarget))
+	pairEngine, ok := convert.Default.EngineForOp(operation, source, target)
+	if !ok || source == "" || target == "" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion, "unsupported conversion: "+source+" -> "+target)
+		return
+	}
+	if s.catalog == nil {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion, "unsupported conversion: "+source+" -> "+target)
+		return
+	}
+	pairMatch, found, lookupErr := s.catalog.Lookup(ctx, operation, source, target)
+	if lookupErr != nil {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	if !found || pairMatch.LegacyEngine == "" || pairMatch.LegacyEngine != pairEngine || pairMatch.LegacyOperation != operation {
+		if found && pairMatch.LegacyEngine != "" && pairMatch.LegacyEngine != pairEngine {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion, "unsupported conversion: "+source+" -> "+target)
+		return
+	}
+	archiveRow, found, lookupErr := s.catalog.Lookup(ctx, convert.OperationArchive, archiveSourceFormat, "zip")
+	if lookupErr != nil {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	if !found || archiveRow.LegacyEngine == "" || archiveRow.LegacyOperation != convert.OperationArchive || archiveRow.CapabilityID == "" || archiveRow.CapabilityVersion < 1 {
+		if found && archiveRow.LegacyEngine != "" && archiveRow.LegacyEngine != convert.EngineArchive {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion, "unsupported conversion: files -> zip")
+		return
+	}
+	archiveBudget := s.engineTimeouts[convert.EngineArchive]
+	if archiveBudget <= 0 {
+		archiveBudget = 120 * time.Second
+	}
+	pairBudget := s.engineTimeouts[pairEngine]
+	if pairBudget <= 0 {
+		pairBudget = 120 * time.Second
+	}
+	budget := archiveBudget + pairBudget
+	linkCap := time.Duration(workerproto.FileLinkMaxTTLSeconds) * time.Second
+	if budget > linkCap {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion, "unsupported conversion: "+source+" -> "+target)
+		return
+	}
+	var files []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		files = r.MultipartForm.File[formFieldFile]
+	}
+	if len(files) == 0 {
+		writeError(w, http.StatusBadRequest, errcode.MissingFile, "missing file")
+		return
+	}
+	if len(files) > 1 {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "exactly one file")
+		return
+	}
+	callbackURL := r.FormValue(formFieldCallbackURL)
+	if callbackURL != "" {
+		if err := validateCallbackURL(callbackURL); err != nil {
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid callback_url")
+			return
+		}
+	}
+	progressWebhook := r.FormValue(formFieldProgressWebhook) == "true"
+	if progressWebhook && callbackURL == "" {
+		progressWebhook = false
+	}
+	fh := files[0]
+	file, openErr := fh.Open()
+	if openErr != nil {
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
+		return
+	}
+	defer file.Close()
+	detected, _, sniffErr := convert.Sniff(file)
+	if sniffErr != nil {
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
+		return
+	}
+	if detected != "" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "unrecognized file content")
+		return
+	}
+	var prefix [4]byte
+	n, _ := file.ReadAt(prefix[:], 0)
+	if n != 4 || !bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "unrecognized file content")
+		return
+	}
+	_, outcome, cerr := sniffCreateContainer(file, fh.Size)
+	switch {
+	case outcome == zipBoundExceedsCeiling:
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, createZipDirectoryTooLargeMessage)
+		return
+	case errors.Is(cerr, convert.ErrNotAZip) || outcome == zipBoundMalformed:
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "unrecognized file content")
+		return
+	case cerr != nil || outcome != zipBoundOK:
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
+		return
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
+		return
+	}
+	if r.FormValue(formFieldPreset) != "" {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "extraction jobs do not accept preset")
+		return
+	}
+	normalizedOpts, optsRefusal := normalizePairOpts(pairEngine, operation, source, target, r.FormValue(formFieldOpts))
+	if optsRefusal != nil {
+		writeError(w, optsRefusal.status, optsRefusal.code, optsRefusal.msg)
+		return
+	}
+	if err := workerproto.ValidateParameters(pairMatch.ParameterSchema, normalizedOpts); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
+		return
+	}
+	limit, _, gated := s.sizeLimit(convert.EngineArchive, archiveSourceFormat)
+	if !gated {
+		limit = defaultMaxEngineBytes[convert.EngineArchive]
+	}
+	if fh.Size < 0 || fh.Size > limit {
+		log.Printf("content validation rejected: client_id=%s reason=engine_size_limit engine=%s size=%d parts=%d limit=%d", client.ID, convert.EngineArchive, fh.Size, 1, limit)
+		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit for this conversion type")
+		return
+	}
+	if err := s.repo.PreAdmit(ctx, client.ID, convert.EngineArchive, fh.Size); err != nil {
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
+	}
+	base := path.Base(rawPartFilename(fh))
+	if base == "" || base == "." || base == ".." || base == "/" {
+		base = "upload.zip"
+	}
+	jobID := uuid.New()
+	key := storage.InputKey(jobID, 0, base)
+	if err := s.storage.Upload(ctx, key, file, fh.Size, "application/zip"); err != nil {
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
+		return
+	}
+	opts := map[string]any{
+		"archive_extraction": map[string]any{
+			"phase":                   "unpack",
+			"pair_capability_id":      pairMatch.CapabilityID,
+			"pair_capability_version": pairMatch.CapabilityVersion,
+			"pair_engine":             pairEngine,
+			"source":                  source,
+			"target":                  target,
+			"operation":               operation,
+			"opts":                    normalizedOpts,
+			"entries":                 []any{},
+			"next":                    0,
+		},
+	}
+	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
+		CorrelationID:   correlationID,
+		ID:              jobID,
+		ClientID:        client.ID,
+		Operation:       operation,
+		Engine:          convert.EngineArchive,
+		SourceFormat:    source,
+		TargetFormat:    target,
+		CallbackURL:     callbackURL,
+		ProgressWebhook: progressWebhook,
+		Opts:            opts,
+		Inputs: []jobs.Input{{
+			Ordinal:     0,
+			ObjectKey:   key,
+			Filename:    base,
+			Format:      "zip",
+			SizeBytes:   fh.Size,
+			ContentType: "application/zip",
+		}},
+		CapabilityID:          archiveRow.CapabilityID,
+		CapabilityVersion:     archiveRow.CapabilityVersion,
+		DispatchOwner:         "protocol",
+		ProtocolAttemptBudget: budget,
+	})
+	if err != nil {
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
+		return
+	}
+	log.Println(logfmt.KV("job accepted",
+		"request_id", middleware.GetReqID(ctx),
+		"job_id", createdID.String(),
+		"client_id", client.ID.String(),
+		"engine", convert.EngineArchive,
+		"source", source,
+		"target", target,
+		"filename", base,
+		"bytes", strconv.FormatInt(fh.Size, 10),
 		"correlation_id", correlationID,
 	))
 	writeJSON(w, http.StatusAccepted, map[string]any{

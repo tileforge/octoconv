@@ -334,6 +334,39 @@ func (r *Repo) ActivateProtocol(ctx context.Context, tx pgx.Tx, id, stepID uuid.
 	return nil
 }
 
+// ActivateProtocolPreserveProgress is ActivateProtocol without clearing progress_pct.
+func (r *Repo) ActivateProtocolPreserveProgress(ctx context.Context, tx pgx.Tx, id, stepID uuid.UUID) error {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lock job: %w", err)
+	}
+	if status != StatusQueued {
+		return fmt.Errorf("illegal transition %s -> %s for job %s", status, StatusActive, id)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'active',
+		    started_at = COALESCE(started_at, now()),
+		    attempts = attempts + 1,
+		    eta_seconds = NULL,
+		    stage = NULL,
+		    stage_index = NULL,
+		    stage_count = NULL,
+		    step_id = $2
+		WHERE id = $1`, id, stepID); err != nil {
+		return fmt.Errorf("activate protocol job: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO job_events (job_id, from_status, to_status, detail)
+		VALUES ($1, $2, $3, NULL)`, id, StatusQueued, StatusActive); err != nil {
+		return fmt.Errorf("insert job_event: %w", err)
+	}
+	return nil
+}
+
 // AcceptProtocol marks an active protocol job done on the caller's transaction.
 // The caller already holds the job lock. It inserts the primary output, then
 // each extra output, records usage once, and releases the attempt hold

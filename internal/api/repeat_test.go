@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/tileforge/octoconv/internal/convert"
 	"github.com/tileforge/octoconv/internal/errcode"
 	"github.com/tileforge/octoconv/internal/jobs"
 )
@@ -83,8 +84,49 @@ func TestRepeatCreatesFreshTaskThroughCurrentIntake(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 	}
 	p := repo.created
-	if p == nil || p.ID == id || p.TargetFormat != "webp" || p.CallbackURL != "" || p.ProgressWebhook || p.CorrelationID != "" || len(p.Inputs) != 1 || p.Inputs[0].ObjectKey == "uploads/old" {
+	if p == nil || p.ID == id || p.Operation != "convert" || p.Engine != "image" || p.TargetFormat != "webp" || p.CallbackURL != "" || p.ProgressWebhook || p.CorrelationID != "" || len(p.Inputs) != 1 || p.Inputs[0].ObjectKey == "uploads/old" {
 		t.Fatalf("created %+v", p)
+	}
+	if _, ok := p.Opts["archive_extraction"]; ok {
+		t.Fatalf("extraction opts %+v", p.Opts)
+	}
+}
+
+func TestRepeatExtractionForwardsSource(t *testing.T) {
+	id := uuid.New()
+	repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{
+		ID: id, Status: jobs.StatusDone, Operation: "convert", SourceFormat: "png", TargetFormat: "webp",
+		Opts: map[string]any{"archive_extraction": map[string]any{"phase": "unpack"}},
+	}}, inputs: []jobs.Input{{Filename: "source.png", Format: "png", ObjectKey: "uploads/old", SizeBytes: 24}}}
+	store := &repeatStoreFake{available: true}
+	srv, resolver := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
+	repo.getJob.ClientID = resolver.client.ID
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, authed(httptest.NewRequest("POST", "/v1/jobs/"+id.String()+"/repeat", strings.NewReader(`{"operation":"convert","target":"webp","opts":{}}`))))
+	if rec.Code != http.StatusUnprocessableEntity || repo.created != nil {
+		t.Fatalf("status %d created %+v body %s", rec.Code, repo.created, rec.Body.String())
+	}
+}
+
+func TestRepeatFinishedExtractionRefuses(t *testing.T) {
+	id := uuid.New()
+	repo := &repeatRepoFake{fakeRepo: fakeRepo{getJob: &jobs.Job{
+		ID: id, Status: jobs.StatusDone, Engine: convert.EngineArchive, Operation: convert.OperationConvert,
+		SourceFormat: "png", TargetFormat: "webp",
+		Opts: map[string]any{"paths": []any{"docs/photo.webp"}},
+	}}, inputs: []jobs.Input{{Filename: "photo.webp", Format: "webp", ObjectKey: "results/member", SizeBytes: 24}}}
+	store := &repeatStoreFake{available: true}
+	srv, resolver := newTestServer(repo, store, &fakeQueue{})
+	srv.SetCapabilityCatalog(imageCatalog())
+	repo.getJob.ClientID = resolver.client.ID
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, authed(httptest.NewRequest("POST", "/v1/jobs/"+id.String()+"/repeat", strings.NewReader(`{"operation":"convert","target":"jpg","opts":{}}`))))
+	if rec.Code != http.StatusUnprocessableEntity || repo.created != nil || store.reads != 0 || store.probes != 0 {
+		t.Fatalf("status %d reads %d probes %d created %+v body %s", rec.Code, store.reads, store.probes, repo.created, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "extraction result cannot be repeated") {
+		t.Fatalf("body %s", rec.Body.String())
 	}
 }
 
