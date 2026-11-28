@@ -226,6 +226,7 @@ type extractionPair struct {
 	target     string
 	pairID     string
 	pairEngine string
+	operation  string
 }
 
 func insertExtractionJob(t *testing.T, pool *pgxpool.Pool, store *memStore, clientID uuid.UUID, zipBytes []byte) uuid.UUID {
@@ -238,6 +239,10 @@ func insertExtractionJob(t *testing.T, pool *pgxpool.Pool, store *memStore, clie
 func insertExtractionJobFor(t *testing.T, pool *pgxpool.Pool, store *memStore, clientID uuid.UUID, zipBytes []byte, pair extractionPair) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
+	operation := pair.operation
+	if operation == "" {
+		operation = "convert"
+	}
 	opts, err := json.Marshal(map[string]any{
 		"archive_extraction": map[string]any{
 			"phase":                   "unpack",
@@ -246,7 +251,7 @@ func insertExtractionJobFor(t *testing.T, pool *pgxpool.Pool, store *memStore, c
 			"pair_engine":             pair.pairEngine,
 			"source":                  pair.source,
 			"target":                  pair.target,
-			"operation":               "convert",
+			"operation":               operation,
 			"opts":                    map[string]any{},
 			"entries":                 []any{},
 			"next":                    0,
@@ -261,10 +266,10 @@ func insertExtractionJobFor(t *testing.T, pool *pgxpool.Pool, store *memStore, c
 			dispatch_owner, capability_id, capability_version, protocol_deadline,
 			options, created_at
 		) VALUES (
-			$1, $2, 'convert', 'archive', 'queued', $3, $4,
+			$1, $2, $3, 'archive', 'queued', $4, $5,
 			'protocol', 'octoconv.archive.zip', 1, now() + interval '1 hour',
-			$5::jsonb, $6
-		)`, id, clientID, pair.source, pair.target, opts, time.Now())
+			$6::jsonb, $7
+		)`, id, clientID, operation, pair.source, pair.target, opts, time.Now())
 	if err != nil {
 		t.Fatalf("insert job: %s", redactDB(err))
 	}
@@ -966,5 +971,214 @@ func assertTerminalUnpublished(t *testing.T, pool *pgxpool.Pool, jobID uuid.UUID
 	}
 	if primary != 0 || outputCount(t, pool, jobID) != 0 {
 		t.Fatalf("primary %d outputs %d", primary, outputCount(t, pool, jobID))
+	}
+}
+
+func TestExtract_SanitizePairDropsReport(t *testing.T) {
+	ln := startWorkerListener(t)
+	clearArchiveClaimJobs(t, ln.pool)
+	archiveLive := ln.hello(t, archiveClaimManifest(t))
+	probeLive := ln.hello(t, probeClaimManifest(t))
+	png := extractPNG()
+	zipBytes := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+	clientID := insertClient(t, ln.pool)
+	jobID := insertExtractionJobFor(t, ln.pool, archiveLive.store, clientID, zipBytes, extractionPair{
+		source: "png", target: "png", pairID: "octoconv.sanitize.probe", pairEngine: "probe", operation: "sanitize",
+	})
+
+	status, resp := pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("unpack pull %d: %s", status, resp)
+	}
+	unpack := decodeOneAssignment(t, resp)
+	attemptID, err := jsonUUID(unpack["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := jsonString(unpack["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveLive.store.put(storage.AttemptOutputKey(attemptID, 0), png)
+	status, _, resp = postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[3], token, completeBody(t, "png", convert.MIMEType("png"), png))
+	if status != http.StatusOK {
+		t.Fatalf("unpack complete %d: %s", status, resp)
+	}
+
+	status, resp = pullOnce(t, probeLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pair pull %d: %s", status, resp)
+	}
+	pair := decodeOneAssignment(t, resp)
+	if capID, err := jsonString(pair["capability_id"]); err != nil || capID != "octoconv.sanitize.probe" {
+		t.Fatalf("pair capability %s %v", capID, err)
+	}
+	var outputs []fileLink
+	if err := json.Unmarshal(pair["outputs"], &outputs); err != nil {
+		t.Fatalf("outputs: %v", err)
+	}
+	if len(outputs) != 2 || outputs[0].Role != "primary" || outputs[0].Format != "png" || outputs[1].Role != "report" || outputs[1].Ordinal != 1 || outputs[1].Format != "json" {
+		t.Fatalf("pair outputs %+v", outputs)
+	}
+	attemptID, err = jsonUUID(pair["attempt_id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err = jsonString(pair["attempt_token"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := []byte(`{"ok":true}`)
+	probeLive.store.put(storage.AttemptOutputKey(attemptID, 0), png)
+	probeLive.store.put(storage.AttemptOutputKey(attemptID, 1), report)
+	status, _, resp = postAttempt(t, probeLive, attemptPaths(probeLive.addr, attemptID)[3], token, probeCompleteBody(t, png, report, false))
+	if status != http.StatusOK {
+		t.Fatalf("pair complete %d: %s", status, resp)
+	}
+	if jobStatusOf(t, ln.pool, jobID) != "queued" || outputCount(t, ln.pool, jobID) != 0 {
+		t.Fatalf("after pair status %s outputs %d", jobStatusOf(t, ln.pool, jobID), outputCount(t, ln.pool, jobID))
+	}
+	reportSum := sha256.Sum256(report)
+	reportKey := storage.AcceptedOutputKey(jobID, attemptID, 1, hex.EncodeToString(reportSum[:]))
+	if _, ok := probeLive.store.get(reportKey); ok {
+		t.Fatal("report copy stayed")
+	}
+	primarySum := sha256.Sum256(png)
+	primaryKey := storage.AcceptedOutputKey(jobID, attemptID, 0, hex.EncodeToString(primarySum[:]))
+	if _, ok := probeLive.store.get(primaryKey); !ok {
+		t.Fatal("primary copy missing")
+	}
+
+	status, resp = pullOnce(t, archiveLive, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pack pull %d: %s", status, resp)
+	}
+	pack := decodeOneAssignment(t, resp)
+	var paths struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal(pack["parameters"], &paths); err != nil {
+		t.Fatalf("pack parameters: %v", err)
+	}
+	if len(paths.Paths) != 1 || paths.Paths[0] != "docs/photo.png" {
+		t.Fatalf("paths %#v", paths.Paths)
+	}
+	if err := json.Unmarshal(pack["outputs"], &outputs); err != nil {
+		t.Fatalf("pack outputs: %v", err)
+	}
+	if len(outputs) != 1 || outputs[0].Format != "zip" {
+		t.Fatalf("pack outputs %+v", outputs)
+	}
+}
+
+func TestExtract_QuotaFailureCommits(t *testing.T) {
+	t.Run("unpack", func(t *testing.T) {
+		ln := startWorkerListener(t)
+		clearArchiveClaimJobs(t, ln.pool)
+		archiveLive := ln.hello(t, archiveClaimManifest(t))
+		png := extractPNG()
+		zipBytes := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+		clientID := insertClient(t, ln.pool)
+		jobID := insertExtractionJob(t, ln.pool, archiveLive.store, clientID, zipBytes)
+		limitDailyJobs(t, ln.pool, clientID, "image", 0)
+
+		status, resp := pullOnce(t, archiveLive, 1)
+		if status != http.StatusOK {
+			t.Fatalf("unpack pull %d: %s", status, resp)
+		}
+		unpack := decodeOneAssignment(t, resp)
+		attemptID, err := jsonUUID(unpack["attempt_id"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := jsonString(unpack["attempt_token"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveLive.store.put(storage.AttemptOutputKey(attemptID, 0), png)
+		status, _, resp = postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[3], token, completeBody(t, "png", convert.MIMEType("png"), png))
+		if status != http.StatusOK {
+			t.Fatalf("unpack complete %d: %s", status, resp)
+		}
+		if holdState(t, ln.pool, attemptID) != "failed" {
+			t.Fatalf("hold %s", holdState(t, ln.pool, attemptID))
+		}
+		assertQuotaFailed(t, ln.pool, jobID, clientID, "archive")
+	})
+	t.Run("pack", func(t *testing.T) {
+		ln := startWorkerListener(t)
+		clearArchiveClaimJobs(t, ln.pool)
+		archiveLive := ln.hello(t, archiveClaimManifest(t))
+		imageLive := ln.hello(t, imageLegacyManifest(t, "octoconv.convert.image", "png", "webp"))
+		png := extractPNG()
+		zipBytes := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+		clientID := insertClient(t, ln.pool)
+		jobID := insertExtractionJob(t, ln.pool, archiveLive.store, clientID, zipBytes)
+
+		status, resp := pullOnce(t, archiveLive, 1)
+		if status != http.StatusOK {
+			t.Fatalf("unpack pull %d: %s", status, resp)
+		}
+		unpack := decodeOneAssignment(t, resp)
+		attemptID, err := jsonUUID(unpack["attempt_id"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := jsonString(unpack["attempt_token"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveLive.store.put(storage.AttemptOutputKey(attemptID, 0), png)
+		status, _, resp = postAttempt(t, archiveLive, attemptPaths(archiveLive.addr, attemptID)[3], token, completeBody(t, "png", convert.MIMEType("png"), png))
+		if status != http.StatusOK {
+			t.Fatalf("unpack complete %d: %s", status, resp)
+		}
+		limitDailyJobs(t, ln.pool, clientID, "archive", 0)
+
+		pair := claimPairMember(t, imageLive, archiveLive.store, jobID, png)
+		webp := []byte("webp-a")
+		imageLive.store.put(storage.AttemptOutputKey(pair.attemptID, 0), webp)
+		status, _, resp = postAttempt(t, imageLive, attemptPaths(imageLive.addr, pair.attemptID)[3], pair.token, completeBody(t, "webp", convert.MIMEType("webp"), webp))
+		if status != http.StatusOK {
+			t.Fatalf("pair complete %d: %s", status, resp)
+		}
+		if holdState(t, ln.pool, pair.attemptID) != "failed" {
+			t.Fatalf("hold %s", holdState(t, ln.pool, pair.attemptID))
+		}
+		assertQuotaFailed(t, ln.pool, jobID, clientID, "image")
+	})
+}
+
+func limitDailyJobs(t *testing.T, pool *pgxpool.Pool, clientID uuid.UUID, engine string, n int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE clients SET enforcement_mode = 'enforce' WHERE id = $1`, clientID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO client_limits (client_id, engine, max_daily_jobs)
+		VALUES ($1, $2, $3)`, clientID, engine, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertQuotaFailed(t *testing.T, pool *pgxpool.Pool, jobID, clientID uuid.UUID, engine string) {
+	t.Helper()
+	assertTerminalUnpublished(t, pool, jobID, "failed")
+	var gotEngine, code, message string
+	if err := pool.QueryRow(context.Background(), `
+		SELECT engine, error_code, error_message FROM jobs WHERE id = $1`, jobID).Scan(&gotEngine, &code, &message); err != nil {
+		t.Fatal(err)
+	}
+	if gotEngine != engine || code != jobs.QuotaReasonDailyJobs || message != "quota" {
+		t.Fatalf("engine %s code %s message %s", gotEngine, code, message)
+	}
+	var status string
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT status, job_count FROM client_usage_daily WHERE client_id = $1`, clientID).Scan(&status, &n); err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if status != "failed" || n != 1 {
+		t.Fatalf("usage %s %d", status, n)
 	}
 }

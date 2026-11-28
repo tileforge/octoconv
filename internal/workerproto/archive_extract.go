@@ -313,10 +313,7 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 	}}); err != nil {
 		return false, err
 	}
-	if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, ex.PairEngine, admitted, dsts); err != nil {
-		return false, err
-	}
-	return false, requeueExtraction(ctx, tx, jobID, attemptID, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, raw)
+	return false, h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, admitted, dsts, raw)
 }
 
 func (h *Handler) copyUnpackArtifacts(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, arts []completeArtifact) ([]string, []int64, bool, error) {
@@ -380,7 +377,11 @@ func (h *Handler) sniffCopied(ctx context.Context, key, declared, operation stri
 }
 
 func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, dsts []string, gotSizes []int64, clientID *uuid.UUID, engine string, admitted *int64) error {
-	if len(dsts) != 1 || len(gotSizes) != 1 {
+	if engine == convert.EngineProbe {
+		if len(dsts) != 2 || len(gotSizes) != 2 {
+			return &completeFailure{status: 409, code: "artifact_rejected"}
+		}
+	} else if len(dsts) != 1 || len(gotSizes) != 1 {
 		return &completeFailure{status: 409, code: "artifact_rejected"}
 	}
 	idx := ex.Next
@@ -413,10 +414,7 @@ func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, atte
 		}}); err != nil {
 			return err
 		}
-		if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, ex.PairEngine, admitted, dsts); err != nil {
-			return err
-		}
-		return requeueExtraction(ctx, tx, jobID, attemptID, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, raw)
+		return h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, ex.PairEngine, ex.PairCapabilityID, ex.PairCapabilityVersion, admitted, dsts, raw)
 	}
 	paths := make([]string, len(ex.Entries))
 	rows := make([]jobInputRow, len(ex.Entries))
@@ -451,25 +449,38 @@ func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, atte
 	if err := replaceJobInputs(ctx, tx, jobID, rows); err != nil {
 		return err
 	}
-	if err := h.admitOrFail(ctx, tx, jobID, clientID, engine, convert.EngineArchive, admitted, dsts); err != nil {
-		return err
-	}
-	return requeueExtraction(ctx, tx, jobID, attemptID, convert.EngineArchive, archiveCapabilityID, 1, raw)
+	return h.requeueAdmitted(ctx, tx, jobID, attemptID, clientID, engine, convert.EngineArchive, archiveCapabilityID, 1, admitted, dsts, raw)
 }
 
-func (h *Handler) admitOrFail(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, clientID *uuid.UUID, engine, next string, admitted *int64, dsts []string) error {
+func (h *Handler) requeueAdmitted(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, clientID *uuid.UUID, engine, next, capabilityID string, capabilityVersion int, admitted *int64, dsts []string, options []byte) error {
+	stopped, err := h.admitOrFail(ctx, tx, jobID, clientID, engine, next, admitted, dsts)
+	if err != nil || stopped {
+		return err
+	}
+	if engine == convert.EngineProbe && len(dsts) > 1 {
+		if err := h.removeUnnamedCopies(ctx, tx, dsts[1:]...); err != nil {
+			return err
+		}
+	}
+	return requeueExtraction(ctx, tx, jobID, attemptID, next, capabilityID, capabilityVersion, options)
+}
+
+func (h *Handler) admitOrFail(ctx context.Context, tx pgx.Tx, jobID uuid.UUID, clientID *uuid.UUID, engine, next string, admitted *int64, dsts []string) (bool, error) {
 	quotaErr := h.admitChangedEngine(ctx, tx, clientID, engine, next, admitted)
 	reason := jobs.QuotaReason(quotaErr)
 	if quotaErr != nil && reason == "" {
-		return quotaErr
+		return false, quotaErr
 	}
 	if reason == "" {
-		return nil
+		return false, nil
 	}
 	if err := h.removeUnnamedCopies(ctx, tx, dsts...); err != nil {
-		return err
+		return false, err
 	}
-	return h.jobsRepo.FailProtocolIn(ctx, tx, jobID, reason, "quota")
+	if err := h.jobsRepo.FailProtocolIn(ctx, tx, jobID, reason, "quota"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (h *Handler) removeExtraAttemptOutputs(ctx context.Context, attemptID uuid.UUID, n int) {
