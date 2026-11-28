@@ -6,7 +6,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -580,10 +579,7 @@ func (s *Server) sizeLimit(engine, format string) (limit int64, perFormat, gated
 }
 
 func formatLimitMessage(format string, limit int64) string {
-	if limit%(1<<20) == 0 {
-		return format + " file exceeds the " + strconv.FormatInt(limit>>20, 10) + " MiB limit for this conversion"
-	}
-	return format + " file exceeds the " + strconv.FormatInt(limit, 10) + " bytes limit for this conversion"
+	return convert.ByteCeilingMessage(format, limit, true)
 }
 
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {

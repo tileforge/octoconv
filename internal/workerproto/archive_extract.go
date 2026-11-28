@@ -270,11 +270,8 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
 				return false, rmErr
 			}
-			if errors.Is(sniffErr, convert.ErrMacroCarryingDocument) {
-				return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "macro-carrying documents are not accepted")
-			}
-			if errors.Is(sniffErr, convert.ErrDeclaredUncompressedLimit) {
-				return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "declared uncompressed size exceeds configured limit")
+			if message, refuse := copiedMemberRefusal(sniffErr, path.Base(ex.Entries[i].Name)); refuse {
+				return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", message)
 			}
 			return false, sniffErr
 		}
@@ -283,6 +280,12 @@ func (h *Handler) acceptUnpack(ctx context.Context, tx pgx.Tx, sess storedSessio
 				return false, rmErr
 			}
 			return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", "content does not match source")
+		}
+		if message, over := memberOverByteCeiling(ex, gotSizes[i]); over {
+			if rmErr := h.removeUnnamedCopies(ctx, tx, dsts...); rmErr != nil {
+				return false, rmErr
+			}
+			return false, h.jobsRepo.FailProtocolIn(ctx, tx, jobID, "engine_error", message)
 		}
 		result := extractionResultName(ex.Entries[i].Name, ex.Target)
 		if _, exists := seenResult[result]; exists {
@@ -375,7 +378,49 @@ func (h *Handler) sniffCopied(ctx context.Context, key, declared, operation stri
 	if err != nil {
 		return "", fmt.Errorf("sniff copied object: %w", err)
 	}
+	if err := h.rejectImagePixels(detected, body); err != nil {
+		return "", err
+	}
 	return detected, nil
+}
+
+func (h *Handler) rejectImagePixels(format string, body []byte) error {
+	if !convert.HasDimensionLimit(format) {
+		return nil
+	}
+	width, height, _, err := convert.Dimensions(format, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("read copied object: %w", err)
+	}
+	if uint64(width)*uint64(height) > h.imagePixels() {
+		return errDeclaredImagePixelLimit
+	}
+	return nil
+}
+
+var errDeclaredImagePixelLimit = errors.New("declared image dimensions exceed configured limit")
+
+func copiedMemberRefusal(err error, filename string) (string, bool) {
+	switch {
+	case errors.Is(err, convert.ErrMacroCarryingDocument):
+		return "macro-carrying documents are not accepted", true
+	case errors.Is(err, convert.ErrDeclaredUncompressedLimit):
+		return "declared uncompressed size exceeds configured limit", true
+	case errors.Is(err, convert.ErrDimensionsUnknown):
+		return "cannot determine declared image dimensions for " + filename, true
+	case errors.Is(err, errDeclaredImagePixelLimit):
+		return errDeclaredImagePixelLimit.Error(), true
+	default:
+		return "", false
+	}
+}
+
+func memberOverByteCeiling(ex archiveExtraction, size int64) (string, bool) {
+	limit, perFormat, gated := convert.InputByteCeiling(ex.PairEngine, ex.Source)
+	if !gated || size <= limit {
+		return "", false
+	}
+	return convert.ByteCeilingMessage(ex.Source, limit, perFormat), true
 }
 
 func (h *Handler) acceptConvertEntry(ctx context.Context, tx pgx.Tx, jobID, attemptID uuid.UUID, ex archiveExtraction, dsts []string, gotSizes []int64, clientID *uuid.UUID, engine string, admitted *int64) error {

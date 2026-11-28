@@ -2657,13 +2657,18 @@ type workerListener struct {
 
 func startWorkerListener(t *testing.T) workerListener {
 	t.Helper()
+	return startConfiguredWorkerListener(t, nil)
+}
+
+func startConfiguredWorkerListener(t *testing.T, configure func(*Handler)) workerListener {
+	t.Helper()
 	pool := testPool(t)
 	resetWorkerState(t, pool)
 	repo := NewRepo(pool)
 	ca, caKey := mintTestCA(t)
 	return workerListener{
 		pool: pool, repo: repo, ca: ca, caKey: caKey,
-		addr: listenWorker(t, repo, ca, caKey),
+		addr: listenConfiguredWorker(t, repo, ca, caKey, configure),
 	}
 }
 

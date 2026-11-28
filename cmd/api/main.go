@@ -211,6 +211,7 @@ func main() {
 	// immediately if anything else were routed through it.
 	jobsRepo := jobs.NewRepo(pool)
 	documentUncompressed := uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)) // D-04: 500 MiB default
+	imagePixels := uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000))                     // D-05: 100 megapixels default
 	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
 	// as the UsageRepo -- because the two interfaces are narrow views of the
 	// same concrete *jobs.Repo, exactly as presetRepo already appears twice
@@ -229,7 +230,7 @@ func main() {
 		// folded into NewServer's own default map -- it does not duplicate
 		// the map, it configures one entry in it.
 		MaxUploadBytes: envInt64("MAX_UPLOAD_BYTES", 2<<30),
-		MaxImagePixels: uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)), // D-05: 100 megapixels default
+		MaxImagePixels: imagePixels,
 		// PROBE_MAX_PAGES is deliberately NOT read here. The sanitize page
 		// ceiling is enforced only in the external probe worker (PROBE-02); the
 		// admission gate that once read it was removed after six review
@@ -375,6 +376,7 @@ func main() {
 		tlsCfg.ClientCAs = clientCAs
 		workerHandler := workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage])
 		workerHandler.SetDocumentUncompressedCeiling(documentUncompressed)
+		workerHandler.SetImagePixelCeiling(imagePixels)
 		workerHandler.SetEngineBudgets(engineTimeoutsFromEnv())
 		if secret := os.Getenv("WEBHOOK_SIGNING_SECRET"); secret != "" {
 			progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)

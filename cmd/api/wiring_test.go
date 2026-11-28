@@ -131,6 +131,19 @@ func TestDocumentUncompressedCeilingIsShared(t *testing.T) {
 	}
 }
 
+func TestImagePixelCeilingIsShared(t *testing.T) {
+	src := readMainSource(t)
+	if got := strings.Count(src, "MAX_IMAGE_PIXELS"); got != 1 {
+		t.Fatalf("MAX_IMAGE_PIXELS occurs %d times, want 1", got)
+	}
+	if !strings.Contains(src, "MaxImagePixels: imagePixels,") {
+		t.Fatal("MaxImagePixels is not the imagePixels local")
+	}
+	if !strings.Contains(src, "SetImagePixelCeiling(imagePixels)") {
+		t.Fatal("SetImagePixelCeiling is not called with imagePixels")
+	}
+}
+
 func TestEveryAPIListenerIsBuiltByTheConstructor(t *testing.T) {
 	src := readMainSource(t)
 	literals := strings.Count(src, "&http.Server{")

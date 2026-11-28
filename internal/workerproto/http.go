@@ -44,6 +44,7 @@ type Handler struct {
 	progressSecret              []byte
 	progressTimeout             time.Duration
 	documentUncompressedCeiling uint64
+	imagePixelCeiling           uint64
 }
 
 type objectStore interface {
@@ -77,6 +78,17 @@ func (h *Handler) documentCeiling() uint64 {
 		return 500 << 20
 	}
 	return h.documentUncompressedCeiling
+}
+
+func (h *Handler) SetImagePixelCeiling(n uint64) {
+	h.imagePixelCeiling = n
+}
+
+func (h *Handler) imagePixels() uint64 {
+	if h.imagePixelCeiling == 0 {
+		return 100_000_000
+	}
+	return h.imagePixelCeiling
 }
 
 // SetEngineBudgets sets the attempt budget used for each engine class.

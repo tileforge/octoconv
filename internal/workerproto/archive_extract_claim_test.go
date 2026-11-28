@@ -565,6 +565,91 @@ func TestExtract_SniffMismatchFailsWholeJob(t *testing.T) {
 	})
 }
 
+func TestExtract_ImagePixelCeilingRejectsMember(t *testing.T) {
+	png := extractPNG()
+	raw := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: png}})
+	ln := startConfiguredWorkerListener(t, func(h *Handler) { h.SetImagePixelCeiling(1) })
+	settled := expectUnpackSettledOn(t, ln, raw, pngPair, [][]byte{png}, "failed")
+	assertUnpackMemberRefused(t, settled, raw, png, "declared image dimensions exceed configured limit")
+}
+
+func TestExtract_UnknownImageDimensionsFailClosed(t *testing.T) {
+	broken := append([]byte(nil), extractPNG()...)
+	broken[12] = 'X'
+	raw := extractMemberZip(t, []namedMember{{name: "docs/photo.png", body: broken}})
+	settled := expectUnpackSettled(t, raw, pngPair, [][]byte{broken}, "failed")
+	assertUnpackMemberRefused(t, settled, raw, broken, "cannot determine declared image dimensions for photo.png")
+}
+
+func TestExtract_DocumentMemberSkipsPixelCeiling(t *testing.T) {
+	docx := officeDocx(t)
+	raw := extractMemberZip(t, []namedMember{{name: "docs/file.docx", body: docx}})
+	ln := startConfiguredWorkerListener(t, func(h *Handler) { h.SetImagePixelCeiling(1) })
+	settled := expectUnpackSettledOn(t, ln, raw, extractionPair{
+		source: "docx", target: "pdf", pairID: "octoconv.convert.document", pairEngine: "document",
+	}, [][]byte{docx}, "queued")
+	if jobStatusOf(t, settled.pool, settled.id) == "failed" {
+		t.Fatal("docx member failed the image pixel ceiling")
+	}
+}
+
+func TestExtract_MemberByteCeilingRejectsPairEngine(t *testing.T) {
+	body := bytes.Repeat([]byte("a"), (2<<20)+1)
+	copy(body, []byte(`\documentclass{article}`+"\n"))
+	raw := storedMemberZip(t, "docs/paper.tex", body)
+	settled := expectUnpackSettled(t, raw, extractionPair{
+		source: "latex", target: "pdf", pairID: "octoconv.convert.tectonic", pairEngine: convert.EngineTectonic,
+	}, [][]byte{body}, "failed")
+	assertUnpackMemberRefused(t, settled, raw, body, "file exceeds size limit for this conversion type")
+}
+
+func storedMemberZip(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	header := &zip.FileHeader{Name: name, Method: zip.Store}
+	header.SetModTime(time.Now())
+	w, err := zw.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func assertUnpackMemberRefused(t *testing.T, settled settledJob, zipBytes, member []byte, message string) {
+	t.Helper()
+	var got string
+	if err := settled.pool.QueryRow(context.Background(), `SELECT error_message FROM jobs WHERE id = $1`, settled.id).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != message || jobErrorCode(t, settled.pool, settled.id) != "engine_error" {
+		t.Fatalf("code %s message %q", jobErrorCode(t, settled.pool, settled.id), got)
+	}
+	assertJobInput(t, settled.pool, settled.archive.store, settled.id, storage.InputKey(settled.id, 0, "photo.zip"), zipBytes)
+	assertCopyAbsent(t, settled.archive.store, storage.AcceptedOutputKey(settled.id, settled.attemptID, 0, sha256Hex(member)))
+	var admitted *int64
+	if err := settled.pool.QueryRow(context.Background(), `SELECT admitted_input_bytes FROM jobs WHERE id = $1`, settled.id).Scan(&admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted != nil {
+		t.Fatalf("admitted %d", *admitted)
+	}
+	if settled.image.client == nil {
+		return
+	}
+	status, resp := pullOnce(t, settled.image, 1)
+	if status != http.StatusOK {
+		t.Fatalf("pair pull %d: %s", status, resp)
+	}
+	assertEmptyPull(t, resp)
+}
+
 func TestExtract_DSStoreIsNotSkipped(t *testing.T) {
 	png := extractPNG()
 	raw := extractMemberZip(t, []namedMember{
@@ -705,9 +790,11 @@ func TestExtract_NoFileMembersFails(t *testing.T) {
 var pngPair = extractionPair{source: "png", target: "webp", pairID: "octoconv.convert.image", pairEngine: "image"}
 
 type settledJob struct {
-	id    uuid.UUID
-	pool  *pgxpool.Pool
-	image liveSession
+	id        uuid.UUID
+	pool      *pgxpool.Pool
+	image     liveSession
+	archive   liveSession
+	attemptID uuid.UUID
 }
 
 func expectClaimRefusal(t *testing.T, zipBytes []byte) {
@@ -746,7 +833,11 @@ func expectUnpackFailed(t *testing.T, zipBytes []byte, pair extractionPair, bodi
 
 func expectUnpackSettled(t *testing.T, zipBytes []byte, pair extractionPair, bodies [][]byte, want string) settledJob {
 	t.Helper()
-	ln := startWorkerListener(t)
+	return expectUnpackSettledOn(t, startWorkerListener(t), zipBytes, pair, bodies, want)
+}
+
+func expectUnpackSettledOn(t *testing.T, ln workerListener, zipBytes []byte, pair extractionPair, bodies [][]byte, want string) settledJob {
+	t.Helper()
 	clearArchiveClaimJobs(t, ln.pool)
 	archiveLive := ln.hello(t, archiveClaimManifest(t))
 	var image liveSession
@@ -785,7 +876,7 @@ func expectUnpackSettled(t *testing.T, zipBytes []byte, pair extractionPair, bod
 	if progress != nil && *progress == 100 {
 		t.Fatalf("progress %d", *progress)
 	}
-	return settledJob{id: jobID, pool: ln.pool, image: image}
+	return settledJob{id: jobID, pool: ln.pool, image: image, archive: archiveLive, attemptID: attemptID}
 }
 
 func emptyZip(t *testing.T) []byte {

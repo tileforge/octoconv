@@ -147,6 +147,10 @@ func (s *Server) handleRepeat(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if repeatRefusesFinishedExtraction(source.job) {
+		writeError(w, 422, errcode.InvalidRequest, "extraction result cannot be repeated")
+		return
+	}
 	target := convert.NormalizeFormat(request.Target)
 	engine, ok := convert.Default.EngineForOp(request.Operation, source.job.SourceFormat, target)
 	if !ok {
@@ -273,6 +277,20 @@ func (r repeatContextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(p)
+}
+
+func repeatRefusesFinishedExtraction(job *jobs.Job) bool {
+	if job == nil || job.Opts == nil {
+		return false
+	}
+	if job.Engine != convert.EngineArchive || job.Operation == convert.OperationArchive {
+		return false
+	}
+	if _, extracting := job.Opts["archive_extraction"]; extracting {
+		return false
+	}
+	_, packed := job.Opts["paths"]
+	return packed
 }
 
 func repeatForwardedSource(job *jobs.Job) string {
