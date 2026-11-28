@@ -13,7 +13,7 @@ func TestSniffDeclared_PNG(t *testing.T) {
 		0x00, 0x00, 0x00, 0x64,
 		0x00, 0x00, 0x00, 0x64,
 	}
-	got, err := SniffDeclared(bytes.NewReader(png), int64(len(png)), "png")
+	got, err := SniffDeclared(bytes.NewReader(png), int64(len(png)), "png", OperationConvert, 500<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

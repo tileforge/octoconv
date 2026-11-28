@@ -2,12 +2,17 @@ package convert
 
 import (
 	"bytes"
+	"errors"
 	"io"
 )
 
+var ErrMacroCarryingDocument = errors.New("macro-carrying documents are not accepted")
+
+var ErrDeclaredUncompressedLimit = errors.New("declared uncompressed size exceeds configured limit")
+
 // TestCreateSniffInventoryCoversEveryCall walks handleCreateJob, so the direct
 // path keeps its own calls and this function repeats them.
-func SniffDeclared(r io.ReaderAt, size int64, declared string) (string, error) {
+func SniffDeclared(r io.ReaderAt, size int64, declared, operation string, uncompressedCeiling uint64) (string, error) {
 	declared = NormalizeFormat(declared)
 	section := io.NewSectionReader(r, 0, size)
 	detected, rest, err := Sniff(section)

@@ -5676,6 +5676,106 @@ func TestCreateJob_MacroPackageReachesSanitizeButNothingElse(t *testing.T) {
 	})
 }
 
+func TestSniffDeclared_MacroAndCeilingMatchDirect(t *testing.T) {
+	macro := macroDocxFixture(t)
+	plain := docxFixture(t)
+	bomb := zipBombDocxFixture(t, 2<<20)
+	cr, err := convert.SniffContainer(bytes.NewReader(bomb), int64(len(bomb)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := cr.TotalUncompressed
+	if total <= 1<<20 {
+		t.Fatalf("TotalUncompressed = %d, want above 1<<20", total)
+	}
+
+	post := func(data []byte, ceiling uint64) (*fakeStorage, *httptest.ResponseRecorder) {
+		t.Helper()
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		resolver := newFakeResolver()
+		srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+			MaxUploadBytes:               1 << 20,
+			MaxDocumentUncompressedBytes: ceiling,
+		})
+		srv.SetCapabilityCatalog(documentCatalog())
+		body, ct := multipartBody(t, "in.docx", "pdf", data)
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+		return store, rec
+	}
+
+	t.Run("convert macro", func(t *testing.T) {
+		for _, op := range []string{convert.OperationConvert, convert.OperationRender, ""} {
+			got, sniffErr := convert.SniffDeclared(bytes.NewReader(macro), int64(len(macro)), "docx", op, 500<<20)
+			if got == "docx" || !errors.Is(sniffErr, convert.ErrMacroCarryingDocument) {
+				t.Fatalf("op %q got %q err %v", op, got, sniffErr)
+			}
+		}
+		store, rec := post(macro, 500<<20)
+		if rec.Code != http.StatusUnprocessableEntity || !bytes.Contains(rec.Body.Bytes(), []byte("macro-carrying documents are not accepted")) {
+			t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+		if store.uploadCalls != 0 {
+			t.Fatalf("storage.Upload called %d times", store.uploadCalls)
+		}
+	})
+
+	t.Run("sanitize", func(t *testing.T) {
+		got, sniffErr := convert.SniffDeclared(bytes.NewReader(macro), int64(len(macro)), "docm", convert.OperationSanitize, 500<<20)
+		if sniffErr != nil || got != "docm" {
+			t.Fatalf("declared docm got %q err %v", got, sniffErr)
+		}
+		got, sniffErr = convert.SniffDeclared(bytes.NewReader(macro), int64(len(macro)), "docx", convert.OperationSanitize, 500<<20)
+		if sniffErr != nil || got != "docm" {
+			t.Fatalf("declared docx got %q err %v", got, sniffErr)
+		}
+	})
+
+	t.Run("ceiling", func(t *testing.T) {
+		got, sniffErr := convert.SniffDeclared(bytes.NewReader(bomb), int64(len(bomb)), "docx", convert.OperationConvert, total)
+		if sniffErr != nil || got != "docx" {
+			t.Fatalf("at ceiling got %q err %v", got, sniffErr)
+		}
+		_, rec := post(bomb, total)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("at ceiling status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+
+		got, sniffErr = convert.SniffDeclared(bytes.NewReader(bomb), int64(len(bomb)), "docx", convert.OperationConvert, total-1)
+		if !errors.Is(sniffErr, convert.ErrDeclaredUncompressedLimit) {
+			t.Fatalf("one under got %q err %v", got, sniffErr)
+		}
+		_, rec = post(bomb, total-1)
+		if rec.Code != http.StatusUnprocessableEntity || !bytes.Contains(rec.Body.Bytes(), []byte("declared uncompressed size exceeds configured limit")) {
+			t.Fatalf("one under status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+
+		got, sniffErr = convert.SniffDeclared(bytes.NewReader(bomb), int64(len(bomb)), "docx", convert.OperationConvert, 1<<20)
+		if !errors.Is(sniffErr, convert.ErrDeclaredUncompressedLimit) {
+			t.Fatalf("1<<20 got %q err %v", got, sniffErr)
+		}
+		_, rec = post(bomb, 1<<20)
+		if rec.Code != http.StatusUnprocessableEntity || !bytes.Contains(rec.Body.Bytes(), []byte("declared uncompressed size exceeds configured limit")) {
+			t.Fatalf("1<<20 status = %d, body=%s", rec.Code, rec.Body.String())
+		}
+
+		got, sniffErr = convert.SniffDeclared(bytes.NewReader(plain), int64(len(plain)), "docx", convert.OperationConvert, 0)
+		if !errors.Is(sniffErr, convert.ErrDeclaredUncompressedLimit) {
+			t.Fatalf("zero ceiling got %q err %v", got, sniffErr)
+		}
+	})
+
+	t.Run("plain docx", func(t *testing.T) {
+		got, sniffErr := convert.SniffDeclared(bytes.NewReader(plain), int64(len(plain)), "docx", convert.OperationConvert, 500<<20)
+		if sniffErr != nil || got != "docx" {
+			t.Fatalf("got %q err %v", got, sniffErr)
+		}
+	})
+}
+
 func TestCreateJob_ExtractionStoresPairUnderArchiveCapability(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}

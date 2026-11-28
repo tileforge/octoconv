@@ -366,7 +366,7 @@ func (h *Handler) sniffCopied(ctx context.Context, key, declared string) (string
 	if err != nil {
 		return "", fmt.Errorf("read copied object: %w", err)
 	}
-	detected, err := convert.SniffDeclared(bytes.NewReader(body), int64(len(body)), declared)
+	detected, err := convert.SniffDeclared(bytes.NewReader(body), int64(len(body)), declared, "", 0)
 	if err != nil {
 		return "", fmt.Errorf("sniff copied object: %w", err)
 	}
