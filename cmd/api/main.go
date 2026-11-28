@@ -210,6 +210,7 @@ func main() {
 	// (MaxConns=2) for exactly one caller, the health ping, and would starve
 	// immediately if anything else were routed through it.
 	jobsRepo := jobs.NewRepo(pool)
+	documentUncompressed := uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)) // D-04: 500 MiB default
 	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
 	// as the UsageRepo -- because the two interfaces are narrow views of the
 	// same concrete *jobs.Repo, exactly as presetRepo already appears twice
@@ -234,7 +235,7 @@ func main() {
 		// admission gate that once read it was removed after six review
 		// rounds -- see internal/api/handlers.go's own note where it stood,
 		// and 63-CONTEXT.md D-04.
-		MaxDocumentUncompressedBytes: uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)), // D-04: 500 MiB default
+		MaxDocumentUncompressedBytes: documentUncompressed,
 		// PR#2 finding-1: the API-side mirror of the worker's own
 		// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go).
 		// Default 0 -- not 100<<20, not the deployed 3 MiB value -- is
@@ -373,6 +374,7 @@ func main() {
 		}
 		tlsCfg.ClientCAs = clientCAs
 		workerHandler := workerproto.NewHandler(workerCatalog, jobsRepo, store, engineTimeoutsFromEnv()[convert.EngineImage])
+		workerHandler.SetDocumentUncompressedCeiling(documentUncompressed)
 		workerHandler.SetEngineBudgets(engineTimeoutsFromEnv())
 		if secret := os.Getenv("WEBHOOK_SIGNING_SECRET"); secret != "" {
 			progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)

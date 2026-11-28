@@ -118,6 +118,19 @@ func TestProtocolReconcileStartsWithTheAPI(t *testing.T) {
 	}
 }
 
+func TestDocumentUncompressedCeilingIsShared(t *testing.T) {
+	src := readMainSource(t)
+	if got := strings.Count(src, "MAX_DOCUMENT_UNCOMPRESSED_BYTES"); got != 1 {
+		t.Fatalf("MAX_DOCUMENT_UNCOMPRESSED_BYTES occurs %d times, want 1", got)
+	}
+	if !strings.Contains(src, "MaxDocumentUncompressedBytes: documentUncompressed,") {
+		t.Fatal("MaxDocumentUncompressedBytes is not the documentUncompressed local")
+	}
+	if !strings.Contains(src, "SetDocumentUncompressedCeiling(documentUncompressed)") {
+		t.Fatal("SetDocumentUncompressedCeiling is not called with documentUncompressed")
+	}
+}
+
 func TestEveryAPIListenerIsBuiltByTheConstructor(t *testing.T) {
 	src := readMainSource(t)
 	literals := strings.Count(src, "&http.Server{")
